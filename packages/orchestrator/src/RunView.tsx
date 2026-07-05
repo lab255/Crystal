@@ -6,12 +6,15 @@ import {
   ChevronRight,
   CircleCheck,
   CircleX,
+  GitBranch,
+  RefreshCw,
   Terminal,
+  Trash2,
   Wrench,
 } from "lucide-react";
 import type { AgentEvent, AgentRun, RunEvent } from "@crystal/core";
-import { useAgents } from "@crystal/client";
-import { Badge, Button, Spinner, StatusDot, cn } from "@crystal/ui";
+import { useAgents, useCrystal } from "@crystal/client";
+import { Badge, Button, Spinner, StatusDot, Tooltip, cn } from "@crystal/ui";
 import { formatCost, formatDuration } from "./prompt.js";
 
 /** Live (or historical) view of a single agent run. */
@@ -69,7 +72,106 @@ export function RunView({ run }: { run: AgentRun }) {
           <EventRow key={e.seq} runEvent={e} />
         ))}
       </div>
+      {run.worktreePath ? <ChangesPanel run={run} /> : null}
     </div>
+  );
+}
+
+/** Diff of an isolated run's worktree, loaded on demand and refreshable live. */
+function ChangesPanel({ run }: { run: AgentRun }) {
+  const { client } = useCrystal();
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [diff, setDiff] = useState<{ diff: string; stat: string } | null>(null);
+
+  async function load() {
+    setLoading(true);
+    try {
+      const result = await client.request("agent.diff", { runId: run.id });
+      setDiff(result);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="shrink-0 border-t border-edge bg-surface-1">
+      <div className="flex items-center gap-2 px-3 py-1.5">
+        <button
+          type="button"
+          className="flex items-center gap-1.5 text-xs font-medium text-ink"
+          onClick={() => {
+            setOpen((o) => !o);
+            if (!open && !diff) void load();
+          }}
+        >
+          {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+          <GitBranch className="h-3.5 w-3.5 text-crystal-300" />
+          Changes
+          <span className="font-normal text-ink-faint">worktree</span>
+        </button>
+        <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-ink-faint">
+          {run.worktreePath}
+        </span>
+        <Tooltip content="Refresh diff">
+          <Button variant="ghost" size="icon-sm" onClick={() => void load()} aria-label="Refresh diff">
+            <RefreshCw className={cn("h-3 w-3", loading && "animate-spin")} />
+          </Button>
+        </Tooltip>
+        <Tooltip content="Discard worktree and its changes">
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Remove worktree"
+            onClick={() => void client.request("agent.cleanupWorktree", { runId: run.id })}
+          >
+            <Trash2 className="h-3 w-3 text-danger" />
+          </Button>
+        </Tooltip>
+      </div>
+      {open ? (
+        <div className="max-h-72 overflow-auto border-t border-edge px-3 py-2">
+          {diff === null ? (
+            <Spinner className="h-3.5 w-3.5" />
+          ) : diff.diff.trim() === "" ? (
+            <div className="py-2 text-xs text-ink-faint">No changes in the worktree yet.</div>
+          ) : (
+            <>
+              <pre className="mb-2 whitespace-pre-wrap font-mono text-[10.5px] leading-relaxed text-ink-muted">
+                {diff.stat.trim()}
+              </pre>
+              <DiffText diff={diff.diff} />
+            </>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function DiffText({ diff }: { diff: string }) {
+  return (
+    <pre className="whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed">
+      {diff.split("\n").map((line, i) => (
+        <span
+          key={i}
+          className={cn(
+            "block",
+            line.startsWith("+") && !line.startsWith("+++")
+              ? "bg-ok/10 text-ok"
+              : line.startsWith("-") && !line.startsWith("---")
+                ? "bg-danger/10 text-danger"
+                : line.startsWith("@@")
+                  ? "text-prism-400"
+                  : line.startsWith("diff ") || line.startsWith("index ")
+                    ? "text-ink-faint"
+                    : "text-ink-muted",
+          )}
+        >
+          {line || " "}
+        </span>
+      ))}
+    </pre>
   );
 }
 

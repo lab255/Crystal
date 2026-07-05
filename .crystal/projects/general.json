@@ -7,54 +7,84 @@
     "description": "Building Crystal, in Crystal.",
     "tasks": [
       {
-        "id": "task_desktop_packaging",
-        "title": "Package the desktop app: installer + bridge server sidecar",
-        "description": "tauri build with the bridge server bundled as a sidecar binary (or embedded Node), so Crystal ships as one installer.",
+        "id": "task_workspace_picker",
+        "title": "Desktop: workspace picker on launch",
+        "description": "The packaged app currently serves CRYSTAL_ROOT or ~/CrystalWorkspace. Add an open-folder dialog and recent-workspaces list.",
         "status": "backlog",
         "priority": "high",
-        "labels": ["desktop"],
-        "links": { "nodeIds": ["node_desktop", "node_server"], "repoIds": [], "files": [] },
+        "labels": [
+          "desktop"
+        ],
+        "links": {
+          "nodeIds": [
+            "node_desktop"
+          ],
+          "repoIds": [],
+          "files": []
+        },
         "runIds": [],
         "order": 1,
         "createdAt": "2026-07-06T00:00:00.000Z",
         "updatedAt": "2026-07-06T00:00:00.000Z"
       },
       {
-        "id": "task_sdk_npm",
-        "title": "Publish @crystal/sdk to npm",
-        "description": "tsup builds + exports maps for core/client/ui/modes/sdk so external apps can embed Crystal without the monorepo.",
+        "id": "task_apply_worktree",
+        "title": "Apply worktree diffs back to the repo",
+        "description": "One-click: turn an isolated run's diff into a branch + commit (or patch apply) on the base repo.",
         "status": "backlog",
         "priority": "medium",
-        "labels": ["sdk"],
-        "links": { "nodeIds": ["node_sdk"], "repoIds": [], "files": [] },
+        "labels": [
+          "agents"
+        ],
+        "links": {
+          "nodeIds": [
+            "node_server"
+          ],
+          "repoIds": [],
+          "files": []
+        },
         "runIds": [],
         "order": 2,
         "createdAt": "2026-07-06T00:00:00.000Z",
         "updatedAt": "2026-07-06T00:00:00.000Z"
       },
       {
-        "id": "task_worktrees",
-        "title": "Agent runs in isolated git worktrees",
-        "description": "Give each agent run an optional worktree so parallel runs on the same repo never conflict; surface diffs back in the run view.",
+        "id": "task_codemap_overlay",
+        "title": "Code map ↔ diagram overlay",
+        "description": "Link hand-drawn architecture nodes to code-map modules so drift between intent and reality is visible.",
         "status": "backlog",
         "priority": "medium",
-        "labels": ["agents"],
-        "links": { "nodeIds": ["node_server", "node_claude"], "repoIds": [], "files": [] },
+        "labels": [
+          "architecture"
+        ],
+        "links": {
+          "nodeIds": [],
+          "repoIds": [],
+          "files": []
+        },
         "runIds": [],
         "order": 3,
         "createdAt": "2026-07-06T00:00:00.000Z",
         "updatedAt": "2026-07-06T00:00:00.000Z"
       },
       {
-        "id": "task_git_decorations",
-        "title": "Git status decorations in the editor file tree",
-        "description": "Color modified/untracked files using the bridge's git.status method.",
-        "status": "backlog",
-        "priority": "low",
-        "labels": ["editor"],
-        "links": { "nodeIds": [], "repoIds": [], "files": [] },
+        "id": "task_sdk_npm",
+        "title": "Publish @crystal/sdk to npm",
+        "description": "Builds + publishConfig are in place (tsup, esm+dts, css copied). Remaining: choose scope/registry and run the publish.",
+        "status": "review",
+        "priority": "medium",
+        "labels": [
+          "sdk"
+        ],
+        "links": {
+          "nodeIds": [
+            "node_sdk"
+          ],
+          "repoIds": [],
+          "files": []
+        },
         "runIds": [],
-        "order": 4,
+        "order": 1,
         "createdAt": "2026-07-06T00:00:00.000Z",
         "updatedAt": "2026-07-06T00:00:00.000Z"
       },
@@ -64,10 +94,126 @@
         "description": "Architecture diagrammer (react-flow, nesting + grouping), PM board with live Claude Code agent runs, Monaco editor with VS Code/IntelliJ/Vim keymaps, embeddable SDK, bridge server, Tauri shell. Verified end-to-end in a real browser with a real agent run.",
         "status": "done",
         "priority": "high",
-        "labels": ["milestone"],
-        "links": { "nodeIds": ["node_workspace"], "repoIds": [], "files": [] },
+        "labels": [
+          "milestone"
+        ],
+        "links": {
+          "nodeIds": [
+            "node_workspace"
+          ],
+          "repoIds": [],
+          "files": []
+        },
         "runIds": [],
         "order": 1,
+        "createdAt": "2026-07-06T00:00:00.000Z",
+        "updatedAt": "2026-07-06T00:00:00.000Z"
+      },
+      {
+        "id": "task_codemap",
+        "title": "Live code map: modules → files → symbols",
+        "description": "Architecture derived from source via the TypeScript parser: workspace/module/file drill-down, imports/exports/enums/functions, auto-updates on save (codemap.changed), open-in-editor cross-link.",
+        "status": "done",
+        "priority": "high",
+        "labels": [
+          "architecture",
+          "milestone"
+        ],
+        "links": {
+          "nodeIds": [
+            "node_server",
+            "node_workspace"
+          ],
+          "repoIds": [],
+          "files": []
+        },
+        "runIds": [],
+        "order": 2,
+        "createdAt": "2026-07-06T00:00:00.000Z",
+        "updatedAt": "2026-07-06T00:00:00.000Z"
+      },
+      {
+        "id": "task_worktrees",
+        "title": "Agent runs in isolated git worktrees",
+        "description": "isolation toggle per run; disposable worktree under ~/.crystal; live diff (tracked + untracked) in the run view; one-click discard. E2E tested.",
+        "status": "done",
+        "priority": "medium",
+        "labels": [
+          "agents"
+        ],
+        "links": {
+          "nodeIds": [
+            "node_server",
+            "node_claude"
+          ],
+          "repoIds": [],
+          "files": []
+        },
+        "runIds": [],
+        "order": 3,
+        "createdAt": "2026-07-06T00:00:00.000Z",
+        "updatedAt": "2026-07-06T00:00:00.000Z"
+      },
+      {
+        "id": "task_git_decorations",
+        "title": "Git status decorations in the editor file tree",
+        "description": "Modified/untracked coloring + M/U markers, directory bubbling, refresh on fs.changed.",
+        "status": "done",
+        "priority": "low",
+        "labels": [
+          "editor"
+        ],
+        "links": {
+          "nodeIds": [],
+          "repoIds": [],
+          "files": []
+        },
+        "runIds": [],
+        "order": 4,
+        "createdAt": "2026-07-06T00:00:00.000Z",
+        "updatedAt": "2026-07-06T00:00:00.000Z"
+      },
+      {
+        "id": "task_desktop_packaging",
+        "title": "Package the desktop app: installer + bridge server sidecar",
+        "description": "Server bundled to a single-file Node SEA executable, shipped as a Tauri sidecar and spawned on launch; NSIS installer via tauri build.",
+        "status": "done",
+        "priority": "high",
+        "labels": [
+          "desktop"
+        ],
+        "links": {
+          "nodeIds": [
+            "node_desktop",
+            "node_server"
+          ],
+          "repoIds": [],
+          "files": []
+        },
+        "runIds": [],
+        "order": 5,
+        "createdAt": "2026-07-06T00:00:00.000Z",
+        "updatedAt": "2026-07-06T00:00:00.000Z"
+      },
+      {
+        "id": "task_codesplit",
+        "title": "Code-split the modes (4.2 MB → 245 kB initial)",
+        "description": "React.lazy per mode; Monaco and react-flow download on first use of their mode.",
+        "status": "done",
+        "priority": "medium",
+        "labels": [
+          "performance"
+        ],
+        "links": {
+          "nodeIds": [
+            "node_web",
+            "node_sdk"
+          ],
+          "repoIds": [],
+          "files": []
+        },
+        "runIds": [],
+        "order": 6,
         "createdAt": "2026-07-06T00:00:00.000Z",
         "updatedAt": "2026-07-06T00:00:00.000Z"
       }

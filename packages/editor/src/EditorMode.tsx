@@ -96,7 +96,8 @@ export function EditorMode() {
     });
   }
 
-  // Global shortcuts: quick-open.
+  // Global shortcuts: quick-open. Also honor cross-mode open-file requests
+  // (dispatched by the code map's "Open in editor").
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "p" && !e.shiftKey) {
@@ -104,9 +105,32 @@ export function EditorMode() {
         setQuickOpen(true);
       }
     };
+    const consumePending = () => {
+      try {
+        const pending = sessionStorage.getItem("crystal.pendingOpenFile");
+        if (pending) {
+          sessionStorage.removeItem("crystal.pendingOpenFile");
+          void openFile(pending);
+          return true;
+        }
+      } catch {
+        /* storage unavailable */
+      }
+      return false;
+    };
+    const onOpenRequest = (e: Event) => {
+      const path = (e as CustomEvent<{ path?: string }>).detail?.path;
+      consumePending();
+      if (typeof path === "string") void openFile(path);
+    };
+    consumePending(); // opened lazily after a request fired
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
+    window.addEventListener("crystal:open-file", onOpenRequest);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("crystal:open-file", onOpenRequest);
+    };
+  }, [openFile]);
 
   const applyProfile = useCallback(
     (profile: KeymapProfile) => {

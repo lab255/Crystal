@@ -12,11 +12,12 @@ boards and code all live in your repos and version with them.
 
 | Mode | What it is | Built on |
 | --- | --- | --- |
-| **Architecture** | Diagrammer with nesting, grouping, drag-in/drag-out containment, typed edges (sync / async / data / dependency), auto-layout, inspector | `@xyflow/react` + dagre |
-| **Orchestrate** | Project boards + agent orchestration: tasks link to repos and architecture nodes, and can be handed to Claude Code with live streaming output, tool-call traces, cost and history | Claude Code CLI (`claude -p --output-format stream-json`) |
-| **Code** | Editor with file tree, tabs, quick-open (`Ctrl+P`) and three keybinding profiles: VS Code, IntelliJ, Vim | Monaco (+ `monaco-vim`) |
+| **Architecture** | Two views. *Diagrams*: hand-authored, with nesting, grouping, drag-in/drag-out containment, typed edges (sync / async / data / dependency), auto-layout, inspector. *Code map*: architecture **derived from the source itself** — modules and their import edges, drill into a module's files, drill into a file's exports (functions, classes, interfaces, enums, types) and import neighborhood. The code map is live: it re-analyzes and re-renders as the codebase changes on disk. | `@xyflow/react` + dagre; TypeScript compiler API |
+| **Orchestrate** | Project boards + agent orchestration: tasks link to repos and architecture nodes, and can be handed to Claude Code with live streaming output, tool-call traces, cost and history. Runs can be **isolated in disposable git worktrees** — parallel-safe, with a live diff view and one-click discard. | Claude Code CLI (`claude -p --output-format stream-json`) |
+| **Code** | Editor with file tree (git status decorations), tabs, quick-open (`Ctrl+P`) and three keybinding profiles: VS Code, IntelliJ, Vim | Monaco (+ `monaco-vim`) |
 
-Global: `Ctrl+K` command palette, `Ctrl+1/2/3` mode switching.
+Global: `Ctrl+K` command palette, `Ctrl+1/2/3` mode switching. "Open in editor" from the
+code map jumps straight into the Code mode.
 
 ## Everything is a file
 
@@ -70,8 +71,18 @@ pnpm --filter @crystal/server exec tsx src/index.ts --root C:\path\to\your\produ
 Desktop (needs Rust ≥ 1.77):
 
 ```sh
-pnpm --filter @crystal/desktop dev
+pnpm --filter @crystal/desktop dev     # dev shell over the running web app
 ```
+
+Packaged desktop build — the bridge server is bundled as a standalone sidecar
+executable (Node SEA), so the installer has no Node.js prerequisite:
+
+```sh
+pnpm --filter @crystal/server build:sidecar   # single-file crystal-server.exe
+pnpm --filter @crystal/desktop build          # NSIS installer via Tauri
+```
+
+The packaged app serves `%CRYSTAL_ROOT%` if set, else `~/CrystalWorkspace`.
 
 Tests and checks:
 
@@ -100,9 +111,11 @@ import { mountCrystal } from "@crystal/sdk";
 const app = mountCrystal(document.getElementById("crystal")!);
 ```
 
-Or compose facets yourself — `CrystalProvider` plus any of `ArchitectMode`,
-`OrchestratorMode`, `EditorMode`, or go headless with `BridgeClient` and the
-`@crystal/core` model.
+Or compose facets yourself — `CrystalProvider` plus any of the mode components
+(imported from `@crystal/architect`, `@crystal/orchestrator`, `@crystal/editor`
+so bundlers can code-split them), or go headless with `BridgeClient` and the
+`@crystal/core` model. All packages build to publishable ESM + type declarations
+(`pnpm -r build`).
 
 ## Agent execution
 
@@ -110,3 +123,8 @@ Runs are spawned as `claude -p --output-format stream-json --verbose --permissio
 in the chosen repo, with the prompt piped over stdin (never shell-interpolated). The
 NDJSON stream is normalized into a stable `AgentEvent` union, broadcast live over the
 bridge, and persisted for replay. Session ids are captured so runs can be resumed.
+
+With **worktree isolation** enabled, the run executes in a disposable
+`git worktree` under `~/.crystal/…/worktrees/<run-id>` instead of the repo itself:
+parallel runs never collide, the run view shows a live diff (tracked and untracked
+files), and the worktree can be discarded in one click.

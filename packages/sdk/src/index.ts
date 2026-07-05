@@ -4,8 +4,10 @@
  * Levels of integration:
  * 1. `mountCrystal(el)` — one call, non-React hosts.
  * 2. `<Crystal />` — the full IDE as a React component.
- * 3. `<CrystalProvider>` + individual modes (`ArchitectMode`, `OrchestratorMode`,
- *    `EditorMode`) — build your own shell.
+ * 3. `<CrystalProvider>` + individual modes — build your own shell. Import
+ *    modes from their own packages (`@crystal/architect`, `@crystal/orchestrator`,
+ *    `@crystal/editor`); they are deliberately not re-exported here so bundlers
+ *    can code-split them behind the shell's lazy boundaries.
  * 4. `BridgeClient` + `@crystal/core` — headless access to workspaces, graphs,
  *    boards and agent runs.
  */
@@ -26,11 +28,6 @@ export {
   useWorkspace,
   type ConnectionState,
 } from "@crystal/client";
-
-// Individual modes for granular embedding
-export { ArchitectMode, ArchitectCanvas } from "@crystal/architect";
-export { OrchestratorMode, RunView } from "@crystal/orchestrator";
-export { EditorMode } from "@crystal/editor";
 
 // Domain model
 export * from "@crystal/core";

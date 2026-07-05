@@ -13,10 +13,13 @@ import {
   type BridgeResponse,
 } from "@crystal/core";
 import { AgentManager } from "./agent-manager.js";
+import { CodeMapAnalyzer } from "./code-map.js";
 import { deleteAt, listDir, mkdirAt, readFileCapped, renameAt, writeFileAt } from "./fs-api.js";
 import { gitStatus } from "./git.js";
 import { appDataDir, isIgnoredDir } from "./paths.js";
 import { WorkspaceStore } from "./workspace-store.js";
+
+const CODE_FILE_RE = /\.(ts|tsx|js|jsx|mjs|cjs)$/;
 
 type Handlers = {
   [M in BridgeMethodName]: (
@@ -35,6 +38,7 @@ export async function startCrystalServer(opts: {
 }): Promise<CrystalServer> {
   const store = new WorkspaceStore(opts.root);
   const agents = new AgentManager(opts.root, appDataDir(opts.root));
+  const codemap = new CodeMapAnalyzer(opts.root);
 
   // Warm the workspace (creates .crystal/ on first run) before accepting clients.
   await store.load();
@@ -87,6 +91,14 @@ export async function startCrystalServer(opts: {
     },
     "agent.list": async () => ({ runs: await agents.list() }),
     "agent.events": async ({ runId }) => ({ events: await agents.eventsFor(runId) }),
+    "agent.diff": ({ runId }) => agents.diff(runId),
+    "agent.cleanupWorktree": async ({ runId }) => {
+      await agents.cleanupWorktree(runId);
+      return { ok: true };
+    },
+    "codemap.get": () => codemap.summary(),
+    "codemap.module": ({ path: p }) => codemap.moduleDetail(p),
+    "codemap.file": ({ path: p }) => codemap.fileDetail(p),
   };
 
   const httpServer = http.createServer((req, res) => {
@@ -128,6 +140,10 @@ export async function startCrystalServer(opts: {
         const paths = [...pendingPaths];
         pendingPaths.clear();
         broadcast("fs.changed", { paths });
+        if (paths.some((p) => CODE_FILE_RE.test(p))) {
+          codemap.invalidate();
+          broadcast("codemap.changed", {});
+        }
       }, 250);
     });
   } catch (err) {

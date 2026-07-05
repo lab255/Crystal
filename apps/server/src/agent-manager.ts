@@ -8,9 +8,11 @@ import {
   nowIso,
   parseClaudeStreamLine,
   type AgentEvent,
+  type AgentIsolation,
   type AgentRun,
   type RunEvent,
 } from "@crystal/core";
+import { runGit } from "./git.js";
 import { resolveInRoot } from "./paths.js";
 
 export interface AgentStartParams {
@@ -20,7 +22,10 @@ export interface AgentStartParams {
   projectId?: string | null;
   repoId?: string | null;
   resumeSessionId?: string | null;
+  isolation?: AgentIsolation;
 }
+
+const MAX_DIFF_BYTES = 1024 * 1024;
 
 interface ActiveProcess {
   child: ChildProcessWithoutNullStreams;
@@ -98,10 +103,31 @@ export class AgentManager {
   async start(params: AgentStartParams): Promise<AgentRun> {
     await this.ensureLoaded();
     const run = createAgentRun(params);
-    const cwdAbs = resolveInRoot(this.root, params.cwd ?? ".");
+    let cwdAbs = resolveInRoot(this.root, params.cwd ?? ".");
 
     this.runs.set(run.id, run);
     this.runEvents.set(run.id, []);
+
+    if (run.isolation === "worktree") {
+      try {
+        const worktree = path.join(this.dataDir, "worktrees", run.id);
+        await fs.mkdir(path.dirname(worktree), { recursive: true });
+        await runGit(cwdAbs, ["worktree", "add", "--detach", worktree]);
+        run.worktreePath = worktree;
+        cwdAbs = worktree;
+        this.record(run, {
+          type: "status",
+          status: "queued",
+          message: `Isolated worktree: ${worktree}`,
+        });
+      } catch (err) {
+        return this.finish(
+          run,
+          "failed",
+          `Could not create worktree (is "${run.cwd}" a git repo with at least one commit?): ${(err as Error).message}`,
+        );
+      }
+    }
 
     const args = [
       "-p",
@@ -173,6 +199,42 @@ export class AgentManager {
     });
 
     return run;
+  }
+
+  /** Diff of the run's worktree vs its base commit (includes untracked files). */
+  async diff(runId: string): Promise<{ diff: string; stat: string; worktreePath: string | null }> {
+    await this.ensureLoaded();
+    const run = this.runs.get(runId);
+    const worktree = run?.worktreePath;
+    if (!run || !worktree || !(await fs.access(worktree).then(() => true, () => false))) {
+      return { diff: "", stat: "", worktreePath: null };
+    }
+    // Register untracked files so they show up in git diff; the worktree is
+    // disposable, so touching its index is fine.
+    await runGit(worktree, ["add", "--intent-to-add", "-A"]).catch(() => {});
+    const [diff, stat] = await Promise.all([
+      runGit(worktree, ["diff"]),
+      runGit(worktree, ["diff", "--stat"]),
+    ]);
+    const capped =
+      diff.length > MAX_DIFF_BYTES ? diff.slice(0, MAX_DIFF_BYTES) + "\n… diff truncated …" : diff;
+    return { diff: capped, stat, worktreePath: worktree };
+  }
+
+  /** Remove a run's worktree (discards any unapplied changes in it). */
+  async cleanupWorktree(runId: string): Promise<void> {
+    await this.ensureLoaded();
+    const run = this.runs.get(runId);
+    if (!run?.worktreePath) return;
+    const base = resolveInRoot(this.root, run.cwd);
+    await runGit(base, ["worktree", "remove", "--force", run.worktreePath]).catch(async () => {
+      // Fall back to manual removal + prune if git refuses (e.g. locked files).
+      await fs.rm(run.worktreePath!, { recursive: true, force: true });
+      await runGit(base, ["worktree", "prune"]).catch(() => {});
+    });
+    run.worktreePath = null;
+    this.emitRunChanged(run);
+    await this.persist(run);
   }
 
   async cancel(runId: string): Promise<void> {

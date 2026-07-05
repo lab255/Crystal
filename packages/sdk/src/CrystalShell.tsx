@@ -1,12 +1,28 @@
-import { useEffect, useState } from "react";
+import { Suspense, lazy, useEffect, useState } from "react";
 import { Boxes, Code2, Gem, KanbanSquare, type LucideIcon } from "lucide-react";
 import { useAgents, useConnectionState, useWorkspace } from "@crystal/client";
-import { ArchitectMode } from "@crystal/architect";
-import { OrchestratorMode } from "@crystal/orchestrator";
-import { EditorMode } from "@crystal/editor";
-import { StatusDot, Tooltip, TooltipProvider, cn } from "@crystal/ui";
+import { Spinner, StatusDot, Tooltip, TooltipProvider, cn } from "@crystal/ui";
 import { CommandPalette } from "./CommandPalette.js";
 import { CRYSTAL_MODES, MODE_LABELS, type CrystalMode } from "./modes.js";
+
+// Each mode is a lazy chunk: react-flow/dagre and Monaco only download when
+// their mode is first opened. Once visited, a mode stays mounted so canvas and
+// editor state survive switches.
+const ArchitectMode = lazy(() =>
+  import("@crystal/architect").then((m) => ({ default: m.ArchitectMode })),
+);
+const OrchestratorMode = lazy(() =>
+  import("@crystal/orchestrator").then((m) => ({ default: m.OrchestratorMode })),
+);
+const EditorMode = lazy(() =>
+  import("@crystal/editor").then((m) => ({ default: m.EditorMode })),
+);
+
+const MODE_COMPONENTS: Record<CrystalMode, React.LazyExoticComponent<() => React.JSX.Element>> = {
+  architect: ArchitectMode,
+  orchestrate: OrchestratorMode,
+  code: EditorMode,
+};
 
 const MODE_ICONS: Record<CrystalMode, LucideIcon> = {
   architect: Boxes,
@@ -23,6 +39,9 @@ export interface CrystalShellProps {
 
 export function CrystalShell({ initialMode, onModeChange, hideStatusBar }: CrystalShellProps) {
   const [mode, setMode] = useState<CrystalMode>(initialMode ?? "architect");
+  const [visited, setVisited] = useState<ReadonlySet<CrystalMode>>(
+    () => new Set([initialMode ?? "architect"]),
+  );
   const [paletteOpen, setPaletteOpen] = useState(false);
 
   const connection = useConnectionState();
@@ -34,6 +53,7 @@ export function CrystalShell({ initialMode, onModeChange, hideStatusBar }: Cryst
 
   function switchMode(next: CrystalMode): void {
     setMode(next);
+    setVisited((v) => (v.has(next) ? v : new Set(v).add(next)));
     onModeChange?.(next);
   }
 
@@ -51,7 +71,26 @@ export function CrystalShell({ initialMode, onModeChange, hideStatusBar }: Cryst
       }
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    // Cross-mode navigation: "open file" requests (e.g. from the code map)
+    // switch to the editor, which handles the actual opening. The path is also
+    // parked in sessionStorage for the case where the editor mounts lazily
+    // after this event has already fired.
+    const onOpenFile = (e: Event) => {
+      const path = (e as CustomEvent<{ path?: string }>).detail?.path;
+      if (typeof path === "string") {
+        try {
+          sessionStorage.setItem("crystal.pendingOpenFile", path);
+        } catch {
+          /* storage unavailable — the live listener still works */
+        }
+      }
+      switchMode("code");
+    };
+    window.addEventListener("crystal:open-file", onOpenFile);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("crystal:open-file", onOpenFile);
+    };
   }, []);
 
   return (
@@ -94,16 +133,22 @@ export function CrystalShell({ initialMode, onModeChange, hideStatusBar }: Cryst
           </nav>
 
           <div className="min-w-0 flex-1">
-            {/* Keep all three modes mounted so canvas/editor state survives switches. */}
-            <div className={cn("h-full", mode !== "architect" && "hidden")}>
-              <ArchitectMode />
-            </div>
-            <div className={cn("h-full", mode !== "orchestrate" && "hidden")}>
-              <OrchestratorMode />
-            </div>
-            <div className={cn("h-full", mode !== "code" && "hidden")}>
-              <EditorMode />
-            </div>
+            <Suspense
+              fallback={
+                <div className="flex h-full items-center justify-center">
+                  <Spinner />
+                </div>
+              }
+            >
+              {CRYSTAL_MODES.filter((m) => visited.has(m)).map((m) => {
+                const ModeComponent = MODE_COMPONENTS[m];
+                return (
+                  <div key={m} className={cn("h-full", mode !== m && "hidden")}>
+                    <ModeComponent />
+                  </div>
+                );
+              })}
+            </Suspense>
           </div>
         </div>
 

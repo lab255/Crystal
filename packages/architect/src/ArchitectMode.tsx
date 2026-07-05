@@ -1,7 +1,16 @@
 import "@xyflow/react/dist/style.css";
 import "./architect.css";
 import { useEffect, useState } from "react";
-import { Boxes, Check, CloudUpload, MoreHorizontal, Plus, Trash2 } from "lucide-react";
+import {
+  Boxes,
+  Check,
+  CloudUpload,
+  FolderGit2,
+  MoreHorizontal,
+  PencilRuler,
+  Plus,
+  Trash2,
+} from "lucide-react";
 import type { ArchitectureGraph } from "@crystal/core";
 import { useWorkspace } from "@crystal/client";
 import {
@@ -20,10 +29,49 @@ import {
   cn,
 } from "@crystal/ui";
 import { ArchitectCanvas } from "./ArchitectCanvas.js";
+import { CodeMapView } from "./codemap/CodeMapView.js";
 
 const EMPTY_ARCHITECTURES: never[] = [];
 
+type ArchitectView = "diagrams" | "codemap";
+
 export function ArchitectMode() {
+  const [view, setView] = useState<ArchitectView>("diagrams");
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <header className="flex items-center gap-2 border-b border-edge bg-surface-1 px-3 py-1.5">
+        <span className="text-[13px] font-semibold text-ink">Architecture</span>
+        <div className="ml-auto flex items-center gap-0.5 rounded-lg bg-surface-2 p-0.5">
+          <button
+            type="button"
+            onClick={() => setView("diagrams")}
+            className={cn(
+              "flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
+              view === "diagrams" ? "bg-surface-3 text-ink" : "text-ink-muted hover:text-ink",
+            )}
+          >
+            <PencilRuler className="h-3.5 w-3.5" /> Diagrams
+          </button>
+          <button
+            type="button"
+            onClick={() => setView("codemap")}
+            className={cn(
+              "flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
+              view === "codemap" ? "bg-surface-3 text-ink" : "text-ink-muted hover:text-ink",
+            )}
+          >
+            <FolderGit2 className="h-3.5 w-3.5" /> Code map
+            <span className="rounded-full bg-ok/15 px-1.5 text-[9px] text-ok">live</span>
+          </button>
+        </div>
+      </header>
+      <div className="min-h-0 flex-1">{view === "diagrams" ? <DiagramsView /> : <CodeMapView />}</div>
+    </div>
+  );
+}
+
+function DiagramsView() {
   const architectures = useWorkspace((s) => s.info?.architectures ?? EMPTY_ARCHITECTURES);
   const loading = useWorkspace((s) => s.loading && !s.info);
   const pendingSaves = useWorkspace((s) => s.pendingSaves);

@@ -10,7 +10,8 @@
     "./styles.css": "./src/styles.css"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build": "tsup && node ../../scripts/copy-css.mjs"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.6",
@@ -31,6 +32,22 @@
     "@types/react-dom": "^19.0.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "typescript": "^5.5.4"
+    "typescript": "^5.5.4",
+    "tsup": "^8.3.5"
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "publishConfig": {
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "./styles.css": "./dist/styles.css"
+    }
   }
 }

@@ -9,6 +9,7 @@ export interface AgentStartInput {
   projectId?: string | null;
   repoId?: string | null;
   resumeSessionId?: string | null;
+  isolation?: "none" | "worktree";
 }
 
 export interface AgentState {

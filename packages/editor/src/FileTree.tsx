@@ -1,13 +1,27 @@
 import { useCallback, useEffect, useState } from "react";
 import { ChevronDown, ChevronRight, FileText, Folder, FolderOpen, RefreshCw } from "lucide-react";
 import type { FileEntry } from "@crystal/core";
-import { useCrystal } from "@crystal/client";
+import { useCrystal, useWorkspace } from "@crystal/client";
 import { Button, Tooltip, cn } from "@crystal/ui";
 
 interface DirState {
   entries: FileEntry[];
   loading: boolean;
 }
+
+/** "M " / " M" → modified, "??"/"A " → new. */
+type GitDecoration = "modified" | "added";
+
+function decorationFor(code: string): GitDecoration {
+  return code === "??" || code.startsWith("A") ? "added" : "modified";
+}
+
+const DECORATION_CLASSES: Record<GitDecoration, string> = {
+  modified: "text-warn",
+  added: "text-ok",
+};
+
+const EMPTY_REPOS: never[] = [];
 
 export function FileTree({
   activePath,
@@ -17,8 +31,35 @@ export function FileTree({
   onOpenFile: (path: string) => void;
 }) {
   const { client } = useCrystal();
+  const repos = useWorkspace((s) => s.info?.manifest.repos ?? EMPTY_REPOS);
   const [dirs, setDirs] = useState<Record<string, DirState>>({});
   const [expanded, setExpanded] = useState<Set<string>>(new Set([""]));
+  const [gitStatus, setGitStatus] = useState<Map<string, GitDecoration>>(new Map());
+
+  const loadGitStatus = useCallback(async () => {
+    const map = new Map<string, GitDecoration>();
+    await Promise.all(
+      repos.map(async (repo) => {
+        try {
+          const status = await client.request("git.status", { repoPath: repo.path });
+          for (const file of status.files) {
+            const full = repo.path === "." ? file.path : `${repo.path}/${file.path}`;
+            const deco = decorationFor(file.code);
+            map.set(full, deco);
+            // Bubble a "modified" hint up parent directories.
+            let dir = full;
+            while (dir.includes("/")) {
+              dir = dir.slice(0, dir.lastIndexOf("/"));
+              if (!map.has(dir)) map.set(dir, "modified");
+            }
+          }
+        } catch {
+          // Not a git repo / git unavailable — no decorations.
+        }
+      }),
+    );
+    setGitStatus(map);
+  }, [client, repos]);
 
   const loadDir = useCallback(
     async (path: string) => {
@@ -35,15 +76,17 @@ export function FileTree({
 
   useEffect(() => {
     void loadDir("");
+    void loadGitStatus();
     const dispose = client.events.on("fs.changed", () => {
       // Refresh only directories we currently show.
       setExpanded((exp) => {
         for (const dir of exp) void loadDir(dir);
         return exp;
       });
+      void loadGitStatus();
     });
     return dispose;
-  }, [client, loadDir]);
+  }, [client, loadDir, loadGitStatus]);
 
   function toggle(path: string): void {
     setExpanded((exp) => {
@@ -65,7 +108,15 @@ export function FileTree({
           Files
         </span>
         <Tooltip content="Refresh">
-          <Button variant="ghost" size="icon-sm" onClick={() => void loadDir("")} aria-label="Refresh files">
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            onClick={() => {
+              void loadDir("");
+              void loadGitStatus();
+            }}
+            aria-label="Refresh files"
+          >
             <RefreshCw className="h-3 w-3" />
           </Button>
         </Tooltip>
@@ -77,6 +128,7 @@ export function FileTree({
           dirs={dirs}
           expanded={expanded}
           activePath={activePath}
+          gitStatus={gitStatus}
           onToggle={toggle}
           onOpenFile={onOpenFile}
         />
@@ -91,6 +143,7 @@ function TreeLevel({
   dirs,
   expanded,
   activePath,
+  gitStatus,
   onToggle,
   onOpenFile,
 }: {
@@ -99,6 +152,7 @@ function TreeLevel({
   dirs: Record<string, DirState>;
   expanded: Set<string>;
   activePath: string | null;
+  gitStatus: Map<string, GitDecoration>;
   onToggle: (path: string) => void;
   onOpenFile: (path: string) => void;
 }) {
@@ -110,6 +164,7 @@ function TreeLevel({
       {state.entries.map((entry) => {
         const isOpen = expanded.has(entry.path);
         const indent = { paddingLeft: `${10 + depth * 12}px` };
+        const decoration = gitStatus.get(entry.path);
         if (entry.kind === "dir") {
           return (
             <div key={entry.path}>
@@ -130,6 +185,11 @@ function TreeLevel({
                   <Folder className="h-3.5 w-3.5 shrink-0 text-accent-amber/60" />
                 )}
                 <span className="truncate">{entry.name}</span>
+                {decoration && !isOpen ? (
+                  <span className={cn("ml-auto pr-1 text-[13px] leading-none", DECORATION_CLASSES[decoration])}>
+                    •
+                  </span>
+                ) : null}
               </button>
               {isOpen ? (
                 <TreeLevel
@@ -138,6 +198,7 @@ function TreeLevel({
                   dirs={dirs}
                   expanded={expanded}
                   activePath={activePath}
+                  gitStatus={gitStatus}
                   onToggle={onToggle}
                   onOpenFile={onOpenFile}
                 />
@@ -159,7 +220,14 @@ function TreeLevel({
             )}
           >
             <FileText className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
-            <span className="truncate">{entry.name}</span>
+            <span className={cn("truncate", decoration && DECORATION_CLASSES[decoration])}>
+              {entry.name}
+            </span>
+            {decoration ? (
+              <span className={cn("ml-auto pr-1 text-[10px] font-semibold", DECORATION_CLASSES[decoration])}>
+                {decoration === "added" ? "U" : "M"}
+              </span>
+            ) : null}
           </button>
         );
       })}

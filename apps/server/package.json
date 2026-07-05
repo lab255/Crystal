@@ -9,16 +9,20 @@
   "scripts": {
     "dev": "tsx watch src/index.ts --root ../..",
     "start": "tsx src/index.ts",
+    "build": "tsup",
+    "build:sidecar": "node ../../scripts/build-sidecar.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@crystal/core": "workspace:*",
     "tsx": "^4.19.0",
+    "typescript": "^5.5.4",
     "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
     "@types/ws": "^8.5.12",
-    "typescript": "^5.5.4"
+    "postject": "^1.0.0-alpha.6",
+    "tsup": "^8.3.5"
   }
 }

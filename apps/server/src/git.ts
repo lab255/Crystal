@@ -5,6 +5,12 @@ import { resolveInRoot } from "./paths.js";
 
 const exec = promisify(execFile);
 
+/** Run git in a directory (absolute path), returning stdout. */
+export async function runGit(cwd: string, args: string[], maxBuffer = 8 * 1024 * 1024): Promise<string> {
+  const { stdout } = await exec("git", args, { cwd, windowsHide: true, maxBuffer });
+  return stdout;
+}
+
 export async function gitStatus(root: string, repoRel: string): Promise<GitStatusResult> {
   const cwd = resolveInRoot(root, repoRel);
   const { stdout } = await exec("git", ["status", "--porcelain=v1", "-b"], {

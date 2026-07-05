@@ -52,6 +52,7 @@ export function TaskDetail({
   const [prompt, setPrompt] = useState("");
   const [promptDirty, setPromptDirty] = useState(false);
   const [cwd, setCwd] = useState(".");
+  const [isolate, setIsolate] = useState(false);
   const [starting, setStarting] = useState(false);
 
   useEffect(() => {
@@ -89,6 +90,7 @@ export function TaskDetail({
         taskId: task.id,
         projectId: project.id,
         repoId,
+        isolation: isolate ? "worktree" : "none",
       });
       patchTask({
         runIds: [...task.runIds, run.id],
@@ -247,6 +249,16 @@ export function TaskDetail({
               <Play className="h-3 w-3" /> Run
             </Button>
           </div>
+          <label className="mt-2 flex cursor-pointer items-center gap-1.5 text-[11px] text-ink-muted">
+            <input
+              type="checkbox"
+              checked={isolate}
+              onChange={(e) => setIsolate(e.target.checked)}
+              className="h-3 w-3 accent-[var(--color-crystal-500)]"
+            />
+            Isolate in a git worktree
+            <span className="text-ink-faint">— parallel-safe, review the diff before applying</span>
+          </label>
         </div>
 
         {taskRuns.length > 0 ? (

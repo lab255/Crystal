@@ -21,6 +21,9 @@ export const AGENT_RUN_STATUSES = [
 export const AgentRunStatusSchema = z.enum(AGENT_RUN_STATUSES);
 export type AgentRunStatus = z.infer<typeof AgentRunStatusSchema>;
 
+export const AgentIsolationSchema = z.enum(["none", "worktree"]);
+export type AgentIsolation = z.infer<typeof AgentIsolationSchema>;
+
 export const AgentRunSchema = z.object({
   id: z.string(),
   /** Optional links back into the PM board. */
@@ -30,6 +33,10 @@ export const AgentRunSchema = z.object({
   repoId: z.string().nullish(),
   /** Working directory relative to the workspace root. */
   cwd: z.string().default("."),
+  /** "worktree" runs in a disposable git worktree instead of the repo itself. */
+  isolation: AgentIsolationSchema.default("none"),
+  /** Absolute host path of the run's worktree (null once cleaned up). */
+  worktreePath: z.string().nullish(),
   prompt: z.string(),
   status: AgentRunStatusSchema.default("queued"),
   /** Claude Code session id (for --resume). */
@@ -52,6 +59,7 @@ export function createAgentRun(init: {
   taskId?: string | null;
   projectId?: string | null;
   repoId?: string | null;
+  isolation?: AgentIsolation;
 }): AgentRun {
   return AgentRunSchema.parse({
     id: uid("run"),
@@ -60,6 +68,7 @@ export function createAgentRun(init: {
     taskId: init.taskId ?? null,
     projectId: init.projectId ?? null,
     repoId: init.repoId ?? null,
+    isolation: init.isolation ?? "none",
     createdAt: nowIso(),
   });
 }

@@ -1,5 +1,6 @@
 import type { ArchitectureGraph } from "./architecture.js";
 import type { AgentRun, RunEvent } from "./agent.js";
+import type { CodeFileDetail, CodeMapSummary, CodeModuleDetail } from "./codemap.js";
 import type { Project } from "./project.js";
 import type { WorkspaceManifest } from "./workspace.js";
 
@@ -66,12 +67,22 @@ export interface BridgeMethods {
       repoId?: string | null;
       /** Resume a previous Claude Code session. */
       resumeSessionId?: string | null;
+      /** "worktree" executes the run in a disposable git worktree. */
+      isolation?: "none" | "worktree";
     };
     result: { run: AgentRun };
   };
   "agent.cancel": { params: { runId: string }; result: { ok: true } };
   "agent.list": { params: Record<string, never>; result: { runs: AgentRun[] } };
   "agent.events": { params: { runId: string }; result: { events: RunEvent[] } };
+  "agent.diff": {
+    params: { runId: string };
+    result: { diff: string; stat: string; worktreePath: string | null };
+  };
+  "agent.cleanupWorktree": { params: { runId: string }; result: { ok: true } };
+  "codemap.get": { params: Record<string, never>; result: CodeMapSummary };
+  "codemap.module": { params: { path: string }; result: CodeModuleDetail };
+  "codemap.file": { params: { path: string }; result: CodeFileDetail };
 }
 
 export type BridgeMethodName = keyof BridgeMethods;
@@ -93,6 +104,8 @@ export interface BridgeEvents {
   "agent.runChanged": { run: AgentRun };
   "fs.changed": { paths: string[] };
   "workspace.changed": Record<string, never>;
+  /** The derived code map was re-analyzed after source changes. */
+  "codemap.changed": Record<string, never>;
 }
 
 export type BridgeEventName = keyof BridgeEvents;

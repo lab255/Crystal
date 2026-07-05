@@ -1,0 +1,5 @@
+{
+  "main": "dist/crystal-server.cjs",
+  "output": "dist/sea-prep.blob",
+  "disableExperimentalSEAWarning": true
+}
