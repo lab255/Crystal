@@ -1,0 +1,48 @@
+import os from "node:os";
+import path from "node:path";
+import crypto from "node:crypto";
+
+/** Resolve a workspace-relative path safely inside the root (blocks traversal). */
+export function resolveInRoot(root: string, rel: string): string {
+  const cleaned = rel.replace(/\\/g, "/").replace(/^\/+/, "");
+  const abs = path.resolve(root, cleaned);
+  const rootAbs = path.resolve(root);
+  if (abs !== rootAbs && !abs.startsWith(rootAbs + path.sep)) {
+    throw new Error(`Path escapes workspace root: ${rel}`);
+  }
+  return abs;
+}
+
+/** Workspace-relative forward-slash path for an absolute path. */
+export function toRelPath(root: string, abs: string): string {
+  return path.relative(root, abs).split(path.sep).join("/");
+}
+
+/** Per-workspace app-data directory (run history, ephemeral state). */
+export function appDataDir(root: string): string {
+  const hash = crypto
+    .createHash("sha1")
+    .update(path.resolve(root).toLowerCase())
+    .digest("hex")
+    .slice(0, 12);
+  const base = path.basename(path.resolve(root)).replace(/[^a-zA-Z0-9-_]/g, "-");
+  return path.join(os.homedir(), ".crystal", "workspaces", `${base}-${hash}`);
+}
+
+const IGNORED_DIRS = new Set([
+  "node_modules",
+  ".git",
+  ".idea",
+  ".vscode",
+  "dist",
+  "build",
+  "target",
+  ".next",
+  ".turbo",
+  "coverage",
+  "__pycache__",
+]);
+
+export function isIgnoredDir(name: string): boolean {
+  return IGNORED_DIRS.has(name);
+}

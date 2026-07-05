@@ -1,0 +1,252 @@
+{
+  "crystal": 1,
+  "kind": "architecture",
+  "data": {
+    "id": "arch_crystal_overview",
+    "name": "Crystal Overview",
+    "description": "How Crystal itself is put together — edit me!",
+    "nodes": [
+      {
+        "id": "node_workspace",
+        "kind": "system",
+        "label": "Crystal",
+        "description": "pnpm workspace",
+        "parentId": null,
+        "position": {
+          "x": 80,
+          "y": 60
+        },
+        "size": {
+          "width": 820,
+          "height": 380
+        },
+        "tech": [],
+        "accent": "violet"
+      },
+      {
+        "id": "node_web",
+        "kind": "frontend",
+        "label": "apps/web",
+        "description": "Standalone shell — composes the SDK",
+        "parentId": "node_workspace",
+        "position": {
+          "x": 36,
+          "y": 64
+        },
+        "size": null,
+        "tech": [
+          "react 19",
+          "vite 7",
+          "tailwind 4"
+        ],
+        "accent": "cyan"
+      },
+      {
+        "id": "node_server",
+        "kind": "service",
+        "label": "@crystal/server",
+        "description": "Bridge: fs, git, .crystal state, agent sessions",
+        "parentId": "node_workspace",
+        "position": {
+          "x": 480,
+          "y": 64
+        },
+        "size": null,
+        "tech": [
+          "node 24",
+          "ws",
+          "tsx"
+        ],
+        "accent": "violet"
+      },
+      {
+        "id": "node_packages",
+        "kind": "group",
+        "label": "packages/*",
+        "description": "",
+        "parentId": "node_workspace",
+        "position": {
+          "x": 36,
+          "y": 218
+        },
+        "size": {
+          "width": 748,
+          "height": 130
+        },
+        "tech": [],
+        "accent": "slate"
+      },
+      {
+        "id": "node_core",
+        "kind": "repo",
+        "label": "@crystal/core",
+        "description": "Domain model + protocols",
+        "parentId": "node_packages",
+        "position": {
+          "x": 16,
+          "y": 46
+        },
+        "size": null,
+        "tech": [],
+        "accent": "blue"
+      },
+      {
+        "id": "node_client",
+        "kind": "repo",
+        "label": "@crystal/client",
+        "description": "Bridge client + stores",
+        "parentId": "node_packages",
+        "position": {
+          "x": 200,
+          "y": 46
+        },
+        "size": null,
+        "tech": [],
+        "accent": "blue"
+      },
+      {
+        "id": "node_modes",
+        "kind": "repo",
+        "label": "architect · orchestrator · editor",
+        "description": "The three modes",
+        "parentId": "node_packages",
+        "position": {
+          "x": 384,
+          "y": 46
+        },
+        "size": null,
+        "tech": [],
+        "accent": "violet"
+      },
+      {
+        "id": "node_sdk",
+        "kind": "repo",
+        "label": "@crystal/sdk",
+        "description": "Embeddable IDE",
+        "parentId": "node_packages",
+        "position": {
+          "x": 610,
+          "y": 46
+        },
+        "size": null,
+        "tech": [],
+        "accent": "emerald"
+      },
+      {
+        "id": "node_claude",
+        "kind": "external",
+        "label": "Claude Code CLI",
+        "description": "Agent execution engine",
+        "parentId": null,
+        "position": {
+          "x": 1000,
+          "y": 120
+        },
+        "size": null,
+        "tech": [
+          "claude -p",
+          "stream-json"
+        ],
+        "accent": "amber"
+      },
+      {
+        "id": "node_crystal_files",
+        "kind": "datastore",
+        "label": ".crystal/",
+        "description": "Diagrams + boards, versioned with your code",
+        "parentId": null,
+        "position": {
+          "x": 1000,
+          "y": 280
+        },
+        "size": null,
+        "tech": [
+          "json"
+        ],
+        "accent": "emerald"
+      },
+      {
+        "id": "node_run_history",
+        "kind": "datastore",
+        "label": "~/.crystal",
+        "description": "Run history per workspace",
+        "parentId": null,
+        "position": {
+          "x": 1000,
+          "y": 420
+        },
+        "size": null,
+        "tech": [
+          "jsonl"
+        ],
+        "accent": "slate"
+      },
+      {
+        "id": "node_desktop",
+        "kind": "frontend",
+        "label": "apps/desktop",
+        "description": "Desktop shell",
+        "parentId": null,
+        "position": {
+          "x": 80,
+          "y": 500
+        },
+        "size": null,
+        "tech": [
+          "tauri 2",
+          "rust"
+        ],
+        "accent": "rose"
+      }
+    ],
+    "edges": [
+      {
+        "id": "edge_web_server",
+        "source": "node_web",
+        "target": "node_server",
+        "kind": "sync",
+        "label": "ws://4517/crystal"
+      },
+      {
+        "id": "edge_server_claude",
+        "source": "node_server",
+        "target": "node_claude",
+        "kind": "async",
+        "label": "spawn · stream-json"
+      },
+      {
+        "id": "edge_server_files",
+        "source": "node_server",
+        "target": "node_crystal_files",
+        "kind": "data",
+        "label": "graphs · boards"
+      },
+      {
+        "id": "edge_server_runs",
+        "source": "node_server",
+        "target": "node_run_history",
+        "kind": "data",
+        "label": "run events"
+      },
+      {
+        "id": "edge_desktop_web",
+        "source": "node_desktop",
+        "target": "node_web",
+        "kind": "dependency",
+        "label": "wraps"
+      },
+      {
+        "id": "edge_web_sdk",
+        "source": "node_web",
+        "target": "node_sdk",
+        "kind": "dependency",
+        "label": "composes"
+      }
+    ],
+    "viewport": {
+      "x": 32.51748251748256,
+      "y": 145.3216783216783,
+      "zoom": 0.9685314685314685
+    }
+  }
+}

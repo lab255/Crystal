@@ -1,0 +1,4 @@
+@import "../../../packages/ui/src/styles.css";
+
+/* Make Tailwind scan the workspace packages that ship Crystal UI code. */
+@source "../../../packages";

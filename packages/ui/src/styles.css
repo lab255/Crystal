@@ -1,0 +1,86 @@
+@import "tailwindcss";
+
+/*
+ * Crystal theme — dark-first. Tokens are the single source of truth;
+ * components use the generated utilities (bg-surface-1, text-ink-muted, …).
+ */
+@theme {
+  --font-sans:
+    "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono:
+    "Cascadia Code", ui-monospace, "JetBrains Mono", Consolas, monospace;
+
+  /* Surfaces (darkest to lightest) */
+  --color-surface-0: #0a0c11;
+  --color-surface-1: #10131a;
+  --color-surface-2: #161a23;
+  --color-surface-3: #1d222e;
+  --color-surface-active: #232a3a;
+
+  /* Lines */
+  --color-edge: #232936;
+  --color-edge-strong: #313949;
+
+  /* Ink */
+  --color-ink: #e7eaf3;
+  --color-ink-muted: #99a1b3;
+  --color-ink-faint: #5d6577;
+
+  /* Brand */
+  --color-crystal-300: #b3a6ff;
+  --color-crystal-400: #9d8cfc;
+  --color-crystal-500: #8b7cf6;
+  --color-crystal-600: #7a63e8;
+  --color-prism-400: #7de3f4;
+  --color-prism-500: #4ecbe0;
+
+  /* Semantic */
+  --color-ok: #34d399;
+  --color-warn: #fbbf24;
+  --color-danger: #fb7185;
+  --color-info: #60a5fa;
+
+  /* Node accents */
+  --color-accent-violet: #8b7cf6;
+  --color-accent-cyan: #22d3ee;
+  --color-accent-emerald: #34d399;
+  --color-accent-amber: #fbbf24;
+  --color-accent-rose: #fb7185;
+  --color-accent-blue: #60a5fa;
+  --color-accent-slate: #94a3b8;
+
+  --radius-panel: 10px;
+}
+
+@layer base {
+  html,
+  body {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-surface-0 text-ink font-sans text-[13px] antialiased;
+  }
+
+  ::selection {
+    background: color-mix(in srgb, var(--color-crystal-500) 40%, transparent);
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-edge-strong) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: var(--color-edge-strong);
+    border-radius: 5px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}

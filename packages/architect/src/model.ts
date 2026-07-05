@@ -1,0 +1,166 @@
+import type { Edge as RfEdge, Node as RfNode } from "@xyflow/react";
+import { MarkerType } from "@xyflow/react";
+import {
+  isContainerKind,
+  topoOrderNodes,
+  type ArchEdge,
+  type ArchEdgeKind,
+  type ArchNode,
+  type ArchNodeKind,
+  type ArchitectureGraph,
+} from "@crystal/core";
+import {
+  AppWindow,
+  Boxes,
+  Database,
+  Folder,
+  GitBranch,
+  Globe,
+  Network,
+  Rows3,
+  Server,
+  StickyNote,
+  type LucideIcon,
+} from "lucide-react";
+
+/* ------------------------------------------------------------------ */
+/* Presentation metadata per node kind                                 */
+/* ------------------------------------------------------------------ */
+
+export type AccentName = NonNullable<ArchNode["accent"]>;
+
+export interface KindMeta {
+  label: string;
+  icon: LucideIcon;
+  defaultAccent: AccentName;
+}
+
+export const KIND_META: Record<ArchNodeKind, KindMeta> = {
+  system: { label: "System", icon: Boxes, defaultAccent: "violet" },
+  group: { label: "Group", icon: Folder, defaultAccent: "slate" },
+  service: { label: "Service", icon: Server, defaultAccent: "violet" },
+  repo: { label: "Repository", icon: GitBranch, defaultAccent: "slate" },
+  datastore: { label: "Datastore", icon: Database, defaultAccent: "emerald" },
+  queue: { label: "Queue", icon: Rows3, defaultAccent: "amber" },
+  gateway: { label: "Gateway", icon: Network, defaultAccent: "blue" },
+  frontend: { label: "Frontend", icon: AppWindow, defaultAccent: "cyan" },
+  external: { label: "External", icon: Globe, defaultAccent: "slate" },
+  note: { label: "Note", icon: StickyNote, defaultAccent: "amber" },
+};
+
+export const ACCENT_CSS: Record<AccentName, string> = {
+  violet: "var(--color-accent-violet)",
+  cyan: "var(--color-accent-cyan)",
+  emerald: "var(--color-accent-emerald)",
+  amber: "var(--color-accent-amber)",
+  rose: "var(--color-accent-rose)",
+  blue: "var(--color-accent-blue)",
+  slate: "var(--color-accent-slate)",
+};
+
+export function accentOf(node: ArchNode): string {
+  return ACCENT_CSS[node.accent ?? KIND_META[node.kind].defaultAccent];
+}
+
+/* ------------------------------------------------------------------ */
+/* Core graph ⇄ react-flow conversion                                  */
+/* ------------------------------------------------------------------ */
+
+export type ArchRfNode = RfNode<{ arch: ArchNode }>;
+export type ArchRfEdge = RfEdge<{ kind: ArchEdgeKind }>;
+
+export function rfTypeFor(kind: ArchNodeKind): string {
+  if (isContainerKind(kind)) return "container";
+  if (kind === "note") return "note";
+  return "leaf";
+}
+
+export function toRfNodes(
+  graph: ArchitectureGraph,
+  selectedIds: ReadonlySet<string>,
+): ArchRfNode[] {
+  return topoOrderNodes(graph).map((n) => {
+    const container = isContainerKind(n.kind);
+    const node: ArchRfNode = {
+      id: n.id,
+      type: rfTypeFor(n.kind),
+      position: { ...n.position },
+      data: { arch: n },
+      selected: selectedIds.has(n.id),
+      dragHandle: container ? ".arch-container-header" : undefined,
+    };
+    if (n.parentId) node.parentId = n.parentId;
+    if (container) {
+      node.width = n.size?.width ?? 420;
+      node.height = n.size?.height ?? 280;
+      node.zIndex = -1;
+    }
+    return node;
+  });
+}
+
+export const EDGE_KIND_STYLE: Record<
+  ArchEdgeKind,
+  { stroke: string; dash?: string; label: string }
+> = {
+  sync: { stroke: "var(--color-accent-blue)", label: "Sync call" },
+  async: { stroke: "var(--color-accent-amber)", dash: "6 4", label: "Async / events" },
+  data: { stroke: "var(--color-accent-emerald)", dash: "2 3", label: "Data flow" },
+  dependency: { stroke: "var(--color-accent-slate)", label: "Dependency" },
+};
+
+export function toRfEdges(
+  graph: ArchitectureGraph,
+  selectedIds: ReadonlySet<string>,
+): ArchRfEdge[] {
+  return graph.edges.map((e) => {
+    const style = EDGE_KIND_STYLE[e.kind];
+    return {
+      id: e.id,
+      source: e.source,
+      target: e.target,
+      label: e.label || undefined,
+      selected: selectedIds.has(e.id),
+      data: { kind: e.kind },
+      type: "default",
+      style: {
+        stroke: style.stroke,
+        strokeWidth: 1.5,
+        strokeDasharray: style.dash,
+        opacity: 0.9,
+      },
+      labelStyle: { fill: "var(--color-ink-muted)", fontSize: 10 },
+      labelBgStyle: { fill: "var(--color-surface-1)", fillOpacity: 0.9 },
+      labelBgPadding: [4, 2] as [number, number],
+      labelBgBorderRadius: 4,
+      markerEnd: { type: MarkerType.ArrowClosed, color: style.stroke, width: 16, height: 16 },
+    };
+  });
+}
+
+/** Write RF node geometry (positions, sizes, parents) back onto a core graph. */
+export function applyRfGeometry(graph: ArchitectureGraph, rfNodes: ArchRfNode[]): ArchitectureGraph {
+  const byId = new Map(rfNodes.map((n) => [n.id, n]));
+  return {
+    ...graph,
+    nodes: graph.nodes.map((n) => {
+      const rf = byId.get(n.id);
+      if (!rf) return n;
+      const next: ArchNode = {
+        ...n,
+        position: { x: rf.position.x, y: rf.position.y },
+        parentId: rf.parentId ?? null,
+      };
+      if (isContainerKind(n.kind) && rf.width != null && rf.height != null) {
+        next.size = { width: rf.width, height: rf.height };
+      }
+      return next;
+    }),
+  };
+}
+
+export function edgeIdsBetween(graph: ArchitectureGraph, nodeIds: Set<string>): string[] {
+  return graph.edges
+    .filter((e) => nodeIds.has(e.source) || nodeIds.has(e.target))
+    .map((e) => e.id);
+}

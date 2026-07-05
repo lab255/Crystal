@@ -1,0 +1,49 @@
+/* Dark-theme overrides for react-flow chrome. */
+
+.react-flow__controls-button {
+  background: var(--color-surface-2);
+  border-bottom: 1px solid var(--color-edge);
+  fill: var(--color-ink-muted);
+  width: 24px;
+  height: 24px;
+}
+
+.react-flow__controls-button:hover {
+  background: var(--color-surface-active);
+  fill: var(--color-ink);
+}
+
+.react-flow__edge.selected .react-flow__edge-path {
+  stroke: var(--color-crystal-400) !important;
+  stroke-width: 2.25;
+}
+
+.react-flow__edge-text {
+  fill: var(--color-ink-muted);
+}
+
+.react-flow__handle {
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.react-flow__node:hover .react-flow__handle,
+.react-flow__node.selected .react-flow__handle,
+.react-flow__handle.connectingfrom,
+.react-flow__handle.valid {
+  opacity: 1;
+}
+
+.react-flow__connection-path {
+  stroke: var(--color-crystal-400);
+  stroke-width: 1.5;
+}
+
+.react-flow__selection {
+  background: color-mix(in srgb, var(--color-crystal-500) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-crystal-500) 40%, transparent);
+}
+
+.react-flow__minimap-mask {
+  stroke: var(--color-edge-strong);
+}

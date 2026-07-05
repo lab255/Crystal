@@ -1,0 +1,24 @@
+{
+  "name": "@crystal/server",
+  "version": "0.1.0",
+  "description": "Crystal bridge server: workspace fs, git, .crystal persistence and Claude Code agent sessions over WebSocket",
+  "type": "module",
+  "bin": {
+    "crystal-server": "./src/index.ts"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts --root ../..",
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@crystal/core": "workspace:*",
+    "tsx": "^4.19.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/ws": "^8.5.12",
+    "typescript": "^5.5.4"
+  }
+}

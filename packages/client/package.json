@@ -1,0 +1,26 @@
+{
+  "name": "@crystal/client",
+  "version": "0.1.0",
+  "description": "Crystal client data layer: bridge transport, workspace and agent state, React hooks",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@crystal/core": "workspace:*",
+    "zustand": "^5.0.3"
+  },
+  "peerDependencies": {
+    "react": "^18 || ^19"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "react": "^19.1.0",
+    "typescript": "^5.5.4"
+  }
+}
