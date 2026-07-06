@@ -5,6 +5,7 @@ import {
   ARCH_LAYERS,
   ARCH_NODE_KINDS,
   DEFAULT_LAYER_OF_KIND,
+  LB_ALGORITHMS,
   isContainerKind,
   type ArchEdge,
   type ArchEdgeKind,
@@ -13,11 +14,14 @@ import {
   type ArchNodeKind,
   type ArchitectureGraph,
   type CodeModule,
+  type LbAlgorithm,
+  type SimNodeConfig,
 } from "@crystal/core";
 import { useWorkspace } from "@crystal/client";
-import { Button, Input, Textarea, cn } from "@crystal/ui";
+import { Button, Input, Switch, Textarea, cn } from "@crystal/ui";
 import { deleteEdges, deleteNodes, updateEdge, updateNode } from "./graph-ops.js";
 import { ACCENT_CSS, KIND_META, type AccentName } from "./model.js";
+import { KIND_SIM_DEFAULTS, isSimKind } from "./simulation.js";
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -226,6 +230,7 @@ function NodeEditor({
           ))}
         </div>
       </Field>
+      {isSimKind(node.kind) ? <SimEditor node={node} onPatch={patch} /> : null}
       <Button
         variant="danger"
         size="sm"
@@ -239,6 +244,141 @@ function NodeEditor({
         Delete {isContainerKind(node.kind) ? "container + contents" : "node"}
       </Button>
     </>
+  );
+}
+
+const DEFAULT_BREAKER = { enabled: true, errorThreshold: 0.5, cooldownTicks: 6 };
+
+/** Traffic-simulation knobs; every field falls back to the kind default. */
+function SimEditor({
+  node,
+  onPatch,
+}: {
+  node: ArchNode;
+  onPatch: (p: Partial<ArchNode>) => void;
+}) {
+  const defaults = KIND_SIM_DEFAULTS[node.kind];
+  const sim = node.sim;
+  const breaker = sim?.circuitBreaker;
+
+  const patchSim = (p: Partial<SimNodeConfig>) =>
+    onPatch({ sim: { replicas: 1, ...(sim ?? {}), ...p } });
+
+  const numberField = (
+    label: string,
+    value: number | null | undefined,
+    placeholder: number | undefined,
+    onCommit: (v: number | null) => void,
+    opts?: { min?: number; step?: number },
+  ) => (
+    <Field label={label}>
+      <Input
+        type="number"
+        min={opts?.min ?? 1}
+        step={opts?.step ?? 1}
+        value={value ?? ""}
+        placeholder={placeholder != null ? String(placeholder) : undefined}
+        onChange={(e) => {
+          const v = e.target.value === "" ? null : Number(e.target.value);
+          if (v == null || Number.isFinite(v)) onCommit(v);
+        }}
+      />
+    </Field>
+  );
+
+  return (
+    <div className="space-y-3 border-t border-edge pt-3">
+      <div className="text-[10px] font-semibold uppercase tracking-wider text-ink-faint">
+        Simulation
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        {numberField("Replicas", sim?.replicas === 1 ? null : sim?.replicas, 1, (v) =>
+          patchSim({ replicas: Math.max(1, Math.round(v ?? 1)) }),
+        )}
+        {numberField("Capacity rps", sim?.capacityRps, defaults?.capacityRps, (v) =>
+          patchSim({ capacityRps: v }),
+        )}
+      </div>
+      {numberField("Base latency ms", sim?.latencyMs, defaults?.latencyMs, (v) =>
+        patchSim({ latencyMs: v }), { min: 0 },
+      )}
+      {node.kind === "loadbalancer" || node.kind === "gateway" ? (
+        <Field label="Balancing algorithm">
+          <select
+            className={selectClasses}
+            value={sim?.lbAlgorithm ?? "round-robin"}
+            onChange={(e) => patchSim({ lbAlgorithm: e.target.value as LbAlgorithm })}
+          >
+            {LB_ALGORITHMS.map((a) => (
+              <option key={a} value={a}>
+                {a === "round-robin"
+                  ? "Round robin (no health checks)"
+                  : a === "least-loaded"
+                    ? "Least loaded (health aware)"
+                    : "Weighted by capacity (health aware)"}
+              </option>
+            ))}
+          </select>
+        </Field>
+      ) : null}
+      {node.kind === "cache" ? (
+        <Field label={`Hit rate — ${Math.round((sim?.cacheHitRate ?? defaults?.cacheHitRate ?? 0.85) * 100)}%`}>
+          <input
+            type="range"
+            min={0}
+            max={100}
+            value={Math.round((sim?.cacheHitRate ?? defaults?.cacheHitRate ?? 0.85) * 100)}
+            onChange={(e) => patchSim({ cacheHitRate: Number(e.target.value) / 100 })}
+            className="h-1 w-full cursor-pointer"
+            style={{ accentColor: "var(--color-crystal-400)" }}
+          />
+        </Field>
+      ) : null}
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-ink-faint">
+          Circuit breaker
+        </span>
+        <Switch
+          checked={breaker?.enabled ?? false}
+          onChange={(enabled) =>
+            patchSim({ circuitBreaker: { ...DEFAULT_BREAKER, ...(breaker ?? {}), enabled } })
+          }
+          aria-label="Circuit breaker"
+        />
+      </div>
+      {breaker?.enabled ? (
+        <div className="grid grid-cols-2 gap-2">
+          <Field label={`Trip at ${Math.round(breaker.errorThreshold * 100)}% err`}>
+            <input
+              type="range"
+              min={5}
+              max={100}
+              step={5}
+              value={Math.round(breaker.errorThreshold * 100)}
+              onChange={(e) =>
+                patchSim({
+                  circuitBreaker: { ...breaker, errorThreshold: Number(e.target.value) / 100 },
+                })
+              }
+              className="h-1 w-full cursor-pointer"
+              style={{ accentColor: "var(--color-crystal-400)" }}
+            />
+          </Field>
+          <Field label="Cooldown ticks">
+            <Input
+              type="number"
+              min={1}
+              value={breaker.cooldownTicks}
+              onChange={(e) => {
+                const v = Math.max(1, Math.round(Number(e.target.value)));
+                if (Number.isFinite(v))
+                  patchSim({ circuitBreaker: { ...breaker, cooldownTicks: v } });
+              }}
+            />
+          </Field>
+        </div>
+      ) : null}
+    </div>
   );
 }
 

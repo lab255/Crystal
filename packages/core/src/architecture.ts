@@ -18,8 +18,10 @@ export const ARCH_NODE_KINDS = [
   "service",
   "repo",
   "datastore",
+  "cache",
   "queue",
   "gateway",
+  "loadbalancer",
   "frontend",
   "external",
   "note",
@@ -43,11 +45,13 @@ export type ArchLayer = z.infer<typeof ArchLayerSchema>;
 /** Default layer per node kind; containers and notes stay unlayered. */
 export const DEFAULT_LAYER_OF_KIND: Partial<Record<ArchNodeKind, ArchLayer>> = {
   gateway: "entry",
+  loadbalancer: "entry",
   frontend: "entry",
   external: "entry",
   service: "service",
   repo: "service",
   datastore: "data",
+  cache: "data",
   queue: "data",
 };
 
@@ -68,6 +72,41 @@ export const ArchPlacementSchema = z.object({
   runtime: z.string().default(""),
 });
 export type ArchPlacement = z.infer<typeof ArchPlacementSchema>;
+
+/** Load-balancing strategies for `loadbalancer` (and gateway) nodes. */
+export const LB_ALGORITHMS = ["round-robin", "least-loaded", "weighted"] as const;
+export const LbAlgorithmSchema = z.enum(LB_ALGORITHMS);
+export type LbAlgorithm = z.infer<typeof LbAlgorithmSchema>;
+
+/** Circuit breaker guarding a component in the traffic simulation. */
+export const CircuitBreakerConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  /** Error fraction (0..1) that trips the breaker open. */
+  errorThreshold: z.number().min(0).max(1).default(0.5),
+  /** Ticks the breaker stays open before probing again (half-open). */
+  cooldownTicks: z.number().int().min(1).default(6),
+});
+export type CircuitBreakerConfig = z.infer<typeof CircuitBreakerConfigSchema>;
+
+/**
+ * Per-node knobs for the traffic simulation. Every field is optional — the
+ * simulator falls back to kind-based defaults, so plain diagrams simulate
+ * without any setup.
+ */
+export const SimNodeConfigSchema = z.object({
+  /** Identical instances behind this component; capacity scales linearly. */
+  replicas: z.number().int().min(1).max(999).default(1),
+  /** Requests/second one replica handles before degrading; null = kind default. */
+  capacityRps: z.number().positive().nullish(),
+  /** Baseline processing latency per request; null = kind default. */
+  latencyMs: z.number().min(0).nullish(),
+  /** Cache nodes only: fraction of requests served without going downstream. */
+  cacheHitRate: z.number().min(0).max(1).nullish(),
+  /** How loadbalancer/gateway nodes split traffic across outgoing edges. */
+  lbAlgorithm: LbAlgorithmSchema.nullish(),
+  circuitBreaker: CircuitBreakerConfigSchema.nullish(),
+});
+export type SimNodeConfig = z.infer<typeof SimNodeConfigSchema>;
 
 export const ArchNodeSchema = z.object({
   id: z.string(),
@@ -111,6 +150,8 @@ export const ArchNodeSchema = z.object({
   accent: z
     .enum(["violet", "cyan", "emerald", "amber", "rose", "blue", "slate"])
     .nullish(),
+  /** Traffic-simulation overrides; absent = simulate with kind defaults. */
+  sim: SimNodeConfigSchema.nullish(),
 });
 export type ArchNode = z.infer<typeof ArchNodeSchema>;
 

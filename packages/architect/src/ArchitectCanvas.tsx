@@ -95,6 +95,14 @@ import { buildCodeContent, unifiedDropTargetAt, type HitTestNode } from "./live-
 import { PeekPanel } from "./snippets.js";
 import { Palette, DRAG_MIME, PALETTE_KINDS } from "./Palette.js";
 import { Toolbar } from "./Toolbar.js";
+import { SimActionsContext, SimPanel } from "./SimPanel.js";
+import {
+  fmtRps,
+  simulate,
+  type BreakerState,
+  type SimChaos,
+  type SimResult,
+} from "./simulation.js";
 
 const nodeTypes = {
   container: ContainerNode,
@@ -238,6 +246,48 @@ function applyOverlayToEdges(edges: ArchRfEdge[], overlay: OverlayResult): ArchR
     });
   }
   return decorated;
+}
+
+/** Simulation tick cadence — slow enough to read, fast enough to feel live. */
+const SIM_TICK_MS = 600;
+
+/** Traffic lens: edge width/label from simulated rps, colored by target health. */
+function applyTrafficToEdges(edges: ArchRfEdge[], sim: SimResult): ArchRfEdge[] {
+  return edges.map((e) => {
+    const rps = sim.edges.get(e.id);
+    if (rps == null || rps < 0.5) {
+      // No traffic: dependency edges, starved paths, dead branches.
+      return { ...e, animated: false, style: { ...e.style, opacity: 0.25 } };
+    }
+    const target = sim.nodes.get(e.target);
+    const failing = target != null && (target.down || target.breaker === "open");
+    const stroke = failing
+      ? "var(--color-danger)"
+      : target?.overloaded
+        ? "var(--color-warn)"
+        : (e.style?.stroke as string | undefined);
+    return {
+      ...e,
+      animated: !failing,
+      label: `${fmtRps(rps)}/s`,
+      style: {
+        ...e.style,
+        stroke,
+        strokeWidth: 1.5 + Math.min(Math.log10(1 + rps), 3.5),
+        opacity: 1,
+      },
+      labelStyle: { fill: stroke ?? "var(--color-ink-muted)", fontSize: 10, fontWeight: 600 },
+      labelBgStyle: { fill: "var(--color-surface-1)", fillOpacity: 0.9 },
+      labelBgPadding: [4, 2] as [number, number],
+      labelBgBorderRadius: 4,
+      markerEnd: {
+        type: MarkerType.ArrowClosed,
+        color: stroke,
+        width: 16,
+        height: 16,
+      },
+    };
+  });
 }
 
 type MenuState =
@@ -432,6 +482,48 @@ function CanvasInner({
     [fitView],
   );
 
+  /* ---------------- traffic simulation ---------------- */
+
+  const [simOn, setSimOn] = useState(false);
+  const [simIngress, setSimIngress] = useState(100);
+  const [simChaos, setSimChaos] = useState<SimChaos>({ spike: false, cacheMissStorm: false });
+  const [simKilled, setSimKilled] = useState<ReadonlySet<string>>(() => new Set());
+  const [simResult, setSimResult] = useState<SimResult | null>(null);
+  const simBreakers = useRef<ReadonlyMap<string, BreakerState>>(new Map());
+
+  useEffect(() => {
+    if (!simOn) {
+      setSimResult(null);
+      simBreakers.current = new Map();
+      return;
+    }
+    const tick = () => {
+      // Small wobble makes the numbers feel live without changing the story.
+      const jitter = 0.92 + Math.random() * 0.16;
+      const result = simulate(graphRef.current, {
+        ingressRps: simIngress * jitter,
+        chaos: simChaos,
+        killed: simKilled,
+        breakers: simBreakers.current,
+      });
+      simBreakers.current = result.breakers;
+      setSimResult(result);
+    };
+    tick();
+    const handle = setInterval(tick, SIM_TICK_MS);
+    return () => clearInterval(handle);
+  }, [simOn, simIngress, simChaos, simKilled]);
+
+  const toggleSimKill = useCallback((id: string) => {
+    setSimKilled((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+  const simActions = useMemo(() => ({ toggleKill: toggleSimKill }), [toggleSimKill]);
+
   /* ---------------- overlay + scene ---------------- */
 
   const overlay = useMemo(
@@ -456,6 +548,16 @@ function CanvasInner({
             data: { ...n.data, flow: { step: stepOf.get(n.id) ?? null } },
           }) as ArchRfNode,
       );
+    }
+    if (simResult) {
+      nodes = nodes.map((n) => {
+        const sim = simResult.nodes.get(n.id);
+        if (!sim) return n;
+        return {
+          ...n,
+          data: { ...n.data, sim, simKilled: simKilled.has(n.id) },
+        } as ArchRfNode;
+      });
     }
     if (expanded.size > 0) {
       // Expanded nodes render as containers sized to their live code content.
@@ -484,14 +586,15 @@ function CanvasInner({
       nodes = [...nodes, ...kids];
     }
     return nodes;
-  }, [graph, selectedNodes, overlay, flow, expanded, codeContent, dragOverrides]);
+  }, [graph, selectedNodes, overlay, flow, simResult, simKilled, expanded, codeContent, dragOverrides]);
 
   const rfEdges = useMemo(() => {
     let edges = [...toRfEdges(graph, selectedEdges), ...(codeContent.edges as ArchRfEdge[])];
     if (overlay) edges = applyOverlayToEdges(edges, overlay);
     if (flow) edges = applyFlowToEdges(edges, flow);
+    if (simResult) edges = applyTrafficToEdges(edges, simResult);
     return edges;
-  }, [graph, selectedEdges, overlay, flow, codeContent]);
+  }, [graph, selectedEdges, overlay, flow, simResult, codeContent]);
 
   const onNodesChange = useCallback(
     (changes: NodeChange<CanvasNode>[]) => {
@@ -1376,6 +1479,7 @@ function CanvasInner({
 
   return (
     <MapActionsContext.Provider value={mapActions}>
+    <SimActionsContext.Provider value={simActions}>
     <div
       ref={wrapperRef}
       className={cn(
@@ -1442,6 +1546,8 @@ function CanvasInner({
             onRename={(name) => commit({ ...graphRef.current, name })}
             lodOn={lodOn}
             onToggleLod={toggleLod}
+            simOn={simOn}
+            onToggleSim={setSimOn}
             overlayOn={overlayOn}
             onToggleOverlay={onToggleOverlay}
             showDuplicates={showDuplicates}
@@ -1452,7 +1558,20 @@ function CanvasInner({
         <Panel position="center-left">
           <Palette onAdd={addAtViewportCenter} />
         </Panel>
-        {overlay ? (
+        {simOn && simResult ? (
+          <Panel position="bottom-center">
+            <SimPanel
+              result={simResult}
+              ingressRps={simIngress}
+              onIngressChange={setSimIngress}
+              chaos={simChaos}
+              onChaosChange={setSimChaos}
+              killedCount={simKilled.size}
+              onRestoreAll={() => setSimKilled(new Set())}
+              onStop={() => setSimOn(false)}
+            />
+          </Panel>
+        ) : overlay ? (
           <Panel position="bottom-center">
             <OverlayLegend
               overlay={overlay}
@@ -1501,6 +1620,7 @@ function CanvasInner({
         />
       ) : null}
     </div>
+    </SimActionsContext.Provider>
     </MapActionsContext.Provider>
   );
 }

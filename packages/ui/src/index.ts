@@ -3,6 +3,7 @@ export * from "./components/Button.js";
 export * from "./components/Input.js";
 export * from "./components/Badge.js";
 export * from "./components/StatusDot.js";
+export * from "./components/Switch.js";
 export * from "./components/Spinner.js";
 export * from "./components/Kbd.js";
 export * from "./components/Tooltip.js";

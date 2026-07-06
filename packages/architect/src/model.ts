@@ -20,9 +20,12 @@ import {
   Rows3,
   Server,
   StickyNote,
+  Waypoints,
+  Zap,
   type LucideIcon,
 } from "lucide-react";
 import type { OverlayBadge } from "./overlay.js";
+import type { SimNodeStats } from "./simulation.js";
 
 /* ------------------------------------------------------------------ */
 /* Presentation metadata per node kind                                 */
@@ -42,8 +45,10 @@ export const KIND_META: Record<ArchNodeKind, KindMeta> = {
   service: { label: "Service", icon: Server, defaultAccent: "violet" },
   repo: { label: "Repository", icon: GitBranch, defaultAccent: "slate" },
   datastore: { label: "Datastore", icon: Database, defaultAccent: "emerald" },
+  cache: { label: "Cache", icon: Zap, defaultAccent: "rose" },
   queue: { label: "Queue", icon: Rows3, defaultAccent: "amber" },
   gateway: { label: "Gateway", icon: Network, defaultAccent: "blue" },
+  loadbalancer: { label: "Load balancer", icon: Waypoints, defaultAccent: "cyan" },
   frontend: { label: "Frontend", icon: AppWindow, defaultAccent: "cyan" },
   external: { label: "External", icon: Globe, defaultAccent: "slate" },
   note: { label: "Note", icon: StickyNote, defaultAccent: "amber" },
@@ -80,6 +85,10 @@ export type ArchRfNode = RfNode<{
   codeExpanded?: boolean;
   /** Expanded, but the module detail is still loading. */
   codeLoading?: boolean;
+  /** Live traffic stats while the simulation is running. */
+  sim?: SimNodeStats;
+  /** Component crashed via the sim kill switch. */
+  simKilled?: boolean;
 }>;
 export type ArchRfEdge = RfEdge<{ kind: ArchEdgeKind }>;
 

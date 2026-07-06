@@ -2,6 +2,7 @@ import { Handle, NodeResizer, Position, type NodeProps } from "@xyflow/react";
 import { memo } from "react";
 import { Spinner, cn } from "@crystal/ui";
 import { KIND_META, accentOf, type ArchRfNode } from "../model.js";
+import { fmtRps } from "../simulation.js";
 
 export const ContainerNode = memo(function ContainerNode({
   data,
@@ -54,6 +55,17 @@ export const ContainerNode = memo(function ContainerNode({
           </span>
         ) : null}
         {data.codeLoading ? <Spinner className="h-3 w-3 shrink-0" /> : null}
+        {data.sim ? (
+          <span
+            className={cn(
+              "shrink-0 rounded-full px-1.5 font-mono text-[9px] leading-4",
+              data.sim.overloaded ? "bg-danger/15 text-danger" : "bg-surface-active text-ink-muted",
+            )}
+            title="Simulated inbound traffic"
+          >
+            {fmtRps(data.sim.inRps)} rps
+          </span>
+        ) : null}
         {data.code ? (
           <span
             className={cn(

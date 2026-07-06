@@ -1,14 +1,100 @@
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import { memo } from "react";
-import { FolderGit2 } from "lucide-react";
-import { Badge, cn } from "@crystal/ui";
+import { FolderGit2, Power, ShieldAlert, ShieldCheck, Skull } from "lucide-react";
+import { Badge, Tooltip, cn } from "@crystal/ui";
 import { KIND_META, accentOf, type ArchRfNode } from "../model.js";
+import { fmtMs, fmtPct, fmtRps, type SimNodeStats } from "../simulation.js";
+import { useSimActions } from "../SimPanel.js";
 
-export const LeafNode = memo(function LeafNode({ data, selected }: NodeProps<ArchRfNode>) {
+function SimStrip({ sim }: { sim: SimNodeStats }) {
+  const u = sim.utilization;
+  const barTone =
+    u > 1 ? "bg-danger" : u > 0.7 ? "bg-warn" : "bg-ok";
+  return (
+    <div
+      className={cn(
+        "mt-1.5 rounded-md border px-1.5 py-1 font-mono text-[9px] leading-3",
+        sim.overloaded ? "border-danger/40 bg-danger/5" : "border-edge bg-surface-1/60",
+      )}
+    >
+      <div className="flex items-center justify-between gap-1 text-ink-muted">
+        <span>{fmtRps(sim.inRps)} rps</span>
+        <span>{fmtMs(sim.latencyMs)}</span>
+        <span className={cn(sim.errorRate > 0.02 && "text-danger")}>
+          {fmtPct(sim.errorRate)} err
+        </span>
+      </div>
+      <div className="mt-1 h-1 overflow-hidden rounded-full bg-surface-active">
+        <div
+          className={cn("h-full rounded-full transition-all duration-300", barTone)}
+          style={{ width: `${Math.min(u * 100, 100)}%` }}
+        />
+      </div>
+      {sim.cacheHitRate != null ? (
+        <div className="mt-0.5 text-ink-faint">hit {fmtPct(sim.cacheHitRate)}</div>
+      ) : null}
+    </div>
+  );
+}
+
+/** Breaker state pill + kill switch, shown while the simulation runs. */
+function SimBadges({ id, sim, killed }: { id: string; sim: SimNodeStats; killed: boolean }) {
+  const actions = useSimActions();
+  return (
+    <span className="nodrag absolute -right-2 -top-2 flex items-center gap-1">
+      {sim.breaker && sim.breaker !== "closed" ? (
+        <Tooltip
+          content={
+            sim.breaker === "open"
+              ? "Circuit breaker OPEN — shedding all traffic while downstream recovers"
+              : "Circuit breaker half-open — probing with a sliver of traffic"
+          }
+        >
+          <span
+            className={cn(
+              "flex h-5 w-5 items-center justify-center rounded-full text-white shadow-md",
+              sim.breaker === "open" ? "bg-danger" : "bg-warn",
+            )}
+          >
+            <ShieldAlert className="h-3 w-3" />
+          </span>
+        </Tooltip>
+      ) : sim.breaker === "closed" ? (
+        <Tooltip content="Circuit breaker closed — traffic flowing normally">
+          <span className="flex h-5 w-5 items-center justify-center rounded-full bg-surface-active text-ok shadow-md">
+            <ShieldCheck className="h-3 w-3" />
+          </span>
+        </Tooltip>
+      ) : null}
+      <Tooltip content={killed ? "Crashed — click to restore" : "Chaos: crash this component"}>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            actions?.toggleKill(id);
+          }}
+          className={cn(
+            "flex h-5 w-5 items-center justify-center rounded-full shadow-md transition-colors",
+            killed
+              ? "bg-danger text-white"
+              : "bg-surface-active text-ink-faint hover:bg-danger/20 hover:text-danger",
+          )}
+          aria-label={killed ? "Restore component" : "Crash component"}
+          aria-pressed={killed}
+        >
+          {killed ? <Skull className="h-3 w-3" /> : <Power className="h-3 w-3" />}
+        </button>
+      </Tooltip>
+    </span>
+  );
+}
+
+export const LeafNode = memo(function LeafNode({ id, data, selected }: NodeProps<ArchRfNode>) {
   const arch = data.arch;
   const meta = KIND_META[arch.kind];
   const accent = accentOf(arch);
   const Icon = meta.icon;
+  const killed = data.simKilled === true;
 
   return (
     <div
@@ -17,6 +103,8 @@ export const LeafNode = memo(function LeafNode({ data, selected }: NodeProps<Arc
         "transition-shadow",
         selected ? "border-crystal-400 shadow-lg shadow-crystal-500/20" : "border-edge-strong",
         data.flow?.step === null && "opacity-30",
+        data.sim?.overloaded && !killed && "border-danger/60 shadow-lg shadow-danger/20",
+        killed && "opacity-40 saturate-0",
       )}
       style={{ borderLeftWidth: 3, borderLeftColor: accent }}
     >
@@ -28,12 +116,18 @@ export const LeafNode = memo(function LeafNode({ data, selected }: NodeProps<Arc
           {data.flow.step === 0 ? "▶" : data.flow.step}
         </span>
       ) : null}
+      {data.sim ? <SimBadges id={id} sim={data.sim} killed={killed} /> : null}
       <Handle type="target" position={Position.Top} className="!h-2 !w-2 !border-none !bg-edge-strong" />
       <div className="flex items-center gap-2">
         <Icon className="h-3.5 w-3.5 shrink-0" style={{ color: accent }} />
         <div className="truncate text-xs font-semibold text-ink">{arch.label}</div>
       </div>
-      <div className="mt-0.5 text-[10px] uppercase tracking-wider text-ink-faint">{meta.label}</div>
+      <div className="mt-0.5 text-[10px] uppercase tracking-wider text-ink-faint">
+        {meta.label}
+        {data.sim && (arch.sim?.replicas ?? 1) > 1 ? (
+          <span className="ml-1 normal-case text-crystal-300">×{arch.sim!.replicas}</span>
+        ) : null}
+      </div>
       {arch.description ? (
         <div className="mt-1 line-clamp-2 text-[11px] leading-snug text-ink-muted">{arch.description}</div>
       ) : null}
@@ -47,6 +141,7 @@ export const LeafNode = memo(function LeafNode({ data, selected }: NodeProps<Arc
           {arch.tech.length > 4 ? <Badge tone="neutral">+{arch.tech.length - 4}</Badge> : null}
         </div>
       ) : null}
+      {data.sim ? <SimStrip sim={data.sim} /> : null}
       {data.code ? (
         <div
           className={cn(
