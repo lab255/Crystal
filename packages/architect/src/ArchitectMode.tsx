@@ -45,9 +45,12 @@ import { CodeMapView } from "./codemap/CodeMapView.js";
 import { projectTrace } from "./dataflow.js";
 import { InfraView } from "./InfraView.js";
 import { FlowStepsPanel, JourneysSection, type JourneySeed } from "./JourneyPanel.js";
+import { buildHoistPrompt } from "./refactor-prompts.js";
+import { ApplyRefactorsDialog, RefactorChip, useIntentProblems } from "./RefactorPanel.js";
 
 const EMPTY_ARCHITECTURES: never[] = [];
 const EMPTY_DRAFTS: never[] = [];
+const EMPTY_REFACTORS: never[] = [];
 
 type ArchitectView = "diagrams" | "infra" | "codemap";
 
@@ -57,6 +60,8 @@ export function ArchitectMode() {
   const [drill, setDrill] = useState<{ module: string; from: string } | null>(null);
   // "Start journey here…" from the code map prefills the journey dialog.
   const [journeySeed, setJourneySeed] = useState<JourneySeed | null>(null);
+  // Lifted here so the code map sees the open draft (drag-refactor targets it).
+  const [draftPath, setDraftPath] = useState<string | null>(null);
 
   const drillIntoModule = useCallback((module: string, from: string) => {
     setDrill({ module, from });
@@ -119,6 +124,7 @@ export function ArchitectMode() {
                 : undefined
             }
             onStartJourney={startJourneyFromCode}
+            activeDraftPath={draftPath}
           />
         ) : (
           <DiagramsView
@@ -126,6 +132,8 @@ export function ArchitectMode() {
             onDrillIntoModule={drillIntoModule}
             journeySeed={journeySeed}
             onJourneySeedConsumed={() => setJourneySeed(null)}
+            draftPath={draftPath}
+            onDraftPathChange={setDraftPath}
           />
         )}
       </div>
@@ -138,11 +146,15 @@ function DiagramsView({
   onDrillIntoModule,
   journeySeed,
   onJourneySeedConsumed,
+  draftPath,
+  onDraftPathChange: setDraftPath,
 }: {
   variant: "diagrams" | "infra";
   onDrillIntoModule: (module: string, from: string) => void;
   journeySeed: JourneySeed | null;
   onJourneySeedConsumed: () => void;
+  draftPath: string | null;
+  onDraftPathChange: (path: string | null) => void;
 }) {
   const architectures = useWorkspace((s) => s.info?.architectures ?? EMPTY_ARCHITECTURES);
   const archDrafts = useWorkspace((s) => s.info?.archDrafts ?? EMPTY_DRAFTS);
@@ -158,8 +170,9 @@ function DiagramsView({
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [newName, setNewName] = useState("");
-  const [draftPath, setDraftPath] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [applyDialogOpen, setApplyDialogOpen] = useState(false);
+  const [applyBusy, setApplyBusy] = useState(false);
 
   // Live code map for the diagram overlay — kept fresh by codemap.changed.
   const { client } = useCrystal();
@@ -272,6 +285,9 @@ function DiagramsView({
     [activeJourney, journeyTrace, codeSummary, effectiveGraph],
   );
 
+  const draftRefactors = activeDraft?.draft.refactors ?? EMPTY_REFACTORS;
+  const refactorProblems = useIntentProblems(draftRefactors);
+
   useEffect(() => {
     if (!notice) return;
     const t = setTimeout(() => setNotice(null), 10_000);
@@ -310,21 +326,80 @@ function DiagramsView({
 
   function applyDraft() {
     if (!activeDraft || !selected) return;
-    let graph = activeDraft.draft.graph;
-    let conflicts: string[] = [];
-    if (!graphsEqual(activeDraft.draft.base, selected.graph)) {
-      const merged = mergeGraphs(activeDraft.draft.base, activeDraft.draft.graph, selected.graph);
-      graph = merged.graph;
-      conflicts = merged.conflicts;
+    if (activeDraft.draft.refactors.length > 0) {
+      setApplyDialogOpen(true);
+      return;
     }
-    updateArchitecture(selected.path, graph);
-    void deleteArchDraft(activeDraft.path);
-    setDraftPath(null);
-    setNotice(
-      conflicts.length
-        ? `Draft applied with ${conflicts.length} note${conflicts.length > 1 ? "s" : ""}: ${conflicts.join(" · ")}`
-        : "Draft applied.",
-    );
+    void finalizeApply({ worktree: true });
+  }
+
+  async function finalizeApply(opts: { worktree: boolean }) {
+    if (!activeDraft || !selected) return;
+    setApplyBusy(true);
+    try {
+      let graph = activeDraft.draft.graph;
+      let notes: string[] = [];
+      if (!graphsEqual(activeDraft.draft.base, selected.graph)) {
+        const merged = mergeGraphs(activeDraft.draft.base, activeDraft.draft.graph, selected.graph);
+        graph = merged.graph;
+        notes = merged.conflicts;
+      }
+      updateArchitecture(selected.path, graph);
+
+      const moves = activeDraft.draft.refactors.filter((r) => r.kind === "move");
+      const hoists = activeDraft.draft.refactors.filter((r) => r.kind === "hoist");
+      if (moves.length > 0) {
+        try {
+          const result = await client.request("refactor.apply", { intents: moves });
+          if (result.applied.length > 0) {
+            notes.push(`${result.applied.length} move${result.applied.length > 1 ? "s" : ""} applied`);
+          }
+          for (const failure of result.failed) {
+            const intent = moves.find((m) => m.id === failure.intentId);
+            notes.push(`move ${intent?.kind === "move" ? intent.symbol : failure.intentId} failed: ${failure.error}`);
+          }
+        } catch (err) {
+          notes.push(`refactor engine error: ${(err as Error).message}`);
+        }
+      }
+      for (const hoist of hoists) {
+        const sources = await Promise.all(
+          hoist.symbols.map(async (s) => {
+            try {
+              const src = await client.request("codemap.symbolSource", { file: s.file, symbol: s.symbol });
+              return { ...s, startLine: src.startLine, endLine: src.endLine, text: src.text };
+            } catch {
+              return { ...s };
+            }
+          }),
+        );
+        try {
+          await client.request("agent.start", {
+            prompt: buildHoistPrompt(hoist, sources),
+            isolation: opts.worktree ? "worktree" : "none",
+          });
+          notes.push(`hoist → ${hoist.targetModule}: agent run started`);
+        } catch (err) {
+          notes.push(`hoist → ${hoist.targetModule} failed to start: ${(err as Error).message}`);
+        }
+      }
+
+      void deleteArchDraft(activeDraft.path);
+      setDraftPath(null);
+      setApplyDialogOpen(false);
+      setNotice(notes.length ? `Draft applied — ${notes.join(" · ")}` : "Draft applied.");
+    } finally {
+      setApplyBusy(false);
+    }
+  }
+
+  function removeRefactor(id: string) {
+    if (!activeDraft) return;
+    updateArchDraft(activeDraft.path, {
+      ...activeDraft.draft,
+      refactors: activeDraft.draft.refactors.filter((r) => r.id !== id),
+      updatedAt: new Date().toISOString(),
+    });
   }
 
   function rebaseActiveDraft() {
@@ -538,8 +613,22 @@ function DiagramsView({
                   onRebase={rebaseActiveDraft}
                   onClose={() => setDraftPath(null)}
                   onDiscard={discardDraft}
+                  refactorChip={
+                    <RefactorChip
+                      intents={draftRefactors}
+                      problems={refactorProblems}
+                      onRemove={removeRefactor}
+                    />
+                  }
                 />
               ) : null}
+              <ApplyRefactorsDialog
+                open={applyDialogOpen}
+                onOpenChange={(open) => !applyBusy && setApplyDialogOpen(open)}
+                intents={draftRefactors}
+                onConfirm={(opts) => void finalizeApply(opts)}
+                busy={applyBusy}
+              />
               {notice ? (
                 <div className="absolute bottom-3 left-1/2 z-20 flex max-w-xl -translate-x-1/2 items-start gap-2 rounded-xl border border-edge bg-surface-2/95 px-3 py-2 text-[11px] text-ink-muted shadow-xl shadow-black/30 backdrop-blur">
                   <GitMerge className="mt-0.5 h-3.5 w-3.5 shrink-0 text-crystal-300" />
@@ -626,6 +715,7 @@ function DraftBar({
   onRebase,
   onClose,
   onDiscard,
+  refactorChip,
 }: {
   draft: ArchDraft;
   stale: boolean;
@@ -634,6 +724,7 @@ function DraftBar({
   onRebase: () => void;
   onClose: () => void;
   onDiscard: () => void;
+  refactorChip?: React.ReactNode;
 }) {
   const [name, setName] = useState(draft.name);
   useEffect(() => setName(draft.name), [draft.id, draft.name]);
@@ -650,6 +741,7 @@ function DraftBar({
         placeholder="Draft name"
         aria-label="Draft name"
       />
+      {refactorChip}
       {stale ? (
         <Tooltip content="The diagram changed underneath this draft — replay your changes onto the latest version">
           <Button variant="secondary" size="xs" onClick={onRebase}>

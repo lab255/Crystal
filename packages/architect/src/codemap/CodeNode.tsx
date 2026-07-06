@@ -1,7 +1,15 @@
 import { Handle, Position, type NodeProps, type Node as RfNode } from "@xyflow/react";
-import { memo } from "react";
-import type { LucideIcon } from "lucide-react";
+import { memo, useState, type DragEvent } from "react";
+import { MoveUpRight, PackagePlus, type LucideIcon } from "lucide-react";
 import { cn } from "@crystal/ui";
+
+/** dataTransfer type for dragging a symbol out of the FilePanel. */
+export const SYMBOL_DRAG_MIME = "application/x-crystal-symbol";
+
+export interface SymbolDragPayload {
+  file: string;
+  symbol: string;
+}
 
 export interface CodeNodeData extends Record<string, unknown> {
   title: string;
@@ -13,25 +21,66 @@ export interface CodeNodeData extends Record<string, unknown> {
   emphasis?: boolean;
   /** Rendered dashed — used for cross-module boundary nodes. */
   boundary?: boolean;
+  /** Accept dropped symbols (draft plan drag-refactor); called with the payload. */
+  onSymbolDrop?: (payload: SymbolDragPayload) => void;
+  /** Pending refactor-intent marker: this node gives or receives a symbol. */
+  intentMark?: "source" | "target";
 }
 
 export type CodeRfNode = RfNode<CodeNodeData>;
 
 export const CodeNode = memo(function CodeNode({ data, selected }: NodeProps<CodeRfNode>) {
   const Icon = data.icon;
+  const [dragOver, setDragOver] = useState(false);
+
+  const accepts = (e: DragEvent) =>
+    data.onSymbolDrop != null && e.dataTransfer.types.includes(SYMBOL_DRAG_MIME);
+
   return (
     <div
       className={cn(
-        "min-w-36 max-w-52 cursor-pointer rounded-lg border bg-surface-2/95 px-2.5 py-1.5 shadow-md shadow-black/25 transition-shadow",
+        "relative min-w-36 max-w-52 cursor-pointer rounded-lg border bg-surface-2/95 px-2.5 py-1.5 shadow-md shadow-black/25 transition-shadow",
         data.emphasis && "ring-2 ring-crystal-400/50",
         selected ? "border-crystal-400" : "border-edge-strong",
+        dragOver && "ring-2 ring-warn",
       )}
       style={{
         borderLeftWidth: 3,
         borderLeftColor: data.accent,
         borderStyle: data.boundary ? "dashed" : "solid",
       }}
+      onDragOver={(e) => {
+        if (!accepts(e)) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+        setDragOver(true);
+      }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={(e) => {
+        setDragOver(false);
+        if (!accepts(e)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        try {
+          const payload = JSON.parse(e.dataTransfer.getData(SYMBOL_DRAG_MIME)) as SymbolDragPayload;
+          if (payload?.file && payload?.symbol) data.onSymbolDrop?.(payload);
+        } catch {
+          /* malformed drag payload — ignore */
+        }
+      }}
     >
+      {data.intentMark ? (
+        <span
+          className="absolute -right-2 -top-2 flex h-4 w-4 items-center justify-center rounded-full bg-warn text-surface-0 shadow"
+          title={data.intentMark === "source" ? "A symbol moves out of here (draft)" : "A symbol moves in here (draft)"}
+        >
+          {data.intentMark === "source" ? (
+            <MoveUpRight className="h-2.5 w-2.5" />
+          ) : (
+            <PackagePlus className="h-2.5 w-2.5" />
+          )}
+        </span>
+      ) : null}
       <Handle type="target" position={Position.Left} className="!h-1.5 !w-1.5 !border-none !bg-edge-strong" />
       <div className="flex items-center gap-1.5">
         {Icon ? <Icon className="h-3 w-3 shrink-0" style={{ color: data.accent }} /> : null}

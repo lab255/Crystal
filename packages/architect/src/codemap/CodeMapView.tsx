@@ -22,18 +22,26 @@ import {
   Route,
   X,
 } from "lucide-react";
-import type {
-  CodeFileDetail,
-  CodeMapSummary,
-  CodeModuleDetail,
-  CodeSymbolKind,
-  CrossWorkspaceEdge,
-  CrossWorkspaceMap,
+import {
+  createMoveIntent,
+  type CodeFileDetail,
+  type CodeMapSummary,
+  type CodeModuleDetail,
+  type CodeSymbolKind,
+  type CrossWorkspaceEdge,
+  type CrossWorkspaceMap,
+  type RefactorIntent,
 } from "@crystal/core";
-import { useCrystal, useWorkspaces } from "@crystal/client";
+import { useCrystal, useWorkspace, useWorkspaces } from "@crystal/client";
 import { Badge, Button, EmptyState, Spinner, Tooltip, cn } from "@crystal/ui";
 import { SymbolSnippet } from "../snippets.js";
-import { CodeNode, type CodeRfNode } from "./CodeNode.js";
+import {
+  CodeNode,
+  SYMBOL_DRAG_MIME,
+  type CodeNodeData,
+  type CodeRfNode,
+  type SymbolDragPayload,
+} from "./CodeNode.js";
 
 const nodeTypes = { code: CodeNode };
 
@@ -102,6 +110,12 @@ export interface CodeMapViewProps {
   origin?: { label: string; onExit: () => void };
   /** "Start journey here…" on a symbol — opens the journey dialog in Diagrams. */
   onStartJourney?: (seed: { file: string; symbol: string }) => void;
+  /**
+   * Path of the draft plan open in Diagrams, if any. With a draft active,
+   * FilePanel symbols become draggable and drops on module/file nodes record
+   * move intents on the draft.
+   */
+  activeDraftPath?: string | null;
 }
 
 export function CodeMapView(props: CodeMapViewProps = {}) {
@@ -112,11 +126,16 @@ export function CodeMapView(props: CodeMapViewProps = {}) {
   );
 }
 
-function CodeMapInner({ initialModule, origin, onStartJourney }: CodeMapViewProps) {
+const EMPTY_DRAFTS: never[] = [];
+const EMPTY_REFACTORS: RefactorIntent[] = [];
+
+function CodeMapInner({ initialModule, origin, onStartJourney, activeDraftPath }: CodeMapViewProps) {
   const { client } = useCrystal();
   const activeWs = useWorkspaces((s) => s.activeId);
   const workspaces = useWorkspaces((s) => s.workspaces);
   const setActive = useWorkspaces((s) => s.setActive);
+  const archDrafts = useWorkspace((s) => s.info?.archDrafts ?? EMPTY_DRAFTS);
+  const updateArchDraft = useWorkspace((s) => s.updateArchDraft);
 
   // Level is null until we know the active workspace to start from.
   const [level, setLevelRaw] = useState<Level | null>(null);
@@ -393,6 +412,77 @@ function CodeMapInner({ initialModule, origin, onStartJourney }: CodeMapViewProp
     [levelWs, activeWs, setActive],
   );
 
+  /* ---- drag-a-symbol refactor intents (draft plan mode) ---- */
+  const activeDraft = archDrafts.find((d) => d.path === activeDraftPath) ?? null;
+  const [dropNotice, setDropNotice] = useState<string | null>(null);
+  useEffect(() => {
+    if (!dropNotice) return;
+    const t = setTimeout(() => setDropNotice(null), 6000);
+    return () => clearTimeout(t);
+  }, [dropNotice]);
+
+  const recordMove = useCallback(
+    async (payload: SymbolDragPayload, target: { module?: string; file?: string }) => {
+      if (!activeDraft) {
+        setDropNotice("Open a draft plan in Diagrams first — symbol moves are recorded on the draft.");
+        return;
+      }
+      if (target.file === payload.file) return;
+      let toModule = target.module ?? null;
+      const toFile = target.file ?? null;
+      if (!toModule && toFile) {
+        try {
+          toModule = (await client.request("codemap.file", { ws: levelWs ?? undefined, path: toFile })).module;
+        } catch {
+          toModule = ".";
+        }
+      }
+      const intent = createMoveIntent(payload.symbol, payload.file, toModule ?? ".", toFile);
+      updateArchDraft(activeDraft.path, {
+        ...activeDraft.draft,
+        refactors: [...activeDraft.draft.refactors, intent],
+        updatedAt: new Date().toISOString(),
+      });
+      setDropNotice(`Draft "${activeDraft.draft.name}": move ${payload.symbol} → ${toFile ?? toModule}`);
+    },
+    [activeDraft, client, levelWs, updateArchDraft],
+  );
+
+  // Drop targets + pending-intent badges, layered onto the level's nodes.
+  const refactors = activeDraft?.draft.refactors ?? EMPTY_REFACTORS;
+  const decoratedNodes = useMemo(() => {
+    if (!level || level.kind === "all") return nodes;
+    const moves = refactors.filter((r) => r.kind === "move");
+    return nodes.map((n) => {
+      let onSymbolDrop: CodeNodeData["onSymbolDrop"];
+      let intentMark: CodeNodeData["intentMark"];
+      if (level.kind === "workspace") {
+        const module = n.id;
+        onSymbolDrop = (p) => void recordMove(p, { module });
+        if (moves.some((m) => m.toModule === module)) intentMark = "target";
+        else if (module !== "." && moves.some((m) => m.fromFile.startsWith(module + "/"))) intentMark = "source";
+      } else if (level.kind === "module") {
+        if (n.id.startsWith("mod:")) {
+          const module = n.id.slice(4);
+          onSymbolDrop = (p) => void recordMove(p, { module });
+          if (moves.some((m) => m.toModule === module)) intentMark = "target";
+        } else if (n.id !== "__module__") {
+          const file = n.id;
+          onSymbolDrop = (p) => void recordMove(p, { module: level.path, file });
+          if (moves.some((m) => m.fromFile === file)) intentMark = "source";
+          else if (moves.some((m) => m.toFile === file)) intentMark = "target";
+        }
+      } else {
+        const file = n.id;
+        onSymbolDrop = (p) => void recordMove(p, { file });
+        if (moves.some((m) => m.fromFile === file)) intentMark = "source";
+        else if (moves.some((m) => m.toFile === file)) intentMark = "target";
+      }
+      if (!onSymbolDrop && !intentMark) return n;
+      return { ...n, data: { ...n.data, onSymbolDrop, intentMark } };
+    });
+  }, [nodes, level, refactors, recordMove]);
+
   return (
     <div className="flex h-full min-h-0">
       <div className="relative min-w-0 flex-1">
@@ -480,6 +570,20 @@ function CodeMapInner({ initialModule, origin, onStartJourney }: CodeMapViewProp
           </div>
         ) : null}
 
+        {dropNotice ? (
+          <div className="absolute bottom-3 left-1/2 z-20 flex max-w-lg -translate-x-1/2 items-center gap-2 rounded-xl border border-warn/40 bg-surface-2/95 px-3 py-2 text-[11px] text-ink-muted shadow-xl shadow-black/30 backdrop-blur">
+            <span className="min-w-0">{dropNotice}</span>
+            <button
+              type="button"
+              onClick={() => setDropNotice(null)}
+              className="shrink-0 text-ink-faint hover:text-ink"
+              aria-label="Dismiss"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        ) : null}
+
         {nodes.length === 0 && !loading ? (
           <EmptyState icon={FolderGit2} title="Nothing to map yet">
             No analyzable TypeScript/JavaScript found in this workspace.
@@ -487,7 +591,7 @@ function CodeMapInner({ initialModule, origin, onStartJourney }: CodeMapViewProp
         ) : (
           <ReactFlow
             key={level ? `${level.kind}:${"ws" in level ? level.ws : ""}:${"path" in level ? level.path : ""}` : "empty"}
-            nodes={nodes}
+            nodes={decoratedNodes}
             edges={edges}
             nodeTypes={nodeTypes}
             onNodeClick={onNodeClick}
@@ -514,6 +618,7 @@ function CodeMapInner({ initialModule, origin, onStartJourney }: CodeMapViewProp
           onNavigate={(p) => setLevel({ kind: "file", ws: level.ws, path: p })}
           onOpenFile={openInEditor}
           onStartJourney={onStartJourney}
+          dragSymbols={activeDraft != null}
         />
       ) : null}
       {level?.kind === "all" && crossEdge ? (
@@ -613,12 +718,15 @@ function FilePanel({
   onNavigate,
   onOpenFile,
   onStartJourney,
+  dragSymbols,
 }: {
   detail: CodeFileDetail;
   ws?: string;
   onNavigate: (path: string) => void;
   onOpenFile: (path: string) => void;
   onStartJourney?: (seed: { file: string; symbol: string }) => void;
+  /** Draft plan active — symbols can be dragged onto files/modules to record moves. */
+  dragSymbols?: boolean;
 }) {
   const externals = detail.imports.filter((i) => i.external);
   const internals = detail.imports.filter((i) => i.resolved);
@@ -646,9 +754,27 @@ function FilePanel({
       </div>
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
         <Section title={`Symbols (${symbols.length})`}>
+          {dragSymbols ? (
+            <div className="mb-1.5 rounded-lg border border-warn/30 bg-warn/10 px-2 py-1 text-[10px] text-warn">
+              Draft plan active — drag a symbol onto a file or module node to plan a move.
+            </div>
+          ) : null}
           {symbols.map((sym, i) => (
             <div key={`${sym.name}${i}`}>
-              <div className="flex items-center gap-1.5 py-0.5 text-[11.5px]">
+              <div
+                className={cn(
+                  "flex items-center gap-1.5 py-0.5 text-[11.5px]",
+                  dragSymbols && sym.kind !== "reexport" && "cursor-grab active:cursor-grabbing",
+                )}
+                draggable={dragSymbols && sym.kind !== "reexport"}
+                onDragStart={(e) => {
+                  e.dataTransfer.setData(
+                    SYMBOL_DRAG_MIME,
+                    JSON.stringify({ file: detail.path, symbol: sym.name }),
+                  );
+                  e.dataTransfer.effectAllowed = "move";
+                }}
+              >
                 <button
                   type="button"
                   onClick={() => setExpanded(expanded === sym.name ? null : sym.name)}
