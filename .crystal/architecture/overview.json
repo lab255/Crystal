@@ -21,6 +21,7 @@
           "height": 380
         },
         "tech": [],
+        "placements": {},
         "accent": "violet"
       },
       {
@@ -39,6 +40,7 @@
           "vite 7",
           "tailwind 4"
         ],
+        "placements": {},
         "accent": "cyan"
       },
       {
@@ -48,8 +50,8 @@
         "description": "Bridge: fs, git, .crystal state, agent sessions",
         "parentId": "node_workspace",
         "position": {
-          "x": 480,
-          "y": 64
+          "x": 474.83754512635375,
+          "y": 69.16245487364621
         },
         "size": null,
         "tech": [
@@ -57,6 +59,7 @@
           "ws",
           "tsx"
         ],
+        "placements": {},
         "accent": "violet"
       },
       {
@@ -74,6 +77,7 @@
           "height": 130
         },
         "tech": [],
+        "placements": {},
         "accent": "slate"
       },
       {
@@ -88,6 +92,7 @@
         },
         "size": null,
         "tech": [],
+        "placements": {},
         "accent": "blue"
       },
       {
@@ -102,6 +107,7 @@
         },
         "size": null,
         "tech": [],
+        "placements": {},
         "accent": "blue"
       },
       {
@@ -116,6 +122,7 @@
         },
         "size": null,
         "tech": [],
+        "placements": {},
         "accent": "violet"
       },
       {
@@ -130,6 +137,7 @@
         },
         "size": null,
         "tech": [],
+        "placements": {},
         "accent": "emerald"
       },
       {
@@ -139,15 +147,16 @@
         "description": "Agent execution engine",
         "parentId": null,
         "position": {
-          "x": 1000,
-          "y": 120
+          "x": 1014.4548736462091,
+          "y": 139.61732851985562
         },
         "size": null,
         "tech": [
           "claude -p",
           "stream-json"
         ],
-        "accent": "amber"
+        "placements": {},
+        "accent": "blue"
       },
       {
         "id": "node_crystal_files",
@@ -163,6 +172,7 @@
         "tech": [
           "json"
         ],
+        "placements": {},
         "accent": "emerald"
       },
       {
@@ -179,6 +189,7 @@
         "tech": [
           "jsonl"
         ],
+        "placements": {},
         "accent": "slate"
       },
       {
@@ -196,6 +207,7 @@
           "tauri 2",
           "rust"
         ],
+        "placements": {},
         "accent": "rose"
       }
     ],
@@ -243,6 +255,7 @@
         "label": "composes"
       }
     ],
+    "environments": [],
     "viewport": {
       "x": 667.5174825174826,
       "y": 355.3216783216783,

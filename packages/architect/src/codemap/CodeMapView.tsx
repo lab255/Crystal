@@ -93,15 +93,22 @@ export function requestOpenFile(path: string): void {
   window.dispatchEvent(new CustomEvent("crystal:open-file", { detail: { path } }));
 }
 
-export function CodeMapView() {
+export interface CodeMapViewProps {
+  /** Start at this module instead of the workspace overview ("zoom in" entry). */
+  initialModule?: string;
+  /** Where the user came from (e.g. an architecture diagram) — rendered as a leading breadcrumb. */
+  origin?: { label: string; onExit: () => void };
+}
+
+export function CodeMapView(props: CodeMapViewProps = {}) {
   return (
     <ReactFlowProvider>
-      <CodeMapInner />
+      <CodeMapInner {...props} />
     </ReactFlowProvider>
   );
 }
 
-function CodeMapInner() {
+function CodeMapInner({ initialModule, origin }: CodeMapViewProps) {
   const { client } = useCrystal();
   const activeWs = useWorkspaces((s) => s.activeId);
   const workspaces = useWorkspaces((s) => s.workspaces);
@@ -118,8 +125,14 @@ function CodeMapInner() {
   const [pulse, setPulse] = useState(false);
 
   useEffect(() => {
-    if (!level && activeWs) setLevelRaw({ kind: "workspace", ws: activeWs });
-  }, [level, activeWs]);
+    if (!level && activeWs) {
+      setLevelRaw(
+        initialModule
+          ? { kind: "module", ws: activeWs, path: initialModule }
+          : { kind: "workspace", ws: activeWs },
+      );
+    }
+  }, [level, activeWs, initialModule]);
 
   const setLevel = useCallback((next: Level) => {
     setCrossEdge(null);
@@ -380,6 +393,20 @@ function CodeMapInner() {
     <div className="flex h-full min-h-0">
       <div className="relative min-w-0 flex-1">
         <div className="absolute left-3 top-3 z-10 flex items-center gap-1 rounded-xl border border-edge bg-surface-2/95 px-2.5 py-1.5 text-xs shadow-xl shadow-black/30 backdrop-blur">
+          {origin ? (
+            <>
+              <button
+                type="button"
+                className="flex items-center gap-1 font-semibold text-crystal-300 hover:text-crystal-200"
+                onClick={origin.onExit}
+                title="Back to the architecture diagram"
+              >
+                <Boxes className="h-3 w-3" />
+                {origin.label}
+              </button>
+              <ChevronRight className="h-3 w-3 text-ink-faint" />
+            </>
+          ) : null}
           <button
             type="button"
             className={cn(

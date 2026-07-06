@@ -14,9 +14,12 @@ import {
   type Node as RfNode,
   type Viewport,
 } from "@xyflow/react";
-import { useCallback, useMemo, useRef, useState, type DragEvent } from "react";
+import { useCallback, useMemo, useRef, useState, type DragEvent, type MouseEvent as ReactMouseEvent } from "react";
+import { Copy, FolderGit2, LayoutGrid, Maximize2, Pencil, Plus, Trash2 } from "lucide-react";
 import {
+  ARCH_EDGE_KINDS,
   isContainerKind,
+  uid,
   type ArchNodeKind,
   type ArchitectureGraph,
   type CodeMapSummary,
@@ -29,10 +32,14 @@ import {
   deleteEdges,
   deleteNodes,
   reparentNode,
+  updateEdge,
   updateNode,
 } from "./graph-ops.js";
+import { cn } from "@crystal/ui";
+import { ContextMenu, InlineRename, type MenuEntry } from "./ContextMenu.js";
 import { autoLayout } from "./layout.js";
 import {
+  EDGE_KIND_STYLE,
   KIND_META,
   accentOf,
   toRfEdges,
@@ -44,8 +51,8 @@ import { ContainerNode } from "./nodes/ContainerNode.js";
 import { LeafNode } from "./nodes/LeafNode.js";
 import { NoteNode } from "./nodes/NoteNode.js";
 import { Inspector } from "./Inspector.js";
-import { adoptAutoLinks, computeOverlay, type OverlayResult } from "./overlay.js";
-import { Palette, DRAG_MIME } from "./Palette.js";
+import { adoptAutoLinks, computeOverlay, suggestModuleFor, type OverlayResult } from "./overlay.js";
+import { Palette, DRAG_MIME, PALETTE_KINDS } from "./Palette.js";
 import { Toolbar } from "./Toolbar.js";
 import type { ArchEdgeKind } from "@crystal/core";
 
@@ -58,6 +65,10 @@ export interface ArchitectCanvasProps {
   codeSummary?: CodeMapSummary | null;
   overlayOn?: boolean;
   onToggleOverlay?: (on: boolean) => void;
+  /** "Zoom into code": open the code map at the module a node is linked to. */
+  onDrillIntoModule?: (modulePath: string) => void;
+  /** True while editing a draft plan — canvas gets a visual draft treatment. */
+  draftMode?: boolean;
 }
 
 const GHOST_STROKE = "var(--color-crystal-400)";
@@ -106,16 +117,25 @@ function applyOverlayToEdges(edges: ArchRfEdge[], overlay: OverlayResult): ArchR
   return decorated;
 }
 
+type MenuState =
+  | { kind: "pane"; x: number; y: number; flowPos: { x: number; y: number } }
+  | { kind: "node"; x: number; y: number; id: string }
+  | { kind: "edge"; x: number; y: number; id: string };
+
 function CanvasInner({
   graph,
   onChange,
   codeSummary,
   overlayOn,
   onToggleOverlay,
+  onDrillIntoModule,
+  draftMode,
 }: ArchitectCanvasProps) {
   const [selectedNodes, setSelectedNodes] = useState<ReadonlySet<string>>(new Set());
   const [selectedEdges, setSelectedEdges] = useState<ReadonlySet<string>>(new Set());
   const [defaultEdgeKind, setDefaultEdgeKind] = useState<ArchEdgeKind>("sync");
+  const [menu, setMenu] = useState<MenuState | null>(null);
+  const [renaming, setRenaming] = useState<{ x: number; y: number; id: string } | null>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const { screenToFlowPosition, fitView } = useReactFlow();
 
@@ -292,6 +312,168 @@ function CanvasInner({
     requestAnimationFrame(() => void fitView({ padding: 0.15, duration: 300 }));
   }, [commit, fitView]);
 
+  /** Module a node maps to: explicit link, then overlay match, then name match. */
+  const moduleForNode = useCallback(
+    (id: string): string | null => {
+      const node = graphRef.current.nodes.find((n) => n.id === id);
+      if (!node || node.kind === "note") return null;
+      if (node.codeModule) return node.codeModule;
+      const badge = overlay?.nodeBadges.get(id);
+      if (badge) return badge.module;
+      if (codeSummary) return suggestModuleFor(node, codeSummary.modules)?.path ?? null;
+      return null;
+    },
+    [overlay, codeSummary],
+  );
+
+  const onNodeDoubleClick = useCallback(
+    (_evt: unknown, node: RfNode) => {
+      const module = moduleForNode(node.id);
+      if (module && onDrillIntoModule) onDrillIntoModule(module);
+    },
+    [moduleForNode, onDrillIntoModule],
+  );
+
+  const duplicateNode = useCallback(
+    (id: string) => {
+      const g = graphRef.current;
+      const node = g.nodes.find((n) => n.id === id);
+      if (!node) return;
+      const copy = {
+        ...structuredClone(node),
+        id: uid("node"),
+        label: `${node.label} copy`,
+        position: { x: node.position.x + 32, y: node.position.y + 32 },
+      };
+      commit({ ...g, nodes: [...g.nodes, copy] });
+      setSelectedNodes(new Set([copy.id]));
+    },
+    [commit],
+  );
+
+  const onNodeContextMenu = useCallback((evt: ReactMouseEvent, node: RfNode) => {
+    evt.preventDefault();
+    setMenu({ kind: "node", x: evt.clientX, y: evt.clientY, id: node.id });
+  }, []);
+
+  const onEdgeContextMenu = useCallback((evt: ReactMouseEvent, edge: ArchRfEdge) => {
+    evt.preventDefault();
+    setMenu({ kind: "edge", x: evt.clientX, y: evt.clientY, id: edge.id });
+  }, []);
+
+  const onPaneContextMenu = useCallback(
+    (evt: MouseEvent | ReactMouseEvent) => {
+      evt.preventDefault();
+      setMenu({
+        kind: "pane",
+        x: evt.clientX,
+        y: evt.clientY,
+        flowPos: screenToFlowPosition({ x: evt.clientX, y: evt.clientY }),
+      });
+    },
+    [screenToFlowPosition],
+  );
+
+  const menuEntries = useMemo<MenuEntry[]>(() => {
+    if (!menu) return [];
+    const g = graphRef.current;
+
+    if (menu.kind === "pane") {
+      return [
+        { type: "heading", label: "Add" },
+        ...PALETTE_KINDS.map<MenuEntry>((kind) => ({
+          type: "item",
+          label: KIND_META[kind].label,
+          icon: KIND_META[kind].icon,
+          onSelect: () => addNodeAt(kind, menu.flowPos),
+        })),
+        { type: "separator" },
+        { type: "item", label: "Auto-layout", icon: LayoutGrid, onSelect: runAutoLayout },
+        {
+          type: "item",
+          label: "Fit view",
+          icon: Maximize2,
+          onSelect: () => void fitView({ padding: 0.15, duration: 300 }),
+        },
+      ];
+    }
+
+    if (menu.kind === "node") {
+      const node = g.nodes.find((n) => n.id === menu.id);
+      if (!node) return [];
+      const module = moduleForNode(node.id);
+      return [
+        { type: "heading", label: node.label },
+        {
+          type: "item",
+          label: "Rename",
+          icon: Pencil,
+          onSelect: () => setRenaming({ x: menu.x, y: menu.y, id: node.id }),
+        },
+        {
+          type: "item",
+          label: "Zoom into code",
+          icon: FolderGit2,
+          disabled: !module || !onDrillIntoModule,
+          hint: module ?? undefined,
+          onSelect: () => module && onDrillIntoModule?.(module),
+        },
+        { type: "item", label: "Duplicate", icon: Copy, onSelect: () => duplicateNode(node.id) },
+        { type: "separator" },
+        {
+          type: "item",
+          label: isContainerKind(node.kind) ? "Delete container + contents" : "Delete",
+          icon: Trash2,
+          danger: true,
+          onSelect: () => {
+            commit(deleteNodes(graphRef.current, [node.id]));
+            setSelectedNodes(new Set());
+          },
+        },
+      ];
+    }
+
+    // Edge menu. Ghost edges (code-only) get a single "draw it" action.
+    if (menu.id.startsWith("ghost:")) {
+      const ghost = overlay?.ghostEdges.find(
+        (e) => `ghost:${e.sourceModule}->${e.targetModule}` === menu.id,
+      );
+      if (!ghost) return [];
+      return [
+        { type: "heading", label: "Code-only dependency" },
+        {
+          type: "item",
+          label: "Add to diagram",
+          icon: Plus,
+          onSelect: () =>
+            commit(opAddEdge(graphRef.current, ghost.source, ghost.target, "dependency")),
+        },
+      ];
+    }
+    const edge = g.edges.find((e) => e.id === menu.id);
+    if (!edge) return [];
+    return [
+      { type: "heading", label: "Connection kind" },
+      ...ARCH_EDGE_KINDS.map<MenuEntry>((kind) => ({
+        type: "item",
+        label: EDGE_KIND_STYLE[kind].label,
+        checked: edge.kind === kind,
+        onSelect: () => commit(updateEdge(graphRef.current, edge.id, { kind })),
+      })),
+      { type: "separator" },
+      {
+        type: "item",
+        label: "Delete connection",
+        icon: Trash2,
+        danger: true,
+        onSelect: () => {
+          commit(deleteEdges(graphRef.current, [edge.id]));
+          setSelectedEdges(new Set());
+        },
+      },
+    ];
+  }, [menu, moduleForNode, onDrillIntoModule, addNodeAt, runAutoLayout, fitView, duplicateNode, commit, overlay]);
+
   const selectedNode =
     selectedNodes.size === 1 ? graph.nodes.find((n) => selectedNodes.has(n.id)) : undefined;
   const selectedEdge =
@@ -300,7 +482,13 @@ function CanvasInner({
       : undefined;
 
   return (
-    <div ref={wrapperRef} className="relative h-full w-full">
+    <div
+      ref={wrapperRef}
+      className={cn(
+        "relative h-full w-full",
+        draftMode && "ring-2 ring-inset ring-warn/50",
+      )}
+    >
       <ReactFlow
         nodes={rfNodes}
         edges={rfEdges}
@@ -309,6 +497,11 @@ function CanvasInner({
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         onNodeDragStop={onNodeDragStop}
+        onNodeDoubleClick={onNodeDoubleClick}
+        onNodeContextMenu={onNodeContextMenu}
+        onEdgeContextMenu={onEdgeContextMenu}
+        onPaneContextMenu={onPaneContextMenu}
+        zoomOnDoubleClick={false}
         onDrop={onDrop}
         onDragOver={(e) => {
           e.preventDefault();
@@ -365,6 +558,22 @@ function CanvasInner({
           </Panel>
         ) : null}
       </ReactFlow>
+
+      {menu ? (
+        <ContextMenu x={menu.x} y={menu.y} entries={menuEntries} onClose={() => setMenu(null)} />
+      ) : null}
+      {renaming ? (
+        <InlineRename
+          x={renaming.x}
+          y={renaming.y}
+          initial={graph.nodes.find((n) => n.id === renaming.id)?.label ?? ""}
+          onCommit={(label) => {
+            commit(updateNode(graphRef.current, renaming.id, { label }));
+            setRenaming(null);
+          }}
+          onCancel={() => setRenaming(null)}
+        />
+      ) : null}
 
       {selectedNode || selectedEdge ? (
         <Inspector

@@ -1,0 +1,430 @@
+import {
+  Background,
+  BackgroundVariant,
+  Controls,
+  Handle,
+  MarkerType,
+  Position,
+  ReactFlow,
+  ReactFlowProvider,
+  type Edge as RfEdge,
+  type Node as RfNode,
+  type NodeProps,
+} from "@xyflow/react";
+import { memo, useMemo, useState } from "react";
+import { Cloud, Globe2, MapPin, Plus, Server, X } from "lucide-react";
+import { uid, updateNodePlacement, type ArchNode, type ArchitectureGraph } from "@crystal/core";
+import { Badge, Button, EmptyState, Input, cn } from "@crystal/ui";
+import { CodeNode, type CodeRfNode } from "./codemap/CodeNode.js";
+import { infraGroups, knownTargets, placedEdges } from "./infra.js";
+import { EDGE_KIND_STYLE, KIND_META, accentOf } from "./model.js";
+
+/**
+ * Infrastructure view — the same architecture projected per environment:
+ * deployment targets become containers, components sit where they run, and
+ * the logical edges connect them across targets (a lightweight service map).
+ */
+
+interface GroupData extends Record<string, unknown> {
+  target: string;
+  count: number;
+}
+type GroupRfNode = RfNode<GroupData>;
+
+const InfraGroupNode = memo(function InfraGroupNode({ data }: NodeProps<GroupRfNode>) {
+  return (
+    <div className="h-full w-full rounded-xl border border-dashed border-edge-strong bg-surface-1/60">
+      <div className="flex items-center gap-1.5 border-b border-dashed border-edge px-2.5 py-1.5">
+        <Cloud className="h-3 w-3 shrink-0 text-crystal-300" />
+        <span className="truncate text-[10.5px] font-semibold text-ink">{data.target}</span>
+        <span className="ml-auto shrink-0 rounded-full bg-surface-3 px-1.5 text-[9px] leading-4 text-ink-faint">
+          {data.count}
+        </span>
+      </div>
+      {/* Handles keep react-flow quiet; edges attach to child nodes. */}
+      <Handle type="target" position={Position.Left} className="!invisible" />
+      <Handle type="source" position={Position.Right} className="!invisible" />
+    </div>
+  );
+});
+
+const nodeTypes = { infragroup: InfraGroupNode, code: CodeNode };
+
+const CELL_W = 190;
+const CELL_H = 58;
+const CELL_GAP = 12;
+const GROUP_PAD = 14;
+const GROUP_HEADER = 32;
+const GROUPS_PER_ROW = 3;
+const GROUP_GAP = 56;
+
+export function InfraView({
+  graph,
+  onChange,
+}: {
+  graph: ArchitectureGraph;
+  onChange: (graph: ArchitectureGraph) => void;
+}) {
+  const [envId, setEnvId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [addingEnv, setAddingEnv] = useState(false);
+  const [newEnvName, setNewEnvName] = useState("");
+
+  const activeEnv =
+    graph.environments.find((e) => e.id === envId) ?? graph.environments[0] ?? null;
+
+  const { groups, unplaced } = useMemo(
+    () => infraGroups(graph, activeEnv?.id ?? ""),
+    [graph, activeEnv?.id],
+  );
+  const targets = useMemo(() => knownTargets(graph), [graph]);
+
+  const addEnvironment = () => {
+    const name = newEnvName.trim();
+    if (!name) return;
+    const env = { id: uid("env"), name };
+    onChange({ ...graph, environments: [...graph.environments, env] });
+    setEnvId(env.id);
+    setNewEnvName("");
+    setAddingEnv(false);
+  };
+
+  const removeEnvironment = (id: string) => {
+    // Strip the environment and every placement keyed by it.
+    onChange({
+      ...graph,
+      environments: graph.environments.filter((e) => e.id !== id),
+      nodes: graph.nodes.map((n) => {
+        if (!(id in n.placements)) return n;
+        const { [id]: _, ...rest } = n.placements;
+        return { ...n, placements: rest };
+      }),
+    });
+    if (envId === id) setEnvId(null);
+  };
+
+  const { nodes, edges } = useMemo(() => {
+    if (!activeEnv) return { nodes: [] as (GroupRfNode | CodeRfNode)[], edges: [] as RfEdge[] };
+
+    const nodes: (GroupRfNode | CodeRfNode)[] = [];
+    let cursorX = 0;
+    let cursorY = 0;
+    let rowMaxH = 0;
+
+    groups.forEach((group, i) => {
+      const n = group.nodes.length;
+      const cols = Math.max(1, Math.min(3, Math.ceil(Math.sqrt(n))));
+      const rows = Math.ceil(n / cols);
+      const width = GROUP_PAD * 2 + cols * CELL_W + (cols - 1) * CELL_GAP;
+      const height = GROUP_HEADER + GROUP_PAD + rows * CELL_H + (rows - 1) * CELL_GAP + GROUP_PAD;
+
+      if (i > 0 && i % GROUPS_PER_ROW === 0) {
+        cursorX = 0;
+        cursorY += rowMaxH + GROUP_GAP;
+        rowMaxH = 0;
+      }
+      const groupId = `target:${group.target}`;
+      nodes.push({
+        id: groupId,
+        type: "infragroup",
+        position: { x: cursorX, y: cursorY },
+        width,
+        height,
+        zIndex: -1,
+        draggable: false,
+        selectable: false,
+        data: { target: group.target, count: n },
+      });
+      group.nodes.forEach((node, j) => {
+        const col = j % cols;
+        const row = Math.floor(j / cols);
+        nodes.push({
+          id: node.id,
+          type: "code",
+          parentId: groupId,
+          draggable: false,
+          position: {
+            x: GROUP_PAD + col * (CELL_W + CELL_GAP),
+            y: GROUP_HEADER + GROUP_PAD + row * (CELL_H + CELL_GAP),
+          },
+          selected: node.id === selectedId,
+          data: {
+            title: node.label,
+            subtitle: node.placements[activeEnv.id]?.runtime || KIND_META[node.kind].label,
+            accent: accentOf(node),
+            icon: KIND_META[node.kind].icon,
+          },
+        });
+      });
+      cursorX += width + GROUP_GAP;
+      rowMaxH = Math.max(rowMaxH, height);
+    });
+
+    const edges: RfEdge[] = placedEdges(graph, activeEnv.id).map((e) => {
+      const style = EDGE_KIND_STYLE[e.kind];
+      return {
+        id: e.id,
+        source: e.source,
+        target: e.target,
+        label: e.label || undefined,
+        style: { stroke: style.stroke, strokeWidth: 1.4, strokeDasharray: style.dash, opacity: 0.9 },
+        labelStyle: { fill: "var(--color-ink-muted)", fontSize: 9 },
+        labelBgStyle: { fill: "var(--color-surface-1)", fillOpacity: 0.9 },
+        markerEnd: { type: MarkerType.ArrowClosed, color: style.stroke, width: 14, height: 14 },
+      };
+    });
+    return { nodes, edges };
+  }, [graph, groups, activeEnv, selectedId]);
+
+  const selectedNode = graph.nodes.find((n) => n.id === selectedId) ?? null;
+
+  if (graph.environments.length === 0) {
+    return (
+      <EmptyState icon={Globe2} title="No environments yet">
+        <div className="mb-3">
+          Define where this architecture runs — e.g. <code className="text-ink">production</code>,{" "}
+          <code className="text-ink">staging</code> — then place each component on its deployment
+          target.
+        </div>
+        <form
+          className="mx-auto flex max-w-60 gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            addEnvironment();
+          }}
+        >
+          <Input
+            autoFocus
+            value={newEnvName}
+            onChange={(e) => setNewEnvName(e.target.value)}
+            placeholder="production"
+          />
+          <Button type="submit" variant="primary" size="sm" disabled={!newEnvName.trim()}>
+            Add
+          </Button>
+        </form>
+      </EmptyState>
+    );
+  }
+
+  return (
+    <div className="flex h-full min-h-0">
+      <div className="relative min-w-0 flex-1">
+        {/* Environment switcher */}
+        <div className="absolute left-3 top-3 z-10 flex items-center gap-1 rounded-xl border border-edge bg-surface-2/95 p-1 text-xs shadow-xl shadow-black/30 backdrop-blur">
+          {graph.environments.map((env) => (
+            <span
+              key={env.id}
+              className={cn(
+                "group flex items-center gap-1 rounded-lg px-2 py-1",
+                env.id === activeEnv?.id
+                  ? "bg-surface-active text-ink"
+                  : "text-ink-muted hover:text-ink",
+              )}
+            >
+              <button type="button" onClick={() => setEnvId(env.id)} className="font-medium">
+                {env.name}
+              </button>
+              <button
+                type="button"
+                onClick={() => removeEnvironment(env.id)}
+                className="hidden text-ink-faint hover:text-danger group-hover:block"
+                aria-label={`Remove environment ${env.name}`}
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </span>
+          ))}
+          {addingEnv ? (
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                addEnvironment();
+              }}
+            >
+              <input
+                autoFocus
+                value={newEnvName}
+                onChange={(e) => setNewEnvName(e.target.value)}
+                onBlur={() => {
+                  setAddingEnv(false);
+                  setNewEnvName("");
+                }}
+                onKeyDown={(e) => e.key === "Escape" && setAddingEnv(false)}
+                placeholder="staging"
+                className="w-24 rounded-lg border border-crystal-500/60 bg-surface-1 px-2 py-1 text-xs text-ink outline-none"
+                aria-label="New environment name"
+              />
+            </form>
+          ) : (
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              onClick={() => setAddingEnv(true)}
+              aria-label="Add environment"
+            >
+              <Plus className="h-3.5 w-3.5" />
+            </Button>
+          )}
+        </div>
+
+        {groups.length === 0 ? (
+          <EmptyState icon={Server} title={`Nothing placed in ${activeEnv?.name ?? "this environment"}`}>
+            Pick a component on the right and give it a deployment target to start the service map.
+          </EmptyState>
+        ) : (
+          <ReactFlow
+            key={activeEnv?.id}
+            nodes={nodes}
+            edges={edges}
+            nodeTypes={nodeTypes}
+            onNodeClick={(_e, n) => {
+              if (n.type === "code") setSelectedId(n.id);
+            }}
+            onPaneClick={() => setSelectedId(null)}
+            fitView
+            fitViewOptions={{ padding: 0.2, maxZoom: 1.15 }}
+            minZoom={0.1}
+            maxZoom={2}
+            nodesConnectable={false}
+            panOnScroll
+            proOptions={{ hideAttribution: true }}
+            className="bg-surface-0"
+          >
+            <Background variant={BackgroundVariant.Dots} gap={22} size={1.25} color="var(--color-edge-strong)" />
+            <Controls
+              position="bottom-left"
+              showInteractive={false}
+              className="!rounded-lg !border !border-edge !bg-surface-2 !shadow-lg overflow-hidden"
+            />
+          </ReactFlow>
+        )}
+      </div>
+
+      <aside className="flex w-72 shrink-0 flex-col border-l border-edge bg-surface-1">
+        {selectedNode && activeEnv ? (
+          <PlacementEditor
+            key={`${selectedNode.id}:${activeEnv.id}`}
+            node={selectedNode}
+            envId={activeEnv.id}
+            envName={activeEnv.name}
+            targets={targets}
+            graph={graph}
+            onChange={onChange}
+            onClose={() => setSelectedId(null)}
+          />
+        ) : null}
+        <div className="min-h-0 flex-1 overflow-y-auto p-3">
+          <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-ink-faint">
+            Unplaced in {activeEnv?.name} ({unplaced.length})
+          </div>
+          {unplaced.map((n) => {
+            const Icon = KIND_META[n.kind].icon;
+            return (
+              <button
+                key={n.id}
+                type="button"
+                onClick={() => setSelectedId(n.id)}
+                className={cn(
+                  "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs",
+                  selectedId === n.id
+                    ? "bg-crystal-500/15 text-ink"
+                    : "text-ink-muted hover:bg-surface-2 hover:text-ink",
+                )}
+              >
+                <Icon className="h-3.5 w-3.5 shrink-0" style={{ color: accentOf(n) }} />
+                <span className="min-w-0 flex-1 truncate">{n.label}</span>
+                <Badge tone="neutral">{KIND_META[n.kind].label}</Badge>
+              </button>
+            );
+          })}
+          {unplaced.length === 0 ? (
+            <div className="py-1 text-[11px] text-ink-faint">
+              Every component is placed. Nice.
+            </div>
+          ) : null}
+        </div>
+      </aside>
+    </div>
+  );
+}
+
+function PlacementEditor({
+  node,
+  envId,
+  envName,
+  targets,
+  graph,
+  onChange,
+  onClose,
+}: {
+  node: ArchNode;
+  envId: string;
+  envName: string;
+  targets: string[];
+  graph: ArchitectureGraph;
+  onChange: (graph: ArchitectureGraph) => void;
+  onClose: () => void;
+}) {
+  const placement = node.placements[envId];
+  const [target, setTarget] = useState(placement?.target ?? "");
+  const [runtime, setRuntime] = useState(placement?.runtime ?? "");
+
+  const commit = (t: string, r: string) => {
+    onChange(updateNodePlacement(graph, node.id, envId, t.trim() ? { target: t.trim(), runtime: r.trim() } : null));
+  };
+
+  return (
+    <div className="border-b border-edge p-3">
+      <div className="mb-2 flex items-center gap-2">
+        <MapPin className="h-3.5 w-3.5 shrink-0 text-crystal-300" />
+        <span className="min-w-0 flex-1 truncate text-xs font-semibold text-ink">{node.label}</span>
+        <Button variant="ghost" size="icon-sm" onClick={onClose} aria-label="Close placement editor">
+          <X className="h-3.5 w-3.5" />
+        </Button>
+      </div>
+      <div className="space-y-2">
+        <label className="block">
+          <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-ink-faint">
+            Target in {envName}
+          </div>
+          <Input
+            list="crystal-infra-targets"
+            value={target}
+            onChange={(e) => setTarget(e.target.value)}
+            onBlur={() => commit(target, runtime)}
+            onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+            placeholder="aws us-east-1 / ecs"
+          />
+          <datalist id="crystal-infra-targets">
+            {targets.map((t) => (
+              <option key={t} value={t} />
+            ))}
+          </datalist>
+        </label>
+        <label className="block">
+          <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-ink-faint">
+            Runtime
+          </div>
+          <Input
+            value={runtime}
+            onChange={(e) => setRuntime(e.target.value)}
+            onBlur={() => commit(target, runtime)}
+            onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+            placeholder="fargate ×3, k8s deployment, lambda…"
+          />
+        </label>
+        {placement ? (
+          <Button
+            variant="ghost"
+            size="xs"
+            className="text-danger"
+            onClick={() => commit("", "")}
+          >
+            <X className="h-3 w-3" /> Remove from {envName}
+          </Button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
