@@ -5,7 +5,7 @@ import {
   type ArchNode,
   type ArchitectureGraph,
 } from "@crystal/core";
-import { infraGroups, knownTargets, placedEdges } from "./infra.js";
+import { groupLayer, infraGroups, knownTargets, layerBands, placedEdges } from "./infra.js";
 
 function node(id: string, kind: ArchNode["kind"], placements: ArchNode["placements"] = {}): ArchNode {
   return { ...createArchNode(kind, id, { x: 0, y: 0 }), id, placements };
@@ -54,6 +54,27 @@ describe("placedEdges", () => {
       ],
     );
     expect(placedEdges(g, "prod").map((e) => e.id)).toEqual(["e1"]);
+  });
+});
+
+describe("layerBands", () => {
+  it("orders target groups entry → service → data → unlayered by majority layer", () => {
+    const bands = layerBands([
+      { target: "postgres", nodes: [node("db", "datastore"), node("q", "queue")] },
+      { target: "vercel", nodes: [node("web", "frontend")] },
+      { target: "ecs", nodes: [node("api", "service"), node("worker", "service"), node("cache", "datastore")] },
+      { target: "misc", nodes: [node("memo", "external", {})] }, // external → entry
+    ]);
+    expect(bands.map((b) => [b.layer, b.groups.map((g) => g.target)])).toEqual([
+      ["entry", ["vercel", "misc"]],
+      ["service", ["ecs"]],
+      ["data", ["postgres"]],
+    ]);
+  });
+
+  it("respects explicit layer overrides via groupLayer", () => {
+    const middleware = { ...node("mw", "service"), layer: "entry" as const };
+    expect(groupLayer({ target: "edge", nodes: [middleware] })).toBe("entry");
   });
 });
 

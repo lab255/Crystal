@@ -12,11 +12,18 @@ import {
   type NodeProps,
 } from "@xyflow/react";
 import { memo, useMemo, useState } from "react";
-import { Cloud, Globe2, MapPin, Plus, Server, X } from "lucide-react";
-import { uid, updateNodePlacement, type ArchNode, type ArchitectureGraph } from "@crystal/core";
+import { Cloud, Globe2, Laptop, MapPin, Plus, Server, X } from "lucide-react";
+import {
+  createLocalEnvironment,
+  uid,
+  updateNodePlacement,
+  type ArchEnvironment,
+  type ArchNode,
+  type ArchitectureGraph,
+} from "@crystal/core";
 import { Badge, Button, EmptyState, Input, cn } from "@crystal/ui";
 import { CodeNode, type CodeRfNode } from "./codemap/CodeNode.js";
-import { infraGroups, knownTargets, placedEdges } from "./infra.js";
+import { infraGroups, knownTargets, layerBands, placedEdges } from "./infra.js";
 import { EDGE_KIND_STYLE, KIND_META, accentOf } from "./model.js";
 
 /**
@@ -28,14 +35,17 @@ import { EDGE_KIND_STYLE, KIND_META, accentOf } from "./model.js";
 interface GroupData extends Record<string, unknown> {
   target: string;
   count: number;
+  /** True when the active environment is local development. */
+  local: boolean;
 }
 type GroupRfNode = RfNode<GroupData>;
 
 const InfraGroupNode = memo(function InfraGroupNode({ data }: NodeProps<GroupRfNode>) {
+  const Icon = data.local ? Laptop : Cloud;
   return (
     <div className="h-full w-full rounded-xl border border-dashed border-edge-strong bg-surface-1/60">
       <div className="flex items-center gap-1.5 border-b border-dashed border-edge px-2.5 py-1.5">
-        <Cloud className="h-3 w-3 shrink-0 text-crystal-300" />
+        <Icon className="h-3 w-3 shrink-0 text-crystal-300" />
         <span className="truncate text-[10.5px] font-semibold text-ink">{data.target}</span>
         <span className="ml-auto shrink-0 rounded-full bg-surface-3 px-1.5 text-[9px] leading-4 text-ink-faint">
           {data.count}
@@ -48,7 +58,20 @@ const InfraGroupNode = memo(function InfraGroupNode({ data }: NodeProps<GroupRfN
   );
 });
 
-const nodeTypes = { infragroup: InfraGroupNode, code: CodeNode };
+interface BandLabelData extends Record<string, unknown> {
+  label: string;
+}
+type BandLabelRfNode = RfNode<BandLabelData>;
+
+const BandLabelNode = memo(function BandLabelNode({ data }: NodeProps<BandLabelRfNode>) {
+  return (
+    <div className="select-none text-[10px] font-semibold uppercase tracking-wider text-ink-faint">
+      {data.label}
+    </div>
+  );
+});
+
+const nodeTypes = { infragroup: InfraGroupNode, code: CodeNode, bandlabel: BandLabelNode };
 
 const CELL_W = 190;
 const CELL_H = 58;
@@ -69,9 +92,14 @@ export function InfraView({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [addingEnv, setAddingEnv] = useState(false);
   const [newEnvName, setNewEnvName] = useState("");
+  const [newEnvKind, setNewEnvKind] = useState<ArchEnvironment["kind"]>("cloud");
 
+  // Local development is the default lens; cloud environments are opt-in.
   const activeEnv =
-    graph.environments.find((e) => e.id === envId) ?? graph.environments[0] ?? null;
+    graph.environments.find((e) => e.id === envId) ??
+    graph.environments.find((e) => e.kind === "local") ??
+    graph.environments[0] ??
+    null;
 
   const { groups, unplaced } = useMemo(
     () => infraGroups(graph, activeEnv?.id ?? ""),
@@ -82,11 +110,17 @@ export function InfraView({
   const addEnvironment = () => {
     const name = newEnvName.trim();
     if (!name) return;
-    const env = { id: uid("env"), name };
+    const env: ArchEnvironment = { id: uid("env"), name, kind: newEnvKind };
     onChange({ ...graph, environments: [...graph.environments, env] });
     setEnvId(env.id);
     setNewEnvName("");
     setAddingEnv(false);
+  };
+
+  const addLocalEnvironment = () => {
+    const env = createLocalEnvironment();
+    onChange({ ...graph, environments: [...graph.environments, env] });
+    setEnvId(env.id);
   };
 
   const removeEnvironment = (id: string) => {
@@ -104,61 +138,77 @@ export function InfraView({
   };
 
   const { nodes, edges } = useMemo(() => {
-    if (!activeEnv) return { nodes: [] as (GroupRfNode | CodeRfNode)[], edges: [] as RfEdge[] };
+    if (!activeEnv)
+      return { nodes: [] as (GroupRfNode | CodeRfNode | BandLabelRfNode)[], edges: [] as RfEdge[] };
 
-    const nodes: (GroupRfNode | CodeRfNode)[] = [];
-    let cursorX = 0;
-    let cursorY = 0;
-    let rowMaxH = 0;
+    const nodes: (GroupRfNode | CodeRfNode | BandLabelRfNode)[] = [];
+    const isLocal = activeEnv.kind === "local";
+    let bandY = 0;
 
-    groups.forEach((group, i) => {
-      const n = group.nodes.length;
-      const cols = Math.max(1, Math.min(3, Math.ceil(Math.sqrt(n))));
-      const rows = Math.ceil(n / cols);
-      const width = GROUP_PAD * 2 + cols * CELL_W + (cols - 1) * CELL_GAP;
-      const height = GROUP_HEADER + GROUP_PAD + rows * CELL_H + (rows - 1) * CELL_GAP + GROUP_PAD;
-
-      if (i > 0 && i % GROUPS_PER_ROW === 0) {
-        cursorX = 0;
-        cursorY += rowMaxH + GROUP_GAP;
-        rowMaxH = 0;
-      }
-      const groupId = `target:${group.target}`;
+    // Targets stack in the same top-down traffic bands as the layered layout.
+    for (const band of layerBands(groups)) {
       nodes.push({
-        id: groupId,
-        type: "infragroup",
-        position: { x: cursorX, y: cursorY },
-        width,
-        height,
-        zIndex: -1,
+        id: `band:${band.layer ?? "other"}`,
+        type: "bandlabel",
+        position: { x: -110, y: bandY + 6 },
         draggable: false,
         selectable: false,
-        data: { target: group.target, count: n },
+        data: { label: band.layer ?? "other" },
       });
-      group.nodes.forEach((node, j) => {
-        const col = j % cols;
-        const row = Math.floor(j / cols);
+
+      let cursorX = 0;
+      let cursorY = bandY;
+      let rowMaxH = 0;
+      band.groups.forEach((group, i) => {
+        const n = group.nodes.length;
+        const cols = Math.max(1, Math.min(3, Math.ceil(Math.sqrt(n))));
+        const rows = Math.ceil(n / cols);
+        const width = GROUP_PAD * 2 + cols * CELL_W + (cols - 1) * CELL_GAP;
+        const height = GROUP_HEADER + GROUP_PAD + rows * CELL_H + (rows - 1) * CELL_GAP + GROUP_PAD;
+
+        if (i > 0 && i % GROUPS_PER_ROW === 0) {
+          cursorX = 0;
+          cursorY += rowMaxH + GROUP_GAP;
+          rowMaxH = 0;
+        }
+        const groupId = `target:${group.target}`;
         nodes.push({
-          id: node.id,
-          type: "code",
-          parentId: groupId,
+          id: groupId,
+          type: "infragroup",
+          position: { x: cursorX, y: cursorY },
+          width,
+          height,
+          zIndex: -1,
           draggable: false,
-          position: {
-            x: GROUP_PAD + col * (CELL_W + CELL_GAP),
-            y: GROUP_HEADER + GROUP_PAD + row * (CELL_H + CELL_GAP),
-          },
-          selected: node.id === selectedId,
-          data: {
-            title: node.label,
-            subtitle: node.placements[activeEnv.id]?.runtime || KIND_META[node.kind].label,
-            accent: accentOf(node),
-            icon: KIND_META[node.kind].icon,
-          },
+          selectable: false,
+          data: { target: group.target, count: n, local: isLocal },
         });
+        group.nodes.forEach((node, j) => {
+          const col = j % cols;
+          const row = Math.floor(j / cols);
+          nodes.push({
+            id: node.id,
+            type: "code",
+            parentId: groupId,
+            draggable: false,
+            position: {
+              x: GROUP_PAD + col * (CELL_W + CELL_GAP),
+              y: GROUP_HEADER + GROUP_PAD + row * (CELL_H + CELL_GAP),
+            },
+            selected: node.id === selectedId,
+            data: {
+              title: node.label,
+              subtitle: node.placements[activeEnv.id]?.runtime || KIND_META[node.kind].label,
+              accent: accentOf(node),
+              icon: KIND_META[node.kind].icon,
+            },
+          });
+        });
+        cursorX += width + GROUP_GAP;
+        rowMaxH = Math.max(rowMaxH, height);
       });
-      cursorX += width + GROUP_GAP;
-      rowMaxH = Math.max(rowMaxH, height);
-    });
+      bandY = cursorY + rowMaxH + GROUP_GAP + 8;
+    }
 
     const edges: RfEdge[] = placedEdges(graph, activeEnv.id).map((e) => {
       const style = EDGE_KIND_STYLE[e.kind];
@@ -182,10 +232,14 @@ export function InfraView({
     return (
       <EmptyState icon={Globe2} title="No environments yet">
         <div className="mb-3">
-          Define where this architecture runs — e.g. <code className="text-ink">production</code>,{" "}
-          <code className="text-ink">staging</code> — then place each component on its deployment
-          target.
+          Define where this architecture runs. Local development is the usual starting point;
+          cloud environments come later, when it deploys.
         </div>
+        <Button variant="primary" size="sm" className="mb-3" onClick={addLocalEnvironment}>
+          <Laptop className="h-3.5 w-3.5" />
+          Add local environment
+        </Button>
+        <div className="mb-2 text-[11px] text-ink-faint">or name one yourself:</div>
         <form
           className="mx-auto flex max-w-60 gap-2"
           onSubmit={(e) => {
@@ -222,7 +276,16 @@ export function InfraView({
                   : "text-ink-muted hover:text-ink",
               )}
             >
-              <button type="button" onClick={() => setEnvId(env.id)} className="font-medium">
+              <button
+                type="button"
+                onClick={() => setEnvId(env.id)}
+                className="flex items-center gap-1 font-medium"
+              >
+                {env.kind === "cloud" ? (
+                  <Cloud className="h-3 w-3 shrink-0 opacity-70" />
+                ) : (
+                  <Laptop className="h-3 w-3 shrink-0 opacity-70" />
+                )}
                 {env.name}
               </button>
               <button
@@ -237,21 +300,33 @@ export function InfraView({
           ))}
           {addingEnv ? (
             <form
+              className="flex items-center gap-1"
               onSubmit={(e) => {
                 e.preventDefault();
                 addEnvironment();
               }}
             >
+              <button
+                type="button"
+                onClick={() => setNewEnvKind(newEnvKind === "cloud" ? "local" : "cloud")}
+                className="rounded-md p-1 text-ink-muted hover:text-ink"
+                aria-label={`Environment kind: ${newEnvKind} (click to toggle)`}
+                title={newEnvKind === "cloud" ? "Cloud environment" : "Local environment"}
+              >
+                {newEnvKind === "cloud" ? <Cloud className="h-3.5 w-3.5" /> : <Laptop className="h-3.5 w-3.5" />}
+              </button>
               <input
                 autoFocus
                 value={newEnvName}
                 onChange={(e) => setNewEnvName(e.target.value)}
-                onBlur={() => {
+                onBlur={(e) => {
+                  // Keep the form open while toggling the kind button.
+                  if (e.relatedTarget instanceof HTMLElement && e.relatedTarget.closest("form") === e.currentTarget.form) return;
                   setAddingEnv(false);
                   setNewEnvName("");
                 }}
                 onKeyDown={(e) => e.key === "Escape" && setAddingEnv(false)}
-                placeholder="staging"
+                placeholder={newEnvKind === "cloud" ? "aws production" : "local dev"}
                 className="w-24 rounded-lg border border-crystal-500/60 bg-surface-1 px-2 py-1 text-xs text-ink outline-none"
                 aria-label="New environment name"
               />

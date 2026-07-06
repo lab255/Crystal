@@ -15,7 +15,7 @@ import {
   type Viewport,
 } from "@xyflow/react";
 import { useCallback, useMemo, useRef, useState, type DragEvent, type MouseEvent as ReactMouseEvent } from "react";
-import { Copy, FolderGit2, LayoutGrid, Maximize2, Pencil, Plus, Trash2 } from "lucide-react";
+import { Copy, FolderGit2, LayoutGrid, Maximize2, Pencil, Plus, Rows3, Trash2 } from "lucide-react";
 import {
   ARCH_EDGE_KINDS,
   isContainerKind,
@@ -306,11 +306,14 @@ function CanvasInner({
     [commit],
   );
 
-  const runAutoLayout = useCallback(() => {
-    commit(autoLayout(graphRef.current));
-    // Let the new positions render, then bring everything into view.
-    requestAnimationFrame(() => void fitView({ padding: 0.15, duration: 300 }));
-  }, [commit, fitView]);
+  const runAutoLayout = useCallback(
+    (mode: "flow" | "layers" = "flow") => {
+      commit(autoLayout(graphRef.current, { mode }));
+      // Let the new positions render, then bring everything into view.
+      requestAnimationFrame(() => void fitView({ padding: 0.15, duration: 300 }));
+    },
+    [commit, fitView],
+  );
 
   /** Module a node maps to: explicit link, then overlay match, then name match. */
   const moduleForNode = useCallback(
@@ -388,7 +391,13 @@ function CanvasInner({
           onSelect: () => addNodeAt(kind, menu.flowPos),
         })),
         { type: "separator" },
-        { type: "item", label: "Auto-layout", icon: LayoutGrid, onSelect: runAutoLayout },
+        { type: "item", label: "Auto-layout · flow", icon: LayoutGrid, onSelect: () => runAutoLayout("flow") },
+        {
+          type: "item",
+          label: "Auto-layout · layers",
+          icon: Rows3,
+          onSelect: () => runAutoLayout("layers"),
+        },
         {
           type: "item",
           label: "Fit view",

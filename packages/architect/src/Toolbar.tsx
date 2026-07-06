@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { LayoutGrid, Maximize2, Radar } from "lucide-react";
+import { LayoutGrid, Maximize2, Radar, Rows3 } from "lucide-react";
 import type { ArchEdgeKind, ArchitectureGraph } from "@crystal/core";
 import { Button, Tooltip, cn } from "@crystal/ui";
 import { EDGE_KIND_STYLE } from "./model.js";
@@ -17,7 +17,7 @@ export function Toolbar({
   graph: ArchitectureGraph;
   defaultEdgeKind: ArchEdgeKind;
   onDefaultEdgeKindChange: (kind: ArchEdgeKind) => void;
-  onAutoLayout: () => void;
+  onAutoLayout: (mode: "flow" | "layers") => void;
   onFitView: () => void;
   onRename: (name: string) => void;
   overlayOn?: boolean;
@@ -65,9 +65,24 @@ export function Toolbar({
         ))}
       </div>
       <div className="h-4 w-px bg-edge" />
-      <Tooltip content="Auto-layout (dagre)">
-        <Button variant="ghost" size="icon-sm" onClick={onAutoLayout} aria-label="Auto layout">
+      <Tooltip content="Auto-layout — flow (left to right)">
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          onClick={() => onAutoLayout("flow")}
+          aria-label="Auto layout, flow"
+        >
           <LayoutGrid className="h-3.5 w-3.5" />
+        </Button>
+      </Tooltip>
+      <Tooltip content="Auto-layout — layers (entry → service → data, top-down)">
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          onClick={() => onAutoLayout("layers")}
+          aria-label="Auto layout, layers"
+        >
+          <Rows3 className="h-3.5 w-3.5" />
         </Button>
       </Tooltip>
       <Tooltip content="Fit view">

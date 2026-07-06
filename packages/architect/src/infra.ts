@@ -1,4 +1,12 @@
-import { isContainerKind, type ArchEdge, type ArchNode, type ArchitectureGraph } from "@crystal/core";
+import {
+  ARCH_LAYERS,
+  isContainerKind,
+  layerOfNode,
+  type ArchEdge,
+  type ArchLayer,
+  type ArchNode,
+  type ArchitectureGraph,
+} from "@crystal/core";
 
 /**
  * Infrastructure view model — for one environment, group the architecture's
@@ -46,6 +54,37 @@ export function placedEdges(graph: ArchitectureGraph, envId: string): ArchEdge[]
       .map((n) => n.id),
   );
   return graph.edges.filter((e) => placed.has(e.source) && placed.has(e.target));
+}
+
+/** Majority layer of a target group's members (ties break toward the first counted). */
+export function groupLayer(group: InfraGroup): ArchLayer | null {
+  const counts = new Map<ArchLayer, number>();
+  for (const node of group.nodes) {
+    const layer = layerOfNode(node);
+    if (layer) counts.set(layer, (counts.get(layer) ?? 0) + 1);
+  }
+  let best: ArchLayer | null = null;
+  let bestCount = 0;
+  for (const [layer, count] of counts) {
+    if (count > bestCount) {
+      best = layer;
+      bestCount = count;
+    }
+  }
+  return best;
+}
+
+/**
+ * Target groups stacked into top-down traffic bands (entry → service → data,
+ * unlayered last) — the same reading order as the diagram's layered layout.
+ */
+export function layerBands(
+  groups: InfraGroup[],
+): { layer: ArchLayer | null; groups: InfraGroup[] }[] {
+  const order: (ArchLayer | null)[] = [...ARCH_LAYERS, null];
+  return order
+    .map((layer) => ({ layer, groups: groups.filter((g) => groupLayer(g) === layer) }))
+    .filter((band) => band.groups.length > 0);
 }
 
 /** Every target used across all environments — suggestions for placement. */

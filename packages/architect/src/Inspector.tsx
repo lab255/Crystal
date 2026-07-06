@@ -2,10 +2,13 @@ import { useEffect, useState } from "react";
 import { Trash2, X } from "lucide-react";
 import {
   ARCH_EDGE_KINDS,
+  ARCH_LAYERS,
   ARCH_NODE_KINDS,
+  DEFAULT_LAYER_OF_KIND,
   isContainerKind,
   type ArchEdge,
   type ArchEdgeKind,
+  type ArchLayer,
   type ArchNode,
   type ArchNodeKind,
   type ArchitectureGraph,
@@ -139,6 +142,24 @@ function NodeEditor({
           placeholder="What does this do?"
         />
       </Field>
+      {node.kind !== "note" ? (
+        <Field label="Layer (top-down view)">
+          <select
+            className={selectClasses}
+            value={node.layer ?? ""}
+            onChange={(e) => patch({ layer: (e.target.value || null) as ArchLayer | null })}
+          >
+            <option value="">
+              Auto{DEFAULT_LAYER_OF_KIND[node.kind] ? ` (${DEFAULT_LAYER_OF_KIND[node.kind]})` : ""}
+            </option>
+            {ARCH_LAYERS.map((layer) => (
+              <option key={layer} value={layer}>
+                {layer}
+              </option>
+            ))}
+          </select>
+        </Field>
+      ) : null}
       <Field label="Tech (comma-separated)">
         <Input
           value={tech}
