@@ -1,0 +1,270 @@
+import fs from "node:fs/promises";
+import fsSync from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import type {
+  BridgeEventName,
+  BridgeEvents,
+  CrossImportUse,
+  CrossPackageUse,
+  CrossWorkspaceEdge,
+  CrossWorkspaceMap,
+  WorkspaceDescriptor,
+} from "@crystal/core";
+import { AgentManager } from "./agent-manager.js";
+import { CodeMapAnalyzer, type CrossSurface } from "./code-map.js";
+import { appDataDir, isIgnoredDir, workspaceIdFor } from "./paths.js";
+import { WorkspaceStore } from "./workspace-store.js";
+
+const CODE_FILE_RE = /\.(ts|tsx|js|jsx|mjs|cjs)$/;
+
+/** Where the set of open workspace roots persists across server restarts. */
+function openWorkspacesFile(): string {
+  return path.join(os.homedir(), ".crystal", "open-workspaces.json");
+}
+
+/** realpath expands Windows 8.3 short paths, which crash libuv's recursive fs watcher. */
+export function canonicalRoot(p: string): string {
+  try {
+    return fsSync.realpathSync.native(p);
+  } catch {
+    return path.resolve(p);
+  }
+}
+
+type Broadcast = <E extends BridgeEventName>(event: E, payload: BridgeEvents[E]) => void;
+
+/** Everything the server holds per open workspace. */
+export class WorkspaceRuntime {
+  readonly id: string;
+  readonly store: WorkspaceStore;
+  readonly agents: AgentManager;
+  readonly codemap: CodeMapAnalyzer;
+  /** Manifest name, kept fresh by workspace.get / saveManifest handlers. */
+  name: string;
+
+  private watcher: fsSync.FSWatcher | null = null;
+  private watchTimer: NodeJS.Timeout | null = null;
+  private pendingPaths = new Set<string>();
+  private disposeAgentListeners: (() => void)[] = [];
+
+  constructor(readonly root: string) {
+    this.id = workspaceIdFor(root);
+    this.name = path.basename(root);
+    this.store = new WorkspaceStore(root);
+    this.agents = new AgentManager(root, appDataDir(root));
+    this.codemap = new CodeMapAnalyzer(root);
+  }
+
+  descriptor(): WorkspaceDescriptor {
+    return { id: this.id, root: this.root, name: this.name };
+  }
+
+  start(broadcast: Broadcast): void {
+    this.disposeAgentListeners = [
+      this.agents.events.on("event", (payload) => broadcast("agent.event", payload)),
+      this.agents.events.on("runChanged", ({ run }) =>
+        broadcast("agent.runChanged", { ws: this.id, run }),
+      ),
+    ];
+    try {
+      this.watcher = fsSync.watch(this.root, { recursive: true }, (_evt, filename) => {
+        if (!filename) return;
+        const rel = filename.split(path.sep).join("/");
+        if (rel.split("/").some((part) => isIgnoredDir(part))) return;
+        this.pendingPaths.add(rel);
+        this.watchTimer ??= setTimeout(() => {
+          this.watchTimer = null;
+          const paths = [...this.pendingPaths];
+          this.pendingPaths.clear();
+          broadcast("fs.changed", { ws: this.id, paths });
+          if (paths.some((p) => CODE_FILE_RE.test(p))) {
+            this.codemap.invalidate();
+            broadcast("codemap.changed", { ws: this.id });
+          }
+        }, 250);
+      });
+    } catch (err) {
+      console.warn(`[crystal] fs watch unavailable for ${this.root}:`, (err as Error).message);
+    }
+  }
+
+  close(): void {
+    this.watcher?.close();
+    if (this.watchTimer) clearTimeout(this.watchTimer);
+    for (const dispose of this.disposeAgentListeners) dispose();
+    this.disposeAgentListeners = [];
+  }
+}
+
+/**
+ * The set of workspaces a bridge server is hosting. Every workspace-scoped
+ * bridge method resolves through `get(ws)`; the open set persists to
+ * `~/.crystal/open-workspaces.json` so a restarted server reopens them.
+ */
+export class WorkspaceRegistry {
+  private runtimes = new Map<string, WorkspaceRuntime>();
+  private defaultId: string | null = null;
+
+  constructor(
+    private readonly broadcast: Broadcast,
+    /** Where to persist the open set; null disables persistence entirely. */
+    private readonly persistFile: string | null = openWorkspacesFile(),
+  ) {}
+
+  /** Open (or return the already-open) workspace at `root`. */
+  async open(root: string): Promise<WorkspaceRuntime> {
+    const canonical = canonicalRoot(root);
+    const stat = await fs.stat(canonical).catch(() => null);
+    if (!stat?.isDirectory()) throw new Error(`Not a directory: ${root}`);
+    const id = workspaceIdFor(canonical);
+    const existing = this.runtimes.get(id);
+    if (existing) return existing;
+
+    const runtime = new WorkspaceRuntime(canonical);
+    // Warm the workspace (creates .crystal/ on first run) and pick up its name.
+    const info = await runtime.store.load();
+    runtime.name = info.manifest.name;
+    this.runtimes.set(id, runtime);
+    this.defaultId ??= id;
+    runtime.start(this.broadcast);
+    await this.persist();
+    this.broadcast("workspaces.changed", {});
+    return runtime;
+  }
+
+  /** Close a workspace (the last one cannot be closed). */
+  async close(id: string): Promise<void> {
+    const runtime = this.runtimes.get(id);
+    if (!runtime) throw new Error(`Unknown workspace: ${id}`);
+    if (this.runtimes.size === 1) throw new Error("Cannot close the last workspace");
+    runtime.close();
+    this.runtimes.delete(id);
+    if (this.defaultId === id) this.defaultId = this.runtimes.keys().next().value ?? null;
+    await this.persist();
+    this.broadcast("workspaces.changed", {});
+  }
+
+  get(ws?: string): WorkspaceRuntime {
+    const id = ws ?? this.defaultId;
+    const runtime = id ? this.runtimes.get(id) : undefined;
+    if (!runtime) throw new Error(`Unknown workspace: ${ws ?? "(default)"}`);
+    return runtime;
+  }
+
+  list(): WorkspaceDescriptor[] {
+    return [...this.runtimes.values()].map((r) => r.descriptor());
+  }
+
+  get defaultWs(): string {
+    if (!this.defaultId) throw new Error("No workspaces open");
+    return this.defaultId;
+  }
+
+  closeAll(): void {
+    for (const runtime of this.runtimes.values()) runtime.close();
+    this.runtimes.clear();
+    this.defaultId = null;
+  }
+
+  /** Reopen workspaces persisted by a previous run (silently skips gone dirs). */
+  async restorePersisted(): Promise<void> {
+    if (!this.persistFile) return;
+    let roots: string[] = [];
+    try {
+      const parsed = JSON.parse(await fs.readFile(this.persistFile, "utf8"));
+      if (Array.isArray(parsed?.roots)) roots = parsed.roots.filter((r: unknown) => typeof r === "string");
+    } catch {
+      return;
+    }
+    for (const root of roots) {
+      try {
+        await this.open(root);
+      } catch (err) {
+        console.warn(`[crystal] skipping persisted workspace ${root}:`, (err as Error).message);
+      }
+    }
+  }
+
+  private async persist(): Promise<void> {
+    const file = this.persistFile;
+    if (!file) return;
+    try {
+      await fs.mkdir(path.dirname(file), { recursive: true });
+      await fs.writeFile(
+        file,
+        JSON.stringify({ roots: [...this.runtimes.values()].map((r) => r.root) }, null, 2),
+        "utf8",
+      );
+    } catch (err) {
+      console.warn("[crystal] could not persist open workspaces:", (err as Error).message);
+    }
+  }
+
+  /** Cross-workspace import/export graph across every open workspace. */
+  async crossMap(): Promise<CrossWorkspaceMap> {
+    const runtimes = [...this.runtimes.values()];
+    const surfaces = new Map<string, CrossSurface>();
+    await Promise.all(
+      runtimes.map(async (r) => {
+        surfaces.set(r.id, await r.codemap.crossSurface());
+      }),
+    );
+    return {
+      workspaces: runtimes.map((r) => ({
+        ...r.descriptor(),
+        fileTotal: surfaces.get(r.id)!.fileTotal,
+        packages: [...surfaces.get(r.id)!.packages.keys()].sort(),
+      })),
+      edges: computeCrossEdges(surfaces),
+      generatedAt: new Date().toISOString(),
+    };
+  }
+}
+
+/**
+ * Match each workspace's external imports against packages published by the
+ * *other* workspaces. Pure so it can be unit-tested without a filesystem.
+ */
+export function computeCrossEdges(surfaces: Map<string, CrossSurface>): CrossWorkspaceEdge[] {
+  const edges: CrossWorkspaceEdge[] = [];
+  for (const [sourceWs, surface] of surfaces) {
+    // pair key: targetWs → pkg → fromModule → use
+    const perTarget = new Map<string, Map<string, { toModule: string; uses: Map<string, CrossImportUse> }>>();
+    for (const imp of surface.externalImports) {
+      for (const [targetWs, target] of surfaces) {
+        if (targetWs === sourceWs) continue;
+        const toModule = target.packages.get(imp.pkg);
+        if (toModule === undefined) continue;
+        let pkgs = perTarget.get(targetWs);
+        if (!pkgs) perTarget.set(targetWs, (pkgs = new Map()));
+        let entry = pkgs.get(imp.pkg);
+        if (!entry) pkgs.set(imp.pkg, (entry = { toModule, uses: new Map() }));
+        let use = entry.uses.get(imp.fromModule);
+        if (!use) entry.uses.set(imp.fromModule, (use = { fromModule: imp.fromModule, count: 0, names: [] }));
+        use.count += 1;
+        for (const name of imp.names) if (!use.names.includes(name)) use.names.push(name);
+      }
+    }
+    for (const [targetWs, pkgs] of perTarget) {
+      const packages: CrossPackageUse[] = [...pkgs.entries()]
+        .map(([pkg, entry]) => {
+          const uses = [...entry.uses.values()].sort((a, b) => b.count - a.count);
+          return {
+            pkg,
+            toModule: entry.toModule,
+            count: uses.reduce((sum, u) => sum + u.count, 0),
+            uses,
+          };
+        })
+        .sort((a, b) => b.count - a.count);
+      edges.push({
+        source: sourceWs,
+        target: targetWs,
+        weight: packages.reduce((sum, p) => sum + p.count, 0),
+        packages,
+      });
+    }
+  }
+  return edges;
+}
