@@ -154,6 +154,10 @@ export async function startCrystalServer(opts: {
       clusters: await registry.get(ws).codemap.duplicates(minTokens),
       generatedAt: new Date().toISOString(),
     }),
+    "codemap.journeys": async ({ ws, limit }) => ({
+      suggestions: await registry.get(ws).codemap.suggestJourneys(limit),
+      generatedAt: new Date().toISOString(),
+    }),
     "codemap.symbols": async ({ ws, query, limit }) => ({
       symbols: await registry.get(ws).codemap.searchSymbols(query, limit),
     }),

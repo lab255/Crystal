@@ -9,6 +9,7 @@ import type {
   CodeTrace,
   CrossWorkspaceMap,
   DuplicateCluster,
+  JourneySuggestion,
   SymbolSearchHit,
 } from "./codemap.js";
 import type { Project } from "./project.js";
@@ -150,6 +151,11 @@ export interface BridgeMethods {
   "codemap.duplicates": {
     params: WsScope & { minTokens?: number };
     result: { clusters: DuplicateCluster[]; generatedAt: string };
+  };
+  /** Entry points whose call graphs span the most modules — suggested journeys. */
+  "codemap.journeys": {
+    params: WsScope & { limit?: number };
+    result: { suggestions: JourneySuggestion[]; generatedAt: string };
   };
   /** Case-insensitive substring search over top-level symbol names. */
   "codemap.symbols": {

@@ -35,6 +35,12 @@ export function projectTrace(
   for (const [nodeId, badge] of badges) {
     if (!moduleToNode.has(badge.module)) moduleToNode.set(badge.module, nodeId);
   }
+  // Expanded diagrams carry file-linked children — prefer the exact file's
+  // node over the module's, so flows render at file granularity.
+  const fileToNode = new Map<string, string>();
+  for (const node of graph.nodes) {
+    if (node.codeFile && !fileToNode.has(node.codeFile)) fileToNode.set(node.codeFile, node.id);
+  }
 
   // Trace steps arrive in BFS order — walk them as the journey's storyline,
   // collapsing consecutive steps that live in the same diagram node.
@@ -44,7 +50,7 @@ export function projectTrace(
   const path: string[] = []; // node ids in visit order, deduped consecutively
 
   for (const step of trace.steps) {
-    const nodeId = moduleToNode.get(step.module);
+    const nodeId = fileToNode.get(step.ref.file) ?? moduleToNode.get(step.module);
     if (!nodeId) {
       unmappedSteps.push(step);
       continue;

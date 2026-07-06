@@ -110,6 +110,8 @@ export function requestOpenFile(path: string): void {
 export interface CodeMapViewProps {
   /** Start at this module instead of the workspace overview ("zoom in" entry). */
   initialModule?: string;
+  /** Start at this file (within `initialModule`) — file-level "zoom in" entry. */
+  initialFile?: string;
   /** Where the user came from (e.g. an architecture diagram) — rendered as a leading breadcrumb. */
   origin?: { label: string; onExit: () => void };
   /** "Start journey here…" on a symbol — opens the journey dialog in Diagrams. */
@@ -139,6 +141,7 @@ const EMPTY_ARCHITECTURES: never[] = [];
 
 function CodeMapInner({
   initialModule,
+  initialFile,
   origin,
   onStartJourney,
   activeDraftPath,
@@ -166,12 +169,14 @@ function CodeMapInner({
   useEffect(() => {
     if (!level && activeWs) {
       setLevelRaw(
-        initialModule
-          ? { kind: "module", ws: activeWs, path: initialModule }
-          : { kind: "workspace", ws: activeWs },
+        initialFile
+          ? { kind: "file", ws: activeWs, path: initialFile }
+          : initialModule
+            ? { kind: "module", ws: activeWs, path: initialModule }
+            : { kind: "workspace", ws: activeWs },
       );
     }
-  }, [level, activeWs, initialModule]);
+  }, [level, activeWs, initialModule, initialFile]);
 
   const setLevel = useCallback((next: Level) => {
     setCrossEdge(null);

@@ -47,6 +47,7 @@ import { InfraView } from "./InfraView.js";
 import { FlowStepsPanel, JourneysSection, type JourneySeed } from "./JourneyPanel.js";
 import { buildHoistPrompt } from "./refactor-prompts.js";
 import { ApplyRefactorsDialog, RefactorChip, useIntentProblems } from "./RefactorPanel.js";
+import { canSeedFromCodeMap, seedFromCodeMap } from "./seed.js";
 
 const EMPTY_ARCHITECTURES: never[] = [];
 const EMPTY_DRAFTS: never[] = [];
@@ -56,15 +57,15 @@ type ArchitectView = "diagrams" | "infra" | "codemap";
 
 export function ArchitectMode() {
   const [view, setView] = useState<ArchitectView>("diagrams");
-  // Set when the user zooms from a diagram node into its code module.
-  const [drill, setDrill] = useState<{ module: string; from: string } | null>(null);
+  // Set when the user zooms from a diagram node into its code module (or a file within it).
+  const [drill, setDrill] = useState<{ module: string; file?: string; from: string } | null>(null);
   // "Start journey here…" from the code map prefills the journey dialog.
   const [journeySeed, setJourneySeed] = useState<JourneySeed | null>(null);
   // Lifted here so the code map sees the open draft (drag-refactor targets it).
   const [draftPath, setDraftPath] = useState<string | null>(null);
 
-  const drillIntoModule = useCallback((module: string, from: string) => {
-    setDrill({ module, from });
+  const drillIntoModule = useCallback((module: string, from: string, file?: string) => {
+    setDrill({ module, file, from });
     setView("codemap");
   }, []);
 
@@ -110,8 +111,9 @@ export function ArchitectMode() {
       <div className="min-h-0 flex-1">
         {view === "codemap" ? (
           <CodeMapView
-            key={drill ? `drill:${drill.module}` : "root"}
+            key={drill ? `drill:${drill.module}:${drill.file ?? ""}` : "root"}
             initialModule={drill?.module}
+            initialFile={drill?.file}
             origin={
               drill
                 ? {
@@ -151,7 +153,7 @@ function DiagramsView({
   onDraftPathChange: setDraftPath,
 }: {
   variant: "diagrams" | "infra";
-  onDrillIntoModule: (module: string, from: string) => void;
+  onDrillIntoModule: (module: string, from: string, file?: string) => void;
   journeySeed: JourneySeed | null;
   onJourneySeedConsumed: () => void;
   draftPath: string | null;
@@ -171,6 +173,7 @@ function DiagramsView({
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [newName, setNewName] = useState("");
+  const [seedMode, setSeedMode] = useState<"code" | "blank">("code");
   const [notice, setNotice] = useState<string | null>(null);
   const [applyDialogOpen, setApplyDialogOpen] = useState(false);
   const [applyBusy, setApplyBusy] = useState(false);
@@ -303,10 +306,16 @@ function DiagramsView({
 
   const saving = Object.keys(pendingSaves).length > 0;
 
+  const canSeed = canSeedFromCodeMap(codeSummary);
+
   async function handleCreate() {
     const name = newName.trim();
     if (!name) return;
     const created = await createArchitecture(name);
+    if (seedMode === "code" && canSeedFromCodeMap(codeSummary)) {
+      updateArchitecture(created.path, seedFromCodeMap(created.graph, codeSummary));
+      setOverlayOn(true);
+    }
     setSelectedPath(created.path);
     setNewName("");
     setCreateOpen(false);
@@ -595,7 +604,9 @@ function DiagramsView({
                 codeSummary={codeSummary}
                 overlayOn={overlayOn}
                 onToggleOverlay={setOverlayOn}
-                onDrillIntoModule={(module) => onDrillIntoModule(module, selected.graph.name)}
+                onDrillIntoModule={(module, file) =>
+                  onDrillIntoModule(module, selected.graph.name, file)
+                }
                 draftMode={!!activeDraft}
                 flow={flow}
               />
@@ -651,13 +662,37 @@ function DiagramsView({
             icon={Boxes}
             title="No architectures yet"
             action={
-              <Button variant="primary" size="sm" onClick={() => setCreateOpen(true)}>
-                <Plus className="h-3.5 w-3.5" /> New architecture
-              </Button>
+              <div className="flex items-center gap-2">
+                {canSeed ? (
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    onClick={() => {
+                      setSeedMode("code");
+                      setCreateOpen(true);
+                    }}
+                  >
+                    <FolderGit2 className="h-3.5 w-3.5" /> Map my codebase
+                  </Button>
+                ) : null}
+                <Button
+                  variant={canSeed ? "secondary" : "primary"}
+                  size="sm"
+                  onClick={() => {
+                    setSeedMode("blank");
+                    setCreateOpen(true);
+                  }}
+                >
+                  <Plus className="h-3.5 w-3.5" /> Blank canvas
+                </Button>
+              </div>
             }
           >
-            Model your system as nested groups of services, stores and flows. Diagrams are
-            saved to <code className="text-ink">.crystal/architecture/</code> in your repo.
+            {canSeed
+              ? "Start from a diagram of your modules and imports — linked to the live code map — or from a blank canvas."
+              : "Model your system as nested groups of services, stores and flows."}{" "}
+            Diagrams are saved to <code className="text-ink">.crystal/architecture/</code> in
+            your repo.
           </EmptyState>
         )}
       </main>
@@ -669,6 +704,9 @@ function DiagramsView({
           flow={flow}
           error={journeyError}
           onClose={() => setActiveJourneyId(null)}
+          onOpenStep={(step) =>
+            onDrillIntoModule(step.module, selected?.graph.name ?? "Diagram", step.ref.file)
+          }
         />
       ) : null}
 
@@ -690,6 +728,27 @@ function DiagramsView({
               onChange={(e) => setNewName(e.target.value)}
               placeholder="e.g. Payments platform"
             />
+            {canSeed ? (
+              <div className="grid grid-cols-2 gap-2" role="radiogroup" aria-label="Starting point">
+                <SeedChoice
+                  active={seedMode === "code"}
+                  onSelect={() => setSeedMode("code")}
+                  icon={<FolderGit2 className="h-3.5 w-3.5" />}
+                  title="Map my codebase"
+                >
+                  {codeSummary!.modules.filter((m) => m.fileCount > 0).length} modules and their
+                  imports, linked to the live code map
+                </SeedChoice>
+                <SeedChoice
+                  active={seedMode === "blank"}
+                  onSelect={() => setSeedMode("blank")}
+                  icon={<PencilRuler className="h-3.5 w-3.5" />}
+                  title="Blank canvas"
+                >
+                  Start empty and build from the palette
+                </SeedChoice>
+              </div>
+            ) : null}
             <div className="flex justify-end gap-2">
               <DialogClose asChild>
                 <Button variant="ghost" size="sm">
@@ -704,6 +763,41 @@ function DiagramsView({
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+/** One selectable starting-point card in the "New architecture" dialog. */
+function SeedChoice({
+  active,
+  onSelect,
+  icon,
+  title,
+  children,
+}: {
+  active: boolean;
+  onSelect: () => void;
+  icon: React.ReactNode;
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={active}
+      onClick={onSelect}
+      className={cn(
+        "rounded-lg border px-2.5 py-2 text-left transition-colors",
+        active
+          ? "border-crystal-500/60 bg-crystal-500/10"
+          : "border-edge bg-surface-1 hover:bg-surface-2",
+      )}
+    >
+      <span className={cn("flex items-center gap-1.5 text-xs font-semibold", active ? "text-ink" : "text-ink-muted")}>
+        {icon} {title}
+      </span>
+      <span className="mt-1 block text-[10.5px] leading-snug text-ink-faint">{children}</span>
+    </button>
   );
 }
 

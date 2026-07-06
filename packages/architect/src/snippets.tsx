@@ -116,12 +116,15 @@ export function PeekPanel({
   module,
   nodeLabel,
   ws,
+  initialFile,
   onClose,
   onOpenFile,
 }: {
   module: string;
   nodeLabel: string;
   ws?: string;
+  /** Open at this file instead of the module's most-exporting one. */
+  initialFile?: string;
   onClose: () => void;
   onOpenFile?: (path: string) => void;
 }) {
@@ -139,6 +142,10 @@ export function PeekPanel({
       .then((d) => {
         if (cancelled) return;
         setDetail(d);
+        if (initialFile && d.files.some((f) => f.path === initialFile)) {
+          setFile(initialFile);
+          return;
+        }
         const best = [...d.files].sort((a, b) => b.exportCount - a.exportCount)[0];
         setFile(best?.path ?? null);
       })
@@ -146,7 +153,7 @@ export function PeekPanel({
     return () => {
       cancelled = true;
     };
-  }, [client, ws, module]);
+  }, [client, ws, module, initialFile]);
 
   useEffect(() => {
     if (!file) return;

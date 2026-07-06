@@ -1,16 +1,24 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
   ChevronRight,
+  FolderGit2,
   MoreHorizontal,
   Plus,
   Route,
+  Sparkles,
   Trash2,
   X,
 } from "lucide-react";
-import type { ArchitectureGraph, CodeTrace, Journey, SymbolSearchHit } from "@crystal/core";
+import type {
+  ArchitectureGraph,
+  CodeTrace,
+  Journey,
+  JourneySuggestion,
+  SymbolSearchHit,
+} from "@crystal/core";
 import { uid } from "@crystal/core";
-import { useCrystal } from "@crystal/client";
+import { useCrystal, useWorkspaces } from "@crystal/client";
 import {
   Badge,
   Button,
@@ -172,6 +180,48 @@ export function JourneysSection({
     setEntry(null);
   };
 
+  /* ---- suggested journeys: top entry points ranked by module fan-out ---- */
+  const { client } = useCrystal();
+  const activeWs = useWorkspaces((s) => s.activeId);
+  const [suggestions, setSuggestions] = useState<JourneySuggestion[]>([]);
+
+  const fetchSuggestions = useCallback(async () => {
+    try {
+      const res = await client.request("codemap.journeys", {});
+      setSuggestions(res.suggestions);
+    } catch {
+      // Bridge closed or nothing analyzable — the section simply stays empty.
+      setSuggestions([]);
+    }
+  }, [client]);
+
+  useEffect(() => {
+    void fetchSuggestions();
+  }, [fetchSuggestions]);
+  useEffect(
+    () =>
+      client.events.on("codemap.changed", ({ ws }) => {
+        if (!activeWs || ws === activeWs) void fetchSuggestions();
+      }),
+    [client, fetchSuggestions, activeWs],
+  );
+
+  const existingEntries = new Set(graph.journeys.map((j) => `${j.entry.file}#${j.entry.symbol}`));
+  const visibleSuggestions = suggestions
+    .filter((s) => !existingEntries.has(`${s.entry.file}#${s.entry.symbol}`))
+    .slice(0, 5);
+
+  const adoptSuggestion = (s: JourneySuggestion) => {
+    const journey: Journey = {
+      id: uid("journey"),
+      name: s.entry.symbol,
+      description: "",
+      entry: s.entry,
+    };
+    onGraphChange({ ...graph, journeys: [...graph.journeys, journey] });
+    onActivate(journey.id);
+  };
+
   return (
     <>
       <div className="mt-3 flex items-center justify-between px-1.5 pb-1">
@@ -228,10 +278,38 @@ export function JourneysSection({
           </DropdownMenu>
         </div>
       ))}
-      {graph.journeys.length === 0 ? (
+      {graph.journeys.length === 0 && visibleSuggestions.length === 0 ? (
         <div className="px-2 py-1 text-[11px] text-ink-faint">
           Trace creation, update or submission flows from a code entry point.
         </div>
+      ) : null}
+
+      {visibleSuggestions.length > 0 ? (
+        <>
+          <div className="mt-2 flex items-center gap-1 px-1.5 pb-1">
+            <Sparkles className="h-3 w-3 text-ink-faint" />
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-ink-faint">
+              Suggested
+            </span>
+          </div>
+          {visibleSuggestions.map((s) => (
+            <Tooltip
+              key={`${s.entry.file}#${s.entry.symbol}`}
+              content={`${s.entry.file} — reaches ${s.stepCount} symbols across ${s.moduleSpan} module${s.moduleSpan > 1 ? "s" : ""}`}
+            >
+              <button
+                type="button"
+                onClick={() => adoptSuggestion(s)}
+                className="group flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12px] text-ink-muted hover:bg-surface-2 hover:text-ink"
+              >
+                <Route className="h-3.5 w-3.5 shrink-0 text-ink-faint group-hover:text-crystal-300/80" />
+                <span className="min-w-0 flex-1 truncate font-mono">{s.entry.symbol}</span>
+                <Badge tone="neutral">{s.moduleSpan} mod</Badge>
+                <Plus className="h-3 w-3 shrink-0 opacity-0 group-hover:opacity-100" />
+              </button>
+            </Tooltip>
+          ))}
+        </>
       ) : null}
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
@@ -281,12 +359,15 @@ export function FlowStepsPanel({
   flow,
   error,
   onClose,
+  onOpenStep,
 }: {
   journey: Journey;
   trace: CodeTrace | null;
   flow: FlowProjection | null;
   error: string | null;
   onClose: () => void;
+  /** "Open in code map" on one trace step. */
+  onOpenStep?: (step: CodeTrace["steps"][number]) => void;
 }) {
   const [expanded, setExpanded] = useState<string | null>(null);
   const partial = trace ? trace.truncated || trace.unresolvedCalls.length > 0 : false;
@@ -326,27 +407,41 @@ export function FlowStepsPanel({
           const key = `${step.ref.file}#${step.ref.symbol}`;
           return (
             <div key={key} style={{ paddingLeft: Math.min(step.depth, 6) * 10 }}>
-              <button
-                type="button"
-                onClick={() => setExpanded(expanded === key ? null : key)}
-                className="flex w-full items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-[11.5px] hover:bg-surface-2"
-              >
-                <ChevronRight
-                  className={cn(
-                    "h-3 w-3 shrink-0 text-ink-faint transition-transform",
-                    expanded === key && "rotate-90",
-                  )}
-                />
-                <span className="min-w-0 flex-1 truncate font-mono text-ink">{step.ref.symbol}</span>
-                {unmapped.has(key) ? (
-                  <Tooltip content="This module is not linked to any diagram node">
-                    <Badge tone="amber">unmapped</Badge>
+              <div className="group flex w-full items-center gap-1.5 rounded-md px-1 py-0.5 hover:bg-surface-2">
+                <button
+                  type="button"
+                  onClick={() => setExpanded(expanded === key ? null : key)}
+                  className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-[11.5px]"
+                >
+                  <ChevronRight
+                    className={cn(
+                      "h-3 w-3 shrink-0 text-ink-faint transition-transform",
+                      expanded === key && "rotate-90",
+                    )}
+                  />
+                  <span className="min-w-0 flex-1 truncate font-mono text-ink">{step.ref.symbol}</span>
+                  {unmapped.has(key) ? (
+                    <Tooltip content="This module is not linked to any diagram node">
+                      <Badge tone="amber">unmapped</Badge>
+                    </Tooltip>
+                  ) : null}
+                  <span className="max-w-32 shrink-0 truncate text-[9px] text-ink-faint">
+                    {step.module}
+                  </span>
+                </button>
+                {onOpenStep ? (
+                  <Tooltip content="Open in code map">
+                    <button
+                      type="button"
+                      onClick={() => onOpenStep(step)}
+                      className="shrink-0 text-ink-faint opacity-0 hover:text-ink group-hover:opacity-100"
+                      aria-label={`Open ${step.ref.symbol} in code map`}
+                    >
+                      <FolderGit2 className="h-3 w-3" />
+                    </button>
                   </Tooltip>
                 ) : null}
-                <span className="max-w-32 shrink-0 truncate text-[9px] text-ink-faint">
-                  {step.module}
-                </span>
-              </button>
+              </div>
               {expanded === key ? (
                 <SymbolSnippet file={step.ref.file} symbol={step.ref.symbol} className="mb-1.5 ml-4 mt-1" />
               ) : null}

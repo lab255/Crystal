@@ -157,6 +157,22 @@ export interface CodeTrace {
   unresolvedCalls: { from: CodeSymbolRef; callee: string }[];
 }
 
+/**
+ * A ranked journey suggestion: a code entry point whose call graph fans out
+ * across many modules — a good candidate "top user journey" to trace on the
+ * diagram. Derived live from the call graph; never persisted.
+ */
+export interface JourneySuggestion {
+  entry: CodeSymbolRef;
+  kind: CodeSymbolKind;
+  /** Module path owning the entry file. */
+  entryModule: string;
+  /** Distinct modules the bounded trace touches (entry module included). */
+  moduleSpan: number;
+  /** Symbols reached by the bounded trace (entry included). */
+  stepCount: number;
+}
+
 export interface DuplicateInstance {
   file: string;
   module: string;

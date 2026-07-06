@@ -7,7 +7,9 @@ import {
   callKey,
   CodeMapAnalyzer,
   parseSource,
+  rankJourneySuggestions,
   type CallGraphRecord,
+  type JourneySourceRecord,
 } from "./code-map.js";
 
 describe("parseSource", () => {
@@ -219,6 +221,119 @@ export function main() { helper(); }`,
     const graph = buildCallGraph(recordsOf(a));
     expect(graph.get("a.ts#ping")!.resolved).toEqual([{ file: "a.ts", symbol: "pong" }]);
     expect(graph.get("a.ts#pong")!.resolved).toEqual([{ file: "a.ts", symbol: "ping" }]);
+  });
+});
+
+/** Parse fixture sources and resolve their relative imports against each other. */
+function analyzeFixture(fixture: Record<string, { module: string; text: string }>) {
+  const fileSet = new Set(Object.keys(fixture));
+  const records = new Map<string, JourneySourceRecord>();
+  const importedBy = new Map<string, Set<string>>();
+  for (const [file, { module, text }] of Object.entries(fixture)) {
+    const parsed = parseSource(file, text);
+    const resolvedImports = parsed.imports.map(({ specifier, names }) => {
+      let resolved: string | null = null;
+      if (specifier.startsWith(".")) {
+        const base = path.posix.normalize(path.posix.join(path.posix.dirname(file), specifier));
+        for (const candidate of [base, `${base}.ts`, base.replace(/\.js$/, ".ts")]) {
+          if (fileSet.has(candidate)) {
+            resolved = candidate;
+            break;
+          }
+        }
+      }
+      if (resolved) {
+        let set = importedBy.get(resolved);
+        if (!set) importedBy.set(resolved, (set = new Set()));
+        set.add(file);
+      }
+      return { specifier, resolved, names };
+    });
+    records.set(file, { path: file, module, symbols: parsed.symbols, resolvedImports });
+  }
+  return { records, importedBy, graph: buildCallGraph(records) };
+}
+
+const JOURNEY_FIXTURE = {
+  "apps/web/src/main.ts": {
+    module: "apps/web",
+    text: `import { render } from "./app.js";
+export function start() { render(); }`,
+  },
+  "apps/web/src/app.ts": {
+    module: "apps/web",
+    text: `import { fetchOrders } from "../../../packages/core/src/orders.js";
+export function render() { fetchOrders(); paint(); }
+function paint() {}`,
+  },
+  "packages/core/src/index.ts": {
+    module: "packages/core",
+    text: `export * from "./orders.js";`,
+  },
+  "packages/core/src/orders.ts": {
+    module: "packages/core",
+    text: `import { query } from "./db.js";
+export function fetchOrders() { return query(); }`,
+  },
+  "packages/core/src/db.ts": {
+    module: "packages/core",
+    text: `export function query() { return connect(); }
+function connect() {}`,
+  },
+  "scripts/tiny.ts": {
+    module: ".",
+    text: `export function tiny() { console.log("hi"); }`,
+  },
+  "apps/web/src/flow.test.ts": {
+    module: "apps/web",
+    text: `import { fetchOrders } from "../../../packages/core/src/orders.js";
+export function testFlow() { fetchOrders(); }`,
+  },
+};
+
+describe("rankJourneySuggestions", () => {
+  it("suggests entry points that fan out across modules, widest first", () => {
+    const { records, importedBy, graph } = analyzeFixture(JOURNEY_FIXTURE);
+    const suggestions = rankJourneySuggestions(records, graph, importedBy);
+    const [top] = suggestions;
+    expect(top!.entry).toEqual({ file: "apps/web/src/main.ts", symbol: "start" });
+    expect(top!.entryModule).toBe("apps/web");
+    expect(top!.moduleSpan).toBe(2); // apps/web + packages/core
+    // start → render → {fetchOrders, paint} → query → connect
+    expect(top!.stepCount).toBe(6);
+    // render (one importer — reached via main) qualifies too, ranked below start.
+    expect(suggestions.map((s) => s.entry.symbol)).toEqual(["start", "render"]);
+  });
+
+  it("excludes test files and trivially shallow traces", () => {
+    const { records, importedBy, graph } = analyzeFixture(JOURNEY_FIXTURE);
+    const files = rankJourneySuggestions(records, graph, importedBy).map((s) => s.entry.file);
+    expect(files).not.toContain("apps/web/src/flow.test.ts"); // spans 2 modules, but a test
+    expect(files).not.toContain("scripts/tiny.ts"); // only ambient calls
+  });
+
+  it("skips shared utilities — files with many importers", () => {
+    const { records, importedBy, graph } = analyzeFixture(JOURNEY_FIXTURE);
+    // orders.ts is imported by app.ts, the core barrel, and the test file (3 > 2).
+    expect(importedBy.get("packages/core/src/orders.ts")!.size).toBeGreaterThan(2);
+    const symbols = rankJourneySuggestions(records, graph, importedBy).map((s) => s.entry.symbol);
+    expect(symbols).not.toContain("fetchOrders");
+  });
+
+  it("caps suggestions per entry module for diversity", () => {
+    const alt = (n: string) => ({
+      module: "apps/web",
+      text: `import { render } from "./app.js";
+export function ${n}() { render(); }`,
+    });
+    const { records, importedBy, graph } = analyzeFixture({
+      ...JOURNEY_FIXTURE,
+      "apps/web/src/alt1.ts": alt("altOne"),
+      "apps/web/src/alt2.ts": alt("altTwo"),
+      "apps/web/src/alt3.ts": alt("altThree"),
+    });
+    const suggestions = rankJourneySuggestions(records, graph, importedBy);
+    expect(suggestions.filter((s) => s.entryModule === "apps/web")).toHaveLength(2);
   });
 });
 

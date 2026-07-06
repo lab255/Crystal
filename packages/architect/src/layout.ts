@@ -70,6 +70,65 @@ export function autoLayout(
 }
 
 /**
+ * Lay out only the children of one container (parent-relative), leaving every
+ * other node untouched — used when a node is expanded in place.
+ */
+export function layoutChildrenOf(graph: ArchitectureGraph, parentId: string): ArchitectureGraph {
+  const ids = graph.nodes.filter((n) => n.parentId === parentId).map((n) => n.id);
+  if (ids.length === 0) return graph;
+  const dims = new Map<string, { width: number; height: number }>();
+  for (const n of graph.nodes) {
+    dims.set(
+      n.id,
+      isContainerKind(n.kind)
+        ? { width: n.size?.width ?? 420, height: n.size?.height ?? 280 }
+        : { width: LEAF_W, height: LEAF_H },
+    );
+  }
+  const positions = new Map<string, { x: number; y: number }>();
+  layoutScopeFlow(graph, ids, dims, positions, true);
+  return {
+    ...graph,
+    nodes: graph.nodes.map((n) => {
+      const pos = positions.get(n.id);
+      return pos ? { ...n, position: pos } : n;
+    }),
+  };
+}
+
+/**
+ * Fit containers to their (parent-relative) children extents. Pass `onlyId`
+ * to resize a single container.
+ */
+export function fitContainersToChildren(
+  graph: ArchitectureGraph,
+  onlyId?: string,
+): ArchitectureGraph {
+  const childrenOf = new Map<string, ArchNode[]>();
+  for (const n of graph.nodes) {
+    if (!n.parentId) continue;
+    const list = childrenOf.get(n.parentId) ?? [];
+    list.push(n);
+    childrenOf.set(n.parentId, list);
+  }
+  return {
+    ...graph,
+    nodes: graph.nodes.map((n) => {
+      if (onlyId && n.id !== onlyId) return n;
+      const children = childrenOf.get(n.id);
+      if (!children || children.length === 0) return n;
+      let maxX = 0;
+      let maxY = 0;
+      for (const c of children) {
+        maxX = Math.max(maxX, c.position.x + (c.size?.width ?? LEAF_W));
+        maxY = Math.max(maxY, c.position.y + (c.size?.height ?? LEAF_H));
+      }
+      return { ...n, size: { width: maxX + PADDING_X, height: maxY + PADDING_Y / 2 } };
+    }),
+  };
+}
+
+/**
  * Band a container by the majority layer of its (leaf) descendants, so a
  * "data" group of stores sinks to the data band even though `group` itself
  * has no derived layer.

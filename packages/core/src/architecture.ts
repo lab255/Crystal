@@ -88,6 +88,19 @@ export const ArchNodeSchema = z.object({
    * "packages/core"). Drives the live code overlay on the diagram.
    */
   codeModule: z.string().nullish(),
+  /**
+   * Link to a specific file (workspace-relative) — finer than `codeModule`.
+   * Set on nodes materialized by "Expand code" so peeks and dataflow can
+   * resolve at file granularity.
+   */
+  codeFile: z.string().nullish(),
+  /** True on children materialized by "Expand code"; collapse removes them. */
+  generated: z.boolean().optional(),
+  /**
+   * Original leaf kind before "Expand code" converted this node into a
+   * container; collapse restores it.
+   */
+  expandedFrom: ArchNodeKindSchema.nullish(),
   /** External URL (dashboard, docs, repo…). */
   href: z.string().nullish(),
   /** Environment id → where this component runs (infrastructure view). */

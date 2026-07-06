@@ -117,8 +117,8 @@
         "description": "The three modes",
         "parentId": "node_packages",
         "position": {
-          "x": 384,
-          "y": 46
+          "x": 371.6101083032491,
+          "y": 40.8375451263538
         },
         "size": null,
         "tech": [],
@@ -256,10 +256,21 @@
       }
     ],
     "environments": [],
+    "journeys": [
+      {
+        "id": "journey_6c41271d3074",
+        "name": "ConnectionState",
+        "description": "",
+        "entry": {
+          "file": "packages/client/src/provider.tsx",
+          "symbol": "useConnectionState"
+        }
+      }
+    ],
     "viewport": {
-      "x": 667.5174825174826,
-      "y": 355.3216783216783,
-      "zoom": 0.9685314685314685
+      "x": 55.99905898850466,
+      "y": 140.40783930229838,
+      "zoom": 1.4583341021335745
     }
   }
 }

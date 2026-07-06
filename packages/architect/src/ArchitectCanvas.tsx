@@ -15,7 +15,7 @@ import {
   type Viewport,
 } from "@xyflow/react";
 import { useCallback, useMemo, useRef, useState, type DragEvent, type MouseEvent as ReactMouseEvent } from "react";
-import { Code2, Copy, FolderGit2, LayoutGrid, Maximize2, Pencil, Plus, Rows3, Trash2 } from "lucide-react";
+import { Code2, Copy, Expand, FolderGit2, LayoutGrid, Maximize2, Pencil, Plus, Rows3, Shrink, Trash2 } from "lucide-react";
 import {
   ARCH_EDGE_KINDS,
   isContainerKind,
@@ -35,8 +35,10 @@ import {
   updateEdge,
   updateNode,
 } from "./graph-ops.js";
+import { useCrystal } from "@crystal/client";
 import { cn } from "@crystal/ui";
 import { ContextMenu, InlineRename, type MenuEntry } from "./ContextMenu.js";
+import { collapseNode, expandNodeIntoCode, hasGeneratedChildren } from "./expand.js";
 import { autoLayout } from "./layout.js";
 import {
   EDGE_KIND_STYLE,
@@ -68,8 +70,8 @@ export interface ArchitectCanvasProps {
   codeSummary?: CodeMapSummary | null;
   overlayOn?: boolean;
   onToggleOverlay?: (on: boolean) => void;
-  /** "Zoom into code": open the code map at the module a node is linked to. */
-  onDrillIntoModule?: (modulePath: string) => void;
+  /** "Zoom into code": open the code map at the module (and optionally file) a node is linked to. */
+  onDrillIntoModule?: (modulePath: string, file?: string) => void;
   /** True while editing a draft plan — canvas gets a visual draft treatment. */
   draftMode?: boolean;
   /** Active journey projection — decorates the canvas as a dataflow lens. */
@@ -179,7 +181,7 @@ function CanvasInner({
   const [defaultEdgeKind, setDefaultEdgeKind] = useState<ArchEdgeKind>("sync");
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [renaming, setRenaming] = useState<{ x: number; y: number; id: string } | null>(null);
-  const [peek, setPeek] = useState<{ module: string; label: string } | null>(null);
+  const [peek, setPeek] = useState<{ module: string; label: string; file?: string } | null>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const { screenToFlowPosition, fitView } = useReactFlow();
 
@@ -384,12 +386,56 @@ function CanvasInner({
     [overlay, codeSummary],
   );
 
+  /**
+   * Code anchor of a node: file-linked nodes (from "Expand code") resolve to
+   * their file plus its owning module; everything else falls back to the
+   * module link.
+   */
+  const codeRefForNode = useCallback(
+    (id: string): { module: string; file?: string } | null => {
+      const g = graphRef.current;
+      const node = g.nodes.find((n) => n.id === id);
+      if (!node || node.kind === "note") return null;
+      if (node.codeFile) {
+        const file = node.codeFile;
+        let parent = node.parentId ? g.nodes.find((n) => n.id === node.parentId) : undefined;
+        while (parent && !parent.codeModule) {
+          parent = parent.parentId ? g.nodes.find((n) => n.id === parent!.parentId) : undefined;
+        }
+        const byPrefix = codeSummary?.modules
+          .filter((m) => m.path !== "." && file.startsWith(`${m.path}/`))
+          .sort((a, b) => b.path.length - a.path.length)[0]?.path;
+        const module =
+          parent?.codeModule ??
+          byPrefix ??
+          (codeSummary?.modules.some((m) => m.path === ".") ? "." : null);
+        return module ? { module, file } : null;
+      }
+      const module = moduleForNode(id);
+      return module ? { module } : null;
+    },
+    [moduleForNode, codeSummary],
+  );
+
+  const { client } = useCrystal();
+  const expandNodeCode = useCallback(
+    async (id: string, module: string) => {
+      try {
+        const detail = await client.request("codemap.module", { path: module });
+        commit(expandNodeIntoCode(graphRef.current, id, detail));
+      } catch {
+        // Module vanished from the map between menu open and click — no-op.
+      }
+    },
+    [client, commit],
+  );
+
   const onNodeDoubleClick = useCallback(
     (_evt: unknown, node: RfNode) => {
-      const module = moduleForNode(node.id);
-      if (module && onDrillIntoModule) onDrillIntoModule(module);
+      const ref = codeRefForNode(node.id);
+      if (ref && onDrillIntoModule) onDrillIntoModule(ref.module, ref.file);
     },
-    [moduleForNode, onDrillIntoModule],
+    [codeRefForNode, onDrillIntoModule],
   );
 
   const duplicateNode = useCallback(
@@ -465,7 +511,9 @@ function CanvasInner({
     if (menu.kind === "node") {
       const node = g.nodes.find((n) => n.id === menu.id);
       if (!node) return [];
-      const module = moduleForNode(node.id);
+      const ref = codeRefForNode(node.id);
+      const hint = ref ? (ref.file ? ref.file.split("/").pop() : ref.module) : undefined;
+      const expanded = hasGeneratedChildren(g, node.id);
       return [
         { type: "heading", label: node.label },
         {
@@ -478,18 +526,36 @@ function CanvasInner({
           type: "item",
           label: "Peek code",
           icon: Code2,
-          disabled: !module,
-          hint: module ?? undefined,
-          onSelect: () => module && setPeek({ module, label: node.label }),
+          disabled: !ref,
+          hint,
+          onSelect: () => ref && setPeek({ module: ref.module, label: node.label, file: ref.file }),
         },
         {
           type: "item",
           label: "Zoom into code",
           icon: FolderGit2,
-          disabled: !module || !onDrillIntoModule,
-          hint: module ?? undefined,
-          onSelect: () => module && onDrillIntoModule?.(module),
+          disabled: !ref || !onDrillIntoModule,
+          hint,
+          onSelect: () => ref && onDrillIntoModule?.(ref.module, ref.file),
         },
+        {
+          type: "item",
+          label: expanded ? "Refresh expanded code" : "Expand code into diagram",
+          icon: Expand,
+          disabled: !ref || !!ref.file,
+          hint: ref && !ref.file ? ref.module : undefined,
+          onSelect: () => ref && void expandNodeCode(node.id, ref.module),
+        },
+        ...(expanded
+          ? [
+              {
+                type: "item",
+                label: "Collapse code",
+                icon: Shrink,
+                onSelect: () => commit(collapseNode(graphRef.current, node.id)),
+              } satisfies MenuEntry,
+            ]
+          : []),
         { type: "item", label: "Duplicate", icon: Copy, onSelect: () => duplicateNode(node.id) },
         { type: "separator" },
         {
@@ -544,7 +610,7 @@ function CanvasInner({
         },
       },
     ];
-  }, [menu, moduleForNode, onDrillIntoModule, addNodeAt, runAutoLayout, fitView, duplicateNode, commit, overlay]);
+  }, [menu, codeRefForNode, expandNodeCode, onDrillIntoModule, addNodeAt, runAutoLayout, fitView, duplicateNode, commit, overlay]);
 
   const selectedNode =
     selectedNodes.size === 1 ? graph.nodes.find((n) => selectedNodes.has(n.id)) : undefined;
@@ -638,6 +704,7 @@ function CanvasInner({
         <PeekPanel
           module={peek.module}
           nodeLabel={peek.label}
+          initialFile={peek.file}
           onClose={() => setPeek(null)}
           onOpenFile={requestOpenFile}
         />
