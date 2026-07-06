@@ -2,6 +2,8 @@ import { Handle, Position, type NodeProps, type Node as RfNode } from "@xyflow/r
 import { memo, useState, type DragEvent } from "react";
 import { MoveUpRight, PackagePlus, type LucideIcon } from "lucide-react";
 import { cn } from "@crystal/ui";
+import { SimBadges, SimStrip } from "../SimPanel.js";
+import type { SimNodeStats } from "../simulation.js";
 
 /** dataTransfer type for dragging a symbol out of the FilePanel. */
 export const SYMBOL_DRAG_MIME = "application/x-crystal-symbol";
@@ -25,13 +27,18 @@ export interface CodeNodeData extends Record<string, unknown> {
   onSymbolDrop?: (payload: SymbolDragPayload) => void;
   /** Pending refactor-intent marker: this node gives or receives a symbol. */
   intentMark?: "source" | "target";
+  /** Live traffic stats while the infra simulation runs. */
+  sim?: SimNodeStats;
+  /** Component crashed via the sim kill switch. */
+  simKilled?: boolean;
 }
 
 export type CodeRfNode = RfNode<CodeNodeData>;
 
-export const CodeNode = memo(function CodeNode({ data, selected }: NodeProps<CodeRfNode>) {
+export const CodeNode = memo(function CodeNode({ id, data, selected }: NodeProps<CodeRfNode>) {
   const Icon = data.icon;
   const [dragOver, setDragOver] = useState(false);
+  const killed = data.simKilled === true;
 
   const accepts = (e: DragEvent) =>
     data.onSymbolDrop != null && e.dataTransfer.types.includes(SYMBOL_DRAG_MIME);
@@ -43,6 +50,8 @@ export const CodeNode = memo(function CodeNode({ data, selected }: NodeProps<Cod
         data.emphasis && "ring-2 ring-crystal-400/50",
         selected ? "border-crystal-400" : "border-edge-strong",
         dragOver && "ring-2 ring-warn",
+        data.sim?.overloaded && !killed && "border-danger/60 shadow-lg shadow-danger/20",
+        killed && "opacity-40 saturate-0",
       )}
       style={{
         borderLeftWidth: 3,
@@ -94,6 +103,8 @@ export const CodeNode = memo(function CodeNode({ data, selected }: NodeProps<Cod
       {data.subtitle ? (
         <div className="mt-0.5 truncate text-[9.5px] text-ink-faint">{data.subtitle}</div>
       ) : null}
+      {data.sim ? <SimStrip sim={data.sim} /> : null}
+      {data.sim ? <SimBadges id={id} sim={data.sim} killed={killed} /> : null}
       <Handle type="source" position={Position.Bottom} className="!h-1.5 !w-1.5 !border-none !bg-edge-strong" />
     </div>
   );

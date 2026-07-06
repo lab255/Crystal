@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Copy, FolderGit2, LayoutGrid, Maximize2, Play, Radar, Rows3, ZoomIn } from "lucide-react";
+import { Copy, FolderGit2, LayoutGrid, Maximize2, Radar, Rows3, ZoomIn } from "lucide-react";
 import type { ArchEdgeKind, ArchitectureGraph } from "@crystal/core";
 import { Button, Tooltip, cn } from "@crystal/ui";
 import { EDGE_KIND_STYLE } from "./model.js";
@@ -13,8 +13,6 @@ export function Toolbar({
   onRename,
   lodOn,
   onToggleLod,
-  simOn,
-  onToggleSim,
   overlayOn,
   onToggleOverlay,
   showDuplicates,
@@ -29,8 +27,6 @@ export function Toolbar({
   onRename: (name: string) => void;
   lodOn?: boolean;
   onToggleLod?: (on: boolean) => void;
-  simOn?: boolean;
-  onToggleSim?: (on: boolean) => void;
   overlayOn?: boolean;
   onToggleOverlay?: (on: boolean) => void;
   showDuplicates?: boolean;
@@ -117,22 +113,6 @@ export function Toolbar({
           >
             <ZoomIn className="h-3.5 w-3.5" />
             detail
-          </button>
-        </Tooltip>
-      ) : null}
-      {onToggleSim ? (
-        <Tooltip content="Simulate traffic — watch req/s flow through the design, then break it with chaos switches">
-          <button
-            type="button"
-            aria-pressed={simOn}
-            onClick={() => onToggleSim(!simOn)}
-            className={cn(
-              "flex h-6 items-center gap-1.5 rounded-md px-1.5 text-[11px] transition-colors",
-              simOn ? "bg-ok/15 text-ok" : "text-ink-faint hover:text-ink-muted",
-            )}
-          >
-            <Play className={cn("h-3.5 w-3.5", simOn && "fill-current")} />
-            simulate
           </button>
         </Tooltip>
       ) : null}

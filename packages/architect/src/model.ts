@@ -25,7 +25,6 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import type { OverlayBadge } from "./overlay.js";
-import type { SimNodeStats } from "./simulation.js";
 
 /* ------------------------------------------------------------------ */
 /* Presentation metadata per node kind                                 */
@@ -85,10 +84,6 @@ export type ArchRfNode = RfNode<{
   codeExpanded?: boolean;
   /** Expanded, but the module detail is still loading. */
   codeLoading?: boolean;
-  /** Live traffic stats while the simulation is running. */
-  sim?: SimNodeStats;
-  /** Component crashed via the sim kill switch. */
-  simKilled?: boolean;
 }>;
 export type ArchRfEdge = RfEdge<{ kind: ArchEdgeKind }>;
 

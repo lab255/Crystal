@@ -4,6 +4,7 @@ import {
   Controls,
   Handle,
   MarkerType,
+  Panel,
   Position,
   ReactFlow,
   ReactFlowProvider,
@@ -13,8 +14,8 @@ import {
   type Node as RfNode,
   type NodeProps,
 } from "@xyflow/react";
-import { memo, useCallback, useEffect, useMemo, useState, type DragEvent } from "react";
-import { Cloud, Globe2, GripVertical, Laptop, MapPin, Plus, Server, X } from "lucide-react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
+import { Cloud, Gauge, Globe2, GripVertical, Laptop, MapPin, Play, Plus, Server, X } from "lucide-react";
 import {
   createLocalEnvironment,
   uid,
@@ -24,10 +25,19 @@ import {
   type ArchitectureGraph,
 } from "@crystal/core";
 import { Badge, Button, EmptyState, Input, cn } from "@crystal/ui";
-import { CodeNode, type CodeRfNode } from "./codemap/CodeNode.js";
+import { CodeNode, type CodeNodeData, type CodeRfNode } from "./codemap/CodeNode.js";
 import { InlineRename } from "./ContextMenu.js";
+import { updateNode } from "./graph-ops.js";
 import { infraGroups, knownTargets, layerBands, placedEdges } from "./infra.js";
 import { EDGE_KIND_STYLE, KIND_META, accentOf } from "./model.js";
+import { SimActionsContext, SimEditor, SimPanel, applyTrafficToEdges } from "./SimPanel.js";
+import {
+  isSimKind,
+  simulate,
+  type BreakerState,
+  type SimChaos,
+  type SimResult,
+} from "./simulation.js";
 
 /**
  * Infrastructure view — the same architecture projected per environment:
@@ -84,7 +94,11 @@ type InfraRfNode = GroupRfNode | CodeRfNode | BandLabelRfNode;
 
 const CELL_W = 190;
 const CELL_H = 58;
+/** Taller cells while simulating — cards grow a live stats strip. */
+const CELL_H_SIM = 104;
 const CELL_GAP = 12;
+/** Simulation tick cadence — slow enough to read, fast enough to feel live. */
+const SIM_TICK_MS = 600;
 const GROUP_PAD = 14;
 const GROUP_HEADER = 32;
 const GROUPS_PER_ROW = 3;
@@ -123,6 +137,52 @@ function InfraInner({
   const [newEnvKind, setNewEnvKind] = useState<ArchEnvironment["kind"]>("cloud");
   const [targetPrompt, setTargetPrompt] = useState<TargetPrompt | null>(null);
   const { screenToFlowPosition } = useReactFlow();
+
+  // Keep a ref of the latest graph so the sim tick always reads fresh state.
+  const graphRef = useRef(graph);
+  graphRef.current = graph;
+
+  /* ---- traffic simulation (runs over the whole logical graph; the map
+     decorates whatever is placed in the active environment) ---- */
+  const [simOn, setSimOn] = useState(false);
+  const [simIngress, setSimIngress] = useState(100);
+  const [simChaos, setSimChaos] = useState<SimChaos>({ spike: false, cacheMissStorm: false });
+  const [simKilled, setSimKilled] = useState<ReadonlySet<string>>(() => new Set());
+  const [simResult, setSimResult] = useState<SimResult | null>(null);
+  const simBreakers = useRef<ReadonlyMap<string, BreakerState>>(new Map());
+
+  useEffect(() => {
+    if (!simOn) {
+      setSimResult(null);
+      simBreakers.current = new Map();
+      return;
+    }
+    const tick = () => {
+      // Small wobble makes the numbers feel live without changing the story.
+      const jitter = 0.92 + Math.random() * 0.16;
+      const result = simulate(graphRef.current, {
+        ingressRps: simIngress * jitter,
+        chaos: simChaos,
+        killed: simKilled,
+        breakers: simBreakers.current,
+      });
+      simBreakers.current = result.breakers;
+      setSimResult(result);
+    };
+    tick();
+    const handle = setInterval(tick, SIM_TICK_MS);
+    return () => clearInterval(handle);
+  }, [simOn, simIngress, simChaos, simKilled]);
+
+  const toggleSimKill = useCallback((id: string) => {
+    setSimKilled((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+  const simActions = useMemo(() => ({ toggleKill: toggleSimKill }), [toggleSimKill]);
 
   // Local development is the default lens; cloud environments are opt-in.
   const activeEnv =
@@ -185,6 +245,7 @@ function InfraInner({
 
     const nodes: InfraRfNode[] = [];
     const isLocal = activeEnv.kind === "local";
+    const cellH = simOn ? CELL_H_SIM : CELL_H;
     let bandY = 0;
 
     // Targets stack in the same top-down traffic bands as the layered layout.
@@ -206,7 +267,7 @@ function InfraInner({
         const cols = Math.max(1, Math.min(3, Math.ceil(Math.sqrt(n))));
         const rows = Math.ceil(n / cols);
         const width = GROUP_PAD * 2 + cols * CELL_W + (cols - 1) * CELL_GAP;
-        const height = GROUP_HEADER + GROUP_PAD + rows * CELL_H + (rows - 1) * CELL_GAP + GROUP_PAD;
+        const height = GROUP_HEADER + GROUP_PAD + rows * cellH + (rows - 1) * CELL_GAP + GROUP_PAD;
 
         if (i > 0 && i % GROUPS_PER_ROW === 0) {
           cursorX = 0;
@@ -235,7 +296,7 @@ function InfraInner({
             draggable: true,
             position: {
               x: GROUP_PAD + col * (CELL_W + CELL_GAP),
-              y: GROUP_HEADER + GROUP_PAD + row * (CELL_H + CELL_GAP),
+              y: GROUP_HEADER + GROUP_PAD + row * (cellH + CELL_GAP),
             },
             selected: node.id === selectedId,
             data: {
@@ -266,12 +327,30 @@ function InfraInner({
       };
     });
     return { nodes, edges };
-  }, [graph, groups, activeEnv, selectedId]);
+  }, [graph, groups, activeEnv, selectedId, simOn]);
 
   // Drag needs live node state; the derived scene resets it (drop snaps back
   // unless the placement actually changed, in which case the scene moves it).
   const [nodes, setNodes, onNodesChange] = useNodesState<InfraRfNode>(scene.nodes);
   useEffect(() => setNodes(scene.nodes), [scene, setNodes]);
+
+  // Sim decorations merge into live node state (never a scene rebuild), so a
+  // tick landing mid-drag doesn't snap the dragged card back.
+  useEffect(() => {
+    setNodes((prev) =>
+      prev.map((n) => {
+        if (n.type !== "code") return n;
+        const sim = simResult?.nodes.get(n.id);
+        if (!sim && !(n.data as CodeNodeData).sim) return n;
+        return { ...n, data: { ...n.data, sim, simKilled: simKilled.has(n.id) } } as InfraRfNode;
+      }),
+    );
+  }, [simResult, simKilled, setNodes]);
+
+  const edges = useMemo(
+    () => (simResult ? applyTrafficToEdges(scene.edges, simResult) : scene.edges),
+    [scene.edges, simResult],
+  );
 
   /** Target group whose rect contains the point (flow coordinates). */
   const groupAtPoint = useCallback(
@@ -389,6 +468,7 @@ function InfraInner({
   }
 
   return (
+    <SimActionsContext.Provider value={simActions}>
     <div className="flex h-full min-h-0">
       <div className="relative min-w-0 flex-1">
         {/* Environment switcher */}
@@ -468,6 +548,24 @@ function InfraInner({
               <Plus className="h-3.5 w-3.5" />
             </Button>
           )}
+          {groups.length > 0 ? (
+            <>
+              <div className="mx-0.5 h-4 w-px bg-edge" />
+              <button
+                type="button"
+                aria-pressed={simOn}
+                onClick={() => setSimOn(!simOn)}
+                title="Simulate traffic — watch req/s flow through this environment, then break it with chaos switches"
+                className={cn(
+                  "flex h-6 items-center gap-1.5 rounded-lg px-2 text-[11px] transition-colors",
+                  simOn ? "bg-ok/15 text-ok" : "text-ink-faint hover:text-ink-muted",
+                )}
+              >
+                <Play className={cn("h-3.5 w-3.5", simOn && "fill-current")} />
+                simulate
+              </button>
+            </>
+          ) : null}
         </div>
 
         {groups.length === 0 ? (
@@ -481,7 +579,7 @@ function InfraInner({
           <ReactFlow
             key={activeEnv?.id}
             nodes={nodes}
-            edges={scene.edges}
+            edges={edges}
             nodeTypes={nodeTypes}
             onNodesChange={onNodesChange}
             onNodeDragStop={onNodeDragStop}
@@ -510,6 +608,20 @@ function InfraInner({
               showInteractive={false}
               className="!rounded-lg !border !border-edge !bg-surface-2 !shadow-lg overflow-hidden"
             />
+            {simOn && simResult ? (
+              <Panel position="bottom-center">
+                <SimPanel
+                  result={simResult}
+                  ingressRps={simIngress}
+                  onIngressChange={setSimIngress}
+                  chaos={simChaos}
+                  onChaosChange={setSimChaos}
+                  killedCount={simKilled.size}
+                  onRestoreAll={() => setSimKilled(new Set())}
+                  onStop={() => setSimOn(false)}
+                />
+              </Panel>
+            ) : null}
           </ReactFlow>
         )}
 
@@ -541,6 +653,18 @@ function InfraInner({
             onChange={onChange}
             onClose={() => setSelectedId(null)}
           />
+        ) : null}
+        {selectedNode && isSimKind(selectedNode.kind) ? (
+          <div className="border-b border-edge p-3">
+            <div className="mb-2 flex items-center gap-2">
+              <Gauge className="h-3.5 w-3.5 shrink-0 text-crystal-300" />
+              <span className="text-xs font-semibold text-ink">Simulation</span>
+            </div>
+            <SimEditor
+              node={selectedNode}
+              onPatch={(p) => onChange(updateNode(graph, selectedNode.id, p))}
+            />
+          </div>
         ) : null}
         <div className="min-h-0 flex-1 overflow-y-auto p-3">
           <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-ink-faint">
@@ -585,6 +709,7 @@ function InfraInner({
         </div>
       </aside>
     </div>
+    </SimActionsContext.Provider>
   );
 }
 
