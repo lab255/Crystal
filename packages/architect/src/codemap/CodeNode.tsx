@@ -81,7 +81,7 @@ export const CodeNode = memo(function CodeNode({ data, selected }: NodeProps<Cod
           )}
         </span>
       ) : null}
-      <Handle type="target" position={Position.Left} className="!h-1.5 !w-1.5 !border-none !bg-edge-strong" />
+      <Handle type="target" position={Position.Top} className="!h-1.5 !w-1.5 !border-none !bg-edge-strong" />
       <div className="flex items-center gap-1.5">
         {Icon ? <Icon className="h-3 w-3 shrink-0" style={{ color: data.accent }} /> : null}
         <span className="truncate text-[11.5px] font-semibold text-ink">{data.title}</span>
@@ -94,7 +94,7 @@ export const CodeNode = memo(function CodeNode({ data, selected }: NodeProps<Cod
       {data.subtitle ? (
         <div className="mt-0.5 truncate text-[9.5px] text-ink-faint">{data.subtitle}</div>
       ) : null}
-      <Handle type="source" position={Position.Right} className="!h-1.5 !w-1.5 !border-none !bg-edge-strong" />
+      <Handle type="source" position={Position.Bottom} className="!h-1.5 !w-1.5 !border-none !bg-edge-strong" />
     </div>
   );
 });

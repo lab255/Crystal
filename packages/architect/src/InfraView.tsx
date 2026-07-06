@@ -7,12 +7,14 @@ import {
   Position,
   ReactFlow,
   ReactFlowProvider,
+  useNodesState,
+  useReactFlow,
   type Edge as RfEdge,
   type Node as RfNode,
   type NodeProps,
 } from "@xyflow/react";
-import { memo, useMemo, useState } from "react";
-import { Cloud, Globe2, Laptop, MapPin, Plus, Server, X } from "lucide-react";
+import { memo, useCallback, useEffect, useMemo, useState, type DragEvent } from "react";
+import { Cloud, Globe2, GripVertical, Laptop, MapPin, Plus, Server, X } from "lucide-react";
 import {
   createLocalEnvironment,
   uid,
@@ -23,6 +25,7 @@ import {
 } from "@crystal/core";
 import { Badge, Button, EmptyState, Input, cn } from "@crystal/ui";
 import { CodeNode, type CodeRfNode } from "./codemap/CodeNode.js";
+import { InlineRename } from "./ContextMenu.js";
 import { infraGroups, knownTargets, layerBands, placedEdges } from "./infra.js";
 import { EDGE_KIND_STYLE, KIND_META, accentOf } from "./model.js";
 
@@ -30,7 +33,12 @@ import { EDGE_KIND_STYLE, KIND_META, accentOf } from "./model.js";
  * Infrastructure view — the same architecture projected per environment:
  * deployment targets become containers, components sit where they run, and
  * the logical edges connect them across targets (a lightweight service map).
+ * Placement is drag-and-drop: drag components between targets, drag unplaced
+ * components in from the sidebar, drop on empty canvas to name a new target.
  */
+
+/** dataTransfer type for dragging an unplaced component from the sidebar. */
+const INFRA_DRAG_MIME = "application/x-crystal-infra-node";
 
 interface GroupData extends Record<string, unknown> {
   target: string;
@@ -52,8 +60,8 @@ const InfraGroupNode = memo(function InfraGroupNode({ data }: NodeProps<GroupRfN
         </span>
       </div>
       {/* Handles keep react-flow quiet; edges attach to child nodes. */}
-      <Handle type="target" position={Position.Left} className="!invisible" />
-      <Handle type="source" position={Position.Right} className="!invisible" />
+      <Handle type="target" position={Position.Top} className="!invisible" />
+      <Handle type="source" position={Position.Bottom} className="!invisible" />
     </div>
   );
 });
@@ -72,6 +80,7 @@ const BandLabelNode = memo(function BandLabelNode({ data }: NodeProps<BandLabelR
 });
 
 const nodeTypes = { infragroup: InfraGroupNode, code: CodeNode, bandlabel: BandLabelNode };
+type InfraRfNode = GroupRfNode | CodeRfNode | BandLabelRfNode;
 
 const CELL_W = 190;
 const CELL_H = 58;
@@ -81,7 +90,26 @@ const GROUP_HEADER = 32;
 const GROUPS_PER_ROW = 3;
 const GROUP_GAP = 56;
 
-export function InfraView({
+/** Pending "name a new deployment target" prompt from a drop on empty canvas. */
+interface TargetPrompt {
+  /** Screen coordinates for the floating input. */
+  x: number;
+  y: number;
+  nodeId: string;
+}
+
+export function InfraView(props: {
+  graph: ArchitectureGraph;
+  onChange: (graph: ArchitectureGraph) => void;
+}) {
+  return (
+    <ReactFlowProvider>
+      <InfraInner {...props} />
+    </ReactFlowProvider>
+  );
+}
+
+function InfraInner({
   graph,
   onChange,
 }: {
@@ -93,6 +121,8 @@ export function InfraView({
   const [addingEnv, setAddingEnv] = useState(false);
   const [newEnvName, setNewEnvName] = useState("");
   const [newEnvKind, setNewEnvKind] = useState<ArchEnvironment["kind"]>("cloud");
+  const [targetPrompt, setTargetPrompt] = useState<TargetPrompt | null>(null);
+  const { screenToFlowPosition } = useReactFlow();
 
   // Local development is the default lens; cloud environments are opt-in.
   const activeEnv =
@@ -137,11 +167,23 @@ export function InfraView({
     if (envId === id) setEnvId(null);
   };
 
-  const { nodes, edges } = useMemo(() => {
-    if (!activeEnv)
-      return { nodes: [] as (GroupRfNode | CodeRfNode | BandLabelRfNode)[], edges: [] as RfEdge[] };
+  /** Place (or re-place) a component on a target, keeping any runtime detail. */
+  const placeOn = useCallback(
+    (nodeId: string, target: string) => {
+      if (!activeEnv) return;
+      const node = graph.nodes.find((n) => n.id === nodeId);
+      if (!node) return;
+      const runtime = node.placements[activeEnv.id]?.runtime ?? "";
+      onChange(updateNodePlacement(graph, nodeId, activeEnv.id, { target, runtime }));
+      setSelectedId(nodeId);
+    },
+    [graph, onChange, activeEnv],
+  );
 
-    const nodes: (GroupRfNode | CodeRfNode | BandLabelRfNode)[] = [];
+  const scene = useMemo(() => {
+    if (!activeEnv) return { nodes: [] as InfraRfNode[], edges: [] as RfEdge[] };
+
+    const nodes: InfraRfNode[] = [];
     const isLocal = activeEnv.kind === "local";
     let bandY = 0;
 
@@ -190,7 +232,7 @@ export function InfraView({
             id: node.id,
             type: "code",
             parentId: groupId,
-            draggable: false,
+            draggable: true,
             position: {
               x: GROUP_PAD + col * (CELL_W + CELL_GAP),
               y: GROUP_HEADER + GROUP_PAD + row * (CELL_H + CELL_GAP),
@@ -225,6 +267,91 @@ export function InfraView({
     });
     return { nodes, edges };
   }, [graph, groups, activeEnv, selectedId]);
+
+  // Drag needs live node state; the derived scene resets it (drop snaps back
+  // unless the placement actually changed, in which case the scene moves it).
+  const [nodes, setNodes, onNodesChange] = useNodesState<InfraRfNode>(scene.nodes);
+  useEffect(() => setNodes(scene.nodes), [scene, setNodes]);
+
+  /** Target group whose rect contains the point (flow coordinates). */
+  const groupAtPoint = useCallback(
+    (point: { x: number; y: number }): string | null => {
+      for (const n of nodes) {
+        if (n.type !== "infragroup") continue;
+        const w = n.width ?? 0;
+        const h = n.height ?? 0;
+        if (
+          point.x >= n.position.x &&
+          point.x <= n.position.x + w &&
+          point.y >= n.position.y &&
+          point.y <= n.position.y + h
+        ) {
+          return (n.data as GroupData).target;
+        }
+      }
+      return null;
+    },
+    [nodes],
+  );
+
+  const onNodeDragStop = useCallback(
+    (evt: MouseEvent | globalThis.TouchEvent, node: RfNode) => {
+      if (node.type !== "code") return;
+      const parent = nodes.find((n) => n.id === node.parentId);
+      const abs = {
+        x: (parent?.position.x ?? 0) + node.position.x,
+        y: (parent?.position.y ?? 0) + node.position.y,
+      };
+      const center = {
+        x: abs.x + (node.measured?.width ?? node.width ?? CELL_W) / 2,
+        y: abs.y + (node.measured?.height ?? node.height ?? CELL_H) / 2,
+      };
+      const target = groupAtPoint(center);
+      const current = parent ? (parent.data as GroupData).target : null;
+      if (target && target !== current) {
+        placeOn(node.id, target);
+      } else if (!target && "clientX" in evt) {
+        // Dropped on empty canvas — name a new deployment target for it.
+        setTargetPrompt({ x: evt.clientX, y: evt.clientY, nodeId: node.id });
+      }
+      // Always snap back to the derived layout; a real placement change moves
+      // the node via the recomputed scene.
+      setNodes(scene.nodes);
+    },
+    [nodes, scene, setNodes, groupAtPoint, placeOn],
+  );
+
+  /* ---- HTML5 drops from the "Unplaced" sidebar ---- */
+
+  const acceptsSidebarDrag = (e: DragEvent) => e.dataTransfer.types.includes(INFRA_DRAG_MIME);
+
+  const onCanvasDrop = useCallback(
+    (evt: DragEvent) => {
+      const nodeId = evt.dataTransfer.getData(INFRA_DRAG_MIME);
+      if (!nodeId) return;
+      evt.preventDefault();
+      const point = screenToFlowPosition({ x: evt.clientX, y: evt.clientY });
+      const target = groupAtPoint(point);
+      if (target) placeOn(nodeId, target);
+      else setTargetPrompt({ x: evt.clientX, y: evt.clientY, nodeId });
+    },
+    [screenToFlowPosition, groupAtPoint, placeOn],
+  );
+
+  /** Drop zone used by the empty states (no groups yet → first target). */
+  const emptyDropProps = {
+    onDragOver: (e: DragEvent) => {
+      if (!acceptsSidebarDrag(e)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+    },
+    onDrop: (e: DragEvent) => {
+      const nodeId = e.dataTransfer.getData(INFRA_DRAG_MIME);
+      if (!nodeId) return;
+      e.preventDefault();
+      setTargetPrompt({ x: e.clientX, y: e.clientY, nodeId });
+    },
+  };
 
   const selectedNode = graph.nodes.find((n) => n.id === selectedId) ?? null;
 
@@ -344,19 +471,30 @@ export function InfraView({
         </div>
 
         {groups.length === 0 ? (
-          <EmptyState icon={Server} title={`Nothing placed in ${activeEnv?.name ?? "this environment"}`}>
-            Pick a component on the right and give it a deployment target to start the service map.
-          </EmptyState>
+          <div className="h-full" {...emptyDropProps}>
+            <EmptyState icon={Server} title={`Nothing placed in ${activeEnv?.name ?? "this environment"}`}>
+              Drag a component in from the right (or drop it here to name its first deployment
+              target) to start the service map.
+            </EmptyState>
+          </div>
         ) : (
           <ReactFlow
             key={activeEnv?.id}
             nodes={nodes}
-            edges={edges}
+            edges={scene.edges}
             nodeTypes={nodeTypes}
+            onNodesChange={onNodesChange}
+            onNodeDragStop={onNodeDragStop}
             onNodeClick={(_e, n) => {
               if (n.type === "code") setSelectedId(n.id);
             }}
             onPaneClick={() => setSelectedId(null)}
+            onDrop={onCanvasDrop}
+            onDragOver={(e) => {
+              if (!acceptsSidebarDrag(e)) return;
+              e.preventDefault();
+              e.dataTransfer.dropEffect = "move";
+            }}
             fitView
             fitViewOptions={{ padding: 0.2, maxZoom: 1.15 }}
             minZoom={0.1}
@@ -374,6 +512,21 @@ export function InfraView({
             />
           </ReactFlow>
         )}
+
+        {targetPrompt ? (
+          <InlineRename
+            x={targetPrompt.x}
+            y={targetPrompt.y}
+            initial=""
+            placeholder="New deployment target, e.g. aws us-east-1 / ecs"
+            commitEmpty
+            onCommit={(target) => {
+              placeOn(targetPrompt.nodeId, target);
+              setTargetPrompt(null);
+            }}
+            onCancel={() => setTargetPrompt(null)}
+          />
+        ) : null}
       </div>
 
       <aside className="flex w-72 shrink-0 flex-col border-l border-edge bg-surface-1">
@@ -393,20 +546,31 @@ export function InfraView({
           <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-ink-faint">
             Unplaced in {activeEnv?.name} ({unplaced.length})
           </div>
+          {unplaced.length > 0 ? (
+            <div className="mb-1.5 rounded-lg border border-edge bg-surface-2 px-2 py-1 text-[10px] text-ink-faint">
+              Drag onto a target on the canvas — or onto empty space to name a new one.
+            </div>
+          ) : null}
           {unplaced.map((n) => {
             const Icon = KIND_META[n.kind].icon;
             return (
               <button
                 key={n.id}
                 type="button"
+                draggable
+                onDragStart={(e) => {
+                  e.dataTransfer.setData(INFRA_DRAG_MIME, n.id);
+                  e.dataTransfer.effectAllowed = "move";
+                }}
                 onClick={() => setSelectedId(n.id)}
                 className={cn(
-                  "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs",
+                  "flex w-full cursor-grab items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs active:cursor-grabbing",
                   selectedId === n.id
                     ? "bg-crystal-500/15 text-ink"
                     : "text-ink-muted hover:bg-surface-2 hover:text-ink",
                 )}
               >
+                <GripVertical className="h-3 w-3 shrink-0 text-ink-faint" />
                 <Icon className="h-3.5 w-3.5 shrink-0" style={{ color: accentOf(n) }} />
                 <span className="min-w-0 flex-1 truncate">{n.label}</span>
                 <Badge tone="neutral">{KIND_META[n.kind].label}</Badge>

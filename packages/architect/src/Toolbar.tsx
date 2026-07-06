@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { LayoutGrid, Maximize2, Radar, Rows3 } from "lucide-react";
+import { Copy, FolderGit2, LayoutGrid, Maximize2, Radar, Rows3 } from "lucide-react";
 import type { ArchEdgeKind, ArchitectureGraph } from "@crystal/core";
 import { Button, Tooltip, cn } from "@crystal/ui";
 import { EDGE_KIND_STYLE } from "./model.js";
@@ -13,6 +13,9 @@ export function Toolbar({
   onRename,
   overlayOn,
   onToggleOverlay,
+  showDuplicates,
+  onToggleDuplicates,
+  onOpenFullMap,
 }: {
   graph: ArchitectureGraph;
   defaultEdgeKind: ArchEdgeKind;
@@ -22,6 +25,9 @@ export function Toolbar({
   onRename: (name: string) => void;
   overlayOn?: boolean;
   onToggleOverlay?: (on: boolean) => void;
+  showDuplicates?: boolean;
+  onToggleDuplicates?: (on: boolean) => void;
+  onOpenFullMap?: () => void;
 }) {
   const [name, setName] = useState(graph.name);
   useEffect(() => setName(graph.name), [graph.id, graph.name]);
@@ -65,7 +71,7 @@ export function Toolbar({
         ))}
       </div>
       <div className="h-4 w-px bg-edge" />
-      <Tooltip content="Auto-layout — flow (left to right)">
+      <Tooltip content="Auto-layout — flow (top to bottom)">
         <Button
           variant="ghost"
           size="icon-sm"
@@ -110,6 +116,31 @@ export function Toolbar({
             </button>
           </Tooltip>
         </>
+      ) : null}
+      {onToggleDuplicates ? (
+        <Tooltip content="Duplicated functions — identical implementations across the workspace">
+          <button
+            type="button"
+            aria-pressed={showDuplicates}
+            onClick={() => onToggleDuplicates(!showDuplicates)}
+            className={cn(
+              "flex h-6 items-center gap-1.5 rounded-md px-1.5 text-[11px] transition-colors",
+              showDuplicates
+                ? "bg-warn/15 text-warn"
+                : "text-ink-faint hover:text-ink-muted",
+            )}
+          >
+            <Copy className="h-3.5 w-3.5" />
+            dupes
+          </button>
+        </Tooltip>
+      ) : null}
+      {onOpenFullMap ? (
+        <Tooltip content="Full code map — every module and workspace, beyond this diagram">
+          <Button variant="ghost" size="icon-sm" onClick={onOpenFullMap} aria-label="Open full code map">
+            <FolderGit2 className="h-3.5 w-3.5" />
+          </Button>
+        </Tooltip>
       ) : null}
     </div>
   );

@@ -141,20 +141,24 @@ export type MapRfNode = RfNode<MapNodeData>;
 
 /* ---- scene input ---- */
 
-export interface MapSceneInput {
-  summary: CodeMapSummary;
-  moduleDetails: ReadonlyMap<string, CodeModuleDetail>;
+/** The slice of scene input `buildFile` needs (also used by the unified diagram canvas). */
+export interface FileBuildInput {
   fileDetails: ReadonlyMap<string, CodeFileDetail>;
-  expandedModules: ReadonlySet<string>;
   expandedFiles: ReadonlySet<string>;
   /** `${file}#${symbol}` keys with the source snippet open. */
   openCode: ReadonlySet<string>;
+  /** Node id to visually emphasize (drill target). */
+  focusId?: string | null;
+}
+
+export interface MapSceneInput extends FileBuildInput {
+  summary: CodeMapSummary;
+  moduleDetails: ReadonlyMap<string, CodeModuleDetail>;
+  expandedModules: ReadonlySet<string>;
   /** Move intents on the active draft — rendered as ghosts/marks. */
   moves: readonly MoveLikeIntent[];
   /** File whose import neighborhood is drawn as edges. */
   selectedFile?: string | null;
-  /** Node id to visually emphasize (drill target). */
-  focusId?: string | null;
   /** Manual module positions (drag overrides), by module path. */
   positions?: ReadonlyMap<string, { x: number; y: number }>;
 }
@@ -240,7 +244,7 @@ function selectionEdge(id: string, source: string, target: string, count: number
 
 /* ---- scene builder ---- */
 
-interface BuiltFile {
+export interface BuiltFile {
   node: MapRfNode;
   symbols: MapRfNode[];
   w: number;
@@ -344,9 +348,10 @@ export function buildMapScene(input: MapSceneInput): MapScene {
     });
   }
 
-  // top-level layout: dagre over module containers with their computed sizes
+  // top-level layout: dagre over module containers with their computed sizes,
+  // top-to-bottom so dependencies read downward like the diagram view
   const g = new dagre.graphlib.Graph();
-  g.setGraph({ rankdir: "LR", nodesep: 48, ranksep: 140, marginx: 24, marginy: 24 });
+  g.setGraph({ rankdir: "TB", nodesep: 56, ranksep: 96, marginx: 24, marginy: 24 });
   g.setDefaultEdgeLabel(() => ({}));
   for (const b of moduleBuilds) g.setNode(b.module.path, { width: b.w, height: b.h });
   for (const d of summary.deps) {
@@ -440,12 +445,17 @@ export function buildMapScene(input: MapSceneInput): MapScene {
   return { nodes, edges };
 }
 
-function buildFile(
+/**
+ * One file card (collapsed, loading, or expanded into symbol chips) parented
+ * to its module container. The unified diagram canvas re-parents the returned
+ * nodes onto diagram nodes.
+ */
+export function buildFile(
   path: string,
   name: string,
   module: string,
   exportCount: number | undefined,
-  input: MapSceneInput,
+  input: FileBuildInput,
   moves: readonly MoveLikeIntent[],
 ): BuiltFile {
   const expanded = input.expandedFiles.has(path);
@@ -615,9 +625,16 @@ function fileMarksFor(path: string, moves: readonly MoveLikeIntent[]): "source" 
   return undefined;
 }
 
+/** Minimal node shape the geometry helpers need (any react-flow node fits). */
+export interface PositionedNode {
+  id: string;
+  parentId?: string;
+  position: { x: number; y: number };
+}
+
 /** Absolute canvas position of a node, walking the parent chain. */
 export function absolutePositionOf(
-  nodes: readonly MapRfNode[],
+  nodes: readonly PositionedNode[],
   id: string,
 ): { x: number; y: number } | null {
   const byId = new Map(nodes.map((n) => [n.id, n]));

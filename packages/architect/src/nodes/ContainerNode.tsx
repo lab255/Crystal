@@ -1,6 +1,6 @@
 import { Handle, NodeResizer, Position, type NodeProps } from "@xyflow/react";
 import { memo } from "react";
-import { cn } from "@crystal/ui";
+import { Spinner, cn } from "@crystal/ui";
 import { KIND_META, accentOf, type ArchRfNode } from "../model.js";
 
 export const ContainerNode = memo(function ContainerNode({
@@ -32,19 +32,28 @@ export const ContainerNode = memo(function ContainerNode({
         </span>
       ) : null}
       <NodeResizer
-        isVisible={selected}
+        isVisible={selected && !data.codeExpanded}
         minWidth={220}
         minHeight={140}
         lineClassName="!border-crystal-400/60"
         handleClassName="!h-2 !w-2 !rounded-sm !border-none !bg-crystal-400"
       />
-      <Handle type="target" position={Position.Left} className="!h-2 !w-2 !border-none !bg-edge-strong" />
+      <Handle type="target" position={Position.Top} className="!h-2 !w-2 !border-none !bg-edge-strong" />
       <div
         className="arch-container-header flex cursor-grab items-center gap-1.5 rounded-t-[11px] border-b border-edge px-2.5 py-1.5 active:cursor-grabbing"
         style={{ background: `color-mix(in srgb, ${accent} 9%, transparent)` }}
       >
         <Icon className="h-3.5 w-3.5" style={{ color: accent }} />
         <span className="truncate text-xs font-semibold text-ink">{arch.label}</span>
+        {data.codeExpanded ? (
+          <span
+            className="shrink-0 rounded-full bg-ok/15 px-1.5 text-[9px] leading-4 text-ok"
+            title="Expanded into live code — derived from source, updates as code changes"
+          >
+            live
+          </span>
+        ) : null}
+        {data.codeLoading ? <Spinner className="h-3 w-3 shrink-0" /> : null}
         {data.code ? (
           <span
             className={cn(
@@ -60,7 +69,7 @@ export const ContainerNode = memo(function ContainerNode({
           {KIND_META[arch.kind].label}
         </span>
       </div>
-      <Handle type="source" position={Position.Right} className="!h-2 !w-2 !border-none !bg-edge-strong" />
+      <Handle type="source" position={Position.Bottom} className="!h-2 !w-2 !border-none !bg-edge-strong" />
     </div>
   );
 });

@@ -31,21 +31,17 @@ import {
   X,
 } from "lucide-react";
 import {
-  createArchDraft as newArchDraft,
-  createMoveFileIntent,
-  createMoveIntent,
-  type ArchDraft,
   type CodeFileDetail,
   type CodeMapLevelLink,
   type CodeMapSummary,
   type CodeModuleDetail,
   type CrossWorkspaceEdge,
   type CrossWorkspaceMap,
-  type HoistIntent,
   type RefactorIntent,
 } from "@crystal/core";
-import { useCrystal, useNav, useNavUpdate, useWorkspace, useWorkspaces } from "@crystal/client";
+import { useCrystal, useNav, useNavUpdate, useWorkspaces } from "@crystal/client";
 import { Badge, Button, EmptyState, Pane, Split, Spinner, Tooltip, cn } from "@crystal/ui";
+import { useRefactorIntents } from "../refactor-intents.js";
 import { SymbolSnippet } from "../snippets.js";
 import { CodeNode, SYMBOL_DRAG_MIME, type CodeRfNode, type SymbolDragPayload } from "./CodeNode.js";
 import { DuplicatesPanel } from "./DuplicatesPanel.js";
@@ -77,7 +73,7 @@ type Level = CodeMapLevelLink;
 /** dagre pass for the (flat) cross-workspace level. */
 function layoutCross(nodes: CodeRfNode[], edges: RfEdge[]): CodeRfNode[] {
   const g = new dagre.graphlib.Graph();
-  g.setGraph({ rankdir: "LR", nodesep: 24, ranksep: 180, marginx: 24, marginy: 24 });
+  g.setGraph({ rankdir: "TB", nodesep: 48, ranksep: 120, marginx: 24, marginy: 24 });
   g.setDefaultEdgeLabel(() => ({}));
   for (const n of nodes) g.setNode(n.id, { width: 190, height: n.data.subtitle ? 52 : 40 });
   for (const e of edges) if (e.source !== e.target) g.setEdge(e.source, e.target);
@@ -120,9 +116,7 @@ export function CodeMapView(props: CodeMapViewProps = {}) {
   );
 }
 
-const EMPTY_DRAFTS: never[] = [];
 const EMPTY_REFACTORS: RefactorIntent[] = [];
-const EMPTY_ARCHITECTURES: never[] = [];
 
 interface CacheEntry<T> {
   gen: number;
@@ -141,10 +135,6 @@ function CodeMapInner({
   const activeWs = useWorkspaces((s) => s.activeId);
   const workspaces = useWorkspaces((s) => s.workspaces);
   const setActive = useWorkspaces((s) => s.setActive);
-  const archDrafts = useWorkspace((s) => s.info?.archDrafts ?? EMPTY_DRAFTS);
-  const architectures = useWorkspace((s) => s.info?.architectures ?? EMPTY_ARCHITECTURES);
-  const updateArchDraft = useWorkspace((s) => s.updateArchDraft);
-  const createDraftFile = useWorkspace((s) => s.createArchDraft);
 
   // The drill level lives in the nav store so it deep-links and follows
   // back/forward. Null until we know the workspace to start from.
@@ -319,81 +309,8 @@ function CodeMapInner({
 
   /* ---- drag-a-symbol refactor intents (plan mode) ---- */
 
-  const activeDraft = archDrafts.find((d) => d.path === activeDraftPath) ?? null;
-  const [dropNotice, setDropNotice] = useState<string | null>(null);
-  useEffect(() => {
-    if (!dropNotice) return;
-    const t = setTimeout(() => setDropNotice(null), 8000);
-    return () => clearTimeout(t);
-  }, [dropNotice]);
-
-  /**
-   * The draft plan intents ride on. Dropping with no draft open *enters plan
-   * mode*: a draft is auto-created against the first architecture.
-   */
-  const ensureDraft = useCallback(async (): Promise<{ path: string; draft: ArchDraft } | null> => {
-    if (activeDraft) return activeDraft;
-    const arch = architectures[0];
-    if (!arch) {
-      setDropNotice("Create an architecture in Diagrams first — refactor plans ride on draft plans.");
-      return null;
-    }
-    const draft = newArchDraft("Refactor plan", arch.path, arch.graph, new Date().toISOString());
-    const created = await createDraftFile(draft);
-    onOpenDraft?.(created.path);
-    return created;
-  }, [activeDraft, architectures, createDraftFile, onOpenDraft]);
-
-  const recordMove = useCallback(
-    async (payload: SymbolDragPayload, target: DropTarget) => {
-      if (target.file === payload.file) return;
-      const holder = await ensureDraft();
-      if (!holder) return;
-      const intent = createMoveIntent(payload.symbol, payload.file, target.module, target.file ?? null);
-      updateArchDraft(holder.path, {
-        ...holder.draft,
-        refactors: [...holder.draft.refactors, intent],
-        updatedAt: new Date().toISOString(),
-      });
-      setDropNotice(
-        `${activeDraft ? `Draft "${holder.draft.name}"` : `Plan mode — draft "${holder.draft.name}" created`}: move ${payload.symbol} → ${target.file ?? target.module}. Apply it from Diagrams to run the refactor.`,
-      );
-    },
-    [ensureDraft, activeDraft, updateArchDraft],
-  );
-
-  const recordFileMove = useCallback(
-    async (fromFile: string, toModule: string) => {
-      const holder = await ensureDraft();
-      if (!holder) return;
-      const intent = createMoveFileIntent(fromFile, toModule);
-      updateArchDraft(holder.path, {
-        ...holder.draft,
-        refactors: [...holder.draft.refactors, intent],
-        updatedAt: new Date().toISOString(),
-      });
-      setDropNotice(
-        `${activeDraft ? `Draft "${holder.draft.name}"` : `Plan mode — draft "${holder.draft.name}" created`}: move file ${fromFile.split("/").pop()} → ${toModule}. Apply it from Diagrams to run the refactor.`,
-      );
-    },
-    [ensureDraft, activeDraft, updateArchDraft],
-  );
-
-  const recordHoist = useCallback(
-    async (intent: HoistIntent) => {
-      const holder = await ensureDraft();
-      if (!holder) return;
-      updateArchDraft(holder.path, {
-        ...holder.draft,
-        refactors: [...holder.draft.refactors, intent],
-        updatedAt: new Date().toISOString(),
-      });
-      setDropNotice(
-        `${activeDraft ? `Draft "${holder.draft.name}"` : `Plan mode — draft "${holder.draft.name}" created`}: hoist → ${intent.targetModule}. Apply it from Diagrams to run it.`,
-      );
-    },
-    [ensureDraft, activeDraft, updateArchDraft],
-  );
+  const { activeDraft, dropNotice, setDropNotice, recordMove, recordFileMove, recordHoist } =
+    useRefactorIntents({ activeDraftPath, onOpenDraft });
 
   const showDuplicates = useNav((l) => l.architect?.duplicates) ?? false;
   const setShowDuplicates = useCallback(

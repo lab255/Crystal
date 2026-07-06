@@ -19,7 +19,7 @@ const LAYER_ORDER: readonly (ArchLayer | null)[] = ["entry", "service", "data", 
 
 export interface AutoLayoutOptions {
   /**
-   * "flow" (default): one left-to-right dagre pass per scope.
+   * "flow" (default): one top-to-bottom dagre pass per scope.
    * "layers": traffic flows top-down — entry/service/data bands stacked
    * vertically, dagre ordering nodes left-to-right within each band.
    */
@@ -160,7 +160,7 @@ function dagrePass(
   edgeScope: Set<string>,
 ): Map<string, { x: number; y: number }> {
   const g = new dagre.graphlib.Graph();
-  g.setGraph({ rankdir: "LR", nodesep: 36, ranksep: 90, marginx: 16, marginy: 16 });
+  g.setGraph({ rankdir: "TB", nodesep: 48, ranksep: 72, marginx: 16, marginy: 16 });
   g.setDefaultEdgeLabel(() => ({}));
   for (const id of ids) {
     const d = dims.get(id)!;

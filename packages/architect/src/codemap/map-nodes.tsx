@@ -123,7 +123,7 @@ export const ModuleNode = memo(function ModuleNode({ data, selected }: NodeProps
       {...dropProps}
     >
       {d.intentMark ? <IntentBadge mark={d.intentMark} /> : null}
-      <Handle type="target" position={Position.Left} className="!h-1.5 !w-1.5 !border-none !bg-edge-strong" />
+      <Handle type="target" position={Position.Top} className="!h-1.5 !w-1.5 !border-none !bg-edge-strong" />
       <div
         className="flex h-10 cursor-grab items-center gap-1.5 rounded-t-[11px] border-b border-edge px-2.5 active:cursor-grabbing"
         style={{ background: `color-mix(in srgb, ${d.accent} 10%, transparent)` }}
@@ -160,7 +160,7 @@ export const ModuleNode = memo(function ModuleNode({ data, selected }: NodeProps
       {!d.expanded && !d.loading ? (
         <div className="px-2.5 py-1 text-[9.5px] text-ink-faint">double-click to zoom in</div>
       ) : null}
-      <Handle type="source" position={Position.Right} className="!h-1.5 !w-1.5 !border-none !bg-edge-strong" />
+      <Handle type="source" position={Position.Bottom} className="!h-1.5 !w-1.5 !border-none !bg-edge-strong" />
     </div>
   );
 });
@@ -197,7 +197,7 @@ export const FileNode = memo(function FileNode({ data, selected }: NodeProps<Map
       {...dropProps}
     >
       {d.intentMark ? <IntentBadge mark={d.intentMark} /> : null}
-      <Handle type="target" position={Position.Left} className="!h-1.5 !w-1.5 !border-none !bg-edge-strong" />
+      <Handle type="target" position={Position.Top} className="!h-1.5 !w-1.5 !border-none !bg-edge-strong" />
       <div className={cn("flex items-center gap-1.5 px-2 pt-1.5", !d.expanded && "pb-1.5")}>
         {!d.planned ? (
           <button
@@ -237,7 +237,7 @@ export const FileNode = memo(function FileNode({ data, selected }: NodeProps<Map
           +{d.overflow} more — open the file panel for the full list
         </div>
       ) : null}
-      <Handle type="source" position={Position.Right} className="!h-1.5 !w-1.5 !border-none !bg-edge-strong" />
+      <Handle type="source" position={Position.Bottom} className="!h-1.5 !w-1.5 !border-none !bg-edge-strong" />
     </div>
   );
 });

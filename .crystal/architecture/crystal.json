@@ -52,8 +52,8 @@
         },
         "size": null,
         "tech": [],
-        "placements": {},
-        "codeModule": "apps/server"
+        "codeModule": "apps/server",
+        "placements": {}
       },
       {
         "id": "node_e0d4e0a12d90",
@@ -67,8 +67,8 @@
         },
         "size": null,
         "tech": [],
-        "placements": {},
-        "codeModule": "apps/web"
+        "codeModule": "apps/web",
+        "placements": {}
       },
       {
         "id": "node_4806fb807167",
@@ -82,8 +82,8 @@
         },
         "size": null,
         "tech": [],
-        "placements": {},
-        "codeModule": "packages/architect"
+        "codeModule": "packages/architect",
+        "placements": {}
       },
       {
         "id": "node_b5bdcf4990e2",
@@ -97,8 +97,8 @@
         },
         "size": null,
         "tech": [],
-        "placements": {},
-        "codeModule": "packages/client"
+        "codeModule": "packages/client",
+        "placements": {}
       },
       {
         "id": "node_b4e60cab8fff",
@@ -112,8 +112,8 @@
         },
         "size": null,
         "tech": [],
-        "placements": {},
-        "codeModule": "packages/core"
+        "codeModule": "packages/core",
+        "placements": {}
       },
       {
         "id": "node_9abce7327c17",
@@ -127,8 +127,8 @@
         },
         "size": null,
         "tech": [],
-        "placements": {},
-        "codeModule": "packages/editor"
+        "codeModule": "packages/editor",
+        "placements": {}
       },
       {
         "id": "node_6a2ad29ddede",
@@ -142,8 +142,8 @@
         },
         "size": null,
         "tech": [],
-        "placements": {},
-        "codeModule": "packages/orchestrator"
+        "codeModule": "packages/orchestrator",
+        "placements": {}
       },
       {
         "id": "node_f0e8ea5654b4",
@@ -157,8 +157,8 @@
         },
         "size": null,
         "tech": [],
-        "placements": {},
-        "codeModule": "packages/sdk"
+        "codeModule": "packages/sdk",
+        "placements": {}
       },
       {
         "id": "node_be33858f6b30",
@@ -172,8 +172,8 @@
         },
         "size": null,
         "tech": [],
-        "placements": {},
-        "codeModule": "packages/ui"
+        "codeModule": "packages/ui",
+        "placements": {}
       }
     ],
     "edges": [
@@ -313,9 +313,9 @@
     ],
     "journeys": [],
     "viewport": {
-      "x": 453.22800000000007,
-      "y": 84.05600000000004,
-      "zoom": 1.184
+      "x": 401.43006993006986,
+      "y": -311.6013986013986,
+      "zoom": 1.1142191142191142
     }
   }
 }

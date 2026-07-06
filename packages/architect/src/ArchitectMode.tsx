@@ -1,6 +1,6 @@
 import "@xyflow/react/dist/style.css";
 import "./architect.css";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Boxes,
   Check,
@@ -51,10 +51,13 @@ import {
 } from "@crystal/ui";
 import { ArchitectCanvas } from "./ArchitectCanvas.js";
 import { CodeMapView } from "./codemap/CodeMapView.js";
+import { DuplicatesPanel } from "./codemap/DuplicatesPanel.js";
+import type { MoveLikeIntent } from "./codemap/map-model.js";
 import { projectTrace } from "./dataflow.js";
 import { InfraView } from "./InfraView.js";
 import { FlowStepsPanel, JourneysSection, type JourneySeed } from "./JourneyPanel.js";
 import { JourneyProfilePanel } from "./ProfilePanel.js";
+import { useRefactorIntents } from "./refactor-intents.js";
 import { buildHoistPrompt } from "./refactor-prompts.js";
 import { ApplyRefactorsDialog, RefactorChip, useIntentProblems } from "./RefactorPanel.js";
 import { canSeedFromCodeMap, seedFromCodeMap } from "./seed.js";
@@ -74,9 +77,14 @@ export function ArchitectMode() {
     (v: ArchitectView) => nav({ architect: { view: v } }),
     [nav],
   );
-  // Set when the user zooms from a diagram node into its code module (or a file within it).
-  const [drill, setDrill] = useState<{ module: string; file?: string; from: string } | null>(null);
-  // "Start journey here…" from the code map prefills the journey dialog.
+  // "Zoom into this module/file" — the canvas expands the matching node in place.
+  const expandNonce = useRef(0);
+  const [expandRequest, setExpandRequest] = useState<{
+    module: string;
+    file?: string;
+    nonce: number;
+  } | null>(null);
+  // "Start journey here…" on a symbol prefills the journey dialog.
   const [journeySeed, setJourneySeed] = useState<JourneySeed | null>(null);
   // Lifted here so the code map sees the open draft (drag-refactor targets it).
   const draftPath = useNav((l) => l.architect?.draft) ?? null;
@@ -86,18 +94,26 @@ export function ArchitectMode() {
   );
 
   const activeWs = useWorkspaces((s) => s.activeId);
-  const drillIntoModule = useCallback(
-    (module: string, from: string, file?: string) => {
-      setDrill({ module, file, from });
+
+  /** Drilling stays in the unified canvas: expand the node linked to the module. */
+  const expandCode = useCallback((module: string, file?: string) => {
+    setView("diagrams");
+    setExpandRequest({ module, file, nonce: ++expandNonce.current });
+  }, [setView]);
+
+  /** The standalone map remains for cross-workspace browsing and unmapped modules. */
+  const openFullMap = useCallback(
+    (at?: { module: string; file?: string }) => {
       nav({
         architect: {
           view: "codemap",
-          // Point the code-map level at the drill target so the URL captures it.
           codemap: activeWs
-            ? file
-              ? { kind: "file", ws: activeWs, path: file }
-              : { kind: "module", ws: activeWs, path: module }
-            : null,
+            ? at?.file
+              ? { kind: "file", ws: activeWs, path: at.file }
+              : at
+                ? { kind: "module", ws: activeWs, path: at.module }
+                : { kind: "workspace", ws: activeWs }
+            : { kind: "all" },
         },
       });
     },
@@ -107,7 +123,6 @@ export function ArchitectMode() {
   const startJourneyFromCode = useCallback(
     (seed: JourneySeed) => {
       setJourneySeed(seed);
-      setDrill(null);
       setView("diagrams");
     },
     [setView],
@@ -116,10 +131,7 @@ export function ArchitectMode() {
   const tab = (v: ArchitectView, icon: React.ReactNode, label: React.ReactNode) => (
     <button
       type="button"
-      onClick={() => {
-        if (v === "codemap") setDrill(null);
-        setView(v);
-      }}
+      onClick={() => setView(v)}
       className={cn(
         "flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
         view === v ? "bg-surface-3 text-ink" : "text-ink-muted hover:text-ink",
@@ -134,35 +146,25 @@ export function ArchitectMode() {
       <header className="flex items-center gap-2 border-b border-edge bg-surface-1 px-3 py-1.5">
         <span className="text-[13px] font-semibold text-ink">Architecture</span>
         <div className="ml-auto flex items-center gap-0.5 rounded-lg bg-surface-2 p-0.5">
-          {tab("diagrams", <PencilRuler className="h-3.5 w-3.5" />, "Diagrams")}
-          {tab("infra", <Globe2 className="h-3.5 w-3.5" />, "Infrastructure")}
           {tab(
-            "codemap",
-            <FolderGit2 className="h-3.5 w-3.5" />,
+            "diagrams",
+            <PencilRuler className="h-3.5 w-3.5" />,
             <>
-              Code map
+              Architecture
               <span className="rounded-full bg-ok/15 px-1.5 text-[9px] text-ok">live</span>
             </>,
           )}
+          {tab("infra", <Globe2 className="h-3.5 w-3.5" />, "Infrastructure")}
+          {/* Reached from the canvas (full map / cross-workspace) — shown only while open. */}
+          {view === "codemap"
+            ? tab("codemap", <FolderGit2 className="h-3.5 w-3.5" />, "Code map")
+            : null}
         </div>
       </header>
       <div className="min-h-0 flex-1">
         {view === "codemap" ? (
           <CodeMapView
-            key={drill ? `drill:${drill.module}:${drill.file ?? ""}` : "root"}
-            initialModule={drill?.module}
-            initialFile={drill?.file}
-            origin={
-              drill
-                ? {
-                    label: drill.from,
-                    onExit: () => {
-                      setDrill(null);
-                      setView("diagrams");
-                    },
-                  }
-                : undefined
-            }
+            origin={{ label: "Architecture", onExit: () => setView("diagrams") }}
             onStartJourney={startJourneyFromCode}
             activeDraftPath={draftPath}
             onOpenDraft={setDraftPath}
@@ -170,8 +172,11 @@ export function ArchitectMode() {
         ) : (
           <DiagramsView
             variant={view}
-            onDrillIntoModule={drillIntoModule}
+            expandRequest={expandRequest}
+            onExpandCode={expandCode}
+            onOpenFullMap={openFullMap}
             journeySeed={journeySeed}
+            onStartJourney={startJourneyFromCode}
             onJourneySeedConsumed={() => setJourneySeed(null)}
             draftPath={draftPath}
             onDraftPathChange={setDraftPath}
@@ -184,15 +189,21 @@ export function ArchitectMode() {
 
 function DiagramsView({
   variant,
-  onDrillIntoModule,
+  expandRequest,
+  onExpandCode,
+  onOpenFullMap,
   journeySeed,
+  onStartJourney,
   onJourneySeedConsumed,
   draftPath,
   onDraftPathChange: setDraftPath,
 }: {
   variant: "diagrams" | "infra";
-  onDrillIntoModule: (module: string, from: string, file?: string) => void;
+  expandRequest: { module: string; file?: string; nonce: number } | null;
+  onExpandCode: (module: string, file?: string) => void;
+  onOpenFullMap: (at?: { module: string; file?: string }) => void;
   journeySeed: JourneySeed | null;
+  onStartJourney: (seed: JourneySeed) => void;
   onJourneySeedConsumed: () => void;
   draftPath: string | null;
   onDraftPathChange: (path: string | null) => void;
@@ -345,6 +356,28 @@ function DiagramsView({
 
   const draftRefactors = activeDraft?.draft.refactors ?? EMPTY_REFACTORS;
   const refactorProblems = useIntentProblems(draftRefactors);
+  const moves = useMemo(
+    () =>
+      draftRefactors.filter(
+        (r): r is MoveLikeIntent => r.kind === "move" || r.kind === "moveFile",
+      ),
+    [draftRefactors],
+  );
+
+  // Drag-a-symbol/file refactor intents from the unified canvas (plan mode).
+  const { dropNotice, setDropNotice, recordMove, recordFileMove, recordHoist } =
+    useRefactorIntents({ activeDraftPath: draftPath, onOpenDraft: setDraftPath });
+  useEffect(() => {
+    if (!dropNotice) return;
+    setNotice(dropNotice);
+    setDropNotice(null);
+  }, [dropNotice, setDropNotice]);
+
+  const showDuplicates = useNav((l) => l.architect?.duplicates) ?? false;
+  const setShowDuplicates = useCallback(
+    (on: boolean) => nav({ architect: { duplicates: on } }),
+    [nav],
+  );
 
   useEffect(() => {
     if (!notice) return;
@@ -672,11 +705,17 @@ function DiagramsView({
                 codeSummary={codeSummary}
                 overlayOn={overlayOn}
                 onToggleOverlay={setOverlayOn}
-                onDrillIntoModule={(module, file) =>
-                  onDrillIntoModule(module, selected.graph.name, file)
-                }
                 draftMode={!!activeDraft}
                 flow={flow}
+                moves={moves}
+                onStartJourney={onStartJourney}
+                onRecordMove={(payload, target) => void recordMove(payload, target)}
+                onRecordFileMove={(fromFile, toModule) => void recordFileMove(fromFile, toModule)}
+                onOpenFullMap={onOpenFullMap}
+                expandRequest={expandRequest}
+                onUnresolvedExpand={(module, file) => onOpenFullMap({ module, file })}
+                showDuplicates={showDuplicates}
+                onToggleDuplicates={setShowDuplicates}
               />
               {activeDraft ? (
                 <DraftBar
@@ -771,9 +810,7 @@ function DiagramsView({
                   trace={journeyTrace}
                   graph={effectiveGraph}
                   summary={codeSummary}
-                  onOpenStep={(step) =>
-                    onDrillIntoModule(step.module, selected?.graph.name ?? "Diagram", step.ref.file)
-                  }
+                  onOpenStep={(step) => onExpandCode(step.module, step.ref.file)}
                 />
               </Pane>
             ) : null}
@@ -788,9 +825,19 @@ function DiagramsView({
               flow={flow}
               error={journeyError}
               onClose={() => setActiveJourneyId(null)}
-              onOpenStep={(step) =>
-                onDrillIntoModule(step.module, selected?.graph.name ?? "Diagram", step.ref.file)
-              }
+              onOpenStep={(step) => onExpandCode(step.module, step.ref.file)}
+            />
+          </Pane>
+        ) : null}
+
+        {variant === "diagrams" && showDuplicates ? (
+          <Pane defaultSize={384} minSize={260} maxSize={640}>
+            <DuplicatesPanel
+              ws={activeWs ?? undefined}
+              modules={codeSummary?.modules ?? []}
+              hasActiveDraft={activeDraft != null}
+              onHoist={(intent) => void recordHoist(intent)}
+              onClose={() => setShowDuplicates(false)}
             />
           </Pane>
         ) : null}

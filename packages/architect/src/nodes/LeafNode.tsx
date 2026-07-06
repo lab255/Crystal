@@ -28,7 +28,7 @@ export const LeafNode = memo(function LeafNode({ data, selected }: NodeProps<Arc
           {data.flow.step === 0 ? "▶" : data.flow.step}
         </span>
       ) : null}
-      <Handle type="target" position={Position.Left} className="!h-2 !w-2 !border-none !bg-edge-strong" />
+      <Handle type="target" position={Position.Top} className="!h-2 !w-2 !border-none !bg-edge-strong" />
       <div className="flex items-center gap-2">
         <Icon className="h-3.5 w-3.5 shrink-0" style={{ color: accent }} />
         <div className="truncate text-xs font-semibold text-ink">{arch.label}</div>
@@ -62,7 +62,7 @@ export const LeafNode = memo(function LeafNode({ data, selected }: NodeProps<Arc
           <span className="ml-auto shrink-0 opacity-70">{data.code.fileCount}f</span>
         </div>
       ) : null}
-      <Handle type="source" position={Position.Right} className="!h-2 !w-2 !border-none !bg-edge-strong" />
+      <Handle type="source" position={Position.Bottom} className="!h-2 !w-2 !border-none !bg-edge-strong" />
     </div>
   );
 });

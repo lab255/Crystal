@@ -72,7 +72,15 @@ export interface FlowMark {
   step: number | null;
 }
 
-export type ArchRfNode = RfNode<{ arch: ArchNode; code?: OverlayBadge; flow?: FlowMark }>;
+export type ArchRfNode = RfNode<{
+  arch: ArchNode;
+  code?: OverlayBadge;
+  flow?: FlowMark;
+  /** Node is expanded into live code (unified view) — renders as a container. */
+  codeExpanded?: boolean;
+  /** Expanded, but the module detail is still loading. */
+  codeLoading?: boolean;
+}>;
 export type ArchRfEdge = RfEdge<{ kind: ArchEdgeKind }>;
 
 export function rfTypeFor(kind: ArchNodeKind): string {

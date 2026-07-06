@@ -14,15 +14,35 @@ import {
   type Node as RfNode,
   type Viewport,
 } from "@xyflow/react";
-import { useCallback, useMemo, useRef, useState, type DragEvent, type MouseEvent as ReactMouseEvent } from "react";
-import { Code2, Copy, Expand, FolderGit2, LayoutGrid, Maximize2, Pencil, Plus, Rows3, Shrink, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type MouseEvent as ReactMouseEvent } from "react";
+import {
+  Code2,
+  Copy,
+  Expand,
+  ExternalLink,
+  FolderGit2,
+  LayoutGrid,
+  Maximize2,
+  MoveUpRight,
+  Package,
+  Paintbrush,
+  Pencil,
+  Plus,
+  Route,
+  Rows3,
+  Shrink,
+  Trash2,
+} from "lucide-react";
 import {
   ARCH_EDGE_KINDS,
   isContainerKind,
   uid,
+  type ArchEdgeKind,
   type ArchNodeKind,
   type ArchitectureGraph,
+  type CodeFileDetail,
   type CodeMapSummary,
+  type CodeModuleDetail,
 } from "@crystal/core";
 import {
   addEdge as opAddEdge,
@@ -35,17 +55,19 @@ import {
   updateEdge,
   updateNode,
 } from "./graph-ops.js";
-import { useCrystal } from "@crystal/client";
+import { useCrystal, useWorkspaces } from "@crystal/client";
 import { cn } from "@crystal/ui";
 import { ContextMenu, InlineRename, type MenuEntry } from "./ContextMenu.js";
-import { collapseNode, expandNodeIntoCode, hasGeneratedChildren } from "./expand.js";
+import { collapseNode, hasGeneratedChildren } from "./expand.js";
 import { autoLayout } from "./layout.js";
 import {
+  ACCENT_CSS,
   EDGE_KIND_STYLE,
   KIND_META,
   accentOf,
   toRfEdges,
   toRfNodes,
+  type AccentName,
   type ArchRfEdge,
   type ArchRfNode,
 } from "./model.js";
@@ -56,26 +78,63 @@ import { Inspector } from "./Inspector.js";
 import { adoptAutoLinks, computeOverlay, suggestModuleFor, type OverlayResult } from "./overlay.js";
 import type { FlowProjection } from "./dataflow.js";
 import { requestOpenFile } from "./codemap/CodeMapView.js";
+import type { SymbolDragPayload } from "./codemap/CodeNode.js";
+import {
+  absolutePositionOf,
+  codeKey,
+  type DropTarget,
+  type FileNodeData,
+  type MapNodeData,
+  type MapRfNode,
+  type MoveLikeIntent,
+  type SymbolNodeData,
+} from "./codemap/map-model.js";
+import { MapActionsContext, mapNodeTypes, type MapActions } from "./codemap/map-nodes.js";
+import { buildCodeContent, unifiedDropTargetAt, type HitTestNode } from "./live-code.js";
 import { PeekPanel } from "./snippets.js";
 import { Palette, DRAG_MIME, PALETTE_KINDS } from "./Palette.js";
 import { Toolbar } from "./Toolbar.js";
-import type { ArchEdgeKind } from "@crystal/core";
 
-const nodeTypes = { container: ContainerNode, leaf: LeafNode, note: NoteNode };
+const nodeTypes = {
+  container: ContainerNode,
+  leaf: LeafNode,
+  note: NoteNode,
+  codeFile: mapNodeTypes.codeFile,
+  codeSymbol: mapNodeTypes.codeSymbol,
+};
+
+type CanvasNode = ArchRfNode | MapRfNode;
+
+/** Ephemeral live-code children carry map-model ids, never graph node ids. */
+function isCodeChildId(id: string): boolean {
+  return id.startsWith("f:") || id.startsWith("s:") || id.startsWith("plan:") || id.startsWith("planfile:");
+}
 
 export interface ArchitectCanvasProps {
   graph: ArchitectureGraph;
   onChange: (graph: ArchitectureGraph) => void;
-  /** Live code map for the overlay; null while unavailable. */
+  /** Live code map for the overlay + code expansion; null while unavailable. */
   codeSummary?: CodeMapSummary | null;
   overlayOn?: boolean;
   onToggleOverlay?: (on: boolean) => void;
-  /** "Zoom into code": open the code map at the module (and optionally file) a node is linked to. */
-  onDrillIntoModule?: (modulePath: string, file?: string) => void;
   /** True while editing a draft plan — canvas gets a visual draft treatment. */
   draftMode?: boolean;
   /** Active journey projection — decorates the canvas as a dataflow lens. */
   flow?: FlowProjection | null;
+  /** Move intents on the active draft — rendered as ghosts/marks in expanded code. */
+  moves?: readonly MoveLikeIntent[];
+  onStartJourney?: (seed: { file: string; symbol: string }) => void;
+  /** Record a symbol move intent (drag or menu) on the active/auto-created draft. */
+  onRecordMove?: (payload: SymbolDragPayload, target: DropTarget) => void;
+  onRecordFileMove?: (fromFile: string, toModule: string) => void;
+  /** Open the standalone code map (cross-workspace level / unmapped modules). */
+  onOpenFullMap?: (at?: { module: string; file?: string }) => void;
+  /** External "zoom into this module (and file)" request — expands in place. */
+  expandRequest?: { module: string; file?: string; nonce: number } | null;
+  /** Module/file couldn't be matched to a diagram node — caller may fall back. */
+  onUnresolvedExpand?: (module: string, file?: string) => void;
+  showDuplicates?: boolean;
+  onToggleDuplicates?: (on: boolean) => void;
 }
 
 const GHOST_STROKE = "var(--color-crystal-400)";
@@ -164,7 +223,16 @@ function applyOverlayToEdges(edges: ArchRfEdge[], overlay: OverlayResult): ArchR
 type MenuState =
   | { kind: "pane"; x: number; y: number; flowPos: { x: number; y: number } }
   | { kind: "node"; x: number; y: number; id: string }
-  | { kind: "edge"; x: number; y: number; id: string };
+  | { kind: "edge"; x: number; y: number; id: string }
+  | { kind: "codefile"; x: number; y: number; data: FileNodeData }
+  | { kind: "codesymbol"; x: number; y: number; data: SymbolNodeData };
+
+interface CacheEntry<T> {
+  gen: number;
+  detail: T;
+}
+
+const NO_MOVES: MoveLikeIntent[] = [];
 
 function CanvasInner({
   graph,
@@ -172,9 +240,17 @@ function CanvasInner({
   codeSummary,
   overlayOn,
   onToggleOverlay,
-  onDrillIntoModule,
   draftMode,
   flow,
+  moves = NO_MOVES,
+  onStartJourney,
+  onRecordMove,
+  onRecordFileMove,
+  onOpenFullMap,
+  expandRequest,
+  onUnresolvedExpand,
+  showDuplicates,
+  onToggleDuplicates,
 }: ArchitectCanvasProps) {
   const [selectedNodes, setSelectedNodes] = useState<ReadonlySet<string>>(new Set());
   const [selectedEdges, setSelectedEdges] = useState<ReadonlySet<string>>(new Set());
@@ -183,7 +259,7 @@ function CanvasInner({
   const [renaming, setRenaming] = useState<{ x: number; y: number; id: string } | null>(null);
   const [peek, setPeek] = useState<{ module: string; label: string; file?: string } | null>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
-  const { screenToFlowPosition, fitView } = useReactFlow();
+  const { screenToFlowPosition, fitView, getNodes } = useReactFlow();
 
   // Keep a ref of the latest graph so stale-closure callbacks always mutate fresh state.
   const graphRef = useRef(graph);
@@ -197,47 +273,201 @@ function CanvasInner({
     [onChange],
   );
 
+  /* ---------------- live code expansion (the unified "zoom in") ---------------- */
+
+  const { client } = useCrystal();
+  const activeWs = useWorkspaces((s) => s.activeId);
+
+  /** Diagram node id → module path currently expanded into live code. */
+  const [codeExpanded, setCodeExpanded] = useState<ReadonlyMap<string, string>>(() => new Map());
+  const [expandedFiles, setExpandedFiles] = useState<ReadonlySet<string>>(() => new Set());
+  const [openCode, setOpenCode] = useState<ReadonlySet<string>>(() => new Set());
+  /** In-flight drag positions for code children (they snap back on drop). */
+  const [dragOverrides, setDragOverrides] = useState<ReadonlyMap<string, { x: number; y: number }>>(
+    () => new Map(),
+  );
+  const [generation, setGeneration] = useState(0);
+  const [moduleDetails, setModuleDetails] = useState<Map<string, CacheEntry<CodeModuleDetail>>>(
+    () => new Map(),
+  );
+  const [fileDetails, setFileDetails] = useState<Map<string, CacheEntry<CodeFileDetail>>>(
+    () => new Map(),
+  );
+  const inflight = useRef(new Set<string>());
+
+  // The server re-analyzes when code changes on disk — refresh expanded content.
+  useEffect(
+    () =>
+      client.events.on("codemap.changed", ({ ws }) => {
+        if (!activeWs || ws === activeWs) setGeneration((g) => g + 1);
+      }),
+    [client, activeWs],
+  );
+
+  // Only nodes that still exist expand; a deleted node drops its code children.
+  const expanded = useMemo(() => {
+    const ids = new Set(graph.nodes.map((n) => n.id));
+    const m = new Map<string, string>();
+    for (const [id, module] of codeExpanded) if (ids.has(id)) m.set(id, module);
+    return m as ReadonlyMap<string, string>;
+  }, [codeExpanded, graph]);
+
+  useEffect(() => {
+    for (const module of new Set(expanded.values())) {
+      if (moduleDetails.get(module)?.gen === generation) continue;
+      const key = `m|${module}|${generation}`;
+      if (inflight.current.has(key)) continue;
+      inflight.current.add(key);
+      client
+        .request("codemap.module", { path: module })
+        .then((detail) => setModuleDetails((m) => new Map(m).set(module, { gen: generation, detail })))
+        .catch(() => {})
+        .finally(() => inflight.current.delete(key));
+    }
+  }, [client, expanded, generation, moduleDetails]);
+
+  useEffect(() => {
+    for (const path of expandedFiles) {
+      if (fileDetails.get(path)?.gen === generation) continue;
+      const key = `f|${path}|${generation}`;
+      if (inflight.current.has(key)) continue;
+      inflight.current.add(key);
+      client
+        .request("codemap.file", { path })
+        .then((detail) => setFileDetails((m) => new Map(m).set(path, { gen: generation, detail })))
+        .catch(() => {})
+        .finally(() => inflight.current.delete(key));
+    }
+  }, [client, expandedFiles, generation, fileDetails]);
+
+  const moduleDetailMap = useMemo(() => {
+    const m = new Map<string, CodeModuleDetail>();
+    for (const [k, v] of moduleDetails) m.set(k, v.detail);
+    return m;
+  }, [moduleDetails]);
+  const fileDetailMap = useMemo(() => {
+    const m = new Map<string, CodeFileDetail>();
+    for (const [k, v] of fileDetails) m.set(k, v.detail);
+    return m;
+  }, [fileDetails]);
+
+  const codeContent = useMemo(
+    () =>
+      buildCodeContent({
+        expanded,
+        moduleDetails: moduleDetailMap,
+        fileDetails: fileDetailMap,
+        expandedFiles,
+        openCode,
+        moves,
+      }),
+    [expanded, moduleDetailMap, fileDetailMap, expandedFiles, openCode, moves],
+  );
+
+  const toggleFile = useCallback((path: string) => {
+    setExpandedFiles((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  }, []);
+  const toggleCode = useCallback((file: string, symbol: string) => {
+    setOpenCode((prev) => {
+      const next = new Set(prev);
+      const key = codeKey(file, symbol);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  const scheduleFocus = useCallback(
+    (id: string) => {
+      setTimeout(() => {
+        void fitView({ nodes: [{ id }], padding: 0.3, duration: 350, maxZoom: 1.15 });
+      }, 80);
+    },
+    [fitView],
+  );
+
+  /* ---------------- overlay + scene ---------------- */
+
   const overlay = useMemo(
     () => (overlayOn && codeSummary ? computeOverlay(graph, codeSummary) : null),
     [overlayOn, codeSummary, graph],
   );
 
-  const rfNodes = useMemo(() => {
-    let nodes = toRfNodes(graph, selectedNodes);
+  const rfNodes = useMemo<CanvasNode[]>(() => {
+    let nodes: CanvasNode[] = toRfNodes(graph, selectedNodes);
     if (overlay) {
       nodes = nodes.map((n) => {
         const code = overlay.nodeBadges.get(n.id);
-        return code ? { ...n, data: { ...n.data, code } } : n;
+        return code ? ({ ...n, data: { ...n.data, code } } as ArchRfNode) : n;
       });
     }
     if (flow) {
       const stepOf = new Map(flow.nodeOrder.map((o) => [o.nodeId, o.firstStep]));
-      nodes = nodes.map((n) => ({
-        ...n,
-        data: { ...n.data, flow: { step: stepOf.get(n.id) ?? null } },
-      }));
+      nodes = nodes.map(
+        (n) =>
+          ({
+            ...n,
+            data: { ...n.data, flow: { step: stepOf.get(n.id) ?? null } },
+          }) as ArchRfNode,
+      );
+    }
+    if (expanded.size > 0) {
+      // Expanded nodes render as containers sized to their live code content.
+      nodes = nodes.map((n) => {
+        if (!expanded.has(n.id)) return n;
+        const size = codeContent.sizes.get(n.id);
+        return {
+          ...n,
+          type: "container",
+          width: size?.width,
+          height: size?.height,
+          zIndex: -1,
+          dragHandle: ".arch-container-header",
+          data: {
+            ...n.data,
+            codeExpanded: true,
+            codeLoading: codeContent.loading.has(n.id),
+          },
+        } as ArchRfNode;
+      });
+      const kids = codeContent.nodes.map((k) => {
+        const o = dragOverrides.get(k.id);
+        return o ? { ...k, position: o } : k;
+      });
+      nodes = [...nodes, ...kids];
     }
     return nodes;
-  }, [graph, selectedNodes, overlay, flow]);
+  }, [graph, selectedNodes, overlay, flow, expanded, codeContent, dragOverrides]);
+
   const rfEdges = useMemo(() => {
-    let edges = toRfEdges(graph, selectedEdges);
+    let edges = [...toRfEdges(graph, selectedEdges), ...(codeContent.edges as ArchRfEdge[])];
     if (overlay) edges = applyOverlayToEdges(edges, overlay);
     if (flow) edges = applyFlowToEdges(edges, flow);
     return edges;
-  }, [graph, selectedEdges, overlay, flow]);
+  }, [graph, selectedEdges, overlay, flow, codeContent]);
 
   const onNodesChange = useCallback(
-    (changes: NodeChange<ArchRfNode>[]) => {
+    (changes: NodeChange<CanvasNode>[]) => {
       let g = graphRef.current;
       let selection: Set<string> | null = null;
+      let overrides: Map<string, { x: number; y: number }> | null = null;
       for (const change of changes) {
         switch (change.type) {
           case "position":
-            if (change.position) {
-              g = updateNode(g, change.id, {
-                position: { x: change.position.x, y: change.position.y },
-              });
+            if (!change.position) break;
+            if (isCodeChildId(change.id)) {
+              overrides ??= new Map(dragOverrides);
+              overrides.set(change.id, change.position);
+              break;
             }
+            g = updateNode(g, change.id, {
+              position: { x: change.position.x, y: change.position.y },
+            });
             break;
           case "dimensions": {
             const node = g.nodes.find((n) => n.id === change.id);
@@ -255,16 +485,17 @@ function CanvasInner({
             break;
           }
           case "remove":
-            g = deleteNodes(g, [change.id]);
+            if (!isCodeChildId(change.id)) g = deleteNodes(g, [change.id]);
             break;
           default:
             break;
         }
       }
+      if (overrides) setDragOverrides(overrides);
       if (selection) setSelectedNodes(selection);
       if (g !== graphRef.current) commit(g);
     },
-    [commit, selectedNodes],
+    [commit, selectedNodes, dragOverrides],
   );
 
   const onEdgesChange = useCallback(
@@ -289,15 +520,129 @@ function CanvasInner({
   const onConnect = useCallback(
     (connection: Connection) => {
       if (!connection.source || !connection.target) return;
+      if (isCodeChildId(connection.source) || isCodeChildId(connection.target)) return;
       commit(opAddEdge(graphRef.current, connection.source, connection.target, defaultEdgeKind));
     },
     [commit, defaultEdgeKind],
   );
 
+  /** Module a node maps to: explicit link, then overlay match, then name match. */
+  const moduleForNode = useCallback(
+    (id: string): string | null => {
+      const fromExpansion = expanded.get(id);
+      if (fromExpansion) return fromExpansion;
+      const node = graphRef.current.nodes.find((n) => n.id === id);
+      if (!node || node.kind === "note") return null;
+      if (node.codeModule) return node.codeModule;
+      const badge = overlay?.nodeBadges.get(id);
+      if (badge) return badge.module;
+      if (codeSummary) return suggestModuleFor(node, codeSummary.modules)?.path ?? null;
+      return null;
+    },
+    [expanded, overlay, codeSummary],
+  );
+
+  /**
+   * Code anchor of a node: file-linked nodes (legacy "Expand code") resolve to
+   * their file plus its owning module; everything else falls back to the
+   * module link.
+   */
+  const codeRefForNode = useCallback(
+    (id: string): { module: string; file?: string } | null => {
+      const g = graphRef.current;
+      const node = g.nodes.find((n) => n.id === id);
+      if (!node || node.kind === "note") return null;
+      if (node.codeFile) {
+        const file = node.codeFile;
+        let parent = node.parentId ? g.nodes.find((n) => n.id === node.parentId) : undefined;
+        while (parent && !parent.codeModule) {
+          parent = parent.parentId ? g.nodes.find((n) => n.id === parent!.parentId) : undefined;
+        }
+        const byPrefix = codeSummary?.modules
+          .filter((m) => m.path !== "." && file.startsWith(`${m.path}/`))
+          .sort((a, b) => b.path.length - a.path.length)[0]?.path;
+        const module =
+          parent?.codeModule ??
+          byPrefix ??
+          (codeSummary?.modules.some((m) => m.path === ".") ? "." : null);
+        return module ? { module, file } : null;
+      }
+      const module = moduleForNode(id);
+      return module ? { module } : null;
+    },
+    [moduleForNode, codeSummary],
+  );
+
+  /** Expand/collapse a diagram node into its module's live code. */
+  const toggleNodeCode = useCallback(
+    (id: string) => {
+      if (codeExpanded.has(id)) {
+        setCodeExpanded((prev) => {
+          const next = new Map(prev);
+          next.delete(id);
+          return next;
+        });
+        return;
+      }
+      const node = graphRef.current.nodes.find((n) => n.id === id);
+      if (!node || node.kind === "note" || isContainerKind(node.kind)) return;
+      const module = moduleForNode(id);
+      if (!module) return;
+      setCodeExpanded((prev) => new Map(prev).set(id, module));
+      scheduleFocus(id);
+    },
+    [codeExpanded, moduleForNode, scheduleFocus],
+  );
+
+  // External drill requests ("zoom into this module/file") expand in place.
+  const expandNonce = useRef(0);
+  useEffect(() => {
+    if (!expandRequest || expandRequest.nonce === expandNonce.current) return;
+    expandNonce.current = expandRequest.nonce;
+    const { module, file } = expandRequest;
+    const g = graphRef.current;
+    const target =
+      g.nodes.find((n) => n.codeModule === module && !isContainerKind(n.kind) && n.kind !== "note") ??
+      g.nodes.find(
+        (n) => !isContainerKind(n.kind) && n.kind !== "note" && !n.codeFile && moduleForNode(n.id) === module,
+      );
+    if (!target) {
+      onUnresolvedExpand?.(module, file);
+      return;
+    }
+    setCodeExpanded((prev) => new Map(prev).set(target.id, module));
+    if (file) setExpandedFiles((prev) => (prev.has(file) ? prev : new Set(prev).add(file)));
+    scheduleFocus(target.id);
+  }, [expandRequest, moduleForNode, onUnresolvedExpand, scheduleFocus]);
+
+  /* ---------------- drag / drop ---------------- */
+
   const onNodeDragStop = useCallback(
     (_evt: unknown, node: RfNode, nodes: RfNode[]) => {
+      if (isCodeChildId(node.id)) {
+        // Live code children: a drop on another file/module records a refactor
+        // intent; either way the chip snaps back to its derived home.
+        const data = node.data as MapNodeData;
+        const live = getNodes() as unknown as HitTestNode[];
+        const abs = absolutePositionOf(live, node.id);
+        const self = live.find((n) => n.id === node.id);
+        if (abs && self) {
+          const w = self.measured?.width ?? self.width ?? 0;
+          const h = self.measured?.height ?? self.height ?? 0;
+          const center = { x: abs.x + w / 2, y: abs.y + h / 2 };
+          if (data.nodeKind === "symbol" && !data.planned) {
+            const target = unifiedDropTargetAt(live, center, { file: data.file, module: data.module }, moduleForNode);
+            if (target) onRecordMove?.({ file: data.file, symbol: data.name }, target);
+          } else if (data.nodeKind === "file" && !data.planned) {
+            const target = unifiedDropTargetAt(live, center, { file: data.path, module: data.module }, moduleForNode);
+            if (target && target.module !== data.module) onRecordFileMove?.(data.path, target.module);
+          }
+        }
+        setDragOverrides(new Map());
+        return;
+      }
       let g = graphRef.current;
-      const dragged = nodes.length ? nodes : [node];
+      const dragged = (nodes.length ? nodes : [node]).filter((rf) => !isCodeChildId(rf.id));
       for (const rf of dragged) {
         const abs = absolutePosition(g, rf.id);
         const width = rf.measured?.width ?? rf.width ?? 200;
@@ -312,7 +657,7 @@ function CanvasInner({
       }
       if (g !== graphRef.current) commit(g);
     },
-    [commit],
+    [commit, getNodes, moduleForNode, onRecordMove, onRecordFileMove],
   );
 
   const addNodeAt = useCallback(
@@ -333,6 +678,18 @@ function CanvasInner({
       setSelectedEdges(new Set());
     },
     [commit],
+  );
+
+  /** Add a node pre-linked to a code module, expanded into live code. */
+  const addModuleNodeAt = useCallback(
+    (modulePath: string, moduleName: string, flowPos: { x: number; y: number }) => {
+      const { graph: next, node } = opAddNode(graphRef.current, "service", moduleName, flowPos, null);
+      commit(updateNode(next, node.id, { codeModule: modulePath }));
+      setCodeExpanded((prev) => new Map(prev).set(node.id, modulePath));
+      setSelectedNodes(new Set([node.id]));
+      scheduleFocus(node.id);
+    },
+    [commit, scheduleFocus],
   );
 
   const onDrop = useCallback(
@@ -372,70 +729,22 @@ function CanvasInner({
     [commit, fitView],
   );
 
-  /** Module a node maps to: explicit link, then overlay match, then name match. */
-  const moduleForNode = useCallback(
-    (id: string): string | null => {
-      const node = graphRef.current.nodes.find((n) => n.id === id);
-      if (!node || node.kind === "note") return null;
-      if (node.codeModule) return node.codeModule;
-      const badge = overlay?.nodeBadges.get(id);
-      if (badge) return badge.module;
-      if (codeSummary) return suggestModuleFor(node, codeSummary.modules)?.path ?? null;
-      return null;
-    },
-    [overlay, codeSummary],
-  );
-
-  /**
-   * Code anchor of a node: file-linked nodes (from "Expand code") resolve to
-   * their file plus its owning module; everything else falls back to the
-   * module link.
-   */
-  const codeRefForNode = useCallback(
-    (id: string): { module: string; file?: string } | null => {
-      const g = graphRef.current;
-      const node = g.nodes.find((n) => n.id === id);
-      if (!node || node.kind === "note") return null;
-      if (node.codeFile) {
-        const file = node.codeFile;
-        let parent = node.parentId ? g.nodes.find((n) => n.id === node.parentId) : undefined;
-        while (parent && !parent.codeModule) {
-          parent = parent.parentId ? g.nodes.find((n) => n.id === parent!.parentId) : undefined;
-        }
-        const byPrefix = codeSummary?.modules
-          .filter((m) => m.path !== "." && file.startsWith(`${m.path}/`))
-          .sort((a, b) => b.path.length - a.path.length)[0]?.path;
-        const module =
-          parent?.codeModule ??
-          byPrefix ??
-          (codeSummary?.modules.some((m) => m.path === ".") ? "." : null);
-        return module ? { module, file } : null;
-      }
-      const module = moduleForNode(id);
-      return module ? { module } : null;
-    },
-    [moduleForNode, codeSummary],
-  );
-
-  const { client } = useCrystal();
-  const expandNodeCode = useCallback(
-    async (id: string, module: string) => {
-      try {
-        const detail = await client.request("codemap.module", { path: module });
-        commit(expandNodeIntoCode(graphRef.current, id, detail));
-      } catch {
-        // Module vanished from the map between menu open and click — no-op.
-      }
-    },
-    [client, commit],
-  );
-
   const onNodeDoubleClick = useCallback(
     (_evt: unknown, node: RfNode) => {
+      if (isCodeChildId(node.id)) {
+        const data = node.data as MapNodeData;
+        if (data.nodeKind === "file" && !data.planned) toggleFile(data.path);
+        else if (data.nodeKind === "symbol" && !data.planned) toggleCode(data.file, data.name);
+        return;
+      }
       const ref = codeRefForNode(node.id);
-      if (ref && onDrillIntoModule) onDrillIntoModule(ref.module, ref.file);
+      if (ref?.file) {
+        requestOpenFile(ref.file);
+        return;
+      }
+      toggleNodeCode(node.id);
     },
-    [codeRefForNode, onDrillIntoModule],
+    [codeRefForNode, toggleFile, toggleCode, toggleNodeCode],
   );
 
   const duplicateNode = useCallback(
@@ -457,6 +766,15 @@ function CanvasInner({
 
   const onNodeContextMenu = useCallback((evt: ReactMouseEvent, node: RfNode) => {
     evt.preventDefault();
+    if (isCodeChildId(node.id)) {
+      const data = node.data as MapNodeData;
+      if (data.nodeKind === "file") {
+        setMenu({ kind: "codefile", x: evt.clientX, y: evt.clientY, data: data as FileNodeData });
+      } else if (data.nodeKind === "symbol") {
+        setMenu({ kind: "codesymbol", x: evt.clientX, y: evt.clientY, data: data as SymbolNodeData });
+      }
+      return;
+    }
     setMenu({ kind: "node", x: evt.clientX, y: evt.clientY, id: node.id });
   }, []);
 
@@ -478,32 +796,85 @@ function CanvasInner({
     [screenToFlowPosition],
   );
 
+  /** Modules with code that no diagram node links to yet. */
+  const unmappedModules = useMemo(() => {
+    if (!codeSummary) return [];
+    const linked = new Set<string>();
+    for (const n of graph.nodes) if (n.codeModule) linked.add(n.codeModule);
+    for (const m of expanded.values()) linked.add(m);
+    return codeSummary.modules.filter((m) => m.fileCount > 0 && !linked.has(m.path));
+  }, [codeSummary, graph, expanded]);
+
+  /** "Move to module ▸" entries shared by file/symbol menus. */
+  const moveTargetEntries = useCallback(
+    (ownModule: string, onPick: (modulePath: string) => void): MenuEntry[] => {
+      const modules = (codeSummary?.modules ?? []).filter(
+        (m) => m.fileCount > 0 && m.path !== ownModule,
+      );
+      if (modules.length === 0) return [{ type: "heading", label: "No other modules" }];
+      return modules.map<MenuEntry>((m) => ({
+        type: "item",
+        label: m.name,
+        hint: m.path === "." ? "(root)" : m.path,
+        onSelect: () => onPick(m.path),
+      }));
+    },
+    [codeSummary],
+  );
+
   const menuEntries = useMemo<MenuEntry[]>(() => {
     if (!menu) return [];
     const g = graphRef.current;
 
     if (menu.kind === "pane") {
       return [
-        { type: "heading", label: "Add" },
-        ...PALETTE_KINDS.map<MenuEntry>((kind) => ({
-          type: "item",
-          label: KIND_META[kind].label,
-          icon: KIND_META[kind].icon,
-          onSelect: () => addNodeAt(kind, menu.flowPos),
-        })),
-        { type: "separator" },
-        { type: "item", label: "Auto-layout · flow", icon: LayoutGrid, onSelect: () => runAutoLayout("flow") },
         {
-          type: "item",
-          label: "Auto-layout · layers",
-          icon: Rows3,
-          onSelect: () => runAutoLayout("layers"),
+          type: "submenu",
+          label: "Add node",
+          icon: Plus,
+          entries: PALETTE_KINDS.map<MenuEntry>((kind) => ({
+            type: "item",
+            label: KIND_META[kind].label,
+            icon: KIND_META[kind].icon,
+            onSelect: () => addNodeAt(kind, menu.flowPos),
+          })),
+        },
+        {
+          type: "submenu",
+          label: "Add code module",
+          icon: Package,
+          disabled: unmappedModules.length === 0,
+          hint: unmappedModules.length ? String(unmappedModules.length) : "none left",
+          entries: unmappedModules.map<MenuEntry>((m) => ({
+            type: "item",
+            label: m.name,
+            hint: `${m.fileCount}f`,
+            onSelect: () => addModuleNodeAt(m.path, m.name, menu.flowPos),
+          })),
+        },
+        { type: "separator" },
+        {
+          type: "submenu",
+          label: "Auto-layout",
+          icon: LayoutGrid,
+          entries: [
+            { type: "item", label: "Flow — top to bottom", icon: LayoutGrid, onSelect: () => runAutoLayout("flow") },
+            { type: "item", label: "Layers — entry / service / data", icon: Rows3, onSelect: () => runAutoLayout("layers") },
+          ],
         },
         {
           type: "item",
           label: "Fit view",
           icon: Maximize2,
           onSelect: () => void fitView({ padding: 0.15, duration: 300 }),
+        },
+        { type: "separator" },
+        {
+          type: "item",
+          label: "Open full code map",
+          icon: FolderGit2,
+          disabled: !onOpenFullMap,
+          onSelect: () => onOpenFullMap?.(),
         },
       ];
     }
@@ -512,8 +883,11 @@ function CanvasInner({
       const node = g.nodes.find((n) => n.id === menu.id);
       if (!node) return [];
       const ref = codeRefForNode(node.id);
+      const module = moduleForNode(node.id);
       const hint = ref ? (ref.file ? ref.file.split("/").pop() : ref.module) : undefined;
-      const expanded = hasGeneratedChildren(g, node.id);
+      const isLiveExpanded = expanded.has(node.id);
+      const canExpandLive = isLiveExpanded || (!!module && !isContainerKind(node.kind) && !node.codeFile);
+      const effectiveAccent = node.accent ?? KIND_META[node.kind].defaultAccent;
       return [
         { type: "heading", label: node.label },
         {
@@ -521,6 +895,16 @@ function CanvasInner({
           label: "Rename",
           icon: Pencil,
           onSelect: () => setRenaming({ x: menu.x, y: menu.y, id: node.id }),
+        },
+        { type: "item", label: "Duplicate", icon: Copy, onSelect: () => duplicateNode(node.id) },
+        { type: "separator" },
+        {
+          type: "item",
+          label: isLiveExpanded ? "Collapse code" : "Expand code",
+          icon: isLiveExpanded ? Shrink : Expand,
+          disabled: !canExpandLive,
+          hint: !isLiveExpanded ? (module ?? undefined) : undefined,
+          onSelect: () => toggleNodeCode(node.id),
         },
         {
           type: "item",
@@ -532,31 +916,50 @@ function CanvasInner({
         },
         {
           type: "item",
-          label: "Zoom into code",
+          label: "Open in code map",
           icon: FolderGit2,
-          disabled: !ref || !onDrillIntoModule,
-          hint,
-          onSelect: () => ref && onDrillIntoModule?.(ref.module, ref.file),
+          disabled: !ref || !onOpenFullMap,
+          onSelect: () => ref && onOpenFullMap?.({ module: ref.module, file: ref.file }),
         },
-        {
-          type: "item",
-          label: expanded ? "Refresh expanded code" : "Expand code into diagram",
-          icon: Expand,
-          disabled: !ref || !!ref.file,
-          hint: ref && !ref.file ? ref.module : undefined,
-          onSelect: () => ref && void expandNodeCode(node.id, ref.module),
-        },
-        ...(expanded
+        ...(hasGeneratedChildren(g, node.id)
           ? [
               {
                 type: "item",
-                label: "Collapse code",
+                label: "Collapse generated code",
                 icon: Shrink,
                 onSelect: () => commit(collapseNode(graphRef.current, node.id)),
               } satisfies MenuEntry,
             ]
           : []),
-        { type: "item", label: "Duplicate", icon: Copy, onSelect: () => duplicateNode(node.id) },
+        {
+          type: "submenu",
+          label: "Appearance",
+          icon: Paintbrush,
+          entries: [
+            { type: "heading", label: "Accent" },
+            ...(Object.keys(ACCENT_CSS) as AccentName[]).map<MenuEntry>((name) => ({
+              type: "item",
+              label: name,
+              checked: effectiveAccent === name,
+              onSelect: () =>
+                commit(updateNode(graphRef.current, node.id, { accent: name })),
+            })),
+            { type: "separator" },
+            { type: "heading", label: "Layer" },
+            {
+              type: "item",
+              label: "Auto (from kind)",
+              checked: node.layer == null,
+              onSelect: () => commit(updateNode(graphRef.current, node.id, { layer: null })),
+            },
+            ...(["entry", "service", "data"] as const).map<MenuEntry>((layer) => ({
+              type: "item",
+              label: layer,
+              checked: node.layer === layer,
+              onSelect: () => commit(updateNode(graphRef.current, node.id, { layer })),
+            })),
+          ],
+        },
         { type: "separator" },
         {
           type: "item",
@@ -567,6 +970,72 @@ function CanvasInner({
             commit(deleteNodes(graphRef.current, [node.id]));
             setSelectedNodes(new Set());
           },
+        },
+      ];
+    }
+
+    if (menu.kind === "codefile") {
+      const d = menu.data;
+      return [
+        { type: "heading", label: d.name },
+        {
+          type: "item",
+          label: d.expanded ? "Collapse file" : "Expand file",
+          icon: d.expanded ? Shrink : Expand,
+          disabled: !!d.planned,
+          onSelect: () => toggleFile(d.path),
+        },
+        {
+          type: "item",
+          label: "Open in editor",
+          icon: ExternalLink,
+          onSelect: () => requestOpenFile(d.path),
+        },
+        { type: "separator" },
+        {
+          type: "submenu",
+          label: "Move file to module",
+          icon: MoveUpRight,
+          disabled: !onRecordFileMove || !!d.planned,
+          entries: moveTargetEntries(d.module, (m) => void onRecordFileMove?.(d.path, m)),
+        },
+      ];
+    }
+
+    if (menu.kind === "codesymbol") {
+      const d = menu.data;
+      const journeyable = d.kind !== "reexport" && d.kind !== "default";
+      return [
+        { type: "heading", label: d.name },
+        {
+          type: "item",
+          label: d.codeOpen ? "Hide source" : "Show source",
+          icon: Code2,
+          disabled: !!d.planned,
+          onSelect: () => toggleCode(d.file, d.name),
+        },
+        {
+          type: "item",
+          label: "Start journey here",
+          icon: Route,
+          disabled: !onStartJourney || !journeyable || !!d.planned,
+          onSelect: () => onStartJourney?.({ file: d.file, symbol: d.name }),
+        },
+        {
+          type: "item",
+          label: "Open file in editor",
+          icon: ExternalLink,
+          onSelect: () => requestOpenFile(d.file),
+        },
+        { type: "separator" },
+        {
+          type: "submenu",
+          label: "Move to module",
+          icon: MoveUpRight,
+          disabled: !onRecordMove || !!d.planned || d.kind === "reexport",
+          entries: moveTargetEntries(d.module, (m) =>
+            void onRecordMove?.({ file: d.file, symbol: d.name }, { module: m }),
+          ),
         },
       ];
     }
@@ -591,13 +1060,18 @@ function CanvasInner({
     const edge = g.edges.find((e) => e.id === menu.id);
     if (!edge) return [];
     return [
-      { type: "heading", label: "Connection kind" },
-      ...ARCH_EDGE_KINDS.map<MenuEntry>((kind) => ({
-        type: "item",
-        label: EDGE_KIND_STYLE[kind].label,
-        checked: edge.kind === kind,
-        onSelect: () => commit(updateEdge(graphRef.current, edge.id, { kind })),
-      })),
+      { type: "heading", label: edge.label || "Connection" },
+      {
+        type: "submenu",
+        label: "Connection kind",
+        icon: Pencil,
+        entries: ARCH_EDGE_KINDS.map<MenuEntry>((kind) => ({
+          type: "item",
+          label: EDGE_KIND_STYLE[kind].label,
+          checked: edge.kind === kind,
+          onSelect: () => commit(updateEdge(graphRef.current, edge.id, { kind })),
+        })),
+      },
       { type: "separator" },
       {
         type: "item",
@@ -610,7 +1084,39 @@ function CanvasInner({
         },
       },
     ];
-  }, [menu, codeRefForNode, expandNodeCode, onDrillIntoModule, addNodeAt, runAutoLayout, fitView, duplicateNode, commit, overlay]);
+  }, [
+    menu,
+    codeRefForNode,
+    moduleForNode,
+    expanded,
+    toggleNodeCode,
+    toggleFile,
+    toggleCode,
+    onOpenFullMap,
+    onStartJourney,
+    onRecordMove,
+    onRecordFileMove,
+    moveTargetEntries,
+    unmappedModules,
+    addNodeAt,
+    addModuleNodeAt,
+    runAutoLayout,
+    fitView,
+    duplicateNode,
+    commit,
+    overlay,
+  ]);
+
+  const mapActions = useMemo<MapActions>(
+    () => ({
+      toggleModule: () => {},
+      toggleFile,
+      toggleCode,
+      startJourney: onStartJourney,
+      dropSymbol: (payload, target) => void onRecordMove?.(payload, target),
+    }),
+    [toggleFile, toggleCode, onStartJourney, onRecordMove],
+  );
 
   const selectedNode =
     selectedNodes.size === 1 ? graph.nodes.find((n) => selectedNodes.has(n.id)) : undefined;
@@ -620,6 +1126,7 @@ function CanvasInner({
       : undefined;
 
   return (
+    <MapActionsContext.Provider value={mapActions}>
     <div
       ref={wrapperRef}
       className={cn(
@@ -649,7 +1156,7 @@ function CanvasInner({
         defaultViewport={graph.viewport ?? undefined}
         fitView={!graph.viewport}
         fitViewOptions={{ padding: 0.2 }}
-        minZoom={0.1}
+        minZoom={0.05}
         maxZoom={2.5}
         deleteKeyCode={["Delete", "Backspace"]}
         selectionOnDrag={false}
@@ -664,7 +1171,10 @@ function CanvasInner({
           zoomable
           className="!bottom-3 !right-3 !h-32 !w-44 rounded-lg border border-edge !bg-surface-1"
           maskColor="rgba(6, 8, 12, 0.72)"
-          nodeColor={(n) => accentOf((n as ArchRfNode).data.arch)}
+          nodeColor={(n) => {
+            const data = n.data as Partial<ArchRfNode["data"]>;
+            return data.arch ? accentOf(data.arch) : "var(--color-crystal-500)";
+          }}
           nodeStrokeWidth={0}
         />
         <Controls
@@ -682,6 +1192,9 @@ function CanvasInner({
             onRename={(name) => commit({ ...graphRef.current, name })}
             overlayOn={overlayOn}
             onToggleOverlay={onToggleOverlay}
+            showDuplicates={showDuplicates}
+            onToggleDuplicates={onToggleDuplicates}
+            onOpenFullMap={onOpenFullMap ? () => onOpenFullMap() : undefined}
           />
         </Panel>
         <Panel position="center-left">
@@ -736,6 +1249,7 @@ function CanvasInner({
         />
       ) : null}
     </div>
+    </MapActionsContext.Provider>
   );
 }
 
