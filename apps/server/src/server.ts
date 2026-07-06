@@ -146,6 +146,17 @@ export async function startCrystalServer(opts: {
     "codemap.module": ({ ws, path: p }) => registry.get(ws).codemap.moduleDetail(p),
     "codemap.file": ({ ws, path: p }) => registry.get(ws).codemap.fileDetail(p),
     "codemap.cross": () => registry.crossMap(),
+    "codemap.symbolSource": ({ ws, file, symbol }) =>
+      registry.get(ws).codemap.symbolSource(file, symbol),
+    "codemap.trace": ({ ws, file, symbol, maxDepth }) =>
+      registry.get(ws).codemap.trace(file, symbol, maxDepth),
+    "codemap.duplicates": async ({ ws, minTokens }) => ({
+      clusters: await registry.get(ws).codemap.duplicates(minTokens),
+      generatedAt: new Date().toISOString(),
+    }),
+    "codemap.symbols": async ({ ws, query, limit }) => ({
+      symbols: await registry.get(ws).codemap.searchSymbols(query, limit),
+    }),
   };
 
   const httpServer = http.createServer((req, res) => {

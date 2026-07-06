@@ -5,7 +5,11 @@ import type {
   CodeFileDetail,
   CodeMapSummary,
   CodeModuleDetail,
+  CodeSymbolSource,
+  CodeTrace,
   CrossWorkspaceMap,
+  DuplicateCluster,
+  SymbolSearchHit,
 } from "./codemap.js";
 import type { Project } from "./project.js";
 import type { WorkspaceManifest } from "./workspace.js";
@@ -131,6 +135,26 @@ export interface BridgeMethods {
   "codemap.file": { params: WsScope & { path: string }; result: CodeFileDetail };
   /** Import/export graph across every open workspace. */
   "codemap.cross": { params: Record<string, never>; result: CrossWorkspaceMap };
+  /** Source text of one top-level symbol (capped). */
+  "codemap.symbolSource": {
+    params: WsScope & { file: string; symbol: string };
+    result: CodeSymbolSource;
+  };
+  /** BFS call-graph trace from an entry symbol (syntax-resolved, capped). */
+  "codemap.trace": {
+    params: WsScope & { file: string; symbol: string; maxDepth?: number };
+    result: CodeTrace;
+  };
+  /** Clusters of functions with identical normalized token streams. */
+  "codemap.duplicates": {
+    params: WsScope & { minTokens?: number };
+    result: { clusters: DuplicateCluster[]; generatedAt: string };
+  };
+  /** Case-insensitive substring search over top-level symbol names. */
+  "codemap.symbols": {
+    params: WsScope & { query: string; limit?: number };
+    result: { symbols: SymbolSearchHit[] };
+  };
 }
 
 export type BridgeMethodName = keyof BridgeMethods;

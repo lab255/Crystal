@@ -77,6 +77,9 @@ export interface CodeSymbol {
   kind: CodeSymbolKind;
   /** 1-based line of the declaration. */
   line: number;
+  /** 1-based inclusive last line of the declaration. */
+  endLine?: number;
+  exported?: boolean;
 }
 
 export interface CodeImport {
@@ -97,8 +100,86 @@ export interface CodeFileDetail {
   loc: number;
   imports: CodeImport[];
   exports: CodeSymbol[];
+  /** Every top-level symbol (exported and internal), with source ranges. */
+  symbols: CodeSymbol[];
   /** Workspace-relative paths of files importing this one. */
   importedBy: string[];
+}
+
+/* ------------------------------------------------------------------ */
+/* Symbol-level queries: source, call traces, duplicates, search       */
+/* ------------------------------------------------------------------ */
+
+/** A top-level symbol addressed by file + name. */
+export interface CodeSymbolRef {
+  /** Workspace-relative file path. */
+  file: string;
+  symbol: string;
+}
+
+export interface CodeSymbolSource {
+  file: string;
+  symbol: string;
+  /** 1-based, inclusive. */
+  startLine: number;
+  endLine: number;
+  text: string;
+  truncated: boolean;
+}
+
+export interface CodeTraceStep {
+  ref: CodeSymbolRef;
+  /** Module path owning the file. */
+  module: string;
+  /** Declaration line of the symbol. */
+  line: number;
+  /** BFS depth from the entry (entry = 0). */
+  depth: number;
+}
+
+export interface CodeTraceEdge {
+  from: CodeSymbolRef;
+  to: CodeSymbolRef;
+}
+
+/**
+ * A call-graph trace from one entry symbol. Syntax-resolved only: instance
+ * method calls and dynamic dispatch land in `unresolvedCalls` rather than
+ * silently vanishing.
+ */
+export interface CodeTrace {
+  entry: CodeSymbolRef;
+  /** BFS order, entry first. */
+  steps: CodeTraceStep[];
+  edges: CodeTraceEdge[];
+  /** Depth or node cap hit. */
+  truncated: boolean;
+  unresolvedCalls: { from: CodeSymbolRef; callee: string }[];
+}
+
+export interface DuplicateInstance {
+  file: string;
+  module: string;
+  symbol: string;
+  line: number;
+  endLine: number;
+  exported: boolean;
+}
+
+/** Functions whose normalized token streams hash identically. */
+export interface DuplicateCluster {
+  hash: string;
+  tokenCount: number;
+  instances: DuplicateInstance[];
+}
+
+export interface SymbolSearchHit {
+  file: string;
+  module: string;
+  name: string;
+  kind: CodeSymbolKind;
+  line: number;
+  exported: boolean;
 }
 
 /* ------------------------------------------------------------------ */
