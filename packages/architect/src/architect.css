@@ -47,3 +47,38 @@
 .react-flow__minimap-mask {
   stroke: var(--color-edge-strong);
 }
+
+/* Smooth level-of-detail: live-code children fade in as zoom materializes
+   them, and geometry changes (container growth, grid repacks) glide instead
+   of jumping. Dragged nodes are excluded so chips stay glued to the cursor.
+   The entrance keyframe only declares opacity — react-flow positions nodes
+   via an inline transform, which an animated transform would override. */
+.react-flow__node.lod-child {
+  animation: lod-enter 240ms ease-out;
+}
+
+.react-flow__node.lod-child:not(.dragging) {
+  transition:
+    transform 240ms ease,
+    width 240ms ease,
+    height 240ms ease;
+}
+
+/* interpolate-size lets the leaf → container growth animate from auto
+   sizing in Chromium; elsewhere only explicit size changes animate. */
+.react-flow__node.lod-grow:not(.dragging) {
+  interpolate-size: allow-keywords;
+  transition:
+    width 240ms ease,
+    height 240ms ease;
+}
+
+.react-flow__edge.lod-child {
+  animation: lod-enter 240ms ease-out;
+}
+
+@keyframes lod-enter {
+  from {
+    opacity: 0;
+  }
+}

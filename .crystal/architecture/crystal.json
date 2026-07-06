@@ -30,8 +30,8 @@
         "description": "",
         "parentId": null,
         "position": {
-          "x": 16,
-          "y": 344
+          "x": 24.077405857740587,
+          "y": 346.6924686192468
         },
         "size": {
           "width": 1134,
@@ -53,7 +53,12 @@
         "size": null,
         "tech": [],
         "codeModule": "apps/server",
-        "placements": {}
+        "placements": {
+          "env_4e6d8d5974e3": {
+            "target": "database",
+            "runtime": ""
+          }
+        }
       },
       {
         "id": "node_e0d4e0a12d90",
@@ -68,7 +73,12 @@
         "size": null,
         "tech": [],
         "codeModule": "apps/web",
-        "placements": {}
+        "placements": {
+          "env_4e6d8d5974e3": {
+            "target": "cdn",
+            "runtime": ""
+          }
+        }
       },
       {
         "id": "node_4806fb807167",
@@ -83,7 +93,12 @@
         "size": null,
         "tech": [],
         "codeModule": "packages/architect",
-        "placements": {}
+        "placements": {
+          "env_4e6d8d5974e3": {
+            "target": "ecs",
+            "runtime": ""
+          }
+        }
       },
       {
         "id": "node_b5bdcf4990e2",
@@ -98,7 +113,12 @@
         "size": null,
         "tech": [],
         "codeModule": "packages/client",
-        "placements": {}
+        "placements": {
+          "env_4e6d8d5974e3": {
+            "target": "ecs",
+            "runtime": ""
+          }
+        }
       },
       {
         "id": "node_b4e60cab8fff",
@@ -128,7 +148,12 @@
         "size": null,
         "tech": [],
         "codeModule": "packages/editor",
-        "placements": {}
+        "placements": {
+          "env_4e6d8d5974e3": {
+            "target": "ecs",
+            "runtime": ""
+          }
+        }
       },
       {
         "id": "node_6a2ad29ddede",
@@ -173,7 +198,12 @@
         "size": null,
         "tech": [],
         "codeModule": "packages/ui",
-        "placements": {}
+        "placements": {
+          "env_4e6d8d5974e3": {
+            "target": "ecs",
+            "runtime": ""
+          }
+        }
       }
     ],
     "edges": [
@@ -313,9 +343,9 @@
     ],
     "journeys": [],
     "viewport": {
-      "x": 401.43006993006986,
-      "y": -311.6013986013986,
-      "zoom": 1.1142191142191142
+      "x": 544.6131848838812,
+      "y": 150.21160765353852,
+      "zoom": 0.8066015565323608
     }
   }
 }

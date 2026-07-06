@@ -86,9 +86,11 @@ export function buildCodeContent(input: CodeContentInput): CodeContent {
       f.node.parentId = nodeId;
       f.node.position = { x: MODULE_PAD + pos.x, y: ARCH_CODE_HEADER_H + pos.y };
       f.node.deletable = false;
+      f.node.className = "lod-child";
       nodes.push(f.node);
       for (const s of f.symbols) {
         s.deletable = false;
+        s.className = "lod-child";
         nodes.push(s);
       }
     }
@@ -103,6 +105,7 @@ export function buildCodeContent(input: CodeContentInput): CodeContent {
         id: `code:${e.source}->${e.target}`,
         source: fileId(e.source),
         target: fileId(e.target),
+        className: "lod-child",
         style: { stroke: "var(--color-edge-strong)", strokeWidth: 1, opacity: 0.6 },
         markerEnd: { type: MarkerType.ArrowClosed, color: "var(--color-edge-strong)", width: 12, height: 12 },
       });

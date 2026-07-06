@@ -82,6 +82,7 @@ import type { SymbolDragPayload } from "./codemap/CodeNode.js";
 import {
   absolutePositionOf,
   codeKey,
+  fileId,
   type DropTarget,
   type FileNodeData,
   type MapNodeData,
@@ -141,16 +142,20 @@ const GHOST_STROKE = "var(--color-crystal-400)";
 const FLOW_STROKE = "var(--color-crystal-400)";
 
 /**
- * Dynamic level-of-detail thresholds. Zooming past an expand threshold
- * auto-expands what's in view (nodes into their module's files, file cards
- * into symbols); zooming back out past the lower collapse threshold undoes
- * only the automatic expansions. The gap between the pair is hysteresis so
- * detail doesn't flicker at the boundary.
+ * Dynamic level-of-detail. Detail grows continuously with zoom rather than at
+ * a global cliff: every candidate gets its own expand threshold — a base zoom
+ * plus a penalty for its distance from the viewport center — so nodes open one
+ * by one as you keep zooming (center of attention first), instead of everything
+ * in view ballooning at once. Each auto-expansion remembers the threshold it
+ * fired at and folds up individually once zoom drops a fixed hysteresis below
+ * it, which staggers the collapse the same way. Manual expansions stay put.
  */
-const LOD_MODULE_EXPAND_ZOOM = 1.25;
-const LOD_MODULE_COLLAPSE_ZOOM = 0.9;
-const LOD_FILE_EXPAND_ZOOM = 1.9;
-const LOD_FILE_COLLAPSE_ZOOM = 1.45;
+const LOD_MODULE_EXPAND_ZOOM = 1.15;
+const LOD_FILE_EXPAND_ZOOM = 1.7;
+/** Extra zoom required at the viewport corner vs its center. */
+const LOD_STAGGER = 0.45;
+/** Auto-expansions collapse this far below the zoom that opened them. */
+const LOD_HYSTERESIS = 0.3;
 /** New expansions per evaluation pass — keeps a deep zoom from fetching everything at once. */
 const LOD_MODULE_BUDGET = 6;
 const LOD_FILE_BUDGET = 16;
@@ -314,8 +319,9 @@ function CanvasInner({
   const [lodOn, setLodOn] = useState(true);
   const lodOnRef = useRef(lodOn);
   lodOnRef.current = lodOn;
-  const autoExpandedNodes = useRef(new Set<string>());
-  const autoExpandedFiles = useRef(new Set<string>());
+  /** id/path → the staggered threshold the expansion fired at (its collapse anchor). */
+  const autoExpandedNodes = useRef(new Map<string, number>());
+  const autoExpandedFiles = useRef(new Map<string, number>());
   /** Manually collapsed while zoomed in — LOD leaves these alone until the next zoom-out. */
   const lodSuppressedNodes = useRef(new Set<string>());
   const lodSuppressedFiles = useRef(new Set<string>());
@@ -462,6 +468,7 @@ function CanvasInner({
           width: size?.width,
           height: size?.height,
           zIndex: -1,
+          className: "lod-grow",
           dragHandle: ".arch-container-header",
           data: {
             ...n.data,
@@ -754,10 +761,14 @@ function CanvasInner({
   /* ------------- dynamic level of detail: zoom in expands, zoom out collapses ------------- */
 
   /**
-   * One LOD pass for a viewport: past the expand thresholds, code-linked
-   * nodes (then file cards) currently on screen open up; past the collapse
-   * thresholds, everything the engine opened closes again. Only automatic
-   * expansions are ever collapsed — manual ones stay put.
+   * One LOD pass for a viewport. Expansion: every on-screen candidate whose
+   * staggered threshold (base zoom + distance-from-center penalty) the current
+   * zoom clears opens up, most central first, within the per-pass budget.
+   * Collapse: each auto-expansion folds up individually once zoom drops the
+   * hysteresis below the threshold it opened at — unless it would immediately
+   * requalify where it sits now (it drifted toward the center since), in which
+   * case its anchor is lowered instead of flickering closed and open again.
+   * Only automatic expansions are ever collapsed — manual ones stay put.
    */
   const evaluateLod = useCallback(
     (vp: Viewport) => {
@@ -772,7 +783,7 @@ function CanvasInner({
       };
       const live = getNodes() as unknown as HitTestNode[];
       const byId = new Map(live.map((n) => [n.id, n]));
-      const inView = (n: HitTestNode): boolean => {
+      const boundsOf = (n: HitTestNode) => {
         let x = n.position.x;
         let y = n.position.y;
         let cur: HitTestNode | undefined = n;
@@ -784,76 +795,113 @@ function CanvasInner({
         }
         const w = n.measured?.width ?? n.width ?? 200;
         const h = n.measured?.height ?? n.height ?? 84;
-        return x < view.x + view.w && x + w > view.x && y < view.y + view.h && y + h > view.y;
+        return { x, y, w, h };
+      };
+      const inView = (b: { x: number; y: number; w: number; h: number }): boolean =>
+        b.x < view.x + view.w && b.x + b.w > view.x && b.y < view.y + view.h && b.y + b.h > view.y;
+      const thresholdFor = (n: HitTestNode, base: number): number => {
+        const b = boundsOf(n);
+        const dx = (b.x + b.w / 2 - (view.x + view.w / 2)) / (view.w / 2);
+        const dy = (b.y + b.h / 2 - (view.y + view.h / 2)) / (view.h / 2);
+        return base + Math.min(Math.hypot(dx, dy), 1) * LOD_STAGGER;
       };
 
-      if (vp.zoom >= LOD_MODULE_EXPAND_ZOOM) {
-        const toExpand = new Map<string, string>();
-        for (const n of live) {
-          if (toExpand.size >= LOD_MODULE_BUDGET) break;
-          const data = n.data as Partial<ArchRfNode["data"]>;
-          const arch = data.arch;
-          if (!arch || data.codeExpanded) continue;
-          if (isContainerKind(arch.kind) || arch.kind === "note" || arch.codeFile) continue;
-          if (expandedRef.current.has(n.id) || autoExpandedNodes.current.has(n.id)) continue;
-          if (lodSuppressedNodes.current.has(n.id)) continue;
-          if (!inView(n)) continue;
-          const module = moduleForNode(n.id);
-          if (module) toExpand.set(n.id, module);
-        }
-        if (toExpand.size > 0) {
-          for (const id of toExpand.keys()) autoExpandedNodes.current.add(id);
-          setCodeExpanded((prev) => {
-            const next = new Map(prev);
-            for (const [id, module] of toExpand) next.set(id, module);
-            return next;
-          });
-        }
-      } else if (vp.zoom <= LOD_MODULE_COLLAPSE_ZOOM) {
-        lodSuppressedNodes.current.clear();
-        if (autoExpandedNodes.current.size > 0) {
-          const ids = [...autoExpandedNodes.current];
-          autoExpandedNodes.current.clear();
-          setCodeExpanded((prev) => {
-            const next = new Map(prev);
-            for (const id of ids) next.delete(id);
-            return next;
-          });
-        }
+      const moduleCands: { id: string; threshold: number }[] = [];
+      for (const n of live) {
+        const data = n.data as Partial<ArchRfNode["data"]>;
+        const arch = data.arch;
+        if (!arch || data.codeExpanded) continue;
+        if (isContainerKind(arch.kind) || arch.kind === "note" || arch.codeFile) continue;
+        if (expandedRef.current.has(n.id) || autoExpandedNodes.current.has(n.id)) continue;
+        if (lodSuppressedNodes.current.has(n.id)) continue;
+        if (!inView(boundsOf(n))) continue;
+        const threshold = thresholdFor(n, LOD_MODULE_EXPAND_ZOOM);
+        if (vp.zoom >= threshold) moduleCands.push({ id: n.id, threshold });
+      }
+      moduleCands.sort((a, b) => a.threshold - b.threshold);
+      const nodeAdds = new Map<string, string>();
+      for (const c of moduleCands) {
+        if (nodeAdds.size >= LOD_MODULE_BUDGET) break;
+        const module = moduleForNode(c.id);
+        if (!module) continue;
+        nodeAdds.set(c.id, module);
+        autoExpandedNodes.current.set(c.id, c.threshold);
+      }
+      if (nodeAdds.size > 0) {
+        setCodeExpanded((prev) => {
+          const next = new Map(prev);
+          for (const [id, module] of nodeAdds) next.set(id, module);
+          return next;
+        });
       }
 
-      if (vp.zoom >= LOD_FILE_EXPAND_ZOOM) {
-        const toExpand: string[] = [];
-        for (const n of live) {
-          if (toExpand.length >= LOD_FILE_BUDGET) break;
-          const data = n.data as Partial<FileNodeData>;
-          if (data.nodeKind !== "file" || data.planned || data.expanded || !data.path) continue;
-          const path = data.path;
-          if (expandedFilesRef.current.has(path) || autoExpandedFiles.current.has(path)) continue;
-          if (lodSuppressedFiles.current.has(path)) continue;
-          if (!inView(n)) continue;
-          toExpand.push(path);
+      const nodeDrops: string[] = [];
+      for (const [id, threshold] of autoExpandedNodes.current) {
+        if (vp.zoom > threshold - LOD_HYSTERESIS) continue;
+        const n = byId.get(id);
+        if (n) {
+          const now = thresholdFor(n, LOD_MODULE_EXPAND_ZOOM);
+          if (vp.zoom >= now) {
+            autoExpandedNodes.current.set(id, now);
+            continue;
+          }
         }
-        if (toExpand.length > 0) {
-          for (const path of toExpand) autoExpandedFiles.current.add(path);
-          setExpandedFiles((prev) => {
-            const next = new Set(prev);
-            for (const path of toExpand) next.add(path);
-            return next;
-          });
-        }
-      } else if (vp.zoom <= LOD_FILE_COLLAPSE_ZOOM) {
-        lodSuppressedFiles.current.clear();
-        if (autoExpandedFiles.current.size > 0) {
-          const paths = [...autoExpandedFiles.current];
-          autoExpandedFiles.current.clear();
-          setExpandedFiles((prev) => {
-            const next = new Set(prev);
-            for (const path of paths) next.delete(path);
-            return next;
-          });
-        }
+        nodeDrops.push(id);
       }
+      if (nodeDrops.length > 0) {
+        for (const id of nodeDrops) autoExpandedNodes.current.delete(id);
+        setCodeExpanded((prev) => {
+          const next = new Map(prev);
+          for (const id of nodeDrops) next.delete(id);
+          return next;
+        });
+      }
+      if (vp.zoom <= LOD_MODULE_EXPAND_ZOOM - LOD_HYSTERESIS) lodSuppressedNodes.current.clear();
+
+      const fileCands: { path: string; threshold: number }[] = [];
+      for (const n of live) {
+        const data = n.data as Partial<FileNodeData>;
+        if (data.nodeKind !== "file" || data.planned || data.expanded || !data.path) continue;
+        const path = data.path;
+        if (expandedFilesRef.current.has(path) || autoExpandedFiles.current.has(path)) continue;
+        if (lodSuppressedFiles.current.has(path)) continue;
+        if (!inView(boundsOf(n))) continue;
+        const threshold = thresholdFor(n, LOD_FILE_EXPAND_ZOOM);
+        if (vp.zoom >= threshold) fileCands.push({ path, threshold });
+      }
+      fileCands.sort((a, b) => a.threshold - b.threshold);
+      const fileAdds = fileCands.slice(0, LOD_FILE_BUDGET);
+      if (fileAdds.length > 0) {
+        for (const f of fileAdds) autoExpandedFiles.current.set(f.path, f.threshold);
+        setExpandedFiles((prev) => {
+          const next = new Set(prev);
+          for (const f of fileAdds) next.add(f.path);
+          return next;
+        });
+      }
+
+      const fileDrops: string[] = [];
+      for (const [path, threshold] of autoExpandedFiles.current) {
+        if (vp.zoom > threshold - LOD_HYSTERESIS) continue;
+        const n = byId.get(fileId(path));
+        if (n) {
+          const now = thresholdFor(n, LOD_FILE_EXPAND_ZOOM);
+          if (vp.zoom >= now) {
+            autoExpandedFiles.current.set(path, now);
+            continue;
+          }
+        }
+        fileDrops.push(path);
+      }
+      if (fileDrops.length > 0) {
+        for (const path of fileDrops) autoExpandedFiles.current.delete(path);
+        setExpandedFiles((prev) => {
+          const next = new Set(prev);
+          for (const path of fileDrops) next.delete(path);
+          return next;
+        });
+      }
+      if (vp.zoom <= LOD_FILE_EXPAND_ZOOM - LOD_HYSTERESIS) lodSuppressedFiles.current.clear();
     },
     [getNodes, moduleForNode],
   );
@@ -868,7 +916,7 @@ function CanvasInner({
       const last = lastLodVp.current;
       if (
         last &&
-        Math.abs(vp.zoom - last.zoom) < 0.04 &&
+        Math.abs(vp.zoom - last.zoom) < 0.02 &&
         Math.abs(vp.x - last.x) < 120 &&
         Math.abs(vp.y - last.y) < 120
       ) {
