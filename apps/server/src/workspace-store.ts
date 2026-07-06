@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import {
   ARCHITECTURE_DIR,
+  ARCH_DRAFTS_DIR,
   CRYSTAL_DIR,
   PROJECTS_DIR,
   WORKSPACE_FILE,
@@ -12,6 +13,7 @@ import {
   parseCrystalFile,
   serializeCrystalFile,
   slugify,
+  type ArchDraft,
   type ArchitectureGraph,
   type Project,
   type WorkspaceInfo,
@@ -53,6 +55,9 @@ export class WorkspaceStore {
     const architectures = (
       await this.loadKindDir<ArchitectureGraph>(ARCHITECTURE_DIR, "architecture")
     ).map((e) => ({ path: e.path, graph: e.data }));
+    const archDrafts = (await this.loadKindDir<ArchDraft>(ARCH_DRAFTS_DIR, "archdraft")).map(
+      (e) => ({ path: e.path, draft: e.data }),
+    );
     const projects = (await this.loadKindDir<Project>(PROJECTS_DIR, "project")).map(
       (e) => ({ path: e.path, project: e.data }),
     );
@@ -65,7 +70,7 @@ export class WorkspaceStore {
     }
 
     const root = path.resolve(this.root);
-    return { id: workspaceIdFor(root), root, manifest, architectures, projects };
+    return { id: workspaceIdFor(root), root, manifest, architectures, archDrafts, projects };
   }
 
   private async loadOrInitManifest(): Promise<WorkspaceManifest> {
@@ -90,7 +95,7 @@ export class WorkspaceStore {
 
   private async loadKindDir<T>(
     dir: string,
-    kind: "architecture" | "project",
+    kind: "architecture" | "archdraft" | "project",
   ): Promise<{ path: string; data: T }[]> {
     const abs = resolveInRoot(this.root, dir);
     if (!(await exists(abs))) return [];
@@ -124,6 +129,24 @@ export class WorkspaceStore {
 
   async deleteArchitecture(relPath: string): Promise<void> {
     this.assertInside(relPath, ARCHITECTURE_DIR);
+    await fs.rm(resolveInRoot(this.root, relPath), { force: true });
+  }
+
+  async createArchDraft(draft: ArchDraft): Promise<{ path: string; draft: ArchDraft }> {
+    const rel = `${ARCH_DRAFTS_DIR}/${await this.uniqueSlug(ARCH_DRAFTS_DIR, draft.name)}.json`;
+    await this.saveArchDraft(rel, draft);
+    return { path: rel, draft };
+  }
+
+  async saveArchDraft(relPath: string, draft: ArchDraft): Promise<void> {
+    this.assertInside(relPath, ARCH_DRAFTS_DIR);
+    const abs = resolveInRoot(this.root, relPath);
+    await fs.mkdir(path.dirname(abs), { recursive: true });
+    await fs.writeFile(abs, serializeCrystalFile("archdraft", draft), "utf8");
+  }
+
+  async deleteArchDraft(relPath: string): Promise<void> {
+    this.assertInside(relPath, ARCH_DRAFTS_DIR);
     await fs.rm(resolveInRoot(this.root, relPath), { force: true });
   }
 

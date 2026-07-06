@@ -89,6 +89,17 @@ export async function startCrystalServer(opts: {
       broadcast("workspace.changed", { ws: rt.id });
       return { ok: true };
     },
+    "archdraft.create": ({ ws, draft }) => registry.get(ws).store.createArchDraft(draft),
+    "archdraft.save": async ({ ws, path: p, draft }) => {
+      await registry.get(ws).store.saveArchDraft(p, draft);
+      return { ok: true };
+    },
+    "archdraft.delete": async ({ ws, path: p }) => {
+      const rt = registry.get(ws);
+      await rt.store.deleteArchDraft(p);
+      broadcast("workspace.changed", { ws: rt.id });
+      return { ok: true };
+    },
     "project.save": async ({ ws, path: p, project }) => {
       await registry.get(ws).store.saveProject(p, project);
       return { ok: true };
