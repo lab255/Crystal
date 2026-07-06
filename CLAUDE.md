@@ -34,6 +34,10 @@ always run things through pnpm.
   raw hex in components.
 - zustand v5: selectors must return stable references — no `?? []` literals inside
   selectors (use module-level empty constants); deriving arrays belongs outside the selector.
+- Deep links: every view is addressable via the URL hash (`#/<mode>/<subview>?…`). The
+  codec is `packages/core/src/deeplink.ts`, view/selection state lives in the client nav
+  store (`useNav`/`useNavUpdate`), and the SDK's `useDeepLinks` syncs store ↔ URL. New
+  navigational state belongs in the nav store, not component-local `useState`.
 
 ## Gotchas
 

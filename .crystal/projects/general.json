@@ -44,9 +44,9 @@
           "files": []
         },
         "runIds": [],
-        "order": 2,
+        "order": 5,
         "createdAt": "2026-07-06T00:00:00.000Z",
-        "updatedAt": "2026-07-06T00:00:00.000Z"
+        "updatedAt": "2026-07-06T06:46:42.764Z"
       },
       {
         "id": "task_codemap_overlay",
@@ -84,9 +84,9 @@
           "files": []
         },
         "runIds": [],
-        "order": 1,
+        "order": 2,
         "createdAt": "2026-07-06T00:00:00.000Z",
-        "updatedAt": "2026-07-06T00:00:00.000Z"
+        "updatedAt": "2026-07-06T06:46:44.300Z"
       },
       {
         "id": "task_bootstrap",
@@ -216,6 +216,23 @@
         "order": 6,
         "createdAt": "2026-07-06T00:00:00.000Z",
         "updatedAt": "2026-07-06T00:00:00.000Z"
+      },
+      {
+        "id": "task_0b421c2099aa",
+        "title": "New Item",
+        "description": "",
+        "status": "backlog",
+        "priority": "medium",
+        "labels": [],
+        "links": {
+          "nodeIds": [],
+          "repoIds": [],
+          "files": []
+        },
+        "runIds": [],
+        "order": 6,
+        "createdAt": "2026-07-06T06:46:58.020Z",
+        "updatedAt": "2026-07-06T06:47:06.635Z"
       }
     ]
   }

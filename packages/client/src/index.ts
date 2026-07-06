@@ -15,6 +15,7 @@ export {
   type AgentState,
   type AgentStore,
 } from "./agent-store.js";
+export { createNavStore, type NavPatch, type NavState, type NavStore } from "./nav-store.js";
 export {
   CrystalProvider,
   defaultBridgeUrl,
@@ -22,6 +23,8 @@ export {
   useAgents,
   useConnectionState,
   useCrystal,
+  useNav,
+  useNavUpdate,
   useWorkspace,
   useWorkspaces,
   type CrystalContextValue,

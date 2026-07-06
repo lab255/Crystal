@@ -24,7 +24,14 @@ import {
   type CodeMapSummary,
   type CodeTrace,
 } from "@crystal/core";
-import { useConnectionState, useCrystal, useWorkspace, useWorkspaces } from "@crystal/client";
+import {
+  useConnectionState,
+  useCrystal,
+  useNav,
+  useNavUpdate,
+  useWorkspace,
+  useWorkspaces,
+} from "@crystal/client";
 import {
   Button,
   Dialog,
@@ -60,24 +67,51 @@ const EMPTY_REFACTORS: never[] = [];
 type ArchitectView = "diagrams" | "infra" | "codemap";
 
 export function ArchitectMode() {
-  const [view, setView] = useState<ArchitectView>("diagrams");
+  // View + draft selection live in the deep-linkable nav store.
+  const nav = useNavUpdate();
+  const view = useNav((l) => l.architect?.view) ?? "diagrams";
+  const setView = useCallback(
+    (v: ArchitectView) => nav({ architect: { view: v } }),
+    [nav],
+  );
   // Set when the user zooms from a diagram node into its code module (or a file within it).
   const [drill, setDrill] = useState<{ module: string; file?: string; from: string } | null>(null);
   // "Start journey here…" from the code map prefills the journey dialog.
   const [journeySeed, setJourneySeed] = useState<JourneySeed | null>(null);
   // Lifted here so the code map sees the open draft (drag-refactor targets it).
-  const [draftPath, setDraftPath] = useState<string | null>(null);
+  const draftPath = useNav((l) => l.architect?.draft) ?? null;
+  const setDraftPath = useCallback(
+    (path: string | null) => nav({ architect: { draft: path } }),
+    [nav],
+  );
 
-  const drillIntoModule = useCallback((module: string, from: string, file?: string) => {
-    setDrill({ module, file, from });
-    setView("codemap");
-  }, []);
+  const activeWs = useWorkspaces((s) => s.activeId);
+  const drillIntoModule = useCallback(
+    (module: string, from: string, file?: string) => {
+      setDrill({ module, file, from });
+      nav({
+        architect: {
+          view: "codemap",
+          // Point the code-map level at the drill target so the URL captures it.
+          codemap: activeWs
+            ? file
+              ? { kind: "file", ws: activeWs, path: file }
+              : { kind: "module", ws: activeWs, path: module }
+            : null,
+        },
+      });
+    },
+    [nav, activeWs],
+  );
 
-  const startJourneyFromCode = useCallback((seed: JourneySeed) => {
-    setJourneySeed(seed);
-    setDrill(null);
-    setView("diagrams");
-  }, []);
+  const startJourneyFromCode = useCallback(
+    (seed: JourneySeed) => {
+      setJourneySeed(seed);
+      setDrill(null);
+      setView("diagrams");
+    },
+    [setView],
+  );
 
   const tab = (v: ArchitectView, icon: React.ReactNode, label: React.ReactNode) => (
     <button
@@ -174,7 +208,13 @@ function DiagramsView({
   const createDraftFile = useWorkspace((s) => s.createArchDraft);
   const deleteArchDraft = useWorkspace((s) => s.deleteArchDraft);
 
-  const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const nav = useNavUpdate();
+  const infoLoaded = useWorkspace((s) => s.info != null);
+  const selectedPath = useNav((l) => l.architect?.diagram) ?? null;
+  const setSelectedPath = useCallback(
+    (path: string | null) => nav({ architect: { diagram: path } }),
+    [nav],
+  );
   const [createOpen, setCreateOpen] = useState(false);
   const [newName, setNewName] = useState("");
   const [seedMode, setSeedMode] = useState<"code" | "blank">("code");
@@ -186,7 +226,11 @@ function DiagramsView({
   const { client } = useCrystal();
   const connection = useConnectionState();
   const activeWs = useWorkspaces((s) => s.activeId);
-  const [overlayOn, setOverlayOn] = useState(false);
+  const overlayOn = useNav((l) => l.architect?.overlay) ?? false;
+  const setOverlayOn = useCallback(
+    (on: boolean) => nav({ architect: { overlay: on } }),
+    [nav],
+  );
   const [codeSummary, setCodeSummary] = useState<CodeMapSummary | null>(null);
 
   const fetchSummary = useCallback(async () => {
@@ -218,11 +262,12 @@ function DiagramsView({
   const activeDraft = archDrafts.find((d) => d.path === draftPath) ?? null;
 
   // Leave draft mode if the draft vanished or the user switched architectures.
+  // Only once workspace info is in — a deep-linked draft must survive loading.
   useEffect(() => {
-    if (draftPath && (!activeDraft || activeDraft.draft.archPath !== selected?.path)) {
+    if (infoLoaded && draftPath && (!activeDraft || activeDraft.draft.archPath !== selected?.path)) {
       setDraftPath(null);
     }
-  }, [draftPath, activeDraft, selected?.path]);
+  }, [infoLoaded, draftPath, activeDraft, selected?.path]);
 
   // The graph being edited right now — the draft's while a draft is open.
   const effectiveGraph = activeDraft ? activeDraft.draft.graph : (selected?.graph ?? null);
@@ -242,15 +287,20 @@ function DiagramsView({
   );
 
   /* ---- journeys / dataflow lens ---- */
-  const [activeJourneyId, setActiveJourneyId] = useState<string | null>(null);
+  const activeJourneyId = useNav((l) => l.architect?.journey) ?? null;
+  const setActiveJourneyId = useCallback(
+    (id: string | null) => nav({ architect: { journey: id } }),
+    [nav],
+  );
   const [journeyTrace, setJourneyTrace] = useState<CodeTrace | null>(null);
   const [journeyError, setJourneyError] = useState<string | null>(null);
   const [traceGeneration, setTraceGeneration] = useState(0);
 
   const activeJourney = effectiveGraph?.journeys.find((j) => j.id === activeJourneyId) ?? null;
+  // Clear a dangling journey only against a loaded graph — deep links arrive first.
   useEffect(() => {
-    if (activeJourneyId && !activeJourney) setActiveJourneyId(null);
-  }, [activeJourneyId, activeJourney]);
+    if (effectiveGraph && activeJourneyId && !activeJourney) setActiveJourneyId(null);
+  }, [effectiveGraph, activeJourneyId, activeJourney, setActiveJourneyId]);
 
   // The trace follows the code: re-trace whenever the map re-analyzes.
   useEffect(

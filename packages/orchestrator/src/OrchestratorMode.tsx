@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Bot, ChevronDown, KanbanSquare, ListTodo, Plus } from "lucide-react";
-import type { Project } from "@crystal/core";
-import { useAgents, useWorkspace } from "@crystal/client";
+import type { OrchestratorTabId, Project } from "@crystal/core";
+import { useAgents, useNav, useNavUpdate, useWorkspace } from "@crystal/client";
 import {
   Button,
   Dialog,
@@ -23,7 +23,7 @@ import { RunView } from "./RunView.js";
 import { TaskDetail } from "./TaskDetail.js";
 import { formatCost } from "./prompt.js";
 
-type OrchestratorTab = "board" | "runs";
+type OrchestratorTab = OrchestratorTabId;
 
 const EMPTY_PROJECTS: never[] = [];
 
@@ -33,10 +33,28 @@ export function OrchestratorMode() {
   const createProject = useWorkspace((s) => s.createProject);
   const runs = useAgents((s) => s.runs);
 
-  const [tab, setTab] = useState<OrchestratorTab>("board");
-  const [projectPath, setProjectPath] = useState<string | null>(null);
-  const [taskId, setTaskId] = useState<string | null>(null);
-  const [runId, setRunId] = useState<string | null>(null);
+  // Tab and selections are deep-linkable — they live in the nav store.
+  const nav = useNavUpdate();
+  const tab = useNav((l) => l.orchestrate?.tab) ?? "board";
+  const setTab = useCallback(
+    (t: OrchestratorTab) => nav({ orchestrate: { tab: t } }),
+    [nav],
+  );
+  const projectPath = useNav((l) => l.orchestrate?.project) ?? null;
+  const setProjectPath = useCallback(
+    (path: string | null) => nav({ orchestrate: { project: path } }),
+    [nav],
+  );
+  const taskId = useNav((l) => l.orchestrate?.task) ?? null;
+  const setTaskId = useCallback(
+    (id: string | null) => nav({ orchestrate: { task: id } }),
+    [nav],
+  );
+  const runId = useNav((l) => l.orchestrate?.run) ?? null;
+  const setRunId = useCallback(
+    (id: string | null) => nav({ orchestrate: { run: id } }),
+    [nav],
+  );
   const [createOpen, setCreateOpen] = useState(false);
   const [newName, setNewName] = useState("");
 

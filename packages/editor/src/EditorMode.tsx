@@ -1,7 +1,7 @@
 import Editor, { type OnMount } from "@monaco-editor/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Circle, Code2, X } from "lucide-react";
-import { useCrystal } from "@crystal/client";
+import { useCrystal, useNav, useNavUpdate } from "@crystal/client";
 import { Button, EmptyState, Kbd, Spinner, cn } from "@crystal/ui";
 import { FileTree } from "./FileTree.js";
 import { QuickOpen } from "./QuickOpen.js";
@@ -95,6 +95,26 @@ export function EditorMode() {
       return next;
     });
   }
+
+  // Deep links: the URL carries the active file. Opening from the URL only
+  // reacts to nav changes (not activePath) so a tab click isn't fought by a
+  // momentarily stale link; the write-back below keeps the two converged.
+  const nav = useNavUpdate();
+  const navFile = useNav((l) => l.code?.file) ?? null;
+  useEffect(() => {
+    if (navFile && navFile !== activeRef.current) void openFile(navFile);
+  }, [navFile, openFile]);
+  const hadFileRef = useRef(false);
+  useEffect(() => {
+    if (activePath) {
+      hadFileRef.current = true;
+      nav({ code: { file: activePath } });
+    } else if (hadFileRef.current) {
+      // Only clear once a file was actually open — a null activePath on mount
+      // must not wipe a deep-linked file that is still being fetched.
+      nav({ code: { file: null } });
+    }
+  }, [activePath, nav]);
 
   // Global shortcuts: quick-open. Also honor cross-mode open-file requests
   // (dispatched by the code map's "Open in editor").

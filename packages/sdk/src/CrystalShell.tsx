@@ -1,8 +1,17 @@
 import { Suspense, lazy, useEffect, useState } from "react";
-import { Boxes, Code2, Gem, KanbanSquare, type LucideIcon } from "lucide-react";
-import { useAgents, useConnectionState, useWorkspace, useWorkspaces } from "@crystal/client";
+import { Boxes, Check, Code2, Gem, KanbanSquare, Link2, type LucideIcon } from "lucide-react";
+import { parseDeepLink } from "@crystal/core";
+import {
+  useAgents,
+  useConnectionState,
+  useNav,
+  useNavUpdate,
+  useWorkspace,
+  useWorkspaces,
+} from "@crystal/client";
 import { Spinner, StatusDot, Tooltip, TooltipProvider, cn } from "@crystal/ui";
 import { CommandPalette } from "./CommandPalette.js";
+import { useDeepLinks } from "./deeplinks.js";
 import { CRYSTAL_MODES, MODE_LABELS, type CrystalMode } from "./modes.js";
 import { WorkspacePicker } from "./WorkspacePicker.js";
 
@@ -36,13 +45,32 @@ export interface CrystalShellProps {
   onModeChange?: (mode: CrystalMode) => void;
   /** Hide the bottom status bar (for tight embeds). */
   hideStatusBar?: boolean;
+  /** Sync views to the URL hash for shareable deep links (default on; turn off for embeds that own the URL). */
+  deepLinking?: boolean;
 }
 
-export function CrystalShell({ initialMode, onModeChange, hideStatusBar }: CrystalShellProps) {
-  const [mode, setMode] = useState<CrystalMode>(initialMode ?? "architect");
-  const [visited, setVisited] = useState<ReadonlySet<CrystalMode>>(
-    () => new Set([initialMode ?? "architect"]),
+export function CrystalShell({
+  initialMode,
+  onModeChange,
+  hideStatusBar,
+  deepLinking = true,
+}: CrystalShellProps) {
+  // Peek at the hash before the first render so a deep-linked mode doesn't
+  // flash (and lazily download) the default mode first.
+  const [urlMode] = useState(() =>
+    deepLinking && typeof window !== "undefined"
+      ? parseDeepLink(window.location.hash).mode
+      : undefined,
   );
+  const fallbackMode = urlMode ?? initialMode ?? "architect";
+  const mode = useNav((l) => l.mode) ?? fallbackMode;
+  const updateNav = useNavUpdate();
+  useDeepLinks(deepLinking, initialMode ?? "architect");
+
+  const [visited, setVisited] = useState<ReadonlySet<CrystalMode>>(() => new Set([fallbackMode]));
+  useEffect(() => {
+    setVisited((v) => (v.has(mode) ? v : new Set(v).add(mode)));
+  }, [mode]);
   const [paletteOpen, setPaletteOpen] = useState(false);
 
   const connection = useConnectionState();
@@ -52,8 +80,7 @@ export function CrystalShell({ initialMode, onModeChange, hideStatusBar }: Cryst
   const runningRuns = useAgents((s) => s.runs.filter((r) => r.status === "running").length);
 
   function switchMode(next: CrystalMode): void {
-    setMode(next);
-    setVisited((v) => (v.has(next) ? v : new Set(v).add(next)));
+    updateNav({ mode: next });
     onModeChange?.(next);
   }
 
@@ -172,6 +199,7 @@ export function CrystalShell({ initialMode, onModeChange, hideStatusBar }: Cryst
                   {runningRuns} agent{runningRuns > 1 ? "s" : ""} running
                 </span>
               ) : null}
+              {deepLinking ? <CopyLinkButton /> : null}
               <span>Crystal 0.1</span>
             </span>
           </footer>
@@ -180,5 +208,35 @@ export function CrystalShell({ initialMode, onModeChange, hideStatusBar }: Cryst
         <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} onSwitchMode={switchMode} />
       </div>
     </TooltipProvider>
+  );
+}
+
+/** Copies the current deep link — the URL always encodes the active view. */
+function CopyLinkButton() {
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const t = setTimeout(() => setCopied(false), 1500);
+    return () => clearTimeout(t);
+  }, [copied]);
+  return (
+    <Tooltip content="Copy a shareable link to this view">
+      <button
+        type="button"
+        onClick={() => {
+          navigator.clipboard
+            .writeText(window.location.href)
+            .then(() => setCopied(true))
+            .catch(() => {});
+        }}
+        className={cn(
+          "flex items-center gap-1 transition-colors",
+          copied ? "text-ok" : "text-ink-faint hover:text-ink-muted",
+        )}
+      >
+        {copied ? <Check className="h-3 w-3" /> : <Link2 className="h-3 w-3" />}
+        {copied ? "copied" : "share"}
+      </button>
+    </Tooltip>
   );
 }

@@ -27,6 +27,7 @@ import {
   createArchDraft as newArchDraft,
   createMoveIntent,
   type CodeFileDetail,
+  type CodeMapLevelLink,
   type CodeMapSummary,
   type CodeModuleDetail,
   type CodeSymbolKind,
@@ -35,7 +36,7 @@ import {
   type HoistIntent,
   type RefactorIntent,
 } from "@crystal/core";
-import { useCrystal, useWorkspace, useWorkspaces } from "@crystal/client";
+import { useCrystal, useNav, useNavUpdate, useWorkspace, useWorkspaces } from "@crystal/client";
 import { Badge, Button, EmptyState, Pane, Split, Spinner, Tooltip, cn } from "@crystal/ui";
 import { SymbolSnippet } from "../snippets.js";
 import {
@@ -49,11 +50,8 @@ import { DuplicatesPanel } from "./DuplicatesPanel.js";
 
 const nodeTypes = { code: CodeNode };
 
-type Level =
-  | { kind: "all" }
-  | { kind: "workspace"; ws: string }
-  | { kind: "module"; ws: string; path: string }
-  | { kind: "file"; ws: string; path: string };
+// The drill level is deep-linkable — core owns the shape.
+type Level = CodeMapLevelLink;
 
 const ACCENTS = [
   "var(--color-accent-violet)",
@@ -156,8 +154,14 @@ function CodeMapInner({
   const updateArchDraft = useWorkspace((s) => s.updateArchDraft);
   const createDraftFile = useWorkspace((s) => s.createArchDraft);
 
-  // Level is null until we know the active workspace to start from.
-  const [level, setLevelRaw] = useState<Level | null>(null);
+  // The drill level lives in the nav store so it deep-links and follows
+  // back/forward. Null until we know the workspace to start from.
+  const nav = useNavUpdate();
+  const level = useNav((l) => l.architect?.codemap ?? null);
+  const setLevelRaw = useCallback(
+    (next: Level) => nav({ architect: { codemap: next } }),
+    [nav],
+  );
   const [summary, setSummary] = useState<CodeMapSummary | null>(null);
   const [moduleDetail, setModuleDetail] = useState<CodeModuleDetail | null>(null);
   const [fileDetail, setFileDetail] = useState<CodeFileDetail | null>(null);
@@ -176,12 +180,15 @@ function CodeMapInner({
             : { kind: "workspace", ws: activeWs },
       );
     }
-  }, [level, activeWs, initialModule, initialFile]);
+  }, [level, activeWs, initialModule, initialFile, setLevelRaw]);
 
-  const setLevel = useCallback((next: Level) => {
-    setCrossEdge(null);
-    setLevelRaw(next);
-  }, []);
+  const setLevel = useCallback(
+    (next: Level) => {
+      setCrossEdge(null);
+      setLevelRaw(next);
+    },
+    [setLevelRaw],
+  );
 
   const refetch = useCallback(async () => {
     if (!level) return;
@@ -495,7 +502,11 @@ function CodeMapInner({
     [activeDraft, architectures, createDraftFile, onOpenDraft, updateArchDraft],
   );
 
-  const [showDuplicates, setShowDuplicates] = useState(false);
+  const showDuplicates = useNav((l) => l.architect?.duplicates) ?? false;
+  const setShowDuplicates = useCallback(
+    (on: boolean) => nav({ architect: { duplicates: on } }),
+    [nav],
+  );
 
   // Hoist targets come from the workspace module list, which the module level
   // hasn't necessarily fetched (e.g. after a drill-in) — load it on demand.
@@ -621,7 +632,7 @@ function CodeMapInner({
               <button
                 type="button"
                 aria-pressed={showDuplicates}
-                onClick={() => setShowDuplicates((v) => !v)}
+                onClick={() => setShowDuplicates(!showDuplicates)}
                 className={cn(
                   "ml-1 flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] transition-colors",
                   showDuplicates ? "bg-warn/15 text-warn" : "text-ink-faint hover:text-ink-muted",

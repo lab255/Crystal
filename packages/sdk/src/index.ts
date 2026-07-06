@@ -25,8 +25,11 @@ export {
   useAgents,
   useConnectionState,
   useCrystal,
+  useNav,
+  useNavUpdate,
   useWorkspace,
   type ConnectionState,
+  type NavPatch,
 } from "@crystal/client";
 
 // Domain model

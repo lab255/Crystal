@@ -7,9 +7,15 @@ import {
   type ReactNode,
 } from "react";
 import { useStore } from "zustand";
-import { BRIDGE_PATH, DEFAULT_BRIDGE_PORT, type WorkspaceDescriptor } from "@crystal/core";
+import {
+  BRIDGE_PATH,
+  DEFAULT_BRIDGE_PORT,
+  type DeepLink,
+  type WorkspaceDescriptor,
+} from "@crystal/core";
 import { BridgeClient, type ConnectionState } from "./bridge-client.js";
 import { createAgentStore, type AgentState, type AgentStore } from "./agent-store.js";
+import { createNavStore, type NavPatch, type NavStore } from "./nav-store.js";
 import {
   createWorkspaceStore,
   type WorkspaceState,
@@ -26,6 +32,7 @@ export interface CrystalContextValue {
   workspacesStore: WorkspacesStore;
   workspaceStore: WorkspaceStore;
   agentStore: AgentStore;
+  navStore: NavStore;
 }
 
 const CrystalContext = createContext<CrystalContextValue | null>(null);
@@ -53,6 +60,7 @@ export function CrystalProvider({
       workspacesStore: createWorkspacesStore(client),
       workspaceStore: createWorkspaceStore(client),
       agentStore: createAgentStore(client),
+      navStore: createNavStore(),
     };
   }, [url]);
 
@@ -133,4 +141,19 @@ export function useWorkspace<T>(selector: (s: WorkspaceState) => T): T {
 export function useAgents<T>(selector: (s: AgentState) => T): T {
   const { agentStore } = useCrystal();
   return useStore(agentStore, selector);
+}
+
+/**
+ * Select from the deep-linkable navigation state. Selectors should return
+ * primitives (or references stored in the link itself) — zustand v5 rules.
+ */
+export function useNav<T>(selector: (link: DeepLink) => T): T {
+  const { navStore } = useCrystal();
+  return useStore(navStore, (s) => selector(s.link));
+}
+
+/** Stable updater for the navigation state (see `NavPatch` for semantics). */
+export function useNavUpdate(): (patch: NavPatch) => void {
+  const { navStore } = useCrystal();
+  return navStore.getState().update;
 }
