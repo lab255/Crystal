@@ -10,6 +10,7 @@ function graph(partial: Partial<ArchitectureGraph>): ArchitectureGraph {
     nodes: [],
     edges: [],
     environments: [],
+    journeys: [],
     ...partial,
   };
 }

@@ -6,6 +6,7 @@ import {
   type ArchitectureGraph,
 } from "./architecture.js";
 import { uid } from "./ids.js";
+import { RefactorIntentSchema } from "./refactor.js";
 
 /**
  * Architecture draft — a proposed rearrangement of an architecture graph,
@@ -27,6 +28,13 @@ export const ArchDraftSchema = z.object({
   base: ArchitectureGraphSchema,
   /** The draft's working graph. */
   graph: ArchitectureGraphSchema,
+  /**
+   * Symbolic refactor intents recorded while planning (drag a function onto
+   * another file, hoist duplicates). Draft-local: `base` never carries them,
+   * so rebases preserve them untouched; they execute on apply and are
+   * re-validated against the live code map rather than merged.
+   */
+  refactors: z.array(RefactorIntentSchema).default([]),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -45,6 +53,7 @@ export function createArchDraft(
     archPath,
     base: clone(graph),
     graph: clone(graph),
+    refactors: [],
     createdAt: now,
     updatedAt: now,
   };
@@ -59,6 +68,7 @@ export function graphsEqual(a: ArchitectureGraph, b: ArchitectureGraph): boolean
       nodes: [...g.nodes].sort((x, y) => x.id.localeCompare(y.id)),
       edges: [...g.edges].sort((x, y) => x.id.localeCompare(y.id)),
       environments: g.environments,
+      journeys: g.journeys,
     });
   return norm(a) === norm(b);
 }
@@ -84,6 +94,7 @@ const NODE_FIELDS = [
   "href",
   "accent",
   "placements",
+  "layer",
 ] as const;
 
 function geometry(n: ArchNode) {
@@ -94,6 +105,57 @@ function nodeChanged(a: ArchNode, b: ArchNode): boolean {
   return (
     NODE_FIELDS.some((k) => !same(a[k], b[k])) || !same(geometry(a), geometry(b))
   );
+}
+
+/**
+ * Three-way merge of an id-keyed list: draft edits win (with a conflict note
+ * when upstream also changed the item), deletions on either side are honored
+ * unless the other side edited, and both sides' additions are kept.
+ */
+function mergeById<T extends { id: string }>(
+  base: T[],
+  ours: T[],
+  theirs: T[],
+  label: (item: T) => string,
+  conflicts: string[],
+): T[] {
+  const baseBy = new Map(base.map((i) => [i.id, i]));
+  const oursBy = new Map(ours.map((i) => [i.id, i]));
+  const out: T[] = [];
+  for (const t of theirs) {
+    const b = baseBy.get(t.id);
+    if (!b) {
+      out.push(t); // added upstream
+      continue;
+    }
+    const o = oursBy.get(t.id);
+    if (!o) {
+      if (!same(b, t)) {
+        conflicts.push(`kept ${label(t)} — deleted in draft but changed upstream`);
+        out.push(t);
+      }
+      continue;
+    }
+    if (same(o, b)) {
+      out.push(t); // draft untouched — take upstream
+      continue;
+    }
+    if (!same(t, b) && !same(t, o)) {
+      conflicts.push(`${label(o)} changed in draft and upstream — draft wins`);
+    }
+    out.push(o);
+  }
+  for (const o of ours) {
+    const b = baseBy.get(o.id);
+    if (!b) {
+      if (!theirs.some((t) => t.id === o.id)) out.push(o); // added in draft
+      continue;
+    }
+    if (!theirs.some((t) => t.id === o.id) && !same(b, o)) {
+      conflicts.push(`${label(o)} was removed upstream — draft changes to it were dropped`);
+    }
+  }
+  return out;
 }
 
 /**
@@ -192,9 +254,21 @@ export function mergeGraphs(
     if (!baseEdges.has(o.id)) pushEdge(o); // added in draft
   }
 
-  const environments = same(ours.environments, base.environments)
-    ? theirs.environments
-    : ours.environments;
+  let environments = theirs.environments;
+  if (!same(ours.environments, base.environments)) {
+    if (!same(theirs.environments, base.environments) && !same(theirs.environments, ours.environments)) {
+      conflicts.push("environments changed in draft and upstream — draft wins");
+    }
+    environments = ours.environments;
+  }
+
+  const journeys = mergeById(
+    base.journeys,
+    ours.journeys,
+    theirs.journeys,
+    (j) => `journey "${j.name}"`,
+    conflicts,
+  );
 
   return {
     graph: {
@@ -202,6 +276,7 @@ export function mergeGraphs(
       name: ours.name !== base.name ? ours.name : theirs.name,
       description: ours.description !== base.description ? ours.description : theirs.description,
       environments,
+      journeys,
       nodes: fixedNodes,
       edges,
       viewport: ours.viewport ?? theirs.viewport,

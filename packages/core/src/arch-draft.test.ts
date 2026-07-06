@@ -22,7 +22,8 @@ function edge(id: string, source: string, target: string, patch: Partial<ArchEdg
 }
 
 function graph(nodes: ArchNode[], edges: ArchEdge[] = []): ArchitectureGraph {
-  return { ...createArchitectureGraph("g"), id: "arch_1", nodes, edges };
+  // Deterministic: createArchitectureGraph seeds a Local env with a fresh id.
+  return { ...createArchitectureGraph("g"), id: "arch_1", environments: [], nodes, edges };
 }
 
 const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
@@ -122,6 +123,60 @@ describe("mergeGraphs", () => {
   });
 });
 
+describe("mergeGraphs — environments and journeys", () => {
+  const env = (id: string, name = id, kind: "local" | "cloud" = "local") => ({ id, name, kind });
+  const journey = (id: string, name = id, symbol = "main") => ({
+    id,
+    name,
+    description: "",
+    entry: { file: "src/app.ts", symbol },
+  });
+
+  it("takes upstream environments when the draft did not touch them", () => {
+    const base = graph([]);
+    const theirs = { ...graph([]), environments: [env("e1", "Local")] };
+    const { graph: merged, conflicts } = mergeGraphs(base, clone(base), theirs);
+    expect(merged.environments).toEqual([env("e1", "Local")]);
+    expect(conflicts).toEqual([]);
+  });
+
+  it("notes a conflict when environments diverged on both sides", () => {
+    const base = { ...graph([]), environments: [env("e1", "Local")] };
+    const ours = { ...graph([]), environments: [env("e1", "Local"), env("e2", "AWS", "cloud")] };
+    const theirs = { ...graph([]), environments: [env("e1", "Dev")] };
+    const { graph: merged, conflicts } = mergeGraphs(base, ours, theirs);
+    expect(merged.environments).toEqual(ours.environments);
+    expect(conflicts).toContain("environments changed in draft and upstream — draft wins");
+  });
+
+  it("keeps journey additions from both sides", () => {
+    const base = graph([]);
+    const ours = { ...graph([]), journeys: [journey("j1", "Creation")] };
+    const theirs = { ...graph([]), journeys: [journey("j2", "Submission")] };
+    const { graph: merged, conflicts } = mergeGraphs(base, ours, theirs);
+    expect(merged.journeys.map((j) => j.id).sort()).toEqual(["j1", "j2"]);
+    expect(conflicts).toEqual([]);
+  });
+
+  it("draft wins when both sides edit the same journey, with a note", () => {
+    const base = { ...graph([]), journeys: [journey("j1", "Creation")] };
+    const ours = { ...graph([]), journeys: [journey("j1", "Creation", "createThing")] };
+    const theirs = { ...graph([]), journeys: [journey("j1", "Creation", "submitThing")] };
+    const { graph: merged, conflicts } = mergeGraphs(base, ours, theirs);
+    expect(merged.journeys[0]!.entry.symbol).toBe("createThing");
+    expect(conflicts).toHaveLength(1);
+  });
+
+  it("honors journey deletions unless upstream edited the journey", () => {
+    const base = { ...graph([]), journeys: [journey("j1"), journey("j2")] };
+    const ours = { ...graph([]), journeys: [journey("j1")] }; // deleted j2
+    const theirs = { ...graph([]), journeys: [journey("j1"), journey("j2", "j2 renamed")] };
+    const { graph: merged, conflicts } = mergeGraphs(base, ours, theirs);
+    expect(merged.journeys.map((j) => j.id).sort()).toEqual(["j1", "j2"]);
+    expect(conflicts).toHaveLength(1);
+  });
+});
+
 describe("rebaseDraft", () => {
   it("resets base to current so a later apply is a clean write", () => {
     const current = graph([node("a")]);
@@ -133,5 +188,39 @@ describe("rebaseDraft", () => {
     expect(rebased.graph.nodes.map((n) => n.id).sort()).toEqual(["a", "b"]);
     expect(rebased.updatedAt).toBe("t1");
     expect(graphsEqual(rebased.base, current)).toBe(true);
+  });
+
+  it("preserves refactor intents across a rebase", () => {
+    const draft = createArchDraft("plan", ".crystal/architecture/x.json", graph([]), "t0");
+    draft.refactors = [
+      { id: "r1", kind: "move", symbol: "helper", fromFile: "a.ts", toModule: "packages/core", toFile: null },
+    ];
+    const { draft: rebased } = rebaseDraft(draft, graph([node("a")]), "t1");
+    expect(rebased.refactors).toEqual(draft.refactors);
+  });
+});
+
+describe("ArchDraftSchema back-compat", () => {
+  it("parses legacy drafts without refactors or env kinds", async () => {
+    const { ArchDraftSchema } = await import("./arch-draft.js");
+    const legacyGraph = {
+      id: "arch_1",
+      name: "g",
+      nodes: [],
+      edges: [],
+      environments: [{ id: "e1", name: "prod" }], // no `kind`
+    };
+    const parsed = ArchDraftSchema.parse({
+      id: "d1",
+      name: "Plan",
+      archPath: ".crystal/architecture/overview.json",
+      base: legacyGraph,
+      graph: legacyGraph,
+      createdAt: "t0",
+      updatedAt: "t0",
+    });
+    expect(parsed.refactors).toEqual([]);
+    expect(parsed.graph.journeys).toEqual([]);
+    expect(parsed.graph.environments[0]!.kind).toBe("local");
   });
 });

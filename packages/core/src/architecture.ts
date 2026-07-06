@@ -31,10 +31,32 @@ export type ArchNodeKind = z.infer<typeof ArchNodeKindSchema>;
 /** Kinds that render as containers and may hold children. */
 export const CONTAINER_KINDS: readonly ArchNodeKind[] = ["system", "group"];
 
+/**
+ * Traffic layers for the top-down layered view: requests enter through the
+ * `entry` tier (gateways, middleware, controllers, frontends), flow through
+ * `service` business logic, and land in the `data` tier.
+ */
+export const ARCH_LAYERS = ["entry", "service", "data"] as const;
+export const ArchLayerSchema = z.enum(ARCH_LAYERS);
+export type ArchLayer = z.infer<typeof ArchLayerSchema>;
+
+/** Default layer per node kind; containers and notes stay unlayered. */
+export const DEFAULT_LAYER_OF_KIND: Partial<Record<ArchNodeKind, ArchLayer>> = {
+  gateway: "entry",
+  frontend: "entry",
+  external: "entry",
+  service: "service",
+  repo: "service",
+  datastore: "data",
+  queue: "data",
+};
+
 /** A deployment environment the architecture runs in (dev/staging/prod…). */
 export const ArchEnvironmentSchema = z.object({
   id: z.string(),
   name: z.string(),
+  /** Local development vs deployed cloud infrastructure. */
+  kind: z.enum(["local", "cloud"]).default("local"),
 });
 export type ArchEnvironment = z.infer<typeof ArchEnvironmentSchema>;
 
@@ -70,6 +92,8 @@ export const ArchNodeSchema = z.object({
   href: z.string().nullish(),
   /** Environment id → where this component runs (infrastructure view). */
   placements: z.record(ArchPlacementSchema).default({}),
+  /** Explicit layer override; null/absent derives the layer from `kind`. */
+  layer: ArchLayerSchema.nullish(),
   /** Accent color token override (named token, not raw css). */
   accent: z
     .enum(["violet", "cyan", "emerald", "amber", "rose", "blue", "slate"])
@@ -90,6 +114,25 @@ export const ArchEdgeSchema = z.object({
 });
 export type ArchEdge = z.infer<typeof ArchEdgeSchema>;
 
+/**
+ * A named user journey (creation, update, submission…) anchored to a code
+ * entry point. The dataflow view traces the call graph from `entry` and
+ * projects the flow onto the diagram — the journey stores only the anchor,
+ * never the trace, so it follows the code as it changes.
+ */
+export const JourneySchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  description: z.string().default(""),
+  entry: z.object({
+    /** Workspace-relative file path. */
+    file: z.string(),
+    /** Top-level symbol name within that file. */
+    symbol: z.string(),
+  }),
+});
+export type Journey = z.infer<typeof JourneySchema>;
+
 export const ArchitectureGraphSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -98,6 +141,8 @@ export const ArchitectureGraphSchema = z.object({
   edges: z.array(ArchEdgeSchema).default([]),
   /** Deployment environments for the infrastructure view. */
   environments: z.array(ArchEnvironmentSchema).default([]),
+  /** User journeys for the dataflow view. */
+  journeys: z.array(JourneySchema).default([]),
   viewport: z
     .object({ x: z.number(), y: z.number(), zoom: z.number() })
     .nullish(),
@@ -105,7 +150,25 @@ export const ArchitectureGraphSchema = z.object({
 export type ArchitectureGraph = z.infer<typeof ArchitectureGraphSchema>;
 
 export function createArchitectureGraph(name: string): ArchitectureGraph {
-  return { id: uid("arch"), name, description: "", nodes: [], edges: [], environments: [] };
+  return {
+    id: uid("arch"),
+    name,
+    description: "",
+    nodes: [],
+    edges: [],
+    environments: [createLocalEnvironment()],
+    journeys: [],
+  };
+}
+
+/** The default environment every architecture starts with. */
+export function createLocalEnvironment(): ArchEnvironment {
+  return { id: uid("env"), name: "Local", kind: "local" };
+}
+
+/** Effective layer of a node: explicit override, else derived from its kind. */
+export function layerOfNode(node: ArchNode): ArchLayer | null {
+  return node.layer ?? DEFAULT_LAYER_OF_KIND[node.kind] ?? null;
 }
 
 export function createArchNode(

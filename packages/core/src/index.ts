@@ -2,6 +2,7 @@ export * from "./ids.js";
 export * from "./events.js";
 export * from "./architecture.js";
 export * from "./arch-draft.js";
+export * from "./refactor.js";
 export * from "./project.js";
 export * from "./workspace.js";
 export * from "./agent.js";
