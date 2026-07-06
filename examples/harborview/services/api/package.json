@@ -1,0 +1,15 @@
+{
+  "name": "@harborview/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "dependencies": {
+    "express": "^4.18.2",
+    "zod": "^3.22.4",
+    "pino": "^8.16.2",
+    "@harborview/core": "workspace:*",
+    "@harborview/db": "workspace:*",
+    "@harborview/queue": "workspace:*"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "crystal": 1,
+  "kind": "architecture",
+  "data": {
+    "id": "arch_29e793aa0527",
+    "name": "Overview",
+    "description": "",
+    "nodes": [],
+    "edges": [],
+    "environments": [
+      {
+        "id": "env_ece11c054482",
+        "name": "Local",
+        "kind": "local"
+      }
+    ],
+    "journeys": []
+  }
+}

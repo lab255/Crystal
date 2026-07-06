@@ -1,0 +1,19 @@
+{
+  "name": "harborview",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Harborview — ferry & marina booking platform (Crystal fixture workspace)",
+  "workspaces": [
+    "packages/*",
+    "services/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "echo \"fixture workspace — not meant to run\"",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

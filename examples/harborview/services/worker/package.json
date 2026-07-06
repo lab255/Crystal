@@ -1,0 +1,14 @@
+{
+  "name": "@harborview/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "dependencies": {
+    "ioredis": "^5.3.2",
+    "pino": "^8.16.2",
+    "@harborview/core": "workspace:*",
+    "@harborview/db": "workspace:*",
+    "@harborview/queue": "workspace:*"
+  }
+}
