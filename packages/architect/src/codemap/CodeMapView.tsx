@@ -13,6 +13,7 @@ import {
   ArrowRightLeft,
   Boxes,
   ChevronRight,
+  Copy as CopyIcon,
   ExternalLink,
   FileCode2,
   FolderGit2,
@@ -23,6 +24,7 @@ import {
   X,
 } from "lucide-react";
 import {
+  createArchDraft as newArchDraft,
   createMoveIntent,
   type CodeFileDetail,
   type CodeMapSummary,
@@ -30,6 +32,7 @@ import {
   type CodeSymbolKind,
   type CrossWorkspaceEdge,
   type CrossWorkspaceMap,
+  type HoistIntent,
   type RefactorIntent,
 } from "@crystal/core";
 import { useCrystal, useWorkspace, useWorkspaces } from "@crystal/client";
@@ -42,6 +45,7 @@ import {
   type CodeRfNode,
   type SymbolDragPayload,
 } from "./CodeNode.js";
+import { DuplicatesPanel } from "./DuplicatesPanel.js";
 
 const nodeTypes = { code: CodeNode };
 
@@ -116,6 +120,8 @@ export interface CodeMapViewProps {
    * move intents on the draft.
    */
   activeDraftPath?: string | null;
+  /** A hoist auto-created a draft — the shell should open it in Diagrams. */
+  onOpenDraft?: (path: string) => void;
 }
 
 export function CodeMapView(props: CodeMapViewProps = {}) {
@@ -129,13 +135,23 @@ export function CodeMapView(props: CodeMapViewProps = {}) {
 const EMPTY_DRAFTS: never[] = [];
 const EMPTY_REFACTORS: RefactorIntent[] = [];
 
-function CodeMapInner({ initialModule, origin, onStartJourney, activeDraftPath }: CodeMapViewProps) {
+const EMPTY_ARCHITECTURES: never[] = [];
+
+function CodeMapInner({
+  initialModule,
+  origin,
+  onStartJourney,
+  activeDraftPath,
+  onOpenDraft,
+}: CodeMapViewProps) {
   const { client } = useCrystal();
   const activeWs = useWorkspaces((s) => s.activeId);
   const workspaces = useWorkspaces((s) => s.workspaces);
   const setActive = useWorkspaces((s) => s.setActive);
   const archDrafts = useWorkspace((s) => s.info?.archDrafts ?? EMPTY_DRAFTS);
+  const architectures = useWorkspace((s) => s.info?.architectures ?? EMPTY_ARCHITECTURES);
   const updateArchDraft = useWorkspace((s) => s.updateArchDraft);
+  const createDraftFile = useWorkspace((s) => s.createArchDraft);
 
   // Level is null until we know the active workspace to start from.
   const [level, setLevelRaw] = useState<Level | null>(null);
@@ -448,6 +464,44 @@ function CodeMapInner({ initialModule, origin, onStartJourney, activeDraftPath }
     [activeDraft, client, levelWs, updateArchDraft],
   );
 
+  const recordHoist = useCallback(
+    async (intent: HoistIntent) => {
+      if (activeDraft) {
+        updateArchDraft(activeDraft.path, {
+          ...activeDraft.draft,
+          refactors: [...activeDraft.draft.refactors, intent],
+          updatedAt: new Date().toISOString(),
+        });
+        setDropNotice(`Draft "${activeDraft.draft.name}": hoist → ${intent.targetModule}`);
+        return;
+      }
+      const arch = architectures[0];
+      if (!arch) {
+        setDropNotice("Create an architecture in Diagrams first — hoists ride on draft plans.");
+        return;
+      }
+      const name = intent.newName ?? intent.symbols[0]!.symbol;
+      const draft = newArchDraft(`Hoist ${name}`, arch.path, arch.graph, new Date().toISOString());
+      draft.refactors = [intent];
+      const created = await createDraftFile(draft);
+      onOpenDraft?.(created.path);
+      setDropNotice(`Draft "${draft.name}" created — apply it from Diagrams to run the hoist.`);
+    },
+    [activeDraft, architectures, createDraftFile, onOpenDraft, updateArchDraft],
+  );
+
+  const [showDuplicates, setShowDuplicates] = useState(false);
+
+  // Hoist targets come from the workspace module list, which the module level
+  // hasn't necessarily fetched (e.g. after a drill-in) — load it on demand.
+  useEffect(() => {
+    if (!showDuplicates || summary || !level || level.kind === "all") return;
+    client
+      .request("codemap.get", { ws: level.ws })
+      .then(setSummary)
+      .catch(() => {});
+  }, [showDuplicates, summary, level, client]);
+
   // Drop targets + pending-intent badges, layered onto the level's nodes.
   const refactors = activeDraft?.draft.refactors ?? EMPTY_REFACTORS;
   const decoratedNodes = useMemo(() => {
@@ -555,6 +609,22 @@ function CodeMapInner({ initialModule, origin, onStartJourney, activeDraftPath }
               live
             </span>
           </Tooltip>
+          {level && (level.kind === "workspace" || level.kind === "module") ? (
+            <Tooltip content="Duplicated functions — identical implementations across the workspace">
+              <button
+                type="button"
+                aria-pressed={showDuplicates}
+                onClick={() => setShowDuplicates((v) => !v)}
+                className={cn(
+                  "ml-1 flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] transition-colors",
+                  showDuplicates ? "bg-warn/15 text-warn" : "text-ink-faint hover:text-ink-muted",
+                )}
+              >
+                <CopyIcon className="h-3 w-3" />
+                dupes
+              </button>
+            </Tooltip>
+          ) : null}
           {loading ? <Spinner className="ml-1 h-3 w-3" /> : null}
         </div>
 
@@ -627,6 +697,16 @@ function CodeMapInner({ initialModule, origin, onStartJourney, activeDraftPath }
           sourceName={wsName(crossEdge.source)}
           targetName={wsName(crossEdge.target)}
           onClose={() => setCrossEdge(null)}
+        />
+      ) : null}
+      {showDuplicates && level && (level.kind === "workspace" || level.kind === "module") ? (
+        <DuplicatesPanel
+          ws={level.ws}
+          moduleFilter={level.kind === "module" ? level.path : undefined}
+          modules={summary?.modules ?? []}
+          hasActiveDraft={activeDraft != null}
+          onHoist={(intent) => void recordHoist(intent)}
+          onClose={() => setShowDuplicates(false)}
         />
       ) : null}
     </div>

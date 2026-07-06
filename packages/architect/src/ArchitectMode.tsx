@@ -125,6 +125,7 @@ export function ArchitectMode() {
             }
             onStartJourney={startJourneyFromCode}
             activeDraftPath={draftPath}
+            onOpenDraft={setDraftPath}
           />
         ) : (
           <DiagramsView
