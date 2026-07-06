@@ -374,7 +374,7 @@ export function FlowStepsPanel({
   const unmapped = new Set(flow?.unmappedSteps.map((s) => `${s.ref.file}#${s.ref.symbol}`));
 
   return (
-    <aside className="flex w-80 shrink-0 flex-col border-l border-edge bg-surface-1">
+    <aside className="flex h-full w-full flex-col bg-surface-1">
       <div className="border-b border-edge px-3 py-2.5">
         <div className="flex items-center gap-2">
           <Route className="h-3.5 w-3.5 shrink-0 text-crystal-300" />

@@ -2,6 +2,12 @@ import { z } from "zod";
 import { ArchDraftSchema, type ArchDraft } from "./arch-draft.js";
 import { ArchitectureGraphSchema, type ArchitectureGraph } from "./architecture.js";
 import { ProjectSchema, type Project } from "./project.js";
+import { ArchSurveySchema, migrateSurveyData, type ArchSurvey } from "./survey.js";
+import {
+  TraceProfileSchema,
+  migrateTraceProfileData,
+  type TraceProfile,
+} from "./trace-profile.js";
 import { WorkspaceManifestSchema, type WorkspaceManifest } from "./workspace.js";
 
 /**
@@ -17,11 +23,17 @@ import { WorkspaceManifestSchema, type WorkspaceManifest } from "./workspace.js"
 
 export const CRYSTAL_FILE_VERSION = 1;
 
-export type CrystalFileKind = "architecture" | "archdraft" | "project" | "workspace";
+export type CrystalFileKind =
+  | "architecture"
+  | "archdraft"
+  | "project"
+  | "workspace"
+  | "survey"
+  | "trace";
 
 const EnvelopeSchema = z.object({
   crystal: z.number(),
-  kind: z.enum(["architecture", "archdraft", "project", "workspace"]),
+  kind: z.enum(["architecture", "archdraft", "project", "workspace", "survey", "trace"]),
   data: z.unknown(),
 });
 
@@ -30,6 +42,8 @@ const DATA_SCHEMAS = {
   archdraft: ArchDraftSchema,
   project: ProjectSchema,
   workspace: WorkspaceManifestSchema,
+  survey: ArchSurveySchema,
+  trace: TraceProfileSchema,
 } as const;
 
 export interface KindDataMap {
@@ -37,7 +51,19 @@ export interface KindDataMap {
   archdraft: ArchDraft;
   project: Project;
   workspace: WorkspaceManifest;
+  survey: ArchSurvey;
+  trace: TraceProfile;
 }
+
+/**
+ * Kinds whose payload carries its own `schemaVersion` and migrates on read —
+ * interchange formats written by external generators (agents, tracers), which
+ * evolve independently of the envelope version.
+ */
+const DATA_MIGRATORS: Partial<Record<CrystalFileKind, (data: unknown) => unknown>> = {
+  survey: migrateSurveyData,
+  trace: migrateTraceProfileData,
+};
 
 export function serializeCrystalFile<K extends CrystalFileKind>(
   kind: K,
@@ -72,7 +98,16 @@ export function parseCrystalFile<K extends CrystalFileKind>(
       `File version ${envelope.data.crystal} is newer than this build supports (${CRYSTAL_FILE_VERSION})`,
     );
   }
-  const parsed = DATA_SCHEMAS[kind].safeParse(envelope.data.data);
+  let data = envelope.data.data;
+  const migrate = DATA_MIGRATORS[kind];
+  if (migrate) {
+    try {
+      data = migrate(data);
+    } catch (err) {
+      throw new CrystalFileError(`Invalid ${kind} data: ${(err as Error).message}`);
+    }
+  }
+  const parsed = DATA_SCHEMAS[kind].safeParse(data);
   if (!parsed.success) {
     throw new CrystalFileError(`Invalid ${kind} data: ${parsed.error.message}`);
   }

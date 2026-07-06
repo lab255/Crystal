@@ -36,7 +36,7 @@ import {
   type RefactorIntent,
 } from "@crystal/core";
 import { useCrystal, useWorkspace, useWorkspaces } from "@crystal/client";
-import { Badge, Button, EmptyState, Spinner, Tooltip, cn } from "@crystal/ui";
+import { Badge, Button, EmptyState, Pane, Split, Spinner, Tooltip, cn } from "@crystal/ui";
 import { SymbolSnippet } from "../snippets.js";
 import {
   CodeNode,
@@ -543,8 +543,10 @@ function CodeMapInner({
   }, [nodes, level, refactors, recordMove]);
 
   return (
-    <div className="flex h-full min-h-0">
-      <div className="relative min-w-0 flex-1">
+    <div className="h-full min-h-0">
+      <Split storageKey="architect:codemap" direction="horizontal">
+        <Pane minSize="40%">
+          <div className="relative h-full w-full min-w-0">
         <div className="absolute left-3 top-3 z-10 flex items-center gap-1 rounded-xl border border-edge bg-surface-2/95 px-2.5 py-1.5 text-xs shadow-xl shadow-black/30 backdrop-blur">
           {origin ? (
             <>
@@ -685,35 +687,43 @@ function CodeMapInner({
           </ReactFlow>
         )}
       </div>
+        </Pane>
 
-      {level?.kind === "file" && fileDetail ? (
-        <FilePanel
-          detail={fileDetail}
-          ws={level.ws}
-          onNavigate={(p) => setLevel({ kind: "file", ws: level.ws, path: p })}
-          onOpenFile={openInEditor}
-          onStartJourney={onStartJourney}
-          dragSymbols={activeDraft != null}
-        />
-      ) : null}
-      {level?.kind === "all" && crossEdge ? (
-        <CrossEdgePanel
-          edge={crossEdge}
-          sourceName={wsName(crossEdge.source)}
-          targetName={wsName(crossEdge.target)}
-          onClose={() => setCrossEdge(null)}
-        />
-      ) : null}
-      {showDuplicates && level && (level.kind === "workspace" || level.kind === "module") ? (
-        <DuplicatesPanel
-          ws={level.ws}
-          moduleFilter={level.kind === "module" ? level.path : undefined}
-          modules={summary?.modules ?? []}
-          hasActiveDraft={activeDraft != null}
-          onHoist={(intent) => void recordHoist(intent)}
-          onClose={() => setShowDuplicates(false)}
-        />
-      ) : null}
+        {level?.kind === "file" && fileDetail ? (
+          <Pane defaultSize={320} minSize={224} maxSize={560}>
+            <FilePanel
+              detail={fileDetail}
+              ws={level.ws}
+              onNavigate={(p) => setLevel({ kind: "file", ws: level.ws, path: p })}
+              onOpenFile={openInEditor}
+              onStartJourney={onStartJourney}
+              dragSymbols={activeDraft != null}
+            />
+          </Pane>
+        ) : null}
+        {level?.kind === "all" && crossEdge ? (
+          <Pane defaultSize={320} minSize={224} maxSize={560}>
+            <CrossEdgePanel
+              edge={crossEdge}
+              sourceName={wsName(crossEdge.source)}
+              targetName={wsName(crossEdge.target)}
+              onClose={() => setCrossEdge(null)}
+            />
+          </Pane>
+        ) : null}
+        {showDuplicates && level && (level.kind === "workspace" || level.kind === "module") ? (
+          <Pane defaultSize={384} minSize={260} maxSize={640}>
+            <DuplicatesPanel
+              ws={level.ws}
+              moduleFilter={level.kind === "module" ? level.path : undefined}
+              modules={summary?.modules ?? []}
+              hasActiveDraft={activeDraft != null}
+              onHoist={(intent) => void recordHoist(intent)}
+              onClose={() => setShowDuplicates(false)}
+            />
+          </Pane>
+        ) : null}
+      </Split>
     </div>
   );
 }
@@ -731,7 +741,7 @@ function CrossEdgePanel({
   onClose: () => void;
 }) {
   return (
-    <aside className="flex w-80 shrink-0 flex-col border-l border-edge bg-surface-1">
+    <aside className="flex h-full w-full flex-col bg-surface-1">
       <div className="border-b border-edge px-3 py-2.5">
         <div className="flex items-center gap-2">
           <ArrowRightLeft className="h-3.5 w-3.5 shrink-0 text-crystal-300" />
@@ -820,7 +830,7 @@ function FilePanel({
   const symbols = detail.symbols ?? detail.exports;
 
   return (
-    <aside className="flex w-80 shrink-0 flex-col border-l border-edge bg-surface-1">
+    <aside className="flex h-full w-full flex-col bg-surface-1">
       <div className="border-b border-edge px-3 py-2.5">
         <div className="truncate text-xs font-semibold text-ink">{detail.path}</div>
         <div className="mt-0.5 flex items-center gap-2 text-[10px] text-ink-faint">

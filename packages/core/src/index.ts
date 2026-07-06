@@ -7,5 +7,7 @@ export * from "./project.js";
 export * from "./workspace.js";
 export * from "./agent.js";
 export * from "./serialization.js";
+export * from "./survey.js";
+export * from "./trace-profile.js";
 export * from "./codemap.js";
 export * from "./bridge.js";

@@ -84,3 +84,15 @@
     background: transparent;
   }
 }
+
+/* react-split-pane v3 dividers (see components/Split.tsx). The visible line
+   is 1px of edge color; transparent borders widen the grab target without
+   taking layout space (negative margins), matching dividerSize={1}. */
+.crystal-split .split-pane-divider {
+  --split-pane-divider-size: 9px;
+  --split-pane-divider-hit-area: 4px;
+  --split-pane-divider-color: var(--color-edge);
+  --split-pane-divider-color-hover: color-mix(in srgb, var(--color-crystal-500) 60%, transparent);
+  --split-pane-focus-color: var(--color-crystal-500);
+  --split-pane-focus-bg: color-mix(in srgb, var(--color-crystal-500) 15%, transparent);
+}

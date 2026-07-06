@@ -11,3 +11,4 @@ export {
   type OverlayGhostEdge,
   type OverlayResult,
 } from "./overlay.js";
+export { buildSurveyPrompt, type SurveyKind } from "./survey-prompts.js";

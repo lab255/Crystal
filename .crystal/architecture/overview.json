@@ -40,7 +40,12 @@
           "vite 7",
           "tailwind 4"
         ],
-        "placements": {},
+        "placements": {
+          "env_87851e2974c9": {
+            "target": "ecs",
+            "runtime": "fargate"
+          }
+        },
         "accent": "cyan"
       },
       {
@@ -255,7 +260,13 @@
         "label": "composes"
       }
     ],
-    "environments": [],
+    "environments": [
+      {
+        "id": "env_87851e2974c9",
+        "name": "Local",
+        "kind": "local"
+      }
+    ],
     "journeys": [
       {
         "id": "journey_6c41271d3074",
@@ -265,11 +276,47 @@
           "file": "packages/client/src/provider.tsx",
           "symbol": "useConnectionState"
         }
+      },
+      {
+        "id": "journey_3181ce067383",
+        "name": "Board",
+        "description": "",
+        "entry": {
+          "file": "packages/orchestrator/src/Board.tsx",
+          "symbol": "Board"
+        }
+      },
+      {
+        "id": "journey_0a09d4b45a47",
+        "name": "TaskDetail",
+        "description": "",
+        "entry": {
+          "file": "packages/orchestrator/src/TaskDetail.tsx",
+          "symbol": "TaskDetail"
+        }
+      },
+      {
+        "id": "journey_bd2ac310d3a5",
+        "name": "JourneysSection",
+        "description": "",
+        "entry": {
+          "file": "packages/architect/src/JourneyPanel.tsx",
+          "symbol": "JourneysSection"
+        }
+      },
+      {
+        "id": "journey_84ef9d2daeee",
+        "name": "InfraView",
+        "description": "",
+        "entry": {
+          "file": "packages/architect/src/InfraView.tsx",
+          "symbol": "InfraView"
+        }
       }
     ],
     "viewport": {
-      "x": 55.99905898850466,
-      "y": 140.40783930229838,
+      "x": 119.99905898850466,
+      "y": 174.40783930229838,
       "zoom": 1.4583341021335745
     }
   }

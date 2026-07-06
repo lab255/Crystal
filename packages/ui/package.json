@@ -20,7 +20,7 @@
     "@radix-ui/react-tooltip": "^1.1.8",
     "clsx": "^2.1.1",
     "lucide-react": "^0.469.0",
-    "react-resizable-panels": "^2.1.7",
+    "react-split-pane": "^3.2.0",
     "tailwind-merge": "^3.0.2"
   },
   "peerDependencies": {
@@ -32,8 +32,8 @@
     "@types/react-dom": "^19.0.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "typescript": "^5.5.4",
-    "tsup": "^8.3.5"
+    "tsup": "^8.3.5",
+    "typescript": "^5.5.4"
   },
   "files": [
     "dist",

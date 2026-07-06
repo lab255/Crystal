@@ -36,6 +36,8 @@ import {
   DropdownMenuTrigger,
   EmptyState,
   Input,
+  Pane,
+  Split,
   Spinner,
   Tooltip,
   cn,
@@ -45,9 +47,11 @@ import { CodeMapView } from "./codemap/CodeMapView.js";
 import { projectTrace } from "./dataflow.js";
 import { InfraView } from "./InfraView.js";
 import { FlowStepsPanel, JourneysSection, type JourneySeed } from "./JourneyPanel.js";
+import { JourneyProfilePanel } from "./ProfilePanel.js";
 import { buildHoistPrompt } from "./refactor-prompts.js";
 import { ApplyRefactorsDialog, RefactorChip, useIntentProblems } from "./RefactorPanel.js";
 import { canSeedFromCodeMap, seedFromCodeMap } from "./seed.js";
+import { SurveySection } from "./SurveyPanel.js";
 
 const EMPTY_ARCHITECTURES: never[] = [];
 const EMPTY_DRAFTS: never[] = [];
@@ -435,8 +439,10 @@ function DiagramsView({
   }
 
   return (
-    <div className="flex h-full min-h-0">
-      <aside className="flex w-56 shrink-0 flex-col border-r border-edge bg-surface-1">
+    <div className="h-full min-h-0">
+      <Split storageKey="architect:diagrams" direction="horizontal">
+        <Pane defaultSize={224} minSize={176} maxSize={440}>
+          <aside className="flex h-full w-full flex-col bg-surface-1">
         <div className="flex items-center justify-between px-3 py-2.5">
           <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-faint">
             Architectures
@@ -580,10 +586,16 @@ function DiagramsView({
               ) : null}
             </>
           ) : null}
+
+          <SurveySection onImported={setSelectedPath} onNotice={setNotice} />
         </div>
       </aside>
+        </Pane>
 
-      <main className="relative min-w-0 flex-1">
+        <Pane minSize="30%">
+          <Split storageKey="architect:journey" direction="vertical">
+            <Pane minSize="35%">
+              <main className="relative h-full w-full min-w-0">
         {loading ? (
           <div className="flex h-full items-center justify-center">
             <Spinner />
@@ -641,20 +653,6 @@ function DiagramsView({
                 onConfirm={(opts) => void finalizeApply(opts)}
                 busy={applyBusy}
               />
-              {notice ? (
-                <div className="absolute bottom-3 left-1/2 z-20 flex max-w-xl -translate-x-1/2 items-start gap-2 rounded-xl border border-edge bg-surface-2/95 px-3 py-2 text-[11px] text-ink-muted shadow-xl shadow-black/30 backdrop-blur">
-                  <GitMerge className="mt-0.5 h-3.5 w-3.5 shrink-0 text-crystal-300" />
-                  <span className="min-w-0">{notice}</span>
-                  <button
-                    type="button"
-                    onClick={() => setNotice(null)}
-                    className="shrink-0 text-ink-faint hover:text-ink"
-                    aria-label="Dismiss"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              ) : null}
             </>
           )
         ) : (
@@ -695,20 +693,52 @@ function DiagramsView({
             your repo.
           </EmptyState>
         )}
+        {notice ? (
+          <div className="absolute bottom-3 left-1/2 z-20 flex max-w-xl -translate-x-1/2 items-start gap-2 rounded-xl border border-edge bg-surface-2/95 px-3 py-2 text-[11px] text-ink-muted shadow-xl shadow-black/30 backdrop-blur">
+            <GitMerge className="mt-0.5 h-3.5 w-3.5 shrink-0 text-crystal-300" />
+            <span className="min-w-0">{notice}</span>
+            <button
+              type="button"
+              onClick={() => setNotice(null)}
+              className="shrink-0 text-ink-faint hover:text-ink"
+              aria-label="Dismiss"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        ) : null}
       </main>
+            </Pane>
+            {variant === "diagrams" && activeJourney && journeyTrace && effectiveGraph ? (
+              <Pane defaultSize={240} minSize={130} maxSize="60%">
+                <JourneyProfilePanel
+                  trace={journeyTrace}
+                  graph={effectiveGraph}
+                  summary={codeSummary}
+                  onOpenStep={(step) =>
+                    onDrillIntoModule(step.module, selected?.graph.name ?? "Diagram", step.ref.file)
+                  }
+                />
+              </Pane>
+            ) : null}
+          </Split>
+        </Pane>
 
-      {variant === "diagrams" && activeJourney ? (
-        <FlowStepsPanel
-          journey={activeJourney}
-          trace={journeyTrace}
-          flow={flow}
-          error={journeyError}
-          onClose={() => setActiveJourneyId(null)}
-          onOpenStep={(step) =>
-            onDrillIntoModule(step.module, selected?.graph.name ?? "Diagram", step.ref.file)
-          }
-        />
-      ) : null}
+        {variant === "diagrams" && activeJourney ? (
+          <Pane defaultSize={320} minSize={224} maxSize={520}>
+            <FlowStepsPanel
+              journey={activeJourney}
+              trace={journeyTrace}
+              flow={flow}
+              error={journeyError}
+              onClose={() => setActiveJourneyId(null)}
+              onOpenStep={(step) =>
+                onDrillIntoModule(step.module, selected?.graph.name ?? "Diagram", step.ref.file)
+              }
+            />
+          </Pane>
+        ) : null}
+      </Split>
 
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent
