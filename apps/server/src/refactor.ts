@@ -238,7 +238,9 @@ export class RefactorEngine {
         quotePreference: "double",
       };
 
-      const applicable = ls.getApplicableRefactors(fromAbs, span, prefs, "invoked", "Move to file", true);
+      // NB: the 5th param filters by refactor *kind* (e.g. "refactor.move.file"),
+      // not by display name — passing the name silently filters everything out.
+      const applicable = ls.getApplicableRefactors(fromAbs, span, prefs, "invoked", "refactor.move.file", true);
       if (!applicable.some((r) => r.name === "Move to file")) return null;
 
       const edits = ls.getEditsForRefactor(
