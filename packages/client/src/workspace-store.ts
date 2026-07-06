@@ -1,5 +1,6 @@
 import { createStore, type StoreApi } from "zustand/vanilla";
 import type {
+  ArchDraft,
   ArchitectureGraph,
   Project,
   WorkspaceInfo,
@@ -20,6 +21,10 @@ export interface WorkspaceState {
   updateArchitecture(path: string, graph: ArchitectureGraph): void;
   createArchitecture(name: string): Promise<{ path: string; graph: ArchitectureGraph }>;
   deleteArchitecture(path: string): Promise<void>;
+  /** Optimistically update + debounce-persist an architecture draft. */
+  updateArchDraft(path: string, draft: ArchDraft): void;
+  createArchDraft(draft: ArchDraft): Promise<{ path: string; draft: ArchDraft }>;
+  deleteArchDraft(path: string): Promise<void>;
   /** Optimistically update + debounce-persist a project board. */
   updateProject(path: string, project: Project): void;
   createProject(name: string): Promise<{ path: string; project: Project }>;
@@ -121,6 +126,39 @@ export function createWorkspaceStore(client: BridgeClient): WorkspaceStore {
               ...info,
               architectures: info.architectures.filter((a) => a.path !== path),
             },
+          });
+        }
+      },
+
+      updateArchDraft(path, draft) {
+        const info = get().info;
+        if (!info) return;
+        set({
+          info: {
+            ...info,
+            archDrafts: info.archDrafts.map((d) => (d.path === path ? { ...d, draft } : d)),
+          },
+        });
+        const ws = info.id;
+        schedule(path, async () => {
+          const latest = get().info?.archDrafts.find((d) => d.path === path);
+          if (latest) await client.request("archdraft.save", { ws, path, draft: latest.draft });
+        });
+      },
+
+      async createArchDraft(draft) {
+        const created = await client.request("archdraft.create", { draft });
+        const info = get().info;
+        if (info) set({ info: { ...info, archDrafts: [...info.archDrafts, created] } });
+        return created;
+      },
+
+      async deleteArchDraft(path) {
+        await client.request("archdraft.delete", { path });
+        const info = get().info;
+        if (info) {
+          set({
+            info: { ...info, archDrafts: info.archDrafts.filter((d) => d.path !== path) },
           });
         }
       },
