@@ -133,7 +133,12 @@
         "size": null,
         "tech": [],
         "codeModule": "packages/core",
-        "placements": {}
+        "placements": {
+          "env_4e6d8d5974e3": {
+            "target": "database",
+            "runtime": ""
+          }
+        }
       },
       {
         "id": "node_9abce7327c17",
@@ -168,7 +173,12 @@
         "size": null,
         "tech": [],
         "codeModule": "packages/orchestrator",
-        "placements": {}
+        "placements": {
+          "env_4e6d8d5974e3": {
+            "target": "database",
+            "runtime": ""
+          }
+        }
       },
       {
         "id": "node_f0e8ea5654b4",
@@ -183,7 +193,12 @@
         "size": null,
         "tech": [],
         "codeModule": "packages/sdk",
-        "placements": {}
+        "placements": {
+          "env_4e6d8d5974e3": {
+            "target": "database",
+            "runtime": ""
+          }
+        }
       },
       {
         "id": "node_be33858f6b30",

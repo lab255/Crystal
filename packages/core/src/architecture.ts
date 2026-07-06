@@ -78,6 +78,16 @@ export const LB_ALGORITHMS = ["round-robin", "least-loaded", "weighted"] as cons
 export const LbAlgorithmSchema = z.enum(LB_ALGORITHMS);
 export type LbAlgorithm = z.infer<typeof LbAlgorithmSchema>;
 
+/** Autoscaler chasing a target utilization by adding/removing replicas. */
+export const AutoscaleConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  minReplicas: z.number().int().min(1).max(999).default(1),
+  maxReplicas: z.number().int().min(1).max(999).default(10),
+  /** Utilization the scaler chases: scale up above it, down well below it. */
+  targetUtilization: z.number().min(0.05).max(1).default(0.7),
+});
+export type AutoscaleConfig = z.infer<typeof AutoscaleConfigSchema>;
+
 /** Circuit breaker guarding a component in the traffic simulation. */
 export const CircuitBreakerConfigSchema = z.object({
   enabled: z.boolean().default(false),
@@ -102,9 +112,13 @@ export const SimNodeConfigSchema = z.object({
   latencyMs: z.number().min(0).nullish(),
   /** Cache nodes only: fraction of requests served without going downstream. */
   cacheHitRate: z.number().min(0).max(1).nullish(),
+  /** Queue nodes only: buffered requests held before overflow drops; null = default. */
+  maxBacklog: z.number().positive().nullish(),
   /** How loadbalancer/gateway nodes split traffic across outgoing edges. */
   lbAlgorithm: LbAlgorithmSchema.nullish(),
   circuitBreaker: CircuitBreakerConfigSchema.nullish(),
+  /** Replicas follow load instead of staying fixed; overrides `replicas`. */
+  autoscale: AutoscaleConfigSchema.nullish(),
 });
 export type SimNodeConfig = z.infer<typeof SimNodeConfigSchema>;
 

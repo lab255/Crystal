@@ -4,6 +4,7 @@ import {
   type ArchNode,
   type ArchNodeKind,
   type ArchitectureGraph,
+  type AutoscaleConfig,
   type LbAlgorithm,
 } from "@crystal/core";
 
@@ -14,10 +15,14 @@ import {
  * Each component serves up to `capacityRps × replicas`; the excess is dropped
  * as errors and latency climbs as utilization approaches saturation. Load
  * balancers (and gateways) split traffic across their outgoing edges, caches
- * only forward misses, and everything else fans out — one downstream call per
- * dependency per request. Circuit breakers watch a component's error rate and
- * shed inbound load while open. The engine is pure and deterministic: one
- * `simulate` call is one tick, with breaker state threaded between ticks.
+ * only forward misses, queues buffer what their consumers can't pull yet
+ * (backlog, then overflow), and everything else fans out — one downstream
+ * call per dependency per request. Circuit breakers watch a component's
+ * error rate and shed inbound load while open; autoscalers chase a target
+ * utilization one replica step per tick. The engine is pure and
+ * deterministic: one `simulate` call is one tick, with all evolving state
+ * (breakers, backlogs, replica counts, last error rate) threaded between
+ * ticks via `SimTickState`.
  */
 
 /** Edge kinds that carry simulated traffic (dependency edges are static). */
@@ -48,13 +53,18 @@ export function isSimKind(kind: ArchNodeKind): boolean {
   return KIND_SIM_DEFAULTS[kind] != null;
 }
 
+/** Buffered requests a queue holds before overflow, unless configured. */
+export const DEFAULT_MAX_BACKLOG = 5000;
+
 /** Effective sim parameters of a node: explicit config over kind defaults. */
 export function simParamsOf(node: ArchNode): {
   capacityRps: number;
   latencyMs: number;
   replicas: number;
   cacheHitRate: number | null;
+  maxBacklog: number | null;
   lbAlgorithm: LbAlgorithm;
+  autoscale: AutoscaleConfig | null;
 } {
   const d = KIND_SIM_DEFAULTS[node.kind] ?? { capacityRps: 1000, latencyMs: 10 };
   return {
@@ -63,7 +73,9 @@ export function simParamsOf(node: ArchNode): {
     replicas: node.sim?.replicas ?? 1,
     cacheHitRate:
       node.kind === "cache" ? (node.sim?.cacheHitRate ?? d.cacheHitRate ?? 0.85) : null,
+    maxBacklog: node.kind === "queue" ? (node.sim?.maxBacklog ?? DEFAULT_MAX_BACKLOG) : null,
     lbAlgorithm: node.sim?.lbAlgorithm ?? "round-robin",
+    autoscale: node.sim?.autoscale?.enabled ? node.sim.autoscale : null,
   };
 }
 
@@ -99,6 +111,23 @@ export interface SimChaos {
   spike: boolean;
   /** Cache-miss storm: every cache misses everything. */
   cacheMissStorm: boolean;
+  /** Clients retry failures: last tick's error rate amplifies this tick's ingress. */
+  retryStorm: boolean;
+}
+
+/** Everything that evolves across ticks — feed a result's state into the next call. */
+export interface SimTickState {
+  breakers: ReadonlyMap<string, BreakerState>;
+  /** Queue node id → requests buffered and not yet pulled by consumers. */
+  backlogs: ReadonlyMap<string, number>;
+  /** Autoscaled node id → current replica count. */
+  replicas: ReadonlyMap<string, number>;
+  /** Entry error rate last tick; drives retry-storm amplification. */
+  lastErrorRate: number;
+}
+
+export function initialSimTickState(): SimTickState {
+  return { breakers: new Map(), backlogs: new Map(), replicas: new Map(), lastErrorRate: 0 };
 }
 
 export interface SimInput {
@@ -106,8 +135,8 @@ export interface SimInput {
   chaos: SimChaos;
   /** Components toggled off (crashed) — the per-node kill switch. */
   killed: ReadonlySet<string>;
-  /** Breaker state from the previous tick; empty map on the first tick. */
-  breakers: ReadonlyMap<string, BreakerState>;
+  /** State from the previous tick; `initialSimTickState()` on the first. */
+  state: SimTickState;
 }
 
 export interface SimNodeStats {
@@ -122,8 +151,16 @@ export interface SimNodeStats {
   down: boolean;
   breaker: BreakerPhase | null;
   overloaded: boolean;
+  /** Effective replica count this tick (autoscaling included). */
+  replicas: number;
+  /** Autoscaler direction taking effect next tick, if any. */
+  scaling: "up" | "down" | null;
   /** Effective hit rate this tick (cache nodes only). */
   cacheHitRate: number | null;
+  /** Buffered requests (queue nodes only). */
+  backlog: number | null;
+  /** Overflow bound of the backlog (queue nodes only). */
+  maxBacklog: number | null;
 }
 
 export interface SimTotals {
@@ -134,6 +171,8 @@ export interface SimTotals {
   avgLatencyMs: number;
   /** Traffic-weighted across cache nodes; null when the design has none. */
   cacheHitRate: number | null;
+  /** Retry-storm ingress multiplier this tick (1 when the storm is off). */
+  retryMultiplier: number;
 }
 
 export interface SimResult {
@@ -141,14 +180,18 @@ export interface SimResult {
   /** Edge id → requests/second flowing along it this tick. */
   edges: Map<string, number>;
   totals: SimTotals;
-  /** Next-tick breaker state — feed back into the next `simulate` call. */
-  breakers: Map<string, BreakerState>;
+  /** Next-tick state — feed back into the next `simulate` call. */
+  state: SimTickState;
   hints: string[];
 }
 
 export const SPIKE_MULTIPLIER = 4;
+/** Retry storm: each failed request is retried this many times next tick. */
+export const RETRY_AMPLIFICATION = 2;
 /** Fraction of inbound a half-open breaker lets through to probe recovery. */
 const HALF_OPEN_PROBE = 0.1;
+/** Autoscaler scales down when utilization drops below target × this. */
+const SCALE_DOWN_FRACTION = 0.5;
 /** Fixed-point rounds for load propagation (bounded for cyclic graphs). */
 const MAX_ROUNDS = 32;
 const EPSILON_RPS = 0.25;
@@ -159,12 +202,20 @@ const BREAKER_MIN_RPS = 0.5;
 interface SimNode {
   node: ArchNode;
   params: ReturnType<typeof simParamsOf>;
+  /** Effective replicas this tick — autoscale state over configured count. */
+  replicas: number;
   /** capacityRps × replicas. */
   capacity: number;
+  /** Backlog carried in from last tick (queue nodes only). */
+  backlogIn: number;
   outEdges: ArchEdge[];
   inCount: number;
   down: boolean;
   breaker: BreakerState | null;
+}
+
+function clamp(v: number, lo: number, hi: number): number {
+  return Math.min(Math.max(v, lo), hi);
 }
 
 function buildSimNodes(graph: ArchitectureGraph, input: SimInput): Map<string, SimNode> {
@@ -172,16 +223,26 @@ function buildSimNodes(graph: ArchitectureGraph, input: SimInput): Map<string, S
   for (const node of graph.nodes) {
     if (isContainerKind(node.kind) || !isSimKind(node.kind)) continue;
     const params = simParamsOf(node);
+    const auto = params.autoscale;
+    const replicas = auto
+      ? clamp(
+          input.state.replicas.get(node.id) ?? params.replicas,
+          auto.minReplicas,
+          auto.maxReplicas,
+        )
+      : params.replicas;
     const cb = node.sim?.circuitBreaker;
     sim.set(node.id, {
       node,
       params,
-      capacity: params.capacityRps * params.replicas,
+      replicas,
+      capacity: params.capacityRps * replicas,
+      backlogIn: node.kind === "queue" ? (input.state.backlogs.get(node.id) ?? 0) : 0,
       outEdges: [],
       inCount: 0,
       down: input.killed.has(node.id),
       breaker: cb?.enabled
-        ? (input.breakers.get(node.id) ?? { phase: "closed", ticksLeft: 0 })
+        ? (input.state.breakers.get(node.id) ?? { phase: "closed", ticksLeft: 0 })
         : null,
     });
   }
@@ -200,9 +261,9 @@ function buildSimNodes(graph: ArchitectureGraph, input: SimInput): Map<string, S
 export function entryNodeIds(graph: ArchitectureGraph): string[] {
   const sim = buildSimNodes(graph, {
     ingressRps: 0,
-    chaos: { spike: false, cacheMissStorm: false },
+    chaos: { spike: false, cacheMissStorm: false, retryStorm: false },
     killed: new Set(),
-    breakers: new Map(),
+    state: initialSimTickState(),
   });
   const roots = [...sim.values()].filter((s) => s.inCount === 0);
   const sources = roots.filter((s) => s.node.kind === "external" || s.node.kind === "frontend");
@@ -248,18 +309,43 @@ function lbShares(
   return weights.map((w) => w / total);
 }
 
+/**
+ * Queues hand work to whichever consumers can take it — competing consumers
+ * pulling, not pub/sub fan-out. Shares are weighted by healthy capacity.
+ */
+function queueShares(s: SimNode, sim: Map<string, SimNode>): number[] {
+  const weights = s.outEdges.map((e) => {
+    const target = sim.get(e.target)!;
+    return target.capacity * gateOf(target);
+  });
+  const total = weights.reduce((a, b) => a + b, 0);
+  if (total <= 0) return s.outEdges.map(() => 0);
+  return weights.map((w) => w / total);
+}
+
+/** Total rate a queue's consumers can pull at, given their health. */
+function queuePullCapacity(s: SimNode, sim: Map<string, SimNode>): number {
+  let total = 0;
+  for (const e of s.outEdges) {
+    const target = sim.get(e.target)!;
+    total += target.capacity * gateOf(target);
+  }
+  return total;
+}
+
 export function simulate(graph: ArchitectureGraph, input: SimInput): SimResult {
   const sim = buildSimNodes(graph, input);
   const hints: string[] = [];
 
   const entries = entryNodeIds(graph).filter((id) => sim.has(id));
-  const ingress = input.ingressRps * (input.chaos.spike ? SPIKE_MULTIPLIER : 1);
+  const retryMultiplier = input.chaos.retryStorm
+    ? 1 + RETRY_AMPLIFICATION * clamp(input.state.lastErrorRate, 0, 1)
+    : 1;
+  const ingress =
+    input.ingressRps * (input.chaos.spike ? SPIKE_MULTIPLIER : 1) * retryMultiplier;
 
   if (sim.size > 0 && entries.length === 0) {
     hints.push("No entry point — every component is called by another. Add a frontend or external client.");
-  }
-  if (sim.size > 0 && ![...sim.values()].some((s) => s.node.kind === "datastore" || s.node.kind === "cache")) {
-    hints.push("No storage — most designs need a datastore or cache.");
   }
 
   /* ---- load propagation: fixed-point over inbound rps ---- */
@@ -271,17 +357,25 @@ export function simulate(graph: ArchitectureGraph, input: SimInput): SimResult {
   for (let round = 0; round < MAX_ROUNDS; round++) {
     const next = new Map<string, number>(seed);
     const flows = new Map<string, number>();
-    for (const [id, rps] of inbound) {
-      const s = sim.get(id);
-      if (!s || rps <= EPSILON_RPS) continue;
+    for (const [id, s] of sim) {
+      const rps = inbound.get(id) ?? 0;
       const served = Math.min(rps * gateOf(s), s.capacity);
-      if (served <= EPSILON_RPS || s.outEdges.length === 0) continue;
-      const splits = s.node.kind === "loadbalancer" || s.node.kind === "gateway";
-      const hitRate = s.node.kind === "cache"
-        ? (input.chaos.cacheMissStorm ? 0 : (s.params.cacheHitRate ?? 0))
-        : 0;
-      const forwarded = s.node.kind === "cache" ? served * (1 - hitRate) : served;
-      const shares = splits ? lbShares(s, sim, inbound) : null;
+      let forwarded: number;
+      let shares: number[] | null = null;
+      if (s.node.kind === "queue") {
+        // Consumers pull admitted arrivals plus whatever backlog they can drain.
+        forwarded = Math.min(served + s.backlogIn, queuePullCapacity(s, sim));
+        shares = queueShares(s, sim);
+      } else if (s.node.kind === "cache") {
+        const hitRate = input.chaos.cacheMissStorm ? 0 : (s.params.cacheHitRate ?? 0);
+        forwarded = served * (1 - hitRate);
+      } else {
+        forwarded = served;
+        if (s.node.kind === "loadbalancer" || s.node.kind === "gateway") {
+          shares = lbShares(s, sim, inbound);
+        }
+      }
+      if (forwarded <= EPSILON_RPS || s.outEdges.length === 0) continue;
       s.outEdges.forEach((e, i) => {
         const amount = shares ? forwarded * (shares[i] ?? 0) : forwarded;
         if (amount <= 0) return;
@@ -295,6 +389,30 @@ export function simulate(graph: ArchitectureGraph, input: SimInput): SimResult {
     inbound = next;
     edgeFlow = flows;
     if (delta < EPSILON_RPS) break;
+  }
+
+  /** Actual outflow of a node this tick (sum of its edge flows). */
+  const outflowOf = (s: SimNode): number =>
+    s.outEdges.reduce((acc, e) => acc + (edgeFlow.get(e.id) ?? 0), 0);
+
+  /* ---- queue backlog transitions ---- */
+  const backlogs = new Map<string, number>();
+  /** Queue id → failure fraction among admitted messages (overflow drops). */
+  const queueErr = new Map<string, number>();
+  for (const [id, s] of sim) {
+    if (s.node.kind !== "queue") continue;
+    const maxBacklog = s.params.maxBacklog ?? DEFAULT_MAX_BACKLOG;
+    if (s.down) {
+      // A dead queue rejects arrivals but keeps what it already buffered.
+      backlogs.set(id, Math.min(s.backlogIn, maxBacklog));
+      continue;
+    }
+    const arrivals = (inbound.get(id) ?? 0) * gateOf(s);
+    const admitted = Math.min(arrivals, s.capacity);
+    const raw = s.backlogIn + admitted - outflowOf(s);
+    const overflow = Math.max(raw - maxBacklog, 0);
+    backlogs.set(id, clamp(raw, 0, maxBacklog));
+    queueErr.set(id, arrivals > 0 ? clamp((arrivals - admitted + overflow) / arrivals, 0, 1) : 0);
   }
 
   /* ---- quality: errors + latency, walked down coupled edges ---- */
@@ -325,19 +443,26 @@ export function simulate(graph: ArchitectureGraph, input: SimInput): SimResult {
       const served = Math.min(admitted, s.capacity);
       // Requests rejected by a half-open breaker fail fast, like an open one.
       const shed = rps > 0 ? (rps - admitted) / rps : 0;
-      const dropped = admitted > 0 ? (admitted - served) / admitted : 0;
+      const dropped =
+        s.node.kind === "queue"
+          ? (queueErr.get(id) ?? 0)
+          : admitted > 0
+            ? (admitted - served) / admitted
+            : 0;
       const u = s.capacity > 0 ? rps / s.capacity : 0;
       // Queueing curve: latency climbs steeply near saturation, capped at 6×.
       const congestion = Math.min(u, 1);
       let errServed = Math.min(dropped, 1);
       let lat = s.params.latencyMs * (1 + 5 * congestion ** 4);
+      // A draining queue can push out more than it admits this tick.
+      const outBase = s.node.kind === "queue" ? Math.max(outflowOf(s), served) : served;
       for (const e of s.outEdges) {
         if (!COUPLED_EDGE_KINDS.has(e.kind)) continue;
         // Cache misses and LB splits are already baked into the edge flow, so
         // `share` is the fraction of this node's requests that hit the target.
         const flow = edgeFlow.get(e.id) ?? 0;
         if (flow <= 0) continue;
-        const share = served > 0 ? Math.min(flow / served, 1) : 0;
+        const share = outBase > 0 ? Math.min(flow / outBase, 1) : 0;
         const q = qualityOf(e.target);
         errServed = 1 - (1 - errServed) * (1 - share * q.err);
         lat += share * q.lat;
@@ -350,11 +475,29 @@ export function simulate(graph: ArchitectureGraph, input: SimInput): SimResult {
     return result;
   };
 
+  /* ---- autoscale transitions for the next tick ---- */
+  const replicas = new Map<string, number>();
+  const scaling = new Map<string, "up" | "down" | null>();
+  for (const [id, s] of sim) {
+    const auto = s.params.autoscale;
+    if (!auto) continue;
+    let next = s.replicas;
+    if (!s.down) {
+      const u = s.capacity > 0 ? (inbound.get(id) ?? 0) / s.capacity : 0;
+      if (u > auto.targetUtilization) next = s.replicas + 1;
+      else if (u < auto.targetUtilization * SCALE_DOWN_FRACTION) next = s.replicas - 1;
+    }
+    next = clamp(next, auto.minReplicas, auto.maxReplicas);
+    replicas.set(id, next);
+    scaling.set(id, next > s.replicas ? "up" : next < s.replicas ? "down" : null);
+  }
+
   /* ---- assemble per-node stats ---- */
   const nodes = new Map<string, SimNodeStats>();
   for (const [id, s] of sim) {
     const rps = inbound.get(id) ?? 0;
-    const served = Math.min(rps * gateOf(s), s.capacity);
+    const isQueue = s.node.kind === "queue";
+    const served = isQueue ? outflowOf(s) : Math.min(rps * gateOf(s), s.capacity);
     const q = qualityOf(id);
     const u = s.capacity > 0 ? rps / s.capacity : 0;
     nodes.set(id, {
@@ -366,10 +509,14 @@ export function simulate(graph: ArchitectureGraph, input: SimInput): SimResult {
       down: s.down,
       breaker: s.breaker?.phase ?? null,
       overloaded: !s.down && u > 1,
+      replicas: s.replicas,
+      scaling: scaling.get(id) ?? null,
       cacheHitRate:
         s.node.kind === "cache"
           ? (input.chaos.cacheMissStorm ? 0 : (s.params.cacheHitRate ?? 0))
           : null,
+      backlog: isQueue ? (backlogs.get(id) ?? 0) : null,
+      maxBacklog: isQueue ? s.params.maxBacklog : null,
     });
   }
 
@@ -428,6 +575,7 @@ export function simulate(graph: ArchitectureGraph, input: SimInput): SimResult {
     cacheHitRate = acc / weight;
   }
 
+  /* ---- runtime hints, most urgent first ---- */
   const overloaded = [...nodes.entries()].filter(([, s]) => s.overloaded);
   if (overloaded.length > 0) {
     const names = overloaded
@@ -437,6 +585,46 @@ export function simulate(graph: ArchitectureGraph, input: SimInput): SimResult {
     hints.push(
       `Over capacity: ${names}${overloaded.length > 3 ? ` +${overloaded.length - 3}` : ""} — add replicas or a cache.`,
     );
+  }
+  for (const [id, s] of sim) {
+    if (s.node.kind !== "queue" || s.down) continue;
+    const next = backlogs.get(id) ?? 0;
+    const maxBacklog = s.params.maxBacklog ?? DEFAULT_MAX_BACKLOG;
+    if (next >= maxBacklog && (queueErr.get(id) ?? 0) > 0.01) {
+      hints.push(`${s.node.label} overflowed — messages are being dropped. Scale the consumers.`);
+    } else if (next > s.backlogIn + EPSILON_RPS) {
+      hints.push(
+        `Backlog growing on ${s.node.label} (${fmtRps(next)} queued) — consumers can't keep up.`,
+      );
+    }
+  }
+  for (const [id, s] of sim) {
+    const auto = s.params.autoscale;
+    if (!auto || s.down) continue;
+    const stats = nodes.get(id)!;
+    if (s.replicas >= auto.maxReplicas && stats.utilization > 1) {
+      hints.push(
+        `${s.node.label} hit its replica ceiling (×${auto.maxReplicas}) and is still over capacity.`,
+      );
+    }
+  }
+  if (ingress > EPSILON_RPS && entries.length > 0) {
+    for (const [id, s] of sim) {
+      if (s.down || s.params.autoscale) continue;
+      if (s.replicas !== 1) continue;
+      if (s.node.kind !== "service" && s.node.kind !== "datastore" && s.node.kind !== "gateway")
+        continue;
+      const share = (inbound.get(id) ?? 0) / ingress;
+      if (share >= 0.5 && (nodes.get(id)?.utilization ?? 0) > 0.6) {
+        hints.push(
+          `${s.node.label} is a single point of failure — one replica carries ${fmtPct(Math.min(share, 1))} of traffic.`,
+        );
+        break; // one SPOF nag at a time
+      }
+    }
+  }
+  if (sim.size > 0 && ![...sim.values()].some((s) => s.node.kind === "datastore" || s.node.kind === "cache")) {
+    hints.push("No storage — most designs need a datastore or cache.");
   }
 
   return {
@@ -448,8 +636,14 @@ export function simulate(graph: ArchitectureGraph, input: SimInput): SimResult {
       errorRate: entries.length > 0 ? errorRate : 0,
       avgLatencyMs: entries.length > 0 ? avgLatencyMs : 0,
       cacheHitRate,
+      retryMultiplier,
     },
-    breakers,
+    state: {
+      breakers,
+      backlogs,
+      replicas,
+      lastErrorRate: entries.length > 0 ? errorRate : 0,
+    },
     hints,
   };
 }

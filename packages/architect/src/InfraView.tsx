@@ -15,7 +15,7 @@ import {
   type NodeProps,
 } from "@xyflow/react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
-import { Cloud, Gauge, Globe2, GripVertical, Laptop, MapPin, Play, Plus, Server, X } from "lucide-react";
+import { Cloud, Gauge, Globe2, GripVertical, Laptop, MapPin, Play, Plus, Server, Skull, Unplug, X } from "lucide-react";
 import {
   createLocalEnvironment,
   uid,
@@ -24,19 +24,21 @@ import {
   type ArchNode,
   type ArchitectureGraph,
 } from "@crystal/core";
-import { Badge, Button, EmptyState, Input, cn } from "@crystal/ui";
+import { Badge, Button, EmptyState, Input, Tooltip, cn } from "@crystal/ui";
 import { CodeNode, type CodeNodeData, type CodeRfNode } from "./codemap/CodeNode.js";
 import { InlineRename } from "./ContextMenu.js";
 import { updateNode } from "./graph-ops.js";
 import { infraGroups, knownTargets, layerBands, placedEdges } from "./infra.js";
 import { EDGE_KIND_STYLE, KIND_META, accentOf } from "./model.js";
-import { SimActionsContext, SimEditor, SimPanel, applyTrafficToEdges } from "./SimPanel.js";
+import { SimActionsContext, SimEditor, SimPanel, applyTrafficToEdges, useSimActions } from "./SimPanel.js";
 import {
+  initialSimTickState,
   isSimKind,
   simulate,
-  type BreakerState,
   type SimChaos,
   type SimResult,
+  type SimTickState,
+  type SimTotals,
 } from "./simulation.js";
 
 /**
@@ -55,19 +57,61 @@ interface GroupData extends Record<string, unknown> {
   count: number;
   /** True when the active environment is local development. */
   local: boolean;
+  /** Component ids placed on this target — the blast radius of a target outage. */
+  memberIds: string[];
+  /** True while the traffic simulation runs (enables the outage switch). */
+  simActive: boolean;
+  /** How many members are currently crashed. */
+  deadCount: number;
 }
 type GroupRfNode = RfNode<GroupData>;
 
 const InfraGroupNode = memo(function InfraGroupNode({ data }: NodeProps<GroupRfNode>) {
   const Icon = data.local ? Laptop : Cloud;
+  const actions = useSimActions();
+  const allDead = data.count > 0 && data.deadCount === data.count;
   return (
-    <div className="h-full w-full rounded-xl border border-dashed border-edge-strong bg-surface-1/60">
+    <div
+      className={cn(
+        "h-full w-full rounded-xl border border-dashed bg-surface-1/60",
+        allDead ? "border-danger/50" : "border-edge-strong",
+      )}
+    >
       <div className="flex items-center gap-1.5 border-b border-dashed border-edge px-2.5 py-1.5">
-        <Icon className="h-3 w-3 shrink-0 text-crystal-300" />
+        <Icon className={cn("h-3 w-3 shrink-0", allDead ? "text-danger" : "text-crystal-300")} />
         <span className="truncate text-[10.5px] font-semibold text-ink">{data.target}</span>
         <span className="ml-auto shrink-0 rounded-full bg-surface-3 px-1.5 text-[9px] leading-4 text-ink-faint">
           {data.count}
         </span>
+        {data.simActive && data.count > 0 ? (
+          <Tooltip
+            content={
+              allDead
+                ? "Target down — click to restore everything on it"
+                : `Chaos: outage — crash all ${data.count} components on this target`
+            }
+          >
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                actions?.toggleKillTarget(data.memberIds);
+              }}
+              className={cn(
+                "nodrag flex h-4.5 w-4.5 shrink-0 items-center justify-center rounded-full transition-colors",
+                allDead
+                  ? "bg-danger text-white"
+                  : data.deadCount > 0
+                    ? "bg-danger/20 text-danger hover:bg-danger/30"
+                    : "bg-surface-3 text-ink-faint hover:bg-danger/20 hover:text-danger",
+              )}
+              aria-label={allDead ? `Restore target ${data.target}` : `Take target ${data.target} down`}
+              aria-pressed={allDead}
+            >
+              {allDead ? <Skull className="h-2.5 w-2.5" /> : <Unplug className="h-2.5 w-2.5" />}
+            </button>
+          </Tooltip>
+        ) : null}
       </div>
       {/* Handles keep react-flow quiet; edges attach to child nodes. */}
       <Handle type="target" position={Position.Top} className="!invisible" />
@@ -99,6 +143,8 @@ const CELL_H_SIM = 104;
 const CELL_GAP = 12;
 /** Simulation tick cadence — slow enough to read, fast enough to feel live. */
 const SIM_TICK_MS = 600;
+/** Ticks of totals kept for the control-bar sparkline (~30s of history). */
+const SIM_HISTORY_TICKS = 48;
 const GROUP_PAD = 14;
 const GROUP_HEADER = 32;
 const GROUPS_PER_ROW = 3;
@@ -146,15 +192,21 @@ function InfraInner({
      decorates whatever is placed in the active environment) ---- */
   const [simOn, setSimOn] = useState(false);
   const [simIngress, setSimIngress] = useState(100);
-  const [simChaos, setSimChaos] = useState<SimChaos>({ spike: false, cacheMissStorm: false });
+  const [simChaos, setSimChaos] = useState<SimChaos>({
+    spike: false,
+    cacheMissStorm: false,
+    retryStorm: false,
+  });
   const [simKilled, setSimKilled] = useState<ReadonlySet<string>>(() => new Set());
   const [simResult, setSimResult] = useState<SimResult | null>(null);
-  const simBreakers = useRef<ReadonlyMap<string, BreakerState>>(new Map());
+  const [simHistory, setSimHistory] = useState<SimTotals[]>([]);
+  const simState = useRef<SimTickState>(initialSimTickState());
 
   useEffect(() => {
     if (!simOn) {
       setSimResult(null);
-      simBreakers.current = new Map();
+      setSimHistory([]);
+      simState.current = initialSimTickState();
       return;
     }
     const tick = () => {
@@ -164,10 +216,11 @@ function InfraInner({
         ingressRps: simIngress * jitter,
         chaos: simChaos,
         killed: simKilled,
-        breakers: simBreakers.current,
+        state: simState.current,
       });
-      simBreakers.current = result.breakers;
+      simState.current = result.state;
       setSimResult(result);
+      setSimHistory((prev) => [...prev.slice(-(SIM_HISTORY_TICKS - 1)), result.totals]);
     };
     tick();
     const handle = setInterval(tick, SIM_TICK_MS);
@@ -182,7 +235,22 @@ function InfraInner({
       return next;
     });
   }, []);
-  const simActions = useMemo(() => ({ toggleKill: toggleSimKill }), [toggleSimKill]);
+  const toggleSimKillTarget = useCallback((ids: string[]) => {
+    setSimKilled((prev) => {
+      // Restore only when the whole target is already down; otherwise finish it.
+      const allDead = ids.length > 0 && ids.every((id) => prev.has(id));
+      const next = new Set(prev);
+      for (const id of ids) {
+        if (allDead) next.delete(id);
+        else next.add(id);
+      }
+      return next;
+    });
+  }, []);
+  const simActions = useMemo(
+    () => ({ toggleKill: toggleSimKill, toggleKillTarget: toggleSimKillTarget }),
+    [toggleSimKill, toggleSimKillTarget],
+  );
 
   // Local development is the default lens; cloud environments are opt-in.
   const activeEnv =
@@ -284,7 +352,14 @@ function InfraInner({
           zIndex: -1,
           draggable: false,
           selectable: false,
-          data: { target: group.target, count: n, local: isLocal },
+          data: {
+            target: group.target,
+            count: n,
+            local: isLocal,
+            memberIds: group.nodes.map((node) => node.id),
+            simActive: simOn,
+            deadCount: 0,
+          },
         });
         group.nodes.forEach((node, j) => {
           const col = j % cols;
@@ -339,6 +414,12 @@ function InfraInner({
   useEffect(() => {
     setNodes((prev) =>
       prev.map((n) => {
+        if (n.type === "infragroup") {
+          const data = n.data as GroupData;
+          const deadCount = data.memberIds.filter((id) => simKilled.has(id)).length;
+          if (deadCount === data.deadCount) return n;
+          return { ...n, data: { ...data, deadCount } } as InfraRfNode;
+        }
         if (n.type !== "code") return n;
         const sim = simResult?.nodes.get(n.id);
         if (!sim && !(n.data as CodeNodeData).sim) return n;
@@ -612,6 +693,7 @@ function InfraInner({
               <Panel position="bottom-center">
                 <SimPanel
                   result={simResult}
+                  history={simHistory}
                   ingressRps={simIngress}
                   onIngressChange={setSimIngress}
                   chaos={simChaos}

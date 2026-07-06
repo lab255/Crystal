@@ -1,14 +1,16 @@
 import { createContext, useContext } from "react";
 import { MarkerType, type Edge as RfEdge } from "@xyflow/react";
-import { Flame, Gauge, Power, ShieldAlert, ShieldCheck, Skull, Square, TriangleAlert, Zap } from "lucide-react";
+import { Flame, Gauge, Power, Repeat, ShieldAlert, ShieldCheck, Skull, Square, TriangleAlert, Zap } from "lucide-react";
 import { Input, Switch, Tooltip, cn } from "@crystal/ui";
 import {
   LB_ALGORITHMS,
   type ArchNode,
+  type AutoscaleConfig,
   type LbAlgorithm,
   type SimNodeConfig,
 } from "@crystal/core";
 import {
+  DEFAULT_MAX_BACKLOG,
   KIND_SIM_DEFAULTS,
   fmtMs,
   fmtPct,
@@ -17,6 +19,7 @@ import {
   type SimChaos,
   type SimNodeStats,
   type SimResult,
+  type SimTotals,
 } from "./simulation.js";
 
 /**
@@ -29,6 +32,8 @@ import {
 export const SimActionsContext = createContext<{
   /** Crash / restore a component (the per-node kill switch). */
   toggleKill: (id: string) => void;
+  /** Take a whole deployment target down (or restore it if fully dead). */
+  toggleKillTarget: (ids: string[]) => void;
 } | null>(null);
 
 export function useSimActions() {
@@ -86,6 +91,21 @@ export function SimStrip({ sim }: { sim: SimNodeStats }) {
     >
       <div className="flex items-center justify-between gap-1 text-ink-muted">
         <span>{fmtRps(sim.inRps)} rps</span>
+        {sim.replicas > 1 || sim.scaling ? (
+          <span
+            className={cn(sim.scaling ? "text-crystal-300" : "text-ink-faint")}
+            title={
+              sim.scaling === "up"
+                ? "Autoscaler adding a replica"
+                : sim.scaling === "down"
+                  ? "Autoscaler removing a replica"
+                  : `${sim.replicas} replicas`
+            }
+          >
+            ×{sim.replicas}
+            {sim.scaling === "up" ? "↑" : sim.scaling === "down" ? "↓" : ""}
+          </span>
+        ) : null}
         <span>{fmtMs(sim.latencyMs)}</span>
         <span className={cn(sim.errorRate > 0.02 && "text-danger")}>
           {fmtPct(sim.errorRate)} err
@@ -97,6 +117,31 @@ export function SimStrip({ sim }: { sim: SimNodeStats }) {
           style={{ width: `${Math.min(u * 100, 100)}%` }}
         />
       </div>
+      {sim.backlog != null && sim.maxBacklog != null ? (
+        <>
+          <div className="mt-0.5 flex items-center justify-between text-ink-faint">
+            <span className={cn(sim.backlog >= sim.maxBacklog && "text-danger")}>
+              backlog {fmtRps(sim.backlog)}
+            </span>
+            {sim.backlog > 1 ? (
+              <span>
+                {sim.servedRps > 0.5
+                  ? `lag ${fmtMs((sim.backlog / sim.servedRps) * 1000)}`
+                  : "stalled"}
+              </span>
+            ) : null}
+          </div>
+          <div className="mt-0.5 h-1 overflow-hidden rounded-full bg-surface-active">
+            <div
+              className={cn(
+                "h-full rounded-full transition-all duration-300",
+                sim.backlog >= sim.maxBacklog ? "bg-danger" : "bg-crystal-400",
+              )}
+              style={{ width: `${Math.min((sim.backlog / sim.maxBacklog) * 100, 100)}%` }}
+            />
+          </div>
+        </>
+      ) : null}
       {sim.cacheHitRate != null ? (
         <div className="mt-0.5 text-ink-faint">hit {fmtPct(sim.cacheHitRate)}</div>
       ) : null}
@@ -199,8 +244,47 @@ function Metric({
   );
 }
 
+/** Last-ticks trend: ingress (faint) vs throughput (ok) — the gap is failures. */
+function Sparkline({ history }: { history: SimTotals[] }) {
+  const W = 92;
+  const H = 24;
+  if (history.length < 2) return <div style={{ width: W, height: H }} />;
+  const max = Math.max(...history.map((t) => t.ingressRps), 1);
+  const points = (f: (t: SimTotals) => number) =>
+    history
+      .map(
+        (t, i) =>
+          `${((i / (history.length - 1)) * W).toFixed(1)},${(H - 1.5 - (Math.max(f(t), 0) / max) * (H - 3)).toFixed(1)}`,
+      )
+      .join(" ");
+  return (
+    <Tooltip content="Recent ticks — ingress (faint) vs served throughput; the gap is failures">
+      <svg width={W} height={H} className="shrink-0" role="img" aria-label="Traffic history">
+        <polyline
+          points={points((t) => t.ingressRps)}
+          fill="none"
+          stroke="var(--color-ink-faint)"
+          strokeWidth="1"
+          opacity="0.5"
+        />
+        <polyline
+          points={points((t) => t.throughputRps)}
+          fill="none"
+          stroke="var(--color-ok)"
+          strokeWidth="1.5"
+          strokeLinejoin="round"
+        />
+      </svg>
+    </Tooltip>
+  );
+}
+
+/** How many hints stack above the control bar before we cut the nagging off. */
+const MAX_HINTS = 2;
+
 export function SimPanel({
   result,
+  history,
   ingressRps,
   onIngressChange,
   chaos,
@@ -210,6 +294,7 @@ export function SimPanel({
   onStop,
 }: {
   result: SimResult;
+  history: SimTotals[];
   ingressRps: number;
   onIngressChange: (rps: number) => void;
   chaos: SimChaos;
@@ -220,15 +305,19 @@ export function SimPanel({
 }) {
   const { totals } = result;
   const errTone = totals.errorRate > 0.2 ? "danger" : totals.errorRate > 0.02 ? "warn" : "ok";
+  const retrying = chaos.retryStorm && totals.retryMultiplier > 1.05;
 
   return (
     <div className="flex flex-col items-center gap-1">
-      {result.hints.length > 0 ? (
-        <div className="flex items-center gap-1.5 rounded-lg border border-warn/30 bg-surface-2/95 px-2.5 py-1 text-[10px] text-warn shadow-lg backdrop-blur">
+      {result.hints.slice(0, MAX_HINTS).map((hint) => (
+        <div
+          key={hint}
+          className="flex items-center gap-1.5 rounded-lg border border-warn/30 bg-surface-2/95 px-2.5 py-1 text-[10px] text-warn shadow-lg backdrop-blur"
+        >
           <TriangleAlert className="h-3 w-3 shrink-0" />
-          {result.hints[0]}
+          {hint}
         </div>
-      ) : null}
+      ))}
       <div className="flex items-center gap-3 rounded-xl border border-edge bg-surface-2/95 py-1.5 pl-3 pr-1.5 shadow-xl shadow-black/30 backdrop-blur">
         <Gauge className="h-4 w-4 shrink-0 text-crystal-300" />
         <div className="flex flex-col">
@@ -244,8 +333,12 @@ export function SimPanel({
           />
           <span className="mt-0.5 text-center font-mono text-[9px] text-ink-faint">
             {fmtRps(ingressRps)} rps in{chaos.spike ? ` ×${SPIKE_MULTIPLIER}` : ""}
+            {retrying ? (
+              <span className="text-danger"> ×{totals.retryMultiplier.toFixed(1)} retries</span>
+            ) : null}
           </span>
         </div>
+        <Sparkline history={history} />
         <div className="h-6 w-px bg-edge" />
         <Metric label="through" value={`${fmtRps(totals.throughputRps)}/s`} />
         <Metric label="errors" value={fmtPct(totals.errorRate)} tone={errTone} />
@@ -279,6 +372,19 @@ export function SimPanel({
               checked={chaos.cacheMissStorm}
               onChange={(cacheMissStorm) => onChaosChange({ ...chaos, cacheMissStorm })}
               aria-label="Cache-miss storm"
+            />
+          </label>
+        </Tooltip>
+        <Tooltip content="Retry storm — clients retry every failure, so errors amplify next tick's traffic. Watch overload spiral.">
+          <label className="flex cursor-pointer items-center gap-1.5 text-[10px] text-ink-muted">
+            <Repeat
+              className={cn("h-3 w-3", chaos.retryStorm ? "text-danger" : "text-ink-faint")}
+            />
+            retries
+            <Switch
+              checked={chaos.retryStorm}
+              onChange={(retryStorm) => onChaosChange({ ...chaos, retryStorm })}
+              aria-label="Retry storm"
             />
           </label>
         </Tooltip>
@@ -327,6 +433,12 @@ const selectClasses =
   "focus:border-crystal-500/60 focus:outline-none";
 
 const DEFAULT_BREAKER = { enabled: true, errorThreshold: 0.5, cooldownTicks: 6 };
+const DEFAULT_AUTOSCALE: AutoscaleConfig = {
+  enabled: true,
+  minReplicas: 1,
+  maxReplicas: 10,
+  targetUtilization: 0.7,
+};
 
 /** Traffic-simulation knobs; every field falls back to the kind default. */
 export function SimEditor({
@@ -339,6 +451,7 @@ export function SimEditor({
   const defaults = KIND_SIM_DEFAULTS[node.kind];
   const sim = node.sim;
   const breaker = sim?.circuitBreaker;
+  const autoscale = sim?.autoscale;
 
   const patchSim = (p: Partial<SimNodeConfig>) =>
     onPatch({ sim: { replicas: 1, ...(sim ?? {}), ...p } });
@@ -378,6 +491,69 @@ export function SimEditor({
       {numberField("Base latency ms", sim?.latencyMs, defaults?.latencyMs, (v) =>
         patchSim({ latencyMs: v }), { min: 0 },
       )}
+      {node.kind === "queue"
+        ? numberField("Max backlog", sim?.maxBacklog, DEFAULT_MAX_BACKLOG, (v) =>
+            patchSim({ maxBacklog: v }),
+          )
+        : null}
+      {node.kind !== "external" ? (
+        <>
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-ink-faint">
+              Autoscale
+            </span>
+            <Switch
+              checked={autoscale?.enabled ?? false}
+              onChange={(enabled) =>
+                patchSim({ autoscale: { ...DEFAULT_AUTOSCALE, ...(autoscale ?? {}), enabled } })
+              }
+              aria-label="Autoscale"
+            />
+          </div>
+          {autoscale?.enabled ? (
+            <>
+              <div className="grid grid-cols-2 gap-2">
+                {numberField("Min replicas", autoscale.minReplicas, undefined, (v) => {
+                  const min = Math.max(1, Math.round(v ?? 1));
+                  patchSim({
+                    autoscale: {
+                      ...autoscale,
+                      minReplicas: min,
+                      maxReplicas: Math.max(min, autoscale.maxReplicas),
+                    },
+                  });
+                })}
+                {numberField("Max replicas", autoscale.maxReplicas, undefined, (v) => {
+                  const max = Math.max(1, Math.round(v ?? 1));
+                  patchSim({
+                    autoscale: {
+                      ...autoscale,
+                      maxReplicas: max,
+                      minReplicas: Math.min(max, autoscale.minReplicas),
+                    },
+                  });
+                })}
+              </div>
+              <Field label={`Target ${Math.round(autoscale.targetUtilization * 100)}% utilization`}>
+                <input
+                  type="range"
+                  min={10}
+                  max={100}
+                  step={5}
+                  value={Math.round(autoscale.targetUtilization * 100)}
+                  onChange={(e) =>
+                    patchSim({
+                      autoscale: { ...autoscale, targetUtilization: Number(e.target.value) / 100 },
+                    })
+                  }
+                  className="h-1 w-full cursor-pointer"
+                  style={{ accentColor: "var(--color-crystal-400)" }}
+                />
+              </Field>
+            </>
+          ) : null}
+        </>
+      ) : null}
       {node.kind === "loadbalancer" || node.kind === "gateway" ? (
         <Field label="Balancing algorithm">
           <select
