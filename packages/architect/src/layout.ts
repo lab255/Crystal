@@ -17,11 +17,21 @@ const BAND_GAP = 72;
 /** Band order for `layers` mode; `null` = unlayered (containers, notes). */
 const LAYER_ORDER: readonly (ArchLayer | null)[] = ["entry", "service", "data", null];
 
+/**
+ * Fullstack columns for scopes mixing frontend and backend: UI on the left,
+ * the API boundary (gateways, entry tier) next, then services, then data —
+ * requests read left-to-right across the stack.
+ */
+type StackBand = "frontend" | "boundary" | "service" | "data";
+const STACK_ORDER: readonly (StackBand | null)[] = ["frontend", "boundary", "service", "data", null];
+
 export interface AutoLayoutOptions {
   /**
    * "flow" (default): one top-to-bottom dagre pass per scope.
-   * "layers": traffic flows top-down — entry/service/data bands stacked
-   * vertically, dagre ordering nodes left-to-right within each band.
+   * "layers": role-banded. Backend scopes stack entry/service/data bands
+   * top-down; scopes mixing frontend and backend lay out as horizontal
+   * fullstack columns (frontend → api boundary → services → data). Dagre
+   * orders nodes within each band.
    */
   mode?: "flow" | "layers";
 }
@@ -56,8 +66,12 @@ export function autoLayout(
 
   const positions = new Map<string, { x: number; y: number }>();
   for (const [parent, ids] of nodesByParent) {
-    if (mode === "layers") layoutScopeLayers(graph, ids, dims, positions, parent != null);
-    else layoutScopeFlow(graph, ids, dims, positions, parent != null);
+    if (mode === "layers") {
+      if (scopeIsFullstack(graph, ids)) layoutScopeStacks(graph, ids, dims, positions, parent != null);
+      else layoutScopeLayers(graph, ids, dims, positions, parent != null);
+    } else {
+      layoutScopeFlow(graph, ids, dims, positions, parent != null);
+    }
   }
 
   return {
@@ -151,6 +165,53 @@ export function scopeLayerOf(graph: ArchitectureGraph, node: ArchNode): ArchLaye
     }
   }
   return best;
+}
+
+/** Fullstack column of a leaf: kind first (frontends/gateways), then layer. */
+function leafStackBand(node: ArchNode): StackBand | null {
+  if (node.kind === "note") return null;
+  if (node.kind === "frontend") return "frontend";
+  if (node.kind === "gateway" || node.kind === "external") return "boundary";
+  const layer = layerOfNode(node);
+  if (layer === "entry") return "boundary";
+  if (layer === "service") return "service";
+  if (layer === "data") return "data";
+  return null;
+}
+
+/** Fullstack column of a scope member; containers take their majority leaf column. */
+function scopeStackBandOf(graph: ArchitectureGraph, node: ArchNode): StackBand | null {
+  if (!isContainerKind(node.kind)) return leafStackBand(node);
+  const counts = new Map<StackBand, number>();
+  for (const d of descendantsOf(graph, node.id)) {
+    if (isContainerKind(d.kind)) continue;
+    const band = leafStackBand(d);
+    if (band) counts.set(band, (counts.get(band) ?? 0) + 1);
+  }
+  let best: StackBand | null = null;
+  let bestCount = 0;
+  for (const [band, count] of counts) {
+    if (count > bestCount) {
+      best = band;
+      bestCount = count;
+    }
+  }
+  return best;
+}
+
+/**
+ * A scope reads as fullstack when it holds frontend members alongside
+ * backend ones — then the layered layout runs horizontally instead of
+ * stacking request tiers top-down.
+ */
+export function scopeIsFullstack(graph: ArchitectureGraph, ids: readonly string[]): boolean {
+  const byId = new Map(graph.nodes.map((n) => [n.id, n]));
+  const bands = new Set<StackBand | null>();
+  for (const id of ids) {
+    const node = byId.get(id);
+    if (node) bands.add(scopeStackBandOf(graph, node));
+  }
+  return bands.has("frontend") && (bands.has("boundary") || bands.has("service") || bands.has("data"));
 }
 
 function dagrePass(
@@ -256,5 +317,71 @@ function layoutScopeLayers(
     const center = (maxWidth - band.width) / 2;
     for (const n of band.nodes) positions.set(n.id, { x: x0 + center + n.x, y: y + n.y });
     y += band.height + BAND_GAP;
+  }
+}
+
+/**
+ * Horizontal variant of `layoutScopeLayers` for fullstack scopes: stack
+ * columns run left-to-right (frontend → boundary → services → data), members
+ * flowing top-down in wrapped vertical columns inside each band.
+ */
+function layoutScopeStacks(
+  graph: ArchitectureGraph,
+  ids: string[],
+  dims: Map<string, { width: number; height: number }>,
+  positions: Map<string, { x: number; y: number }>,
+  nested: boolean,
+): void {
+  const byId = new Map(graph.nodes.map((n) => [n.id, n]));
+  const bands = STACK_ORDER.map((band) => ({ band, ids: [] as string[] }));
+  for (const id of ids) {
+    const band = scopeStackBandOf(graph, byId.get(id)!);
+    bands[STACK_ORDER.indexOf(band)]!.ids.push(id);
+  }
+
+  interface LaidBand {
+    nodes: { id: string; x: number; y: number }[];
+    width: number;
+    height: number;
+  }
+  const BAND_MAX_H = 760;
+  const GAP_X = 36;
+  const GAP_Y = 36;
+  const laid: LaidBand[] = [];
+  for (const band of bands) {
+    if (band.ids.length === 0) continue;
+    // Dagre yields the top-to-bottom ordering; members are then placed in
+    // wrapped vertical columns (the transpose of the horizontal-bands case).
+    const pass = dagrePass(graph, band.ids, dims, new Set(band.ids));
+    const ordered = [...pass.entries()]
+      .sort((a, b) => a[1].y - b[1].y || a[1].x - b[1].x)
+      .map(([id]) => id);
+    const nodes: LaidBand["nodes"] = [];
+    let y = 0;
+    let colX = 0;
+    let colW = 0;
+    let height = 0;
+    for (const id of ordered) {
+      const d = dims.get(id)!;
+      if (y > 0 && y + d.height > BAND_MAX_H) {
+        colX += colW + GAP_X;
+        y = 0;
+        colW = 0;
+      }
+      nodes.push({ id, x: colX, y });
+      height = Math.max(height, y + d.height);
+      colW = Math.max(colW, d.width);
+      y += d.height + GAP_Y;
+    }
+    laid.push({ nodes, width: colX + colW, height });
+  }
+
+  const maxHeight = Math.max(0, ...laid.map((b) => b.height));
+  const y0 = nested ? PADDING_Y : 0;
+  let x = nested ? PADDING_X : 0;
+  for (const band of laid) {
+    const center = (maxHeight - band.height) / 2;
+    for (const n of band.nodes) positions.set(n.id, { x: x + n.x, y: y0 + center + n.y });
+    x += band.width + BAND_GAP;
   }
 }

@@ -1,5 +1,5 @@
 import { MarkerType, type Edge as RfEdge } from "@xyflow/react";
-import type { CodeModuleDetail, MoveFileIntent } from "@crystal/core";
+import type { CodeFileSummary, CodeModuleDetail, MoveFileIntent } from "@crystal/core";
 import {
   FILE_COLLAPSED_H,
   FILE_COLLAPSED_W,
@@ -9,6 +9,7 @@ import {
   buildFile,
   fileId,
   packGrid,
+  type BuiltFile,
   type DropTarget,
   type FileBuildInput,
   type FileNodeData,
@@ -17,6 +18,7 @@ import {
   type PositionedNode,
   absolutePositionOf,
 } from "./codemap/map-model.js";
+import { moduleFlavorOf, roleOfFile, roleRank } from "./code-roles.js";
 
 /**
  * Live code content for the unified diagram canvas: an expanded, code-linked
@@ -64,23 +66,22 @@ export function buildCodeContent(input: CodeContentInput): CodeContent {
       continue;
     }
 
-    const files = detail.files.map((f) =>
-      buildFile(f.path, f.name, modulePath, f.exportCount, input, input.moves),
-    );
+    const flavor = moduleFlavorOf(detail.files.map(relPathOf));
+    const files = detail.files.map((f) => ({
+      built: buildFile(f.path, f.name, modulePath, f.exportCount, input, input.moves),
+      rank: roleRank(roleOfFile(relPathOf(f), flavor), flavor),
+    }));
     const shownFiles = new Set(detail.files.map((f) => f.path));
 
     // Ghost cards for whole files planned to move INTO this module.
     for (const mv of input.moves) {
       if (mv.kind !== "moveFile" || mv.toModule !== modulePath) continue;
       if (shownFiles.has(mv.fromFile)) continue;
-      files.push(plannedFileCard(mv, modulePath));
+      files.push({ built: plannedFileCard(mv, modulePath), rank: Number.POSITIVE_INFINITY });
     }
 
-    const packed = packGrid(
-      files.map((f) => ({ id: f.node.id, w: f.w, h: f.h })),
-      MODULE_INNER_MAX_W,
-    );
-    for (const f of files) {
+    const packed = packRoleBands(files);
+    for (const { built: f } of files) {
       const pos = packed.pos.get(f.node.id)!;
       f.node.parentId = nodeId;
       f.node.position = { x: MODULE_PAD + pos.x, y: ARCH_CODE_HEADER_H + pos.y };
@@ -109,6 +110,41 @@ export function buildCodeContent(input: CodeContentInput): CodeContent {
   }
 
   return { nodes, edges, sizes, loading };
+}
+
+/** Module-relative path of a file summary (role heuristics never see the module prefix). */
+function relPathOf(f: CodeFileSummary): string {
+  return f.dir ? `${f.dir}/${f.name}` : f.name;
+}
+
+/** Extra breathing room between role bands, beyond the in-band grid gap. */
+const BAND_GAP_Y = 20;
+
+/**
+ * Pack file cards into horizontal role bands: files sharing a role rank pack
+ * into one wrapped grid, bands stack top-down in rank order (entry above
+ * service above data; providers above layouts above components).
+ */
+function packRoleBands(files: readonly { built: BuiltFile; rank: number }[]): {
+  pos: Map<string, { x: number; y: number }>;
+  width: number;
+  height: number;
+} {
+  const ranks = [...new Set(files.map((f) => f.rank))].sort((a, b) => a - b);
+  const pos = new Map<string, { x: number; y: number }>();
+  let y = 0;
+  let width = 0;
+  for (const rank of ranks) {
+    const band = files.filter((f) => f.rank === rank);
+    const packed = packGrid(
+      band.map(({ built }) => ({ id: built.node.id, w: built.w, h: built.h })),
+      MODULE_INNER_MAX_W,
+    );
+    for (const [id, p] of packed.pos) pos.set(id, { x: p.x, y: y + p.y });
+    width = Math.max(width, packed.width);
+    y += packed.height + BAND_GAP_Y;
+  }
+  return { pos, width, height: files.length ? y - BAND_GAP_Y : 0 };
 }
 
 function plannedFileCard(mv: MoveFileIntent, modulePath: string) {

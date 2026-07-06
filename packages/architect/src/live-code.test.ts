@@ -87,6 +87,33 @@ describe("buildCodeContent", () => {
     expect(content.edges[0]!.target).toBe(fileId("packages/core/src/b.ts"));
   });
 
+  it("bands files by role — entry above service above data", () => {
+    const detail: CodeModuleDetail = {
+      module: { path: "services/api", name: "api", fileCount: 3 },
+      files: [
+        { path: "services/api/src/db/client.ts", name: "client.ts", dir: "src/db", importCount: 0, exportCount: 1 },
+        { path: "services/api/src/routes.ts", name: "routes.ts", dir: "src", importCount: 0, exportCount: 1 },
+        { path: "services/api/src/services/pricing.ts", name: "pricing.ts", dir: "src/services", importCount: 0, exportCount: 1 },
+      ],
+      edges: [],
+      moduleDeps: [],
+      truncated: false,
+    };
+    const content = buildCodeContent(
+      input({
+        expanded: new Map([["node_1", "services/api"]]),
+        moduleDetails: new Map([["services/api", detail]]),
+      }),
+    );
+    const topOf = (path: string) => content.nodes.find((n) => n.id === fileId(path))!.position.y;
+    expect(topOf("services/api/src/routes.ts")).toBeLessThan(
+      topOf("services/api/src/services/pricing.ts"),
+    );
+    expect(topOf("services/api/src/services/pricing.ts")).toBeLessThan(
+      topOf("services/api/src/db/client.ts"),
+    );
+  });
+
   it("renders a ghost card for a file planned to move into the module", () => {
     const detail = moduleDetail("packages/core", ["packages/core/src/a.ts"]);
     const content = buildCodeContent(

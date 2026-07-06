@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Copy, FolderGit2, LayoutGrid, Maximize2, Radar, Rows3 } from "lucide-react";
+import { Copy, FolderGit2, LayoutGrid, Maximize2, Radar, Rows3, ZoomIn } from "lucide-react";
 import type { ArchEdgeKind, ArchitectureGraph } from "@crystal/core";
 import { Button, Tooltip, cn } from "@crystal/ui";
 import { EDGE_KIND_STYLE } from "./model.js";
@@ -11,6 +11,8 @@ export function Toolbar({
   onAutoLayout,
   onFitView,
   onRename,
+  lodOn,
+  onToggleLod,
   overlayOn,
   onToggleOverlay,
   showDuplicates,
@@ -23,6 +25,8 @@ export function Toolbar({
   onAutoLayout: (mode: "flow" | "layers") => void;
   onFitView: () => void;
   onRename: (name: string) => void;
+  lodOn?: boolean;
+  onToggleLod?: (on: boolean) => void;
   overlayOn?: boolean;
   onToggleOverlay?: (on: boolean) => void;
   showDuplicates?: boolean;
@@ -81,7 +85,7 @@ export function Toolbar({
           <LayoutGrid className="h-3.5 w-3.5" />
         </Button>
       </Tooltip>
-      <Tooltip content="Auto-layout — layers (entry → service → data, top-down)">
+      <Tooltip content="Auto-layout — layers by role (controller → service → data; fullstack scopes run left-to-right)">
         <Button
           variant="ghost"
           size="icon-sm"
@@ -96,6 +100,22 @@ export function Toolbar({
           <Maximize2 className="h-3.5 w-3.5" />
         </Button>
       </Tooltip>
+      {onToggleLod ? (
+        <Tooltip content="Dynamic detail — nodes expand into their code as you zoom in, and fold up as you zoom out">
+          <button
+            type="button"
+            aria-pressed={lodOn}
+            onClick={() => onToggleLod(!lodOn)}
+            className={cn(
+              "flex h-6 items-center gap-1.5 rounded-md px-1.5 text-[11px] transition-colors",
+              lodOn ? "bg-crystal-500/20 text-crystal-300" : "text-ink-faint hover:text-ink-muted",
+            )}
+          >
+            <ZoomIn className="h-3.5 w-3.5" />
+            detail
+          </button>
+        </Tooltip>
+      ) : null}
       {onToggleOverlay ? (
         <>
           <div className="h-4 w-px bg-edge" />

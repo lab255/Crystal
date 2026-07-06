@@ -140,6 +140,21 @@ export interface ArchitectCanvasProps {
 const GHOST_STROKE = "var(--color-crystal-400)";
 const FLOW_STROKE = "var(--color-crystal-400)";
 
+/**
+ * Dynamic level-of-detail thresholds. Zooming past an expand threshold
+ * auto-expands what's in view (nodes into their module's files, file cards
+ * into symbols); zooming back out past the lower collapse threshold undoes
+ * only the automatic expansions. The gap between the pair is hysteresis so
+ * detail doesn't flicker at the boundary.
+ */
+const LOD_MODULE_EXPAND_ZOOM = 1.25;
+const LOD_MODULE_COLLAPSE_ZOOM = 0.9;
+const LOD_FILE_EXPAND_ZOOM = 1.9;
+const LOD_FILE_COLLAPSE_ZOOM = 1.45;
+/** New expansions per evaluation pass — keeps a deep zoom from fetching everything at once. */
+const LOD_MODULE_BUDGET = 6;
+const LOD_FILE_BUDGET = 16;
+
 /** Journey lens: highlight + number edges on the flow, dim the rest. */
 function applyFlowToEdges(edges: ArchRfEdge[], flow: FlowProjection): ArchRfEdge[] {
   const decorated = edges.map((e): ArchRfEdge => {
@@ -259,7 +274,7 @@ function CanvasInner({
   const [renaming, setRenaming] = useState<{ x: number; y: number; id: string } | null>(null);
   const [peek, setPeek] = useState<{ module: string; label: string; file?: string } | null>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
-  const { screenToFlowPosition, fitView, getNodes } = useReactFlow();
+  const { screenToFlowPosition, fitView, getNodes, getViewport } = useReactFlow();
 
   // Keep a ref of the latest graph so stale-closure callbacks always mutate fresh state.
   const graphRef = useRef(graph);
@@ -295,6 +310,19 @@ function CanvasInner({
   );
   const inflight = useRef(new Set<string>());
 
+  /** Zoom-driven LOD: what the engine expanded on its own (and may collapse again). */
+  const [lodOn, setLodOn] = useState(true);
+  const lodOnRef = useRef(lodOn);
+  lodOnRef.current = lodOn;
+  const autoExpandedNodes = useRef(new Set<string>());
+  const autoExpandedFiles = useRef(new Set<string>());
+  /** Manually collapsed while zoomed in — LOD leaves these alone until the next zoom-out. */
+  const lodSuppressedNodes = useRef(new Set<string>());
+  const lodSuppressedFiles = useRef(new Set<string>());
+  const expandedRef = useRef<ReadonlyMap<string, string>>(new Map());
+  const expandedFilesRef = useRef<ReadonlySet<string>>(new Set());
+  expandedFilesRef.current = expandedFiles;
+
   // The server re-analyzes when code changes on disk — refresh expanded content.
   useEffect(
     () =>
@@ -311,6 +339,7 @@ function CanvasInner({
     for (const [id, module] of codeExpanded) if (ids.has(id)) m.set(id, module);
     return m as ReadonlyMap<string, string>;
   }, [codeExpanded, graph]);
+  expandedRef.current = expanded;
 
   useEffect(() => {
     for (const module of new Set(expanded.values())) {
@@ -367,8 +396,14 @@ function CanvasInner({
   const toggleFile = useCallback((path: string) => {
     setExpandedFiles((prev) => {
       const next = new Set(prev);
-      if (next.has(path)) next.delete(path);
-      else next.add(path);
+      if (next.has(path)) {
+        // Collapsing something LOD opened is an override — don't reopen it.
+        if (autoExpandedFiles.current.delete(path)) lodSuppressedFiles.current.add(path);
+        next.delete(path);
+      } else {
+        lodSuppressedFiles.current.delete(path);
+        next.add(path);
+      }
       return next;
     });
   }, []);
@@ -577,6 +612,8 @@ function CanvasInner({
   const toggleNodeCode = useCallback(
     (id: string) => {
       if (codeExpanded.has(id)) {
+        // Collapsing something LOD opened is an override — don't reopen it.
+        if (autoExpandedNodes.current.delete(id)) lodSuppressedNodes.current.add(id);
         setCodeExpanded((prev) => {
           const next = new Map(prev);
           next.delete(id);
@@ -588,6 +625,7 @@ function CanvasInner({
       if (!node || node.kind === "note" || isContainerKind(node.kind)) return;
       const module = moduleForNode(id);
       if (!module) return;
+      lodSuppressedNodes.current.delete(id);
       setCodeExpanded((prev) => new Map(prev).set(id, module));
       scheduleFocus(id);
     },
@@ -713,11 +751,174 @@ function CanvasInner({
     [addNodeAt, screenToFlowPosition],
   );
 
+  /* ------------- dynamic level of detail: zoom in expands, zoom out collapses ------------- */
+
+  /**
+   * One LOD pass for a viewport: past the expand thresholds, code-linked
+   * nodes (then file cards) currently on screen open up; past the collapse
+   * thresholds, everything the engine opened closes again. Only automatic
+   * expansions are ever collapsed — manual ones stay put.
+   */
+  const evaluateLod = useCallback(
+    (vp: Viewport) => {
+      if (!lodOnRef.current) return;
+      const rect = wrapperRef.current?.getBoundingClientRect();
+      if (!rect || rect.width === 0) return;
+      const view = {
+        x: -vp.x / vp.zoom,
+        y: -vp.y / vp.zoom,
+        w: rect.width / vp.zoom,
+        h: rect.height / vp.zoom,
+      };
+      const live = getNodes() as unknown as HitTestNode[];
+      const byId = new Map(live.map((n) => [n.id, n]));
+      const inView = (n: HitTestNode): boolean => {
+        let x = n.position.x;
+        let y = n.position.y;
+        let cur: HitTestNode | undefined = n;
+        while (cur.parentId) {
+          cur = byId.get(cur.parentId);
+          if (!cur) break;
+          x += cur.position.x;
+          y += cur.position.y;
+        }
+        const w = n.measured?.width ?? n.width ?? 200;
+        const h = n.measured?.height ?? n.height ?? 84;
+        return x < view.x + view.w && x + w > view.x && y < view.y + view.h && y + h > view.y;
+      };
+
+      if (vp.zoom >= LOD_MODULE_EXPAND_ZOOM) {
+        const toExpand = new Map<string, string>();
+        for (const n of live) {
+          if (toExpand.size >= LOD_MODULE_BUDGET) break;
+          const data = n.data as Partial<ArchRfNode["data"]>;
+          const arch = data.arch;
+          if (!arch || data.codeExpanded) continue;
+          if (isContainerKind(arch.kind) || arch.kind === "note" || arch.codeFile) continue;
+          if (expandedRef.current.has(n.id) || autoExpandedNodes.current.has(n.id)) continue;
+          if (lodSuppressedNodes.current.has(n.id)) continue;
+          if (!inView(n)) continue;
+          const module = moduleForNode(n.id);
+          if (module) toExpand.set(n.id, module);
+        }
+        if (toExpand.size > 0) {
+          for (const id of toExpand.keys()) autoExpandedNodes.current.add(id);
+          setCodeExpanded((prev) => {
+            const next = new Map(prev);
+            for (const [id, module] of toExpand) next.set(id, module);
+            return next;
+          });
+        }
+      } else if (vp.zoom <= LOD_MODULE_COLLAPSE_ZOOM) {
+        lodSuppressedNodes.current.clear();
+        if (autoExpandedNodes.current.size > 0) {
+          const ids = [...autoExpandedNodes.current];
+          autoExpandedNodes.current.clear();
+          setCodeExpanded((prev) => {
+            const next = new Map(prev);
+            for (const id of ids) next.delete(id);
+            return next;
+          });
+        }
+      }
+
+      if (vp.zoom >= LOD_FILE_EXPAND_ZOOM) {
+        const toExpand: string[] = [];
+        for (const n of live) {
+          if (toExpand.length >= LOD_FILE_BUDGET) break;
+          const data = n.data as Partial<FileNodeData>;
+          if (data.nodeKind !== "file" || data.planned || data.expanded || !data.path) continue;
+          const path = data.path;
+          if (expandedFilesRef.current.has(path) || autoExpandedFiles.current.has(path)) continue;
+          if (lodSuppressedFiles.current.has(path)) continue;
+          if (!inView(n)) continue;
+          toExpand.push(path);
+        }
+        if (toExpand.length > 0) {
+          for (const path of toExpand) autoExpandedFiles.current.add(path);
+          setExpandedFiles((prev) => {
+            const next = new Set(prev);
+            for (const path of toExpand) next.add(path);
+            return next;
+          });
+        }
+      } else if (vp.zoom <= LOD_FILE_COLLAPSE_ZOOM) {
+        lodSuppressedFiles.current.clear();
+        if (autoExpandedFiles.current.size > 0) {
+          const paths = [...autoExpandedFiles.current];
+          autoExpandedFiles.current.clear();
+          setExpandedFiles((prev) => {
+            const next = new Set(prev);
+            for (const path of paths) next.delete(path);
+            return next;
+          });
+        }
+      }
+    },
+    [getNodes, moduleForNode],
+  );
+
+  // Evaluate while the gesture is in flight (rAF-throttled, and only once the
+  // viewport has moved meaningfully), so detail appears as you zoom, not after.
+  const lodFrame = useRef<number | null>(null);
+  const lastLodVp = useRef<Viewport | null>(null);
+  const onMove = useCallback(
+    (_evt: unknown, vp: Viewport) => {
+      if (!lodOnRef.current) return;
+      const last = lastLodVp.current;
+      if (
+        last &&
+        Math.abs(vp.zoom - last.zoom) < 0.04 &&
+        Math.abs(vp.x - last.x) < 120 &&
+        Math.abs(vp.y - last.y) < 120
+      ) {
+        return;
+      }
+      if (lodFrame.current != null) return;
+      lodFrame.current = requestAnimationFrame(() => {
+        lodFrame.current = null;
+        lastLodVp.current = vp;
+        evaluateLod(vp);
+      });
+    },
+    [evaluateLod],
+  );
+  useEffect(
+    () => () => {
+      if (lodFrame.current != null) cancelAnimationFrame(lodFrame.current);
+    },
+    [],
+  );
+
+  // A diagram can open already zoomed in (persisted viewport) — run one pass
+  // once the initial nodes have been measured.
+  const lodInitDone = useRef(false);
+  useEffect(() => {
+    if (lodInitDone.current) return;
+    const timer = setTimeout(() => {
+      lodInitDone.current = true;
+      const vp = graphRef.current.viewport;
+      if (vp) evaluateLod(vp);
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [evaluateLod]);
+
+  const toggleLod = useCallback(
+    (on: boolean) => {
+      lodOnRef.current = on;
+      setLodOn(on);
+      if (on) evaluateLod(getViewport());
+    },
+    [evaluateLod, getViewport],
+  );
+
   const onMoveEnd = useCallback(
     (_evt: unknown, viewport: Viewport) => {
       commit({ ...graphRef.current, viewport });
+      lastLodVp.current = viewport;
+      evaluateLod(viewport);
     },
-    [commit],
+    [commit, evaluateLod],
   );
 
   const runAutoLayout = useCallback(
@@ -859,7 +1060,7 @@ function CanvasInner({
           icon: LayoutGrid,
           entries: [
             { type: "item", label: "Flow — top to bottom", icon: LayoutGrid, onSelect: () => runAutoLayout("flow") },
-            { type: "item", label: "Layers — entry / service / data", icon: Rows3, onSelect: () => runAutoLayout("layers") },
+            { type: "item", label: "Layers — by role (fullstack aware)", icon: Rows3, onSelect: () => runAutoLayout("layers") },
           ],
         },
         {
@@ -1152,6 +1353,7 @@ function CanvasInner({
           e.preventDefault();
           e.dataTransfer.dropEffect = "move";
         }}
+        onMove={onMove}
         onMoveEnd={onMoveEnd}
         defaultViewport={graph.viewport ?? undefined}
         fitView={!graph.viewport}
@@ -1190,6 +1392,8 @@ function CanvasInner({
             onAutoLayout={runAutoLayout}
             onFitView={() => void fitView({ padding: 0.15, duration: 300 })}
             onRename={(name) => commit({ ...graphRef.current, name })}
+            lodOn={lodOn}
+            onToggleLod={toggleLod}
             overlayOn={overlayOn}
             onToggleOverlay={onToggleOverlay}
             showDuplicates={showDuplicates}
