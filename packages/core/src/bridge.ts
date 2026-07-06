@@ -1,3 +1,4 @@
+import type { ArchDraft } from "./arch-draft.js";
 import type { ArchitectureGraph } from "./architecture.js";
 import type { AgentRun, RunEvent } from "./agent.js";
 import type {
@@ -67,6 +68,8 @@ export interface WorkspaceInfo {
   root: string;
   manifest: WorkspaceManifest;
   architectures: { path: string; graph: ArchitectureGraph }[];
+  /** Saved architecture drafts (`.crystal/architecture/drafts/`). */
+  archDrafts: { path: string; draft: ArchDraft }[];
   projects: { path: string; project: Project }[];
 }
 
@@ -86,6 +89,12 @@ export interface BridgeMethods {
   "arch.save": { params: WsScope & { path: string; graph: ArchitectureGraph }; result: { ok: true } };
   "arch.create": { params: WsScope & { name: string }; result: { path: string; graph: ArchitectureGraph } };
   "arch.delete": { params: WsScope & { path: string }; result: { ok: true } };
+  "archdraft.create": {
+    params: WsScope & { draft: ArchDraft };
+    result: { path: string; draft: ArchDraft };
+  };
+  "archdraft.save": { params: WsScope & { path: string; draft: ArchDraft }; result: { ok: true } };
+  "archdraft.delete": { params: WsScope & { path: string }; result: { ok: true } };
   "project.save": { params: WsScope & { path: string; project: Project }; result: { ok: true } };
   "project.create": { params: WsScope & { name: string }; result: { path: string; project: Project } };
   "fs.list": { params: WsScope & { path: string }; result: { entries: FileEntry[] } };

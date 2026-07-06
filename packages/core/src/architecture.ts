@@ -31,6 +31,22 @@ export type ArchNodeKind = z.infer<typeof ArchNodeKindSchema>;
 /** Kinds that render as containers and may hold children. */
 export const CONTAINER_KINDS: readonly ArchNodeKind[] = ["system", "group"];
 
+/** A deployment environment the architecture runs in (dev/staging/prod…). */
+export const ArchEnvironmentSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+});
+export type ArchEnvironment = z.infer<typeof ArchEnvironmentSchema>;
+
+/** Where a component runs within one environment. */
+export const ArchPlacementSchema = z.object({
+  /** Deployment target grouping, e.g. "aws us-east-1 / ecs", "vercel", "on-prem". */
+  target: z.string(),
+  /** Runtime detail, e.g. "fargate ×3", "k8s deployment", "lambda". */
+  runtime: z.string().default(""),
+});
+export type ArchPlacement = z.infer<typeof ArchPlacementSchema>;
+
 export const ArchNodeSchema = z.object({
   id: z.string(),
   kind: ArchNodeKindSchema,
@@ -52,6 +68,8 @@ export const ArchNodeSchema = z.object({
   codeModule: z.string().nullish(),
   /** External URL (dashboard, docs, repo…). */
   href: z.string().nullish(),
+  /** Environment id → where this component runs (infrastructure view). */
+  placements: z.record(ArchPlacementSchema).default({}),
   /** Accent color token override (named token, not raw css). */
   accent: z
     .enum(["violet", "cyan", "emerald", "amber", "rose", "blue", "slate"])
@@ -78,6 +96,8 @@ export const ArchitectureGraphSchema = z.object({
   description: z.string().default(""),
   nodes: z.array(ArchNodeSchema).default([]),
   edges: z.array(ArchEdgeSchema).default([]),
+  /** Deployment environments for the infrastructure view. */
+  environments: z.array(ArchEnvironmentSchema).default([]),
   viewport: z
     .object({ x: z.number(), y: z.number(), zoom: z.number() })
     .nullish(),
@@ -85,7 +105,7 @@ export const ArchitectureGraphSchema = z.object({
 export type ArchitectureGraph = z.infer<typeof ArchitectureGraphSchema>;
 
 export function createArchitectureGraph(name: string): ArchitectureGraph {
-  return { id: uid("arch"), name, description: "", nodes: [], edges: [] };
+  return { id: uid("arch"), name, description: "", nodes: [], edges: [], environments: [] };
 }
 
 export function createArchNode(
@@ -106,6 +126,26 @@ export function createArchNode(
 
 export function isContainerKind(kind: ArchNodeKind): boolean {
   return CONTAINER_KINDS.includes(kind);
+}
+
+/** Set or clear (`placement: null`) a node's placement in one environment. */
+export function updateNodePlacement(
+  graph: ArchitectureGraph,
+  nodeId: string,
+  envId: string,
+  placement: ArchPlacement | null,
+): ArchitectureGraph {
+  return {
+    ...graph,
+    nodes: graph.nodes.map((n) => {
+      if (n.id !== nodeId) return n;
+      if (!placement) {
+        const { [envId]: _, ...rest } = n.placements;
+        return { ...n, placements: rest };
+      }
+      return { ...n, placements: { ...n.placements, [envId]: placement } };
+    }),
+  };
 }
 
 /** All transitive children of `nodeId`. */

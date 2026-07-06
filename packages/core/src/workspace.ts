@@ -40,4 +40,5 @@ export function createRepoRef(name: string, path: string): RepoRef {
 export const CRYSTAL_DIR = ".crystal";
 export const WORKSPACE_FILE = `${CRYSTAL_DIR}/workspace.json`;
 export const ARCHITECTURE_DIR = `${CRYSTAL_DIR}/architecture`;
+export const ARCH_DRAFTS_DIR = `${ARCHITECTURE_DIR}/drafts`;
 export const PROJECTS_DIR = `${CRYSTAL_DIR}/projects`;

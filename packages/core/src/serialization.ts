@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ArchDraftSchema, type ArchDraft } from "./arch-draft.js";
 import { ArchitectureGraphSchema, type ArchitectureGraph } from "./architecture.js";
 import { ProjectSchema, type Project } from "./project.js";
 import { WorkspaceManifestSchema, type WorkspaceManifest } from "./workspace.js";
@@ -16,22 +17,24 @@ import { WorkspaceManifestSchema, type WorkspaceManifest } from "./workspace.js"
 
 export const CRYSTAL_FILE_VERSION = 1;
 
-export type CrystalFileKind = "architecture" | "project" | "workspace";
+export type CrystalFileKind = "architecture" | "archdraft" | "project" | "workspace";
 
 const EnvelopeSchema = z.object({
   crystal: z.number(),
-  kind: z.enum(["architecture", "project", "workspace"]),
+  kind: z.enum(["architecture", "archdraft", "project", "workspace"]),
   data: z.unknown(),
 });
 
 const DATA_SCHEMAS = {
   architecture: ArchitectureGraphSchema,
+  archdraft: ArchDraftSchema,
   project: ProjectSchema,
   workspace: WorkspaceManifestSchema,
 } as const;
 
 export interface KindDataMap {
   architecture: ArchitectureGraph;
+  archdraft: ArchDraft;
   project: Project;
   workspace: WorkspaceManifest;
 }
