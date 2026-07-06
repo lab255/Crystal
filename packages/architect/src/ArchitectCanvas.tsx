@@ -15,7 +15,7 @@ import {
   type Viewport,
 } from "@xyflow/react";
 import { useCallback, useMemo, useRef, useState, type DragEvent, type MouseEvent as ReactMouseEvent } from "react";
-import { Copy, FolderGit2, LayoutGrid, Maximize2, Pencil, Plus, Rows3, Trash2 } from "lucide-react";
+import { Code2, Copy, FolderGit2, LayoutGrid, Maximize2, Pencil, Plus, Rows3, Trash2 } from "lucide-react";
 import {
   ARCH_EDGE_KINDS,
   isContainerKind,
@@ -52,6 +52,8 @@ import { LeafNode } from "./nodes/LeafNode.js";
 import { NoteNode } from "./nodes/NoteNode.js";
 import { Inspector } from "./Inspector.js";
 import { adoptAutoLinks, computeOverlay, suggestModuleFor, type OverlayResult } from "./overlay.js";
+import { requestOpenFile } from "./codemap/CodeMapView.js";
+import { PeekPanel } from "./snippets.js";
 import { Palette, DRAG_MIME, PALETTE_KINDS } from "./Palette.js";
 import { Toolbar } from "./Toolbar.js";
 import type { ArchEdgeKind } from "@crystal/core";
@@ -136,6 +138,7 @@ function CanvasInner({
   const [defaultEdgeKind, setDefaultEdgeKind] = useState<ArchEdgeKind>("sync");
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [renaming, setRenaming] = useState<{ x: number; y: number; id: string } | null>(null);
+  const [peek, setPeek] = useState<{ module: string; label: string } | null>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const { screenToFlowPosition, fitView } = useReactFlow();
 
@@ -421,6 +424,14 @@ function CanvasInner({
         },
         {
           type: "item",
+          label: "Peek code",
+          icon: Code2,
+          disabled: !module,
+          hint: module ?? undefined,
+          onSelect: () => module && setPeek({ module, label: node.label }),
+        },
+        {
+          type: "item",
           label: "Zoom into code",
           icon: FolderGit2,
           disabled: !module || !onDrillIntoModule,
@@ -570,6 +581,14 @@ function CanvasInner({
 
       {menu ? (
         <ContextMenu x={menu.x} y={menu.y} entries={menuEntries} onClose={() => setMenu(null)} />
+      ) : null}
+      {peek ? (
+        <PeekPanel
+          module={peek.module}
+          nodeLabel={peek.label}
+          onClose={() => setPeek(null)}
+          onOpenFile={requestOpenFile}
+        />
       ) : null}
       {renaming ? (
         <InlineRename

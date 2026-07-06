@@ -11,3 +11,5 @@ export * from "./components/DropdownMenu.js";
 export * from "./components/Tabs.js";
 export * from "./components/EmptyState.js";
 export * from "./components/Split.js";
+export * from "./components/CodeSnippet.js";
+export * from "./highlight.js";

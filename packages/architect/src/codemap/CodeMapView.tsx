@@ -31,6 +31,7 @@ import type {
 } from "@crystal/core";
 import { useCrystal, useWorkspaces } from "@crystal/client";
 import { Badge, Button, EmptyState, Spinner, Tooltip, cn } from "@crystal/ui";
+import { SymbolSnippet } from "../snippets.js";
 import { CodeNode, type CodeRfNode } from "./CodeNode.js";
 
 const nodeTypes = { code: CodeNode };
@@ -506,6 +507,7 @@ function CodeMapInner({ initialModule, origin }: CodeMapViewProps) {
       {level?.kind === "file" && fileDetail ? (
         <FilePanel
           detail={fileDetail}
+          ws={level.ws}
           onNavigate={(p) => setLevel({ kind: "file", ws: level.ws, path: p })}
           onOpenFile={openInEditor}
         />
@@ -603,18 +605,23 @@ const SYMBOL_TONES: Record<CodeSymbolKind, { label: string; tone: "violet" | "cy
 
 function FilePanel({
   detail,
+  ws,
   onNavigate,
   onOpenFile,
 }: {
   detail: CodeFileDetail;
+  ws?: string;
   onNavigate: (path: string) => void;
   onOpenFile: (path: string) => void;
 }) {
   const externals = detail.imports.filter((i) => i.external);
   const internals = detail.imports.filter((i) => i.resolved);
+  const [expanded, setExpanded] = useState<string | null>(null);
+  // Older servers don't send `symbols`; fall back to the export list.
+  const symbols = detail.symbols ?? detail.exports;
 
   return (
-    <aside className="flex w-72 shrink-0 flex-col border-l border-edge bg-surface-1">
+    <aside className="flex w-80 shrink-0 flex-col border-l border-edge bg-surface-1">
       <div className="border-b border-edge px-3 py-2.5">
         <div className="truncate text-xs font-semibold text-ink">{detail.path}</div>
         <div className="mt-0.5 flex items-center gap-2 text-[10px] text-ink-faint">
@@ -632,17 +639,33 @@ function FilePanel({
         </Button>
       </div>
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
-        <Section title={`Exports (${detail.exports.length})`}>
-          {detail.exports.map((sym, i) => (
-            <div key={`${sym.name}${i}`} className="flex items-center gap-2 py-0.5 text-[11.5px]">
-              <Badge tone={SYMBOL_TONES[sym.kind].tone} className="w-8 justify-center font-mono">
-                {SYMBOL_TONES[sym.kind].label}
-              </Badge>
-              <span className="min-w-0 flex-1 truncate font-mono text-ink">{sym.name}</span>
-              <span className="text-[9px] text-ink-faint">:{sym.line}</span>
+        <Section title={`Symbols (${symbols.length})`}>
+          {symbols.map((sym, i) => (
+            <div key={`${sym.name}${i}`}>
+              <div className="flex items-center gap-1.5 py-0.5 text-[11.5px]">
+                <button
+                  type="button"
+                  onClick={() => setExpanded(expanded === sym.name ? null : sym.name)}
+                  className="shrink-0 rounded p-0.5 text-ink-faint hover:text-ink"
+                  aria-label={`${expanded === sym.name ? "Hide" : "Show"} source of ${sym.name}`}
+                >
+                  <ChevronRight
+                    className={cn("h-3 w-3 transition-transform", expanded === sym.name && "rotate-90")}
+                  />
+                </button>
+                <Badge tone={SYMBOL_TONES[sym.kind].tone} className="w-8 justify-center font-mono">
+                  {SYMBOL_TONES[sym.kind].label}
+                </Badge>
+                <span className="min-w-0 flex-1 truncate font-mono text-ink">{sym.name}</span>
+                {sym.exported === false ? <Badge tone="neutral">int</Badge> : null}
+                <span className="text-[9px] text-ink-faint">:{sym.line}</span>
+              </div>
+              {expanded === sym.name ? (
+                <SymbolSnippet file={detail.path} symbol={sym.name} ws={ws} className="mb-1.5 ml-5" />
+              ) : null}
             </div>
           ))}
-          {detail.exports.length === 0 ? <Empty label="No exports" /> : null}
+          {symbols.length === 0 ? <Empty label="No top-level symbols" /> : null}
         </Section>
         <Section title={`Imports — internal (${internals.length})`}>
           {internals.map((imp, i) => (
