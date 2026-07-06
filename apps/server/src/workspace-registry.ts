@@ -14,6 +14,7 @@ import type {
 import { AgentManager } from "./agent-manager.js";
 import { CodeMapAnalyzer, type CrossSurface } from "./code-map.js";
 import { appDataDir, isIgnoredDir, workspaceIdFor } from "./paths.js";
+import { RefactorEngine } from "./refactor.js";
 import { WorkspaceStore } from "./workspace-store.js";
 
 const CODE_FILE_RE = /\.(ts|tsx|js|jsx|mjs|cjs)$/;
@@ -47,6 +48,7 @@ export class WorkspaceRuntime {
   private watchTimer: NodeJS.Timeout | null = null;
   private pendingPaths = new Set<string>();
   private disposeAgentListeners: (() => void)[] = [];
+  private refactorEngine: RefactorEngine | null = null;
 
   constructor(readonly root: string) {
     this.id = workspaceIdFor(root);
@@ -58,6 +60,11 @@ export class WorkspaceRuntime {
 
   descriptor(): WorkspaceDescriptor {
     return { id: this.id, root: this.root, name: this.name };
+  }
+
+  /** LanguageService-backed refactor engine, created on first use. */
+  refactor(): RefactorEngine {
+    return (this.refactorEngine ??= new RefactorEngine(this.root, this.codemap));
   }
 
   start(broadcast: Broadcast): void {
@@ -94,6 +101,8 @@ export class WorkspaceRuntime {
     if (this.watchTimer) clearTimeout(this.watchTimer);
     for (const dispose of this.disposeAgentListeners) dispose();
     this.disposeAgentListeners = [];
+    this.refactorEngine?.dispose();
+    this.refactorEngine = null;
   }
 }
 

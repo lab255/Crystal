@@ -157,6 +157,18 @@ export async function startCrystalServer(opts: {
     "codemap.symbols": async ({ ws, query, limit }) => ({
       symbols: await registry.get(ws).codemap.searchSymbols(query, limit),
     }),
+    "refactor.preview": ({ ws, intents }) => registry.get(ws).refactor().preview(intents),
+    "refactor.apply": async ({ ws, intents }) => {
+      const rt = registry.get(ws);
+      const { applied, failed, pathsTouched } = await rt.refactor().apply(intents);
+      if (pathsTouched.length > 0) {
+        // The watcher would catch these in 250ms; explicit keeps the UI snappy.
+        rt.codemap.invalidate();
+        broadcast("fs.changed", { ws: rt.id, paths: pathsTouched });
+        broadcast("codemap.changed", { ws: rt.id });
+      }
+      return { applied, failed };
+    },
   };
 
   const httpServer = http.createServer((req, res) => {

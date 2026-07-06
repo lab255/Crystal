@@ -12,6 +12,7 @@ import type {
   SymbolSearchHit,
 } from "./codemap.js";
 import type { Project } from "./project.js";
+import type { RefactorApplyResult, RefactorIntent, RefactorPlan } from "./refactor.js";
 import type { WorkspaceManifest } from "./workspace.js";
 
 /**
@@ -154,6 +155,16 @@ export interface BridgeMethods {
   "codemap.symbols": {
     params: WsScope & { query: string; limit?: number };
     result: { symbols: SymbolSearchHit[] };
+  };
+  /** Dry-run of refactor intents — per-intent engine + change summaries. */
+  "refactor.preview": {
+    params: WsScope & { intents: RefactorIntent[] };
+    result: { plans: RefactorPlan[] };
+  };
+  /** Execute mechanical move intents (hoists are rejected — they run via agent.start). */
+  "refactor.apply": {
+    params: WsScope & { intents: RefactorIntent[] };
+    result: RefactorApplyResult;
   };
 }
 

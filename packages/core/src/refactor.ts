@@ -75,6 +75,36 @@ export interface RefactorIntentProblem {
   problem: string;
 }
 
+/* ------------------------------------------------------------------ */
+/* Engine plans (refactor.preview / refactor.apply wire types)          */
+/* ------------------------------------------------------------------ */
+
+export interface RefactorChange {
+  /** Workspace-relative file this change touches. */
+  file: string;
+  /** e.g. "declaration moved here", "3 edits", "re-export shim added". */
+  summary: string;
+  /** Bounded source excerpt of the changed region. */
+  preview: string;
+}
+
+export interface RefactorPlan {
+  intentId: string;
+  /**
+   * "language-service" = TS Move-to-file with full reference rewriting;
+   * "manual" = textual move + re-export/import shim;
+   * "agent" = executes via a Claude Code run (hoists), never via refactor.apply.
+   */
+  engine: "language-service" | "manual" | "agent";
+  changes: RefactorChange[];
+  warnings: string[];
+}
+
+export interface RefactorApplyResult {
+  applied: { intentId: string; filesTouched: string[] }[];
+  failed: { intentId: string; error: string }[];
+}
+
 /**
  * Check intents against the live code map (upstream code may have renamed or
  * deleted symbols since the intent was recorded). `symbolIndex` returns a
