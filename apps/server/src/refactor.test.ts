@@ -2,9 +2,16 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createMoveIntent } from "@crystal/core";
+import { createMoveFileIntent, createMoveIntent } from "@crystal/core";
 import { CodeMapAnalyzer } from "./code-map.js";
-import { RefactorEngine, firstDiffPreview, planManualMove, specifierBetween } from "./refactor.js";
+import {
+  RefactorEngine,
+  firstDiffPreview,
+  planManualFileMove,
+  planManualMove,
+  replaceSpecifier,
+  specifierBetween,
+} from "./refactor.js";
 
 describe("specifierBetween", () => {
   it("builds relative .js specifiers", () => {
@@ -58,6 +65,42 @@ describe("planManualMove", () => {
     expect(from.content).toContain('import { helper } from "./b.js"');
     expect(to.content).toContain("export const existing");
     expect(to.content).toContain("export function helper"); // exported so the import resolves
+  });
+});
+
+describe("replaceSpecifier", () => {
+  it("replaces only exact quoted specifiers", () => {
+    const text = `import { a } from "./a.js";\nimport { aa } from "./a.js/nested";\nconst s = './a.js';\n`;
+    const out = replaceSpecifier(text, "./a.js", "../lib/a.js");
+    expect(out).toContain(`from "../lib/a.js"`);
+    expect(out).toContain(`"./a.js/nested"`); // longer specifier untouched
+    expect(out).toContain(`'../lib/a.js'`);
+  });
+});
+
+describe("planManualFileMove", () => {
+  it("rewrites the moved file's own imports and every importer", () => {
+    const intent = createMoveFileIntent("src/util.ts", "packages/shared", "packages/shared/src/util.ts");
+    const plan = planManualFileMove({
+      intent,
+      toFile: "packages/shared/src/util.ts",
+      fromText: `import { base } from "./base.js";\nexport const twice = (n: number) => base(n) * 2;\n`,
+      ownImports: [{ specifier: "./base.js", resolved: "src/base.ts" }],
+      importers: [
+        {
+          file: "src/app.ts",
+          text: `import { twice } from "./util.js";\nexport const x = twice(2);\n`,
+          specifiers: ["./util.js"],
+        },
+      ],
+    });
+    expect(plan.deletes).toEqual(["src/util.ts"]);
+    const moved = plan.writes.find((w) => w.file === "packages/shared/src/util.ts")!;
+    expect(moved.created).toBe(true);
+    expect(moved.content).toContain(`from "../../../src/base.js"`);
+    const importer = plan.writes.find((w) => w.file === "src/app.ts")!;
+    expect(importer.content).toContain(`from "../packages/shared/src/util.js"`);
+    expect(plan.warnings.join(" ")).toContain("importer");
   });
 });
 
@@ -130,6 +173,42 @@ describe("RefactorEngine (integration)", () => {
     expect(result.failed[0]!.error).toContain("nope");
     expect(result.applied).toHaveLength(1);
   }, 30_000);
+
+  it("applies a whole-file move: file relocates, importers keep resolving", async () => {
+    const intent = createMoveFileIntent("source.ts", ".", "lib/source.ts");
+    const result = await engine.apply([intent]);
+    expect(result.failed).toEqual([]);
+    expect(result.applied).toHaveLength(1);
+    expect(result.pathsTouched).toContain("source.ts");
+    expect(result.pathsTouched).toContain("lib/source.ts");
+
+    // old file gone, new file carries the declarations
+    await expect(fs.access(path.join(root, "source.ts"))).rejects.toThrow();
+    const moved = await fs.readFile(path.join(root, "lib/source.ts"), "utf8");
+    expect(moved).toContain("function moves");
+    expect(moved).toContain("function stays");
+
+    // the importer's specifier now points at the new location
+    const consumer = await fs.readFile(path.join(root, "consumer.ts"), "utf8");
+    expect(consumer).toContain('from "./lib/source.js"');
+  }, 30_000);
+
+  it("previews a whole-file move without touching disk", async () => {
+    const intent = createMoveFileIntent("source.ts", ".", "lib/source.ts");
+    const { plans } = await engine.preview([intent]);
+    expect(plans).toHaveLength(1);
+    expect(plans[0]!.changes.some((c) => c.file === "lib/source.ts")).toBe(true);
+    expect(plans[0]!.changes.some((c) => c.file === "source.ts" && c.summary.includes("deleted"))).toBe(true);
+    await expect(fs.access(path.join(root, "source.ts"))).resolves.toBeUndefined();
+    await expect(fs.access(path.join(root, "lib/source.ts"))).rejects.toThrow();
+  }, 30_000);
+
+  it("refuses to overwrite an existing destination file", async () => {
+    const intent = createMoveFileIntent("source.ts", ".", "target.ts");
+    const result = await engine.apply([intent]);
+    expect(result.applied).toEqual([]);
+    expect(result.failed[0]!.error).toContain("already exists");
+  });
 
   it("rejects hoist intents from apply", async () => {
     const result = await engine.apply([

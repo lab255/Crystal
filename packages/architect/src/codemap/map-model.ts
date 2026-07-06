@@ -1,0 +1,687 @@
+import dagre from "@dagrejs/dagre";
+import { MarkerType, type Edge as RfEdge, type Node as RfNode } from "@xyflow/react";
+import type {
+  CodeFileDetail,
+  CodeMapSummary,
+  CodeModule,
+  CodeModuleDetail,
+  CodeSymbolKind,
+  MoveFileIntent,
+  MoveIntent,
+} from "@crystal/core";
+
+/** The intent kinds the map renders as overlays (hoists live in panels). */
+export type MoveLikeIntent = MoveIntent | MoveFileIntent;
+
+/**
+ * Nested code-map scene: modules are group containers holding file cards,
+ * file cards expand into symbol chips, symbol chips expand into source.
+ * Everything is derived — this module turns (summary + on-demand details +
+ * expansion state + draft move intents) into react-flow nodes/edges with
+ * parents before children and parent-relative child positions.
+ *
+ * Edges stay aggregated (module → module); the only file-level edges drawn
+ * are for the selected file, so the canvas reads as groups you zoom into
+ * rather than a dataflow hairball.
+ */
+
+/* ---- geometry (deterministic; layout math and tests share these) ---- */
+
+export const SYM_W = 168;
+export const SYM_H = 28;
+export const CODE_H = 224;
+export const GAP = 8;
+export const FILE_PAD = 10;
+export const FILE_HEADER_H = 34;
+export const FILE_COLLAPSED_W = 200;
+export const FILE_COLLAPSED_H = 46;
+/** Two symbol columns. */
+export const FILE_INNER_W = SYM_W * 2 + GAP;
+export const FILE_EXPANDED_W = FILE_INNER_W + FILE_PAD * 2;
+export const MODULE_PAD = 12;
+export const MODULE_HEADER_H = 40;
+export const MODULE_COLLAPSED_W = 224;
+export const MODULE_COLLAPSED_H = 64;
+/** Wrap width for file cards inside an expanded module (~2 expanded files). */
+export const MODULE_INNER_MAX_W = FILE_EXPANDED_W * 2 + GAP * 2;
+/** Symbol chips shown per file before "+N more" (full list in the side panel). */
+export const MAX_SYMBOLS_SHOWN = 24;
+
+const ACCENTS = [
+  "var(--color-accent-violet)",
+  "var(--color-accent-cyan)",
+  "var(--color-accent-emerald)",
+  "var(--color-accent-amber)",
+  "var(--color-accent-blue)",
+  "var(--color-accent-rose)",
+  "var(--color-accent-slate)",
+];
+
+export function accentFor(key: string): string {
+  let hash = 0;
+  for (let i = 0; i < key.length; i++) hash = (hash * 31 + key.charCodeAt(i)) | 0;
+  return ACCENTS[Math.abs(hash) % ACCENTS.length]!;
+}
+
+/* ---- node ids ---- */
+
+export const moduleId = (path: string) => `m:${path}`;
+export const fileId = (path: string) => `f:${path}`;
+export const symbolId = (file: string, symbol: string) => `s:${file}#${symbol}`;
+export const codeKey = (file: string, symbol: string) => `${file}#${symbol}`;
+
+/** Longest module path that prefixes `path` ("." when nothing else matches). */
+export function moduleOfPath(path: string, modules: readonly CodeModule[]): string {
+  let best = ".";
+  for (const m of modules) {
+    if (m.path === ".") continue;
+    if ((path === m.path || path.startsWith(m.path + "/")) && m.path.length > best.length) {
+      best = m.path;
+    }
+  }
+  return best;
+}
+
+/* ---- node data ---- */
+
+export interface ModuleNodeData extends Record<string, unknown> {
+  nodeKind: "module";
+  path: string;
+  name: string;
+  accent: string;
+  fileCount: number;
+  expanded: boolean;
+  loading?: boolean;
+  truncated?: boolean;
+  intentMark?: "source" | "target";
+  emphasis?: boolean;
+}
+
+export interface FileNodeData extends Record<string, unknown> {
+  nodeKind: "file";
+  path: string;
+  module: string;
+  name: string;
+  accent: string;
+  exportCount?: number;
+  expanded: boolean;
+  loading?: boolean;
+  /** Symbols hidden by the display cap. */
+  overflow?: number;
+  intentMark?: "source" | "target";
+  emphasis?: boolean;
+  /** Ghost card in the move-target module — exists only on the draft plan. */
+  planned?: boolean;
+  /** Card with a pending whole-file move out of its module. */
+  moving?: boolean;
+  /** "→ dest" caption for a moving card. */
+  moveLabel?: string;
+}
+
+export interface SymbolNodeData extends Record<string, unknown> {
+  nodeKind: "symbol";
+  file: string;
+  module: string;
+  name: string;
+  kind: CodeSymbolKind;
+  line: number;
+  exported: boolean;
+  accent: string;
+  codeOpen: boolean;
+  /** Ghost chip in the move target — exists only on the draft plan. */
+  planned?: boolean;
+  /** Chip with a pending move out of this file. */
+  moving?: boolean;
+  /** "→ dest" caption for a moving chip. */
+  moveLabel?: string;
+}
+
+export type MapNodeData = ModuleNodeData | FileNodeData | SymbolNodeData;
+export type MapRfNode = RfNode<MapNodeData>;
+
+/* ---- scene input ---- */
+
+export interface MapSceneInput {
+  summary: CodeMapSummary;
+  moduleDetails: ReadonlyMap<string, CodeModuleDetail>;
+  fileDetails: ReadonlyMap<string, CodeFileDetail>;
+  expandedModules: ReadonlySet<string>;
+  expandedFiles: ReadonlySet<string>;
+  /** `${file}#${symbol}` keys with the source snippet open. */
+  openCode: ReadonlySet<string>;
+  /** Move intents on the active draft — rendered as ghosts/marks. */
+  moves: readonly MoveLikeIntent[];
+  /** File whose import neighborhood is drawn as edges. */
+  selectedFile?: string | null;
+  /** Node id to visually emphasize (drill target). */
+  focusId?: string | null;
+  /** Manual module positions (drag overrides), by module path. */
+  positions?: ReadonlyMap<string, { x: number; y: number }>;
+}
+
+export interface MapScene {
+  nodes: MapRfNode[];
+  edges: RfEdge[];
+}
+
+/* ---- grid packing ---- */
+
+interface PackItem {
+  id: string;
+  w: number;
+  h: number;
+}
+
+export function packGrid(
+  items: readonly PackItem[],
+  maxW: number,
+  gap: number = GAP,
+): { pos: Map<string, { x: number; y: number }>; width: number; height: number } {
+  const pos = new Map<string, { x: number; y: number }>();
+  let x = 0;
+  let y = 0;
+  let rowH = 0;
+  let width = 0;
+  for (const item of items) {
+    if (x > 0 && x + item.w > maxW) {
+      y += rowH + gap;
+      x = 0;
+      rowH = 0;
+    }
+    pos.set(item.id, { x, y });
+    width = Math.max(width, x + item.w);
+    rowH = Math.max(rowH, item.h);
+    x += item.w + gap;
+  }
+  return { pos, width, height: items.length ? y + rowH : 0 };
+}
+
+/* ---- edge styles ---- */
+
+function depEdge(source: string, target: string, weight: number): RfEdge {
+  return {
+    id: `dep:${source}->${target}`,
+    source: moduleId(source),
+    target: moduleId(target),
+    style: {
+      stroke: "var(--color-edge-strong)",
+      strokeWidth: Math.min(1 + Math.log2(weight + 1), 4),
+      opacity: 0.75,
+    },
+    markerEnd: { type: MarkerType.ArrowClosed, color: "var(--color-edge-strong)", width: 14, height: 14 },
+    label: weight > 1 ? String(weight) : undefined,
+    labelStyle: { fill: "var(--color-ink-faint)", fontSize: 9 },
+    labelBgStyle: { fill: "var(--color-surface-1)", fillOpacity: 0.9 },
+  };
+}
+
+function selectionEdge(id: string, source: string, target: string, count: number, incoming: boolean): RfEdge {
+  return {
+    id,
+    source,
+    target,
+    animated: true,
+    style: {
+      stroke: incoming ? "var(--color-prism-400)" : "var(--color-crystal-400)",
+      strokeWidth: Math.min(1.6 + Math.log2(count + 1) * 0.6, 3.5),
+      opacity: 0.95,
+    },
+    markerEnd: {
+      type: MarkerType.ArrowClosed,
+      color: incoming ? "var(--color-prism-400)" : "var(--color-crystal-400)",
+      width: 15,
+      height: 15,
+    },
+    label: count > 1 ? String(count) : undefined,
+    labelStyle: { fill: incoming ? "var(--color-prism-400)" : "var(--color-crystal-400)", fontSize: 9 },
+    labelBgStyle: { fill: "var(--color-surface-1)", fillOpacity: 0.9 },
+  };
+}
+
+/* ---- scene builder ---- */
+
+interface BuiltFile {
+  node: MapRfNode;
+  symbols: MapRfNode[];
+  w: number;
+  h: number;
+}
+
+export function buildMapScene(input: MapSceneInput): MapScene {
+  const { summary } = input;
+  const moves = input.moves;
+
+  const visibleModules = summary.modules.filter(
+    (m) => m.fileCount > 0 || summary.deps.some((d) => d.source === m.path || d.target === m.path),
+  );
+  const modulePathSet = new Set(visibleModules.map((m) => m.path));
+
+  // intent marks on module headers (file marks are computed per file card)
+  const moduleMark = new Map<string, "source" | "target">();
+  const markModule = (path: string, mark: "source" | "target") => {
+    if (mark === "target" || !moduleMark.has(path)) moduleMark.set(path, mark);
+  };
+  for (const mv of moves) {
+    markModule(moduleOfPath(mv.fromFile, summary.modules), "source");
+    markModule(mv.toModule, "target");
+  }
+
+  const builtFileIds = new Set<string>();
+  const moduleBuilds: {
+    module: CodeModule;
+    expanded: boolean;
+    detail: CodeModuleDetail | undefined;
+    files: BuiltFile[];
+    w: number;
+    h: number;
+  }[] = [];
+
+  for (const m of visibleModules) {
+    const expanded = input.expandedModules.has(m.path);
+    const detail = expanded ? input.moduleDetails.get(m.path) : undefined;
+    if (!expanded || !detail) {
+      moduleBuilds.push({
+        module: m,
+        expanded,
+        detail: undefined,
+        files: [],
+        w: MODULE_COLLAPSED_W,
+        h: MODULE_COLLAPSED_H,
+      });
+      continue;
+    }
+
+    const files: BuiltFile[] = detail.files.map((f) =>
+      buildFile(f.path, f.name, m.path, f.exportCount, input, moves),
+    );
+    for (const f of files) builtFileIds.add(f.node.id);
+
+    // ghost cards for whole files planned to move INTO this module
+    for (const mv of moves) {
+      if (mv.kind !== "moveFile" || mv.toModule !== m.path) continue;
+      if (detail.files.some((f) => f.path === mv.fromFile)) continue; // already here
+      files.push({
+        node: {
+          id: `planfile:${mv.id}`,
+          type: "codeFile",
+          parentId: moduleId(m.path),
+          position: { x: 0, y: 0 },
+          width: FILE_COLLAPSED_W,
+          height: FILE_COLLAPSED_H,
+          draggable: false,
+          selectable: false,
+          data: {
+            nodeKind: "file",
+            path: mv.fromFile,
+            module: m.path,
+            name: mv.fromFile.split("/").pop()!,
+            accent: accentFor(m.path),
+            expanded: false,
+            planned: true,
+          },
+        },
+        symbols: [],
+        w: FILE_COLLAPSED_W,
+        h: FILE_COLLAPSED_H,
+      });
+    }
+
+    const packed = packGrid(
+      files.map((f) => ({ id: f.node.id, w: f.w, h: f.h })),
+      MODULE_INNER_MAX_W,
+    );
+    for (const f of files) {
+      const pos = packed.pos.get(f.node.id)!;
+      f.node.position = { x: MODULE_PAD + pos.x, y: MODULE_HEADER_H + pos.y };
+    }
+    moduleBuilds.push({
+      module: m,
+      expanded: true,
+      detail,
+      files,
+      w: Math.max(packed.width, MODULE_COLLAPSED_W - MODULE_PAD * 2) + MODULE_PAD * 2,
+      h: MODULE_HEADER_H + packed.height + MODULE_PAD,
+    });
+  }
+
+  // top-level layout: dagre over module containers with their computed sizes
+  const g = new dagre.graphlib.Graph();
+  g.setGraph({ rankdir: "LR", nodesep: 48, ranksep: 140, marginx: 24, marginy: 24 });
+  g.setDefaultEdgeLabel(() => ({}));
+  for (const b of moduleBuilds) g.setNode(b.module.path, { width: b.w, height: b.h });
+  for (const d of summary.deps) {
+    if (d.source !== d.target && modulePathSet.has(d.source) && modulePathSet.has(d.target)) {
+      g.setEdge(d.source, d.target);
+    }
+  }
+  dagre.layout(g);
+
+  const nodes: MapRfNode[] = [];
+  const childNodes: MapRfNode[] = [];
+
+  for (const b of moduleBuilds) {
+    const dagrePos = g.node(b.module.path);
+    const override = input.positions?.get(b.module.path);
+    const position = override ?? { x: dagrePos.x - b.w / 2, y: dagrePos.y - b.h / 2 };
+    const id = moduleId(b.module.path);
+    nodes.push({
+      id,
+      type: "codeModule",
+      position,
+      width: b.w,
+      height: b.h,
+      draggable: true,
+      data: {
+        nodeKind: "module",
+        path: b.module.path,
+        name: b.module.name,
+        accent: accentFor(b.module.path),
+        fileCount: b.module.fileCount,
+        expanded: b.expanded && b.detail != null,
+        loading: b.expanded && b.detail == null,
+        truncated: b.detail?.truncated,
+        intentMark: moduleMark.get(b.module.path),
+        emphasis: input.focusId === id,
+      },
+    });
+    for (const f of b.files) {
+      childNodes.push(f.node, ...f.symbols);
+    }
+  }
+
+  // parents before children (react-flow requirement)
+  nodes.push(...childNodes);
+
+  /* ---- edges ---- */
+  const edges: RfEdge[] = [];
+  for (const d of summary.deps) {
+    if (d.source === d.target) continue;
+    if (!modulePathSet.has(d.source) || !modulePathSet.has(d.target)) continue;
+    edges.push(depEdge(d.source, d.target, d.weight));
+  }
+
+  // import neighborhood of the selected file
+  const sel = input.selectedFile;
+  if (sel && builtFileIds.has(fileId(sel))) {
+    const detail = input.fileDetails.get(sel);
+    if (detail) {
+      const selId = fileId(sel);
+      const agg = new Map<string, { target: string; count: number; incoming: boolean }>();
+      const add = (otherPath: string, otherModule: string, incoming: boolean) => {
+        const other =
+          builtFileIds.has(fileId(otherPath)) ? fileId(otherPath)
+          : modulePathSet.has(otherModule) ? moduleId(otherModule)
+          : null;
+        if (!other || other === selId || other === moduleId(moduleOfPath(sel, summary.modules))) return;
+        const key = `${incoming ? "in" : "out"}:${other}`;
+        const entry = agg.get(key) ?? { target: other, count: 0, incoming };
+        entry.count += 1;
+        agg.set(key, entry);
+      };
+      const seen = new Set<string>();
+      for (const imp of detail.imports) {
+        if (!imp.resolved || imp.resolved === sel || seen.has(imp.resolved)) continue;
+        seen.add(imp.resolved);
+        add(imp.resolved, imp.targetModule ?? moduleOfPath(imp.resolved, summary.modules), false);
+      }
+      for (const by of detail.importedBy) {
+        add(by, moduleOfPath(by, summary.modules), true);
+      }
+      for (const [key, e] of agg) {
+        edges.push(
+          e.incoming
+            ? selectionEdge(`sel:${key}`, e.target, selId, e.count, true)
+            : selectionEdge(`sel:${key}`, selId, e.target, e.count, false),
+        );
+      }
+    }
+  }
+
+  return { nodes, edges };
+}
+
+function buildFile(
+  path: string,
+  name: string,
+  module: string,
+  exportCount: number | undefined,
+  input: MapSceneInput,
+  moves: readonly MoveLikeIntent[],
+): BuiltFile {
+  const expanded = input.expandedFiles.has(path);
+  const detail = expanded ? input.fileDetails.get(path) : undefined;
+  const id = fileId(path);
+  const parentId = moduleId(module);
+  const accent = accentFor(module);
+  const marks = fileMarksFor(path, moves);
+  const fileMove = moves.find(
+    (m): m is MoveFileIntent => m.kind === "moveFile" && m.fromFile === path,
+  );
+
+  // NB: not Omit<FileNodeData, …> — the Record index signature would swallow
+  // the named props and the spreads below would lose their types.
+  const base = {
+    nodeKind: "file" as const,
+    path,
+    module,
+    name,
+    accent,
+    exportCount,
+    intentMark: marks,
+    emphasis: input.focusId === id,
+    moving: fileMove != null || undefined,
+    moveLabel: fileMove ? `→ ${fileMove.toModule}` : undefined,
+  };
+
+  if (!expanded) {
+    return {
+      node: {
+        id,
+        type: "codeFile",
+        parentId,
+        position: { x: 0, y: 0 },
+        width: FILE_COLLAPSED_W,
+        height: FILE_COLLAPSED_H,
+        draggable: true,
+        data: { ...base, expanded: false },
+      },
+      symbols: [],
+      w: FILE_COLLAPSED_W,
+      h: FILE_COLLAPSED_H,
+    };
+  }
+
+  if (!detail) {
+    // expanded but still loading — render a slightly taller shell
+    return {
+      node: {
+        id,
+        type: "codeFile",
+        parentId,
+        position: { x: 0, y: 0 },
+        width: FILE_EXPANDED_W,
+        height: FILE_COLLAPSED_H + 24,
+        draggable: true,
+        data: { ...base, expanded: true, loading: true },
+      },
+      symbols: [],
+      w: FILE_EXPANDED_W,
+      h: FILE_COLLAPSED_H + 24,
+    };
+  }
+
+  const symbolMoves = moves.filter((m): m is MoveIntent => m.kind === "move");
+  const all = detail.symbols ?? detail.exports;
+  const ordered = [...all].sort((a, b) => {
+    const ax = a.exported === false ? 1 : 0;
+    const bx = b.exported === false ? 1 : 0;
+    return ax - bx || a.line - b.line;
+  });
+  const shown = ordered.slice(0, MAX_SYMBOLS_SHOWN);
+  const overflow = ordered.length - shown.length;
+
+  const items: PackItem[] = [];
+  const symbolNodes: MapRfNode[] = [];
+  for (const sym of shown) {
+    const open = input.openCode.has(codeKey(path, sym.name));
+    const move = symbolMoves.find((m) => m.fromFile === path && m.symbol === sym.name);
+    const sid = symbolId(path, sym.name);
+    const w = open ? FILE_INNER_W : SYM_W;
+    const h = open ? SYM_H + CODE_H : SYM_H;
+    items.push({ id: sid, w, h });
+    symbolNodes.push({
+      id: sid,
+      type: "codeSymbol",
+      position: { x: 0, y: 0 },
+      parentId: id,
+      width: w,
+      height: h,
+      draggable: sym.kind !== "reexport",
+      data: {
+        nodeKind: "symbol",
+        file: path,
+        module,
+        name: sym.name,
+        kind: sym.kind,
+        line: sym.line,
+        exported: sym.exported !== false,
+        accent,
+        codeOpen: open,
+        moving: move != null,
+        moveLabel: move ? `→ ${move.toFile ? move.toFile.split("/").pop() : move.toModule}` : undefined,
+      },
+    });
+  }
+
+  // ghost chips for symbol moves planned INTO this file
+  for (const mv of symbolMoves) {
+    if (mv.toFile !== path) continue;
+    const gid = `plan:${mv.id}`;
+    const srcDetail = input.fileDetails.get(mv.fromFile);
+    const srcSym = (srcDetail?.symbols ?? srcDetail?.exports)?.find((s) => s.name === mv.symbol);
+    items.push({ id: gid, w: SYM_W, h: SYM_H });
+    symbolNodes.push({
+      id: gid,
+      type: "codeSymbol",
+      position: { x: 0, y: 0 },
+      parentId: id,
+      width: SYM_W,
+      height: SYM_H,
+      draggable: false,
+      selectable: false,
+      data: {
+        nodeKind: "symbol",
+        file: mv.fromFile,
+        module,
+        name: mv.symbol,
+        kind: srcSym?.kind ?? "function",
+        line: srcSym?.line ?? 0,
+        exported: srcSym?.exported !== false,
+        accent,
+        codeOpen: false,
+        planned: true,
+      },
+    });
+  }
+
+  const packed = packGrid(items, FILE_INNER_W);
+  for (const s of symbolNodes) {
+    const pos = packed.pos.get(s.id)!;
+    s.position = { x: FILE_PAD + pos.x, y: FILE_HEADER_H + pos.y };
+  }
+  const w = FILE_EXPANDED_W;
+  const h = FILE_HEADER_H + packed.height + FILE_PAD + (overflow > 0 ? 18 : 0);
+  return {
+    node: {
+      id,
+      type: "codeFile",
+      parentId,
+      position: { x: 0, y: 0 },
+      width: w,
+      height: h,
+      draggable: true,
+      data: { ...base, expanded: true, overflow: overflow > 0 ? overflow : undefined },
+    },
+    symbols: symbolNodes,
+    w,
+    h,
+  };
+}
+
+function fileMarksFor(path: string, moves: readonly MoveLikeIntent[]): "source" | "target" | undefined {
+  const symbolMoves = moves.filter((m) => m.kind === "move");
+  if (symbolMoves.some((m) => m.toFile === path)) return "target";
+  if (symbolMoves.some((m) => m.fromFile === path)) return "source";
+  return undefined;
+}
+
+/** Absolute canvas position of a node, walking the parent chain. */
+export function absolutePositionOf(
+  nodes: readonly MapRfNode[],
+  id: string,
+): { x: number; y: number } | null {
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  let n = byId.get(id);
+  if (!n) return null;
+  let x = n.position.x;
+  let y = n.position.y;
+  while (n.parentId) {
+    n = byId.get(n.parentId);
+    if (!n) break;
+    x += n.position.x;
+    y += n.position.y;
+  }
+  return { x, y };
+}
+
+export interface DropTarget {
+  module: string;
+  file?: string;
+}
+
+/**
+ * What a symbol chip dropped at `center` (absolute canvas coords) lands on:
+ * the file card under the point, else the module container. Its own file and
+ * own module background are not targets.
+ */
+export function dropTargetAt(
+  nodes: readonly MapRfNode[],
+  center: { x: number; y: number },
+  source: { file: string; module: string },
+): DropTarget | null {
+  const contains = (n: MapRfNode): boolean => {
+    const abs = absolutePositionOf(nodes, n.id);
+    if (!abs) return false;
+    const w = n.width ?? 0;
+    const h = n.height ?? 0;
+    return center.x >= abs.x && center.x <= abs.x + w && center.y >= abs.y && center.y <= abs.y + h;
+  };
+  for (const n of nodes) {
+    if (n.data.nodeKind !== "file") continue;
+    const d = n.data as FileNodeData;
+    if (d.path === source.file) continue;
+    if (contains(n)) return { module: d.module, file: d.path };
+  }
+  for (const n of nodes) {
+    if (n.data.nodeKind !== "module") continue;
+    const d = n.data as ModuleNodeData;
+    if (d.path === source.module) continue;
+    if (contains(n)) return { module: d.path };
+  }
+  return null;
+}
+
+/**
+ * Where a dragged file card lands: another module (directly, or via one of
+ * its file cards). Moves within the file's own module are meaningless — null.
+ */
+export function fileDropTargetAt(
+  nodes: readonly MapRfNode[],
+  center: { x: number; y: number },
+  sourceFile: string,
+  sourceModule: string,
+): { module: string } | null {
+  const hit = dropTargetAt(nodes, center, { file: sourceFile, module: sourceModule });
+  if (!hit || hit.module === sourceModule) return null;
+  return { module: hit.module };
+}

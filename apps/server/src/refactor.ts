@@ -2,6 +2,7 @@ import fsSync from "node:fs";
 import path from "node:path";
 import ts from "typescript";
 import type {
+  MoveFileIntent,
   MoveIntent,
   RefactorApplyResult,
   RefactorChange,
@@ -9,16 +10,18 @@ import type {
   RefactorPlan,
 } from "@crystal/core";
 import type { CodeMapAnalyzer, ParsedSymbol } from "./code-map.js";
-import { writeFileAt } from "./fs-api.js";
+import { deleteAt, writeFileAt } from "./fs-api.js";
 import { resolveInRoot, toRelPath } from "./paths.js";
 
 /**
- * Deterministic symbolic refactors. Moves try the TypeScript LanguageService
- * "Move to file" refactor first (full reference rewriting); when the service
- * declines, a manual textual move runs instead — the declaration relocates
- * and a re-export/import shim keeps the source file's contract intact, so
- * importers never break. Hoist intents are not handled here; they execute
- * through an agent run.
+ * Deterministic symbolic refactors. Symbol moves try the TypeScript
+ * LanguageService "Move to file" refactor first (full reference rewriting);
+ * when the service declines, a manual textual move runs instead — the
+ * declaration relocates and a re-export/import shim keeps the source file's
+ * contract intact, so importers never break. Whole-file moves ride the
+ * LanguageService's file-rename edits (importers rewritten project-wide),
+ * with a code-map-driven specifier rewrite as the fallback. Hoist intents
+ * are not handled here; they execute through an agent run.
  *
  * The LanguageService is expensive on big workspaces, so it is (a) created
  * lazily, (b) fed only a focused root-file set (source module ∪ target
@@ -39,6 +42,8 @@ interface PlannedWrite {
 interface MovePlan {
   engine: "language-service" | "manual";
   writes: PlannedWrite[];
+  /** Workspace-relative files removed by the plan (whole-file moves). */
+  deletes?: string[];
   warnings: string[];
 }
 
@@ -109,6 +114,55 @@ export function planManualMove(opts: {
   return { engine: "manual", writes, warnings };
 }
 
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Replace a quoted import specifier everywhere it appears in `text`. */
+export function replaceSpecifier(text: string, oldSpec: string, newSpec: string): string {
+  return text.replace(new RegExp(`(['"])${escapeRegex(oldSpec)}\\1`, "g"), `$1${newSpec}$1`);
+}
+
+/**
+ * Manual whole-file move: the file's own relative imports are recomputed for
+ * its new directory, and every importer's specifier is rewritten to the new
+ * location (targets known from the code map) — no shim needed. Pure —
+ * exported for tests.
+ */
+export function planManualFileMove(opts: {
+  intent: MoveFileIntent;
+  toFile: string;
+  fromText: string;
+  /** The moved file's imports (specifier + workspace-relative resolution). */
+  ownImports: { specifier: string; resolved: string | null }[];
+  /** Files importing the moved one, with the specifiers that resolve to it. */
+  importers: { file: string; text: string; specifiers: string[] }[];
+}): MovePlan {
+  const { intent, toFile, importers } = opts;
+  const warnings: string[] = [];
+
+  let moved = opts.fromText;
+  for (const imp of opts.ownImports) {
+    if (!imp.resolved || !imp.specifier.startsWith(".")) continue;
+    moved = replaceSpecifier(moved, imp.specifier, specifierBetween(toFile, imp.resolved));
+  }
+
+  const writes: PlannedWrite[] = [{ file: toFile, content: moved, created: true }];
+  for (const importer of importers) {
+    let text = importer.text;
+    for (const spec of importer.specifiers) {
+      text = replaceSpecifier(text, spec, specifierBetween(importer.file, toFile));
+    }
+    if (text !== importer.text) writes.push({ file: importer.file, content: text, created: false });
+  }
+  if (importers.length > 0) {
+    warnings.push(
+      `rewrote ${importers.length} importer${importers.length > 1 ? "s" : ""} by specifier match — review the diff`,
+    );
+  }
+  return { engine: "manual", writes, deletes: [intent.fromFile], warnings };
+}
+
 export class RefactorEngine {
   private ls: ts.LanguageService | null = null;
   private lsFiles = new Set<string>(); // absolute paths
@@ -145,11 +199,18 @@ export class RefactorEngine {
         continue;
       }
       try {
-        const plan = await this.planMove(intent);
+        const plan = await this.planFor(intent);
         plans.push({
           intentId: intent.id,
           engine: plan.engine,
-          changes: plan.writes.map((w) => this.changeFor(w)),
+          changes: [
+            ...plan.writes.map((w) => this.changeFor(w)),
+            ...(plan.deletes ?? []).map((file) => ({
+              file,
+              summary: "deleted — contents moved",
+              preview: "",
+            })),
+          ],
           warnings: plan.warnings,
         });
       } catch (err) {
@@ -174,14 +235,21 @@ export class RefactorEngine {
         continue;
       }
       try {
-        const plan = await this.planMove(intent);
+        const plan = await this.planFor(intent);
         for (const write of plan.writes) {
           await writeFileAt(this.root, write.file, write.content);
           pathsTouched.add(write.file);
         }
+        for (const del of plan.deletes ?? []) {
+          await deleteAt(this.root, del);
+          pathsTouched.add(del);
+        }
         // Later intents must see this move's result.
         this.codemap.invalidate();
-        applied.push({ intentId: intent.id, filesTouched: plan.writes.map((w) => w.file) });
+        applied.push({
+          intentId: intent.id,
+          filesTouched: [...plan.writes.map((w) => w.file), ...(plan.deletes ?? [])],
+        });
       } catch (err) {
         failed.push({ intentId: intent.id, error: (err as Error).message });
       }
@@ -190,6 +258,10 @@ export class RefactorEngine {
   }
 
   /* ---------------- planning ---------------- */
+
+  private planFor(intent: MoveIntent | MoveFileIntent): Promise<MovePlan> {
+    return intent.kind === "move" ? this.planMove(intent) : this.planFileMove(intent);
+  }
 
   private async planMove(intent: MoveIntent): Promise<MovePlan> {
     const sym = await this.codemap.symbolMeta(intent.fromFile, intent.symbol);
@@ -216,6 +288,97 @@ export class RefactorEngine {
     return `${base}${srcDir}${kebab}.ts`;
   }
 
+  /* ---------------- whole-file moves ---------------- */
+
+  private async planFileMove(intent: MoveFileIntent): Promise<MovePlan> {
+    const fromAbs = resolveInRoot(this.root, intent.fromFile);
+    if (!fsSync.existsSync(fromAbs)) throw new Error(`${intent.fromFile} does not exist`);
+    const toFile = intent.toFile ?? this.defaultFileTarget(intent);
+    if (toFile === intent.fromFile) throw new Error("source and destination are the same file");
+    const toAbs = resolveInRoot(this.root, toFile);
+    if (fsSync.existsSync(toAbs)) throw new Error(`${toFile} already exists`);
+
+    const viaLs = await this.tryLanguageServiceFileMove(intent, toFile);
+    if (viaLs) return viaLs;
+
+    const detail = await this.codemap.fileDetail(intent.fromFile);
+    const importers = await Promise.all(
+      (await this.codemap.importersOf(intent.fromFile)).map(async (file) => ({
+        file,
+        text: fsSync.readFileSync(resolveInRoot(this.root, file), "utf8"),
+        specifiers: (await this.codemap.fileDetail(file)).imports
+          .filter((imp) => imp.resolved === intent.fromFile)
+          .map((imp) => imp.specifier),
+      })),
+    );
+    return planManualFileMove({
+      intent,
+      toFile,
+      fromText: fsSync.readFileSync(fromAbs, "utf8"),
+      ownImports: detail.imports.map((imp) => ({ specifier: imp.specifier, resolved: imp.resolved })),
+      importers,
+    });
+  }
+
+  private defaultFileTarget(intent: MoveFileIntent): string {
+    const name = intent.fromFile.split("/").pop()!;
+    const base = intent.toModule === "." ? "" : `${intent.toModule}/`;
+    const srcDir = fsSync.existsSync(resolveInRoot(this.root, `${base}src`)) ? "src/" : "";
+    return `${base}${srcDir}${name}`;
+  }
+
+  /**
+   * `getEditsForFileRename` rewrites import specifiers project-wide when a
+   * file moves — edits land on the old paths; the physical move is ours.
+   */
+  private async tryLanguageServiceFileMove(
+    intent: MoveFileIntent,
+    toFile: string,
+  ): Promise<MovePlan | null> {
+    try {
+      const roots = new Set<string>([intent.fromFile]);
+      for (const f of await this.codemap.filesOfModule(await this.codemap.moduleOfFile(intent.fromFile)))
+        roots.add(f);
+      for (const f of await this.codemap.filesOfModule(intent.toModule).catch(() => [] as string[]))
+        roots.add(f);
+      for (const f of await this.codemap.importersOf(intent.fromFile)) roots.add(f);
+
+      const ls = this.ensureLanguageService(roots);
+      // TS path APIs want forward slashes — backslash inputs silently yield no edits.
+      const fromAbs = resolveInRoot(this.root, intent.fromFile).replace(/\\/g, "/");
+      const toAbs = resolveInRoot(this.root, toFile).replace(/\\/g, "/");
+      const edits = ls.getEditsForFileRename(fromAbs, toAbs, ts.getDefaultFormatCodeSettings("\n"), {
+        allowTextChangesInNewFiles: true,
+        quotePreference: "double",
+      });
+
+      const writes: PlannedWrite[] = [];
+      let movedContent: string | null = null;
+      for (const change of edits) {
+        const abs = path.resolve(change.fileName);
+        let text = fsSync.existsSync(abs) ? fsSync.readFileSync(abs, "utf8") : "";
+        const sorted = [...change.textChanges].sort((a, b) => b.span.start - a.span.start);
+        for (const tc of sorted) {
+          text = text.slice(0, tc.span.start) + tc.newText + text.slice(tc.span.start + tc.span.length);
+        }
+        if (abs === path.resolve(fromAbs)) {
+          movedContent = text; // its own relative imports, rewritten for the new home
+        } else {
+          writes.push({ file: toRelPath(this.root, abs), content: text, created: false });
+        }
+      }
+      writes.push({
+        file: toFile,
+        content: movedContent ?? fsSync.readFileSync(fromAbs, "utf8"),
+        created: true,
+      });
+      return { engine: "language-service", writes, deletes: [intent.fromFile], warnings: [] };
+    } catch {
+      // Any LS hiccup falls back to the manual move — never fail the intent here.
+      return null;
+    }
+  }
+
   private async tryLanguageServiceMove(
     intent: MoveIntent,
     sym: ParsedSymbol,
@@ -230,8 +393,9 @@ export class RefactorEngine {
       for (const f of await this.codemap.importersOf(intent.fromFile)) roots.add(f);
 
       const ls = this.ensureLanguageService(roots);
-      const fromAbs = resolveInRoot(this.root, intent.fromFile);
-      const toAbs = resolveInRoot(this.root, toFile);
+      // TS path APIs want forward slashes — backslash inputs silently yield no edits.
+      const fromAbs = resolveInRoot(this.root, intent.fromFile).replace(/\\/g, "/");
+      const toAbs = resolveInRoot(this.root, toFile).replace(/\\/g, "/");
       const span: ts.TextRange = { pos: sym.start, end: sym.end };
       const prefs: ts.UserPreferences = {
         allowTextChangesInNewFiles: true,

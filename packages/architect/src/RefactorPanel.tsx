@@ -37,6 +37,9 @@ export function intentLabel(intent: RefactorIntent): string {
   if (intent.kind === "move") {
     return `move ${intent.symbol}: ${intent.fromFile} → ${intent.toFile ?? intent.toModule}`;
   }
+  if (intent.kind === "moveFile") {
+    return `move file ${intent.fromFile} → ${intent.toFile ?? intent.toModule}`;
+  }
   const name = intent.newName ?? intent.symbols[0]!.symbol;
   return `hoist ${name} (${intent.symbols.length}×) → ${intent.targetModule}`;
 }
@@ -59,7 +62,7 @@ export function useIntentProblems(intents: RefactorIntent[]): RefactorIntentProb
     }
     const files = new Set<string>();
     for (const intent of intents) {
-      if (intent.kind === "move") files.add(intent.fromFile);
+      if (intent.kind === "move" || intent.kind === "moveFile") files.add(intent.fromFile);
       else for (const s of intent.symbols) files.add(s.file);
     }
     let cancelled = false;
@@ -118,10 +121,10 @@ export function RefactorChip({
             const problem = problems.find((p) => p.intent.id === intent.id);
             return (
               <div key={intent.id} className="flex items-start gap-2 rounded-md px-2 py-1.5 text-[11px] hover:bg-surface-3">
-                {intent.kind === "move" ? (
-                  <ArrowRight className="mt-0.5 h-3 w-3 shrink-0 text-warn" />
-                ) : (
+                {intent.kind === "hoist" ? (
                   <PackagePlus className="mt-0.5 h-3 w-3 shrink-0 text-warn" />
+                ) : (
+                  <ArrowRight className="mt-0.5 h-3 w-3 shrink-0 text-warn" />
                 )}
                 <div className="min-w-0 flex-1">
                   <div className="truncate font-mono text-ink">{intentLabel(intent)}</div>

@@ -410,7 +410,9 @@ function DiagramsView({
       }
       updateArchitecture(selected.path, graph);
 
-      const moves = activeDraft.draft.refactors.filter((r) => r.kind === "move");
+      const moves = activeDraft.draft.refactors.filter(
+        (r) => r.kind === "move" || r.kind === "moveFile",
+      );
       const hoists = activeDraft.draft.refactors.filter((r) => r.kind === "hoist");
       if (moves.length > 0) {
         try {
@@ -420,7 +422,11 @@ function DiagramsView({
           }
           for (const failure of result.failed) {
             const intent = moves.find((m) => m.id === failure.intentId);
-            notes.push(`move ${intent?.kind === "move" ? intent.symbol : failure.intentId} failed: ${failure.error}`);
+            const what =
+              intent?.kind === "move" ? intent.symbol
+              : intent?.kind === "moveFile" ? intent.fromFile
+              : failure.intentId;
+            notes.push(`move ${what} failed: ${failure.error}`);
           }
         } catch (err) {
           notes.push(`refactor engine error: ${(err as Error).message}`);

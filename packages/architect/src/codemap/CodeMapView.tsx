@@ -3,34 +3,42 @@ import {
   BackgroundVariant,
   Controls,
   MarkerType,
+  MiniMap,
+  Panel,
   ReactFlow,
   ReactFlowProvider,
+  useNodesState,
+  useReactFlow,
   type Edge as RfEdge,
+  type Node as RfNode,
 } from "@xyflow/react";
 import dagre from "@dagrejs/dagre";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowRightLeft,
   Boxes,
   ChevronRight,
   Copy as CopyIcon,
   ExternalLink,
-  FileCode2,
   FolderGit2,
   Layers,
+  LayoutGrid,
   Package,
   RadioTower,
   Route,
+  Rows3,
+  Shrink,
   X,
 } from "lucide-react";
 import {
   createArchDraft as newArchDraft,
+  createMoveFileIntent,
   createMoveIntent,
+  type ArchDraft,
   type CodeFileDetail,
   type CodeMapLevelLink,
   type CodeMapSummary,
   type CodeModuleDetail,
-  type CodeSymbolKind,
   type CrossWorkspaceEdge,
   type CrossWorkspaceMap,
   type HoistIntent,
@@ -39,43 +47,37 @@ import {
 import { useCrystal, useNav, useNavUpdate, useWorkspace, useWorkspaces } from "@crystal/client";
 import { Badge, Button, EmptyState, Pane, Split, Spinner, Tooltip, cn } from "@crystal/ui";
 import { SymbolSnippet } from "../snippets.js";
-import {
-  CodeNode,
-  SYMBOL_DRAG_MIME,
-  type CodeNodeData,
-  type CodeRfNode,
-  type SymbolDragPayload,
-} from "./CodeNode.js";
+import { CodeNode, SYMBOL_DRAG_MIME, type CodeRfNode, type SymbolDragPayload } from "./CodeNode.js";
 import { DuplicatesPanel } from "./DuplicatesPanel.js";
+import {
+  absolutePositionOf,
+  accentFor,
+  buildMapScene,
+  codeKey,
+  dropTargetAt,
+  fileDropTargetAt,
+  fileId,
+  moduleId,
+  moduleOfPath,
+  type DropTarget,
+  type FileNodeData,
+  type MapRfNode,
+  type MapScene,
+  type ModuleNodeData,
+  type MoveLikeIntent,
+  type SymbolNodeData,
+} from "./map-model.js";
+import { MapActionsContext, SYMBOL_TONES, mapNodeTypes, type MapActions } from "./map-nodes.js";
 
-const nodeTypes = { code: CodeNode };
+const crossNodeTypes = { code: CodeNode };
 
 // The drill level is deep-linkable — core owns the shape.
 type Level = CodeMapLevelLink;
 
-const ACCENTS = [
-  "var(--color-accent-violet)",
-  "var(--color-accent-cyan)",
-  "var(--color-accent-emerald)",
-  "var(--color-accent-amber)",
-  "var(--color-accent-blue)",
-  "var(--color-accent-rose)",
-  "var(--color-accent-slate)",
-];
-
-function accentFor(key: string): string {
-  let hash = 0;
-  for (let i = 0; i < key.length; i++) hash = (hash * 31 + key.charCodeAt(i)) | 0;
-  return ACCENTS[Math.abs(hash) % ACCENTS.length]!;
-}
-
-function layout(
-  nodes: CodeRfNode[],
-  edges: RfEdge[],
-  opts: { ranksep?: number } = {},
-): CodeRfNode[] {
+/** dagre pass for the (flat) cross-workspace level. */
+function layoutCross(nodes: CodeRfNode[], edges: RfEdge[]): CodeRfNode[] {
   const g = new dagre.graphlib.Graph();
-  g.setGraph({ rankdir: "LR", nodesep: 24, ranksep: opts.ranksep ?? 110, marginx: 24, marginy: 24 });
+  g.setGraph({ rankdir: "LR", nodesep: 24, ranksep: 180, marginx: 24, marginy: 24 });
   g.setDefaultEdgeLabel(() => ({}));
   for (const n of nodes) g.setNode(n.id, { width: 190, height: n.data.subtitle ? 52 : 40 });
   for (const e of edges) if (e.source !== e.target) g.setEdge(e.source, e.target);
@@ -84,20 +86,6 @@ function layout(
     const pos = g.node(n.id);
     return { ...n, position: { x: pos.x - 95, y: pos.y - 20 } };
   });
-}
-
-function edgeStyle(weight?: number): Partial<RfEdge> {
-  return {
-    style: {
-      stroke: "var(--color-edge-strong)",
-      strokeWidth: weight ? Math.min(1 + Math.log2(weight + 1), 4) : 1.2,
-      opacity: 0.85,
-    },
-    markerEnd: { type: MarkerType.ArrowClosed, color: "var(--color-edge-strong)", width: 14, height: 14 },
-    label: weight && weight > 1 ? String(weight) : undefined,
-    labelStyle: { fill: "var(--color-ink-faint)", fontSize: 9 },
-    labelBgStyle: { fill: "var(--color-surface-1)", fillOpacity: 0.9 },
-  };
 }
 
 /** Fires a cross-mode "open this file in the editor" request handled by the shell. */
@@ -115,12 +103,12 @@ export interface CodeMapViewProps {
   /** "Start journey here…" on a symbol — opens the journey dialog in Diagrams. */
   onStartJourney?: (seed: { file: string; symbol: string }) => void;
   /**
-   * Path of the draft plan open in Diagrams, if any. With a draft active,
-   * FilePanel symbols become draggable and drops on module/file nodes record
-   * move intents on the draft.
+   * Path of the draft plan open in Diagrams, if any. Dropping a symbol on a
+   * module/file records a move intent on it; without one, the first drop
+   * auto-creates a draft (plan mode) and this is how the shell learns about it.
    */
   activeDraftPath?: string | null;
-  /** A hoist auto-created a draft — the shell should open it in Diagrams. */
+  /** A drop auto-created a draft — the shell should track it as the open draft. */
   onOpenDraft?: (path: string) => void;
 }
 
@@ -134,8 +122,12 @@ export function CodeMapView(props: CodeMapViewProps = {}) {
 
 const EMPTY_DRAFTS: never[] = [];
 const EMPTY_REFACTORS: RefactorIntent[] = [];
-
 const EMPTY_ARCHITECTURES: never[] = [];
+
+interface CacheEntry<T> {
+  gen: number;
+  detail: T;
+}
 
 function CodeMapInner({
   initialModule,
@@ -163,12 +155,29 @@ function CodeMapInner({
     [nav],
   );
   const [summary, setSummary] = useState<CodeMapSummary | null>(null);
-  const [moduleDetail, setModuleDetail] = useState<CodeModuleDetail | null>(null);
-  const [fileDetail, setFileDetail] = useState<CodeFileDetail | null>(null);
   const [cross, setCross] = useState<CrossWorkspaceMap | null>(null);
   const [crossEdge, setCrossEdge] = useState<CrossWorkspaceEdge | null>(null);
   const [loading, setLoading] = useState(true);
   const [pulse, setPulse] = useState(false);
+  // Bumped by codemap.changed — every cached detail keyed below re-fetches.
+  const [generation, setGeneration] = useState(0);
+
+  const [moduleDetails, setModuleDetails] = useState<Map<string, CacheEntry<CodeModuleDetail>>>(
+    () => new Map(),
+  );
+  const [fileDetails, setFileDetails] = useState<Map<string, CacheEntry<CodeFileDetail>>>(
+    () => new Map(),
+  );
+  const [expandedModules, setExpandedModules] = useState<ReadonlySet<string>>(() => new Set());
+  const [expandedFiles, setExpandedFiles] = useState<ReadonlySet<string>>(() => new Set());
+  const [openCode, setOpenCode] = useState<ReadonlySet<string>>(() => new Set());
+  const [modulePositions, setModulePositions] = useState<ReadonlyMap<string, { x: number; y: number }>>(
+    () => new Map(),
+  );
+  const [selectedFile, setSelectedFile] = useState<string | null>(null);
+  const [focus, setFocus] = useState<{ id: string; nonce: number } | null>(null);
+  const focusNonce = useRef(0);
+  const inflight = useRef(new Set<string>());
 
   useEffect(() => {
     if (!level && activeWs) {
@@ -190,29 +199,88 @@ function CodeMapInner({
     [setLevelRaw],
   );
 
-  const refetch = useCallback(async () => {
-    if (!level) return;
-    setLoading(true);
-    try {
-      if (level.kind === "all") {
-        setCross(await client.request("codemap.cross", {}));
-      } else if (level.kind === "workspace") {
-        setSummary(await client.request("codemap.get", { ws: level.ws }));
-      } else if (level.kind === "module") {
-        setModuleDetail(await client.request("codemap.module", { ws: level.ws, path: level.path }));
-      } else {
-        setFileDetail(await client.request("codemap.file", { ws: level.ws, path: level.path }));
-      }
-    } catch {
-      // Analyzer may briefly race a delete; the next codemap.changed refetches.
-    } finally {
-      setLoading(false);
-    }
-  }, [client, level]);
+  const levelKind = level?.kind ?? null;
+  const wsKey = level && level.kind !== "all" ? level.ws : null;
+  const levelPath = level && (level.kind === "module" || level.kind === "file") ? level.path : null;
+
+  // Reset the derived-map state when the browsed workspace actually changes.
+  const lastWs = useRef<string | null>(null);
+  useEffect(() => {
+    if (!wsKey || lastWs.current === wsKey) return;
+    lastWs.current = wsKey;
+    setSummary(null);
+    setModuleDetails(new Map());
+    setFileDetails(new Map());
+    setExpandedModules(new Set());
+    setExpandedFiles(new Set());
+    setOpenCode(new Set());
+    setModulePositions(new Map());
+    setSelectedFile(null);
+    setFocus(null);
+  }, [wsKey]);
+
+  /* ---- fetching ---- */
 
   useEffect(() => {
-    void refetch();
-  }, [refetch]);
+    if (!levelKind) return;
+    let cancelled = false;
+    setLoading(true);
+    const run = async () => {
+      try {
+        if (levelKind === "all") setCross(await client.request("codemap.cross", {}));
+        else if (wsKey) setSummary(await client.request("codemap.get", { ws: wsKey }));
+      } catch {
+        // Analyzer may briefly race a delete; the next codemap.changed refetches.
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [client, levelKind === "all", wsKey, generation]);
+
+  // On-demand module details for every expanded module (re-fetched per generation).
+  useEffect(() => {
+    if (!wsKey) return;
+    for (const path of expandedModules) {
+      if (moduleDetails.get(path)?.gen === generation) continue;
+      const key = `${wsKey}|m|${path}|${generation}`;
+      if (inflight.current.has(key)) continue;
+      inflight.current.add(key);
+      client
+        .request("codemap.module", { ws: wsKey, path })
+        .then((detail) =>
+          setModuleDetails((m) => new Map(m).set(path, { gen: generation, detail })),
+        )
+        .catch(() => {})
+        .finally(() => inflight.current.delete(key));
+    }
+  }, [client, wsKey, expandedModules, generation, moduleDetails]);
+
+  // File details: expanded files + the selected file + the drilled file.
+  const wantedFiles = useMemo(() => {
+    const set = new Set(expandedFiles);
+    if (selectedFile) set.add(selectedFile);
+    if (levelKind === "file" && levelPath) set.add(levelPath);
+    return set;
+  }, [expandedFiles, selectedFile, levelKind, levelPath]);
+
+  useEffect(() => {
+    if (!wsKey) return;
+    for (const path of wantedFiles) {
+      if (fileDetails.get(path)?.gen === generation) continue;
+      const key = `${wsKey}|f|${path}|${generation}`;
+      if (inflight.current.has(key)) continue;
+      inflight.current.add(key);
+      client
+        .request("codemap.file", { ws: wsKey, path })
+        .then((detail) => setFileDetails((m) => new Map(m).set(path, { gen: generation, detail })))
+        .catch(() => {})
+        .finally(() => inflight.current.delete(key));
+    }
+  }, [client, wsKey, wantedFiles, generation, fileDetails]);
 
   // Live updates: the server re-analyzes when code changes on disk.
   useEffect(() => {
@@ -220,286 +288,111 @@ function CodeMapInner({
       if (level && level.kind !== "all" && ws !== level.ws) return;
       setPulse(true);
       setTimeout(() => setPulse(false), 1200);
-      void refetch();
+      setGeneration((g) => g + 1);
     });
-  }, [client, refetch, level]);
+  }, [client, level]);
 
   // The open-workspace set changed — the cross map is stale.
   useEffect(() => {
     return client.events.on("workspaces.changed", () => {
-      if (level?.kind === "all") void refetch();
+      if (level?.kind === "all") setGeneration((g) => g + 1);
     });
-  }, [client, refetch, level]);
+  }, [client, level]);
 
-  const { nodes, edges } = useMemo(() => {
-    if (!level) return { nodes: [] as CodeRfNode[], edges: [] as RfEdge[] };
+  /* ---- level → expansion/focus (drilling zooms into the nested map) ---- */
 
-    if (level.kind === "all" && cross) {
-      const nodes: CodeRfNode[] = cross.workspaces.map((w) => ({
-        id: w.id,
-        type: "code",
-        position: { x: 0, y: 0 },
-        data: {
-          title: w.name,
-          subtitle: w.root,
-          accent: accentFor(w.id),
-          icon: Layers,
-          badge: `${w.fileTotal} files`,
-          emphasis: w.id === activeWs,
-        },
-      }));
-      const edges: RfEdge[] = cross.edges.map((e) => ({
-        id: `${e.source}->${e.target}`,
-        source: e.source,
-        target: e.target,
-        ...edgeStyle(e.weight),
-        label: `${e.packages.length} pkg / ${e.weight} imports`,
-        style: { stroke: "var(--color-crystal-400)", strokeWidth: Math.min(1.2 + Math.log2(e.weight + 1), 4), opacity: 0.9 },
-        markerEnd: { type: MarkerType.ArrowClosed, color: "var(--color-crystal-400)", width: 14, height: 14 },
-        labelStyle: { fill: "var(--color-crystal-400)", fontSize: 9 },
-      }));
-      return { nodes: layout(nodes, edges, { ranksep: 180 }), edges };
+  const levelKey = level ? `${level.kind}:${wsKey ?? ""}:${levelPath ?? ""}` : "";
+  useEffect(() => {
+    if (!level || !summary) return;
+    if (level.kind === "module") {
+      setExpandedModules((prev) => (prev.has(level.path) ? prev : new Set(prev).add(level.path)));
+      setFocus({ id: moduleId(level.path), nonce: ++focusNonce.current });
+    } else if (level.kind === "file") {
+      const mod = moduleOfPath(level.path, summary.modules);
+      setExpandedModules((prev) => (prev.has(mod) ? prev : new Set(prev).add(mod)));
+      setExpandedFiles((prev) => (prev.has(level.path) ? prev : new Set(prev).add(level.path)));
+      setSelectedFile(level.path);
+      setFocus({ id: fileId(level.path), nonce: ++focusNonce.current });
     }
+    // levelKey captures kind+ws+path; re-run once the summary is in.
+  }, [levelKey, summary != null]);
 
-    if (level.kind === "workspace" && summary) {
-      const nodes: CodeRfNode[] = summary.modules
-        .filter((m) => m.fileCount > 0 || summary.deps.some((d) => d.source === m.path || d.target === m.path))
-        .map((m) => ({
-          id: m.path,
-          type: "code",
-          position: { x: 0, y: 0 },
-          data: {
-            title: m.name,
-            subtitle: m.path === "." ? "workspace root" : m.path,
-            accent: accentFor(m.path),
-            icon: Package,
-            badge: `${m.fileCount}`,
-          },
-        }));
-      const edges: RfEdge[] = summary.deps.map((d) => ({
-        id: `${d.source}->${d.target}`,
-        source: d.source,
-        target: d.target,
-        ...edgeStyle(d.weight),
-      }));
-      return { nodes: layout(nodes, edges, { ranksep: 140 }), edges };
-    }
+  /* ---- drag-a-symbol refactor intents (plan mode) ---- */
 
-    if (level.kind === "module" && moduleDetail) {
-      const nodes: CodeRfNode[] = moduleDetail.files.map((f) => ({
-        id: f.path,
-        type: "code",
-        position: { x: 0, y: 0 },
-        data: {
-          title: f.name,
-          subtitle: f.dir || undefined,
-          accent: accentFor(f.dir),
-          icon: FileCode2,
-          badge: f.exportCount ? `${f.exportCount} exp` : undefined,
-        },
-      }));
-      const edges: RfEdge[] = moduleDetail.edges.map((e, i) => ({
-        id: `e${i}`,
-        source: e.source,
-        target: e.target,
-        ...edgeStyle(),
-      }));
-      // Boundary nodes for modules this one depends on.
-      for (const dep of moduleDetail.moduleDeps) {
-        nodes.push({
-          id: `mod:${dep.target}`,
-          type: "code",
-          position: { x: 0, y: 0 },
-          data: {
-            title: dep.target === "." ? "(root)" : dep.target,
-            subtitle: "module",
-            accent: accentFor(dep.target),
-            icon: Package,
-            boundary: true,
-            badge: `${dep.weight}`,
-          },
-        });
-        edges.push({
-          id: `dep:${dep.target}`,
-          source: "__module__",
-          target: `mod:${dep.target}`,
-          ...edgeStyle(dep.weight),
-        });
-      }
-      // Anchor node representing the module itself for boundary edges.
-      if (moduleDetail.moduleDeps.length) {
-        nodes.push({
-          id: "__module__",
-          type: "code",
-          position: { x: 0, y: 0 },
-          data: {
-            title: moduleDetail.module.name,
-            subtitle: "this module",
-            accent: accentFor(moduleDetail.module.path),
-            icon: Boxes,
-            emphasis: true,
-          },
-        });
-      }
-      return { nodes: layout(nodes, edges), edges };
-    }
-
-    if (level.kind === "file" && fileDetail) {
-      const nodes: CodeRfNode[] = [
-        {
-          id: fileDetail.path,
-          type: "code",
-          position: { x: 0, y: 0 },
-          data: {
-            title: fileDetail.path.split("/").pop()!,
-            subtitle: fileDetail.path,
-            accent: "var(--color-crystal-400)",
-            icon: FileCode2,
-            emphasis: true,
-            badge: `${fileDetail.loc} loc`,
-          },
-        },
-      ];
-      const edges: RfEdge[] = [];
-      for (const by of fileDetail.importedBy) {
-        nodes.push({
-          id: by,
-          type: "code",
-          position: { x: 0, y: 0 },
-          data: { title: by.split("/").pop()!, subtitle: by, accent: accentFor(by), icon: FileCode2 },
-        });
-        edges.push({ id: `in:${by}`, source: by, target: fileDetail.path, ...edgeStyle() });
-      }
-      const seen = new Set<string>();
-      for (const imp of fileDetail.imports) {
-        if (!imp.resolved || seen.has(imp.resolved) || imp.resolved === fileDetail.path) continue;
-        seen.add(imp.resolved);
-        if (!nodes.some((n) => n.id === imp.resolved)) {
-          nodes.push({
-            id: imp.resolved,
-            type: "code",
-            position: { x: 0, y: 0 },
-            data: {
-              title: imp.resolved.split("/").pop()!,
-              subtitle: imp.resolved,
-              accent: accentFor(imp.resolved),
-              icon: FileCode2,
-            },
-          });
-        }
-        edges.push({ id: `out:${imp.resolved}`, source: fileDetail.path, target: imp.resolved, ...edgeStyle() });
-      }
-      return { nodes: layout(nodes, edges), edges };
-    }
-
-    return { nodes: [] as CodeRfNode[], edges: [] as RfEdge[] };
-  }, [level, summary, moduleDetail, fileDetail, cross, activeWs]);
-
-  const onNodeClick = useCallback(
-    (_evt: unknown, node: CodeRfNode) => {
-      if (!level) return;
-      if (level.kind === "all") {
-        setLevel({ kind: "workspace", ws: node.id });
-      } else if (level.kind === "workspace") {
-        setLevel({ kind: "module", ws: level.ws, path: node.id });
-      } else if (level.kind === "module") {
-        if (node.id.startsWith("mod:")) setLevel({ kind: "module", ws: level.ws, path: node.id.slice(4) });
-        else if (node.id !== "__module__") setLevel({ kind: "file", ws: level.ws, path: node.id });
-      } else if (node.id !== level.path) {
-        setLevel({ kind: "file", ws: level.ws, path: node.id });
-      }
-    },
-    [level, setLevel],
-  );
-
-  const onEdgeClick = useCallback(
-    (_evt: unknown, edge: RfEdge) => {
-      if (level?.kind !== "all" || !cross) return;
-      const hit = cross.edges.find((e) => `${e.source}->${e.target}` === edge.id);
-      setCrossEdge(hit ?? null);
-    },
-    [level, cross],
-  );
-
-  const moduleName = (p: string) =>
-    summary?.modules.find((m) => m.path === p)?.name ?? (p === "." ? "(root)" : p);
-  const wsName = (id: string) =>
-    workspaces.find((w) => w.id === id)?.name ??
-    cross?.workspaces.find((w) => w.id === id)?.name ??
-    id;
-
-  const levelWs = level && level.kind !== "all" ? level.ws : null;
-
-  // Opening a file in the editor targets the active workspace — switch first
-  // when the map is browsing a different one.
-  const openInEditor = useCallback(
-    (path: string) => {
-      if (levelWs && levelWs !== activeWs) setActive(levelWs);
-      requestOpenFile(path);
-    },
-    [levelWs, activeWs, setActive],
-  );
-
-  /* ---- drag-a-symbol refactor intents (draft plan mode) ---- */
   const activeDraft = archDrafts.find((d) => d.path === activeDraftPath) ?? null;
   const [dropNotice, setDropNotice] = useState<string | null>(null);
   useEffect(() => {
     if (!dropNotice) return;
-    const t = setTimeout(() => setDropNotice(null), 6000);
+    const t = setTimeout(() => setDropNotice(null), 8000);
     return () => clearTimeout(t);
   }, [dropNotice]);
 
+  /**
+   * The draft plan intents ride on. Dropping with no draft open *enters plan
+   * mode*: a draft is auto-created against the first architecture.
+   */
+  const ensureDraft = useCallback(async (): Promise<{ path: string; draft: ArchDraft } | null> => {
+    if (activeDraft) return activeDraft;
+    const arch = architectures[0];
+    if (!arch) {
+      setDropNotice("Create an architecture in Diagrams first — refactor plans ride on draft plans.");
+      return null;
+    }
+    const draft = newArchDraft("Refactor plan", arch.path, arch.graph, new Date().toISOString());
+    const created = await createDraftFile(draft);
+    onOpenDraft?.(created.path);
+    return created;
+  }, [activeDraft, architectures, createDraftFile, onOpenDraft]);
+
   const recordMove = useCallback(
-    async (payload: SymbolDragPayload, target: { module?: string; file?: string }) => {
-      if (!activeDraft) {
-        setDropNotice("Open a draft plan in Diagrams first — symbol moves are recorded on the draft.");
-        return;
-      }
+    async (payload: SymbolDragPayload, target: DropTarget) => {
       if (target.file === payload.file) return;
-      let toModule = target.module ?? null;
-      const toFile = target.file ?? null;
-      if (!toModule && toFile) {
-        try {
-          toModule = (await client.request("codemap.file", { ws: levelWs ?? undefined, path: toFile })).module;
-        } catch {
-          toModule = ".";
-        }
-      }
-      const intent = createMoveIntent(payload.symbol, payload.file, toModule ?? ".", toFile);
-      updateArchDraft(activeDraft.path, {
-        ...activeDraft.draft,
-        refactors: [...activeDraft.draft.refactors, intent],
+      const holder = await ensureDraft();
+      if (!holder) return;
+      const intent = createMoveIntent(payload.symbol, payload.file, target.module, target.file ?? null);
+      updateArchDraft(holder.path, {
+        ...holder.draft,
+        refactors: [...holder.draft.refactors, intent],
         updatedAt: new Date().toISOString(),
       });
-      setDropNotice(`Draft "${activeDraft.draft.name}": move ${payload.symbol} → ${toFile ?? toModule}`);
+      setDropNotice(
+        `${activeDraft ? `Draft "${holder.draft.name}"` : `Plan mode — draft "${holder.draft.name}" created`}: move ${payload.symbol} → ${target.file ?? target.module}. Apply it from Diagrams to run the refactor.`,
+      );
     },
-    [activeDraft, client, levelWs, updateArchDraft],
+    [ensureDraft, activeDraft, updateArchDraft],
+  );
+
+  const recordFileMove = useCallback(
+    async (fromFile: string, toModule: string) => {
+      const holder = await ensureDraft();
+      if (!holder) return;
+      const intent = createMoveFileIntent(fromFile, toModule);
+      updateArchDraft(holder.path, {
+        ...holder.draft,
+        refactors: [...holder.draft.refactors, intent],
+        updatedAt: new Date().toISOString(),
+      });
+      setDropNotice(
+        `${activeDraft ? `Draft "${holder.draft.name}"` : `Plan mode — draft "${holder.draft.name}" created`}: move file ${fromFile.split("/").pop()} → ${toModule}. Apply it from Diagrams to run the refactor.`,
+      );
+    },
+    [ensureDraft, activeDraft, updateArchDraft],
   );
 
   const recordHoist = useCallback(
     async (intent: HoistIntent) => {
-      if (activeDraft) {
-        updateArchDraft(activeDraft.path, {
-          ...activeDraft.draft,
-          refactors: [...activeDraft.draft.refactors, intent],
-          updatedAt: new Date().toISOString(),
-        });
-        setDropNotice(`Draft "${activeDraft.draft.name}": hoist → ${intent.targetModule}`);
-        return;
-      }
-      const arch = architectures[0];
-      if (!arch) {
-        setDropNotice("Create an architecture in Diagrams first — hoists ride on draft plans.");
-        return;
-      }
-      const name = intent.newName ?? intent.symbols[0]!.symbol;
-      const draft = newArchDraft(`Hoist ${name}`, arch.path, arch.graph, new Date().toISOString());
-      draft.refactors = [intent];
-      const created = await createDraftFile(draft);
-      onOpenDraft?.(created.path);
-      setDropNotice(`Draft "${draft.name}" created — apply it from Diagrams to run the hoist.`);
+      const holder = await ensureDraft();
+      if (!holder) return;
+      updateArchDraft(holder.path, {
+        ...holder.draft,
+        refactors: [...holder.draft.refactors, intent],
+        updatedAt: new Date().toISOString(),
+      });
+      setDropNotice(
+        `${activeDraft ? `Draft "${holder.draft.name}"` : `Plan mode — draft "${holder.draft.name}" created`}: hoist → ${intent.targetModule}. Apply it from Diagrams to run it.`,
+      );
     },
-    [activeDraft, architectures, createDraftFile, onOpenDraft, updateArchDraft],
+    [ensureDraft, activeDraft, updateArchDraft],
   );
 
   const showDuplicates = useNav((l) => l.architect?.duplicates) ?? false;
@@ -508,52 +401,159 @@ function CodeMapInner({
     [nav],
   );
 
-  // Hoist targets come from the workspace module list, which the module level
-  // hasn't necessarily fetched (e.g. after a drill-in) — load it on demand.
-  useEffect(() => {
-    if (!showDuplicates || summary || !level || level.kind === "all") return;
-    client
-      .request("codemap.get", { ws: level.ws })
-      .then(setSummary)
-      .catch(() => {});
-  }, [showDuplicates, summary, level, client]);
+  /* ---- scenes ---- */
 
-  // Drop targets + pending-intent badges, layered onto the level's nodes.
+  const moduleDetailMap = useMemo(() => {
+    const m = new Map<string, CodeModuleDetail>();
+    for (const [k, v] of moduleDetails) m.set(k, v.detail);
+    return m;
+  }, [moduleDetails]);
+  const fileDetailMap = useMemo(() => {
+    const m = new Map<string, CodeFileDetail>();
+    for (const [k, v] of fileDetails) m.set(k, v.detail);
+    return m;
+  }, [fileDetails]);
+
   const refactors = activeDraft?.draft.refactors ?? EMPTY_REFACTORS;
-  const decoratedNodes = useMemo(() => {
-    if (!level || level.kind === "all") return nodes;
-    const moves = refactors.filter((r) => r.kind === "move");
-    return nodes.map((n) => {
-      let onSymbolDrop: CodeNodeData["onSymbolDrop"];
-      let intentMark: CodeNodeData["intentMark"];
-      if (level.kind === "workspace") {
-        const module = n.id;
-        onSymbolDrop = (p) => void recordMove(p, { module });
-        if (moves.some((m) => m.toModule === module)) intentMark = "target";
-        else if (module !== "." && moves.some((m) => m.fromFile.startsWith(module + "/"))) intentMark = "source";
-      } else if (level.kind === "module") {
-        if (n.id.startsWith("mod:")) {
-          const module = n.id.slice(4);
-          onSymbolDrop = (p) => void recordMove(p, { module });
-          if (moves.some((m) => m.toModule === module)) intentMark = "target";
-        } else if (n.id !== "__module__") {
-          const file = n.id;
-          onSymbolDrop = (p) => void recordMove(p, { module: level.path, file });
-          if (moves.some((m) => m.fromFile === file)) intentMark = "source";
-          else if (moves.some((m) => m.toFile === file)) intentMark = "target";
-        }
-      } else {
-        const file = n.id;
-        onSymbolDrop = (p) => void recordMove(p, { file });
-        if (moves.some((m) => m.fromFile === file)) intentMark = "source";
-        else if (moves.some((m) => m.toFile === file)) intentMark = "target";
-      }
-      if (!onSymbolDrop && !intentMark) return n;
-      return { ...n, data: { ...n.data, onSymbolDrop, intentMark } };
+  const moves = useMemo(
+    () => refactors.filter((r): r is MoveLikeIntent => r.kind === "move" || r.kind === "moveFile"),
+    [refactors],
+  );
+
+  const scene = useMemo<MapScene | null>(() => {
+    if (!summary || !level || level.kind === "all") return null;
+    return buildMapScene({
+      summary,
+      moduleDetails: moduleDetailMap,
+      fileDetails: fileDetailMap,
+      expandedModules,
+      expandedFiles,
+      openCode,
+      moves,
+      selectedFile,
+      focusId: focus?.id ?? null,
+      positions: modulePositions,
     });
-  }, [nodes, level, refactors, recordMove]);
+  }, [
+    summary,
+    level,
+    moduleDetailMap,
+    fileDetailMap,
+    expandedModules,
+    expandedFiles,
+    openCode,
+    moves,
+    selectedFile,
+    focus,
+    modulePositions,
+  ]);
+
+  const crossScene = useMemo(() => {
+    if (level?.kind !== "all" || !cross) return { nodes: [] as CodeRfNode[], edges: [] as RfEdge[] };
+    const nodes: CodeRfNode[] = cross.workspaces.map((w) => ({
+      id: w.id,
+      type: "code",
+      position: { x: 0, y: 0 },
+      data: {
+        title: w.name,
+        subtitle: w.root,
+        accent: accentFor(w.id),
+        icon: Layers,
+        badge: `${w.fileTotal} files`,
+        emphasis: w.id === activeWs,
+      },
+    }));
+    const edges: RfEdge[] = cross.edges.map((e) => ({
+      id: `${e.source}->${e.target}`,
+      source: e.source,
+      target: e.target,
+      label: `${e.packages.length} pkg / ${e.weight} imports`,
+      style: {
+        stroke: "var(--color-crystal-400)",
+        strokeWidth: Math.min(1.2 + Math.log2(e.weight + 1), 4),
+        opacity: 0.9,
+      },
+      markerEnd: { type: MarkerType.ArrowClosed, color: "var(--color-crystal-400)", width: 14, height: 14 },
+      labelStyle: { fill: "var(--color-crystal-400)", fontSize: 9 },
+      labelBgStyle: { fill: "var(--color-surface-1)", fillOpacity: 0.9 },
+    }));
+    return { nodes: layoutCross(nodes, edges), edges };
+  }, [level, cross, activeWs]);
+
+  /* ---- interactions ---- */
+
+  const moduleName = (p: string) =>
+    summary?.modules.find((m) => m.path === p)?.name ?? (p === "." ? "(root)" : p);
+  const wsName = (id: string) =>
+    workspaces.find((w) => w.id === id)?.name ??
+    cross?.workspaces.find((w) => w.id === id)?.name ??
+    id;
+
+  // Opening a file in the editor targets the active workspace — switch first
+  // when the map is browsing a different one.
+  const openInEditor = useCallback(
+    (path: string) => {
+      if (wsKey && wsKey !== activeWs) setActive(wsKey);
+      requestOpenFile(path);
+    },
+    [wsKey, activeWs, setActive],
+  );
+
+  const toggleModule = useCallback((path: string) => {
+    setExpandedModules((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  }, []);
+  const toggleFile = useCallback((path: string) => {
+    setExpandedFiles((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  }, []);
+  const toggleCode = useCallback((file: string, symbol: string) => {
+    setOpenCode((prev) => {
+      const next = new Set(prev);
+      const key = codeKey(file, symbol);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  const actions = useMemo<MapActions>(
+    () => ({
+      ws: wsKey ?? undefined,
+      toggleModule,
+      toggleFile,
+      toggleCode,
+      startJourney: onStartJourney,
+      dropSymbol: (payload, target) => void recordMove(payload, target),
+    }),
+    [wsKey, toggleModule, toggleFile, toggleCode, onStartJourney, recordMove],
+  );
+
+  const onCrossNodeClick = useCallback(
+    (_evt: unknown, node: CodeRfNode) => setLevel({ kind: "workspace", ws: node.id }),
+    [setLevel],
+  );
+  const onCrossEdgeClick = useCallback(
+    (_evt: unknown, edge: RfEdge) => {
+      if (!cross) return;
+      const hit = cross.edges.find((e) => `${e.source}->${e.target}` === edge.id);
+      setCrossEdge(hit ?? null);
+    },
+    [cross],
+  );
+
+  const drilledFileDetail = levelKind === "file" && levelPath ? (fileDetailMap.get(levelPath) ?? null) : null;
 
   return (
+    <MapActionsContext.Provider value={actions}>
     <div className="h-full min-h-0">
       <Split storageKey="architect:codemap" direction="horizontal">
         <Pane minSize="40%">
@@ -607,11 +607,16 @@ function CodeMapInner({
                   setLevel({
                     kind: "module",
                     ws: level.ws,
-                    path: level.kind === "module" ? level.path : (fileDetail?.module ?? "."),
+                    path:
+                      level.kind === "module"
+                        ? level.path
+                        : moduleOfPath(level.path, summary?.modules ?? []),
                   })
                 }
               >
-                {level.kind === "module" ? moduleName(level.path) : moduleName(fileDetail?.module ?? ".")}
+                {moduleName(
+                  level.kind === "module" ? level.path : moduleOfPath(level.path, summary?.modules ?? []),
+                )}
               </button>
             </>
           ) : null}
@@ -627,7 +632,7 @@ function CodeMapInner({
               live
             </span>
           </Tooltip>
-          {level && (level.kind === "workspace" || level.kind === "module") ? (
+          {level && level.kind !== "all" ? (
             <Tooltip content="Duplicated functions — identical implementations across the workspace">
               <button
                 type="button"
@@ -645,12 +650,6 @@ function CodeMapInner({
           ) : null}
           {loading ? <Spinner className="ml-1 h-3 w-3" /> : null}
         </div>
-
-        {moduleDetail?.truncated && level?.kind === "module" ? (
-          <div className="absolute left-3 top-12 z-10 rounded-lg border border-warn/30 bg-warn/10 px-2 py-1 text-[10px] text-warn">
-            Large module — showing the {moduleDetail.files.length} most connected files
-          </div>
-        ) : null}
 
         {level?.kind === "all" && cross && cross.workspaces.length < 2 && !loading ? (
           <div className="absolute left-3 top-12 z-10 rounded-lg border border-edge bg-surface-2/95 px-2 py-1 text-[10px] text-ink-faint">
@@ -672,43 +671,70 @@ function CodeMapInner({
           </div>
         ) : null}
 
-        {nodes.length === 0 && !loading ? (
+        {level?.kind === "all" ? (
+          crossScene.nodes.length === 0 && !loading ? (
+            <EmptyState icon={FolderGit2} title="Nothing to map yet">
+              No analyzable TypeScript/JavaScript found in the open workspaces.
+            </EmptyState>
+          ) : (
+            <ReactFlow
+              key="cross"
+              nodes={crossScene.nodes}
+              edges={crossScene.edges}
+              nodeTypes={crossNodeTypes}
+              onNodeClick={onCrossNodeClick}
+              onEdgeClick={onCrossEdgeClick}
+              fitView
+              fitViewOptions={{ padding: 0.2, maxZoom: 1.15 }}
+              minZoom={0.08}
+              maxZoom={2}
+              nodesConnectable={false}
+              panOnScroll
+              proOptions={{ hideAttribution: true }}
+              className="bg-surface-0"
+            >
+              <Background variant={BackgroundVariant.Dots} gap={22} size={1.25} color="var(--color-edge-strong)" />
+              <Controls position="bottom-left" showInteractive={false} className="!rounded-lg !border !border-edge !bg-surface-2 !shadow-lg overflow-hidden" />
+            </ReactFlow>
+          )
+        ) : scene && scene.nodes.length === 0 && !loading ? (
           <EmptyState icon={FolderGit2} title="Nothing to map yet">
             No analyzable TypeScript/JavaScript found in this workspace.
           </EmptyState>
-        ) : (
-          <ReactFlow
-            key={level ? `${level.kind}:${"ws" in level ? level.ws : ""}:${"path" in level ? level.path : ""}` : "empty"}
-            nodes={decoratedNodes}
-            edges={edges}
-            nodeTypes={nodeTypes}
-            onNodeClick={onNodeClick}
-            onEdgeClick={onEdgeClick}
-            fitView
-            fitViewOptions={{ padding: 0.2, maxZoom: 1.15 }}
-            minZoom={0.08}
-            maxZoom={2}
-            nodesConnectable={false}
-            panOnScroll
-            proOptions={{ hideAttribution: true }}
-            className="bg-surface-0"
-          >
-            <Background variant={BackgroundVariant.Dots} gap={22} size={1.25} color="var(--color-edge-strong)" />
-            <Controls position="bottom-left" showInteractive={false} className="!rounded-lg !border !border-edge !bg-surface-2 !shadow-lg overflow-hidden" />
-          </ReactFlow>
-        )}
+        ) : scene ? (
+          <WorkspaceMapCanvas
+            key={wsKey ?? "map"}
+            scene={scene}
+            focus={focus}
+            onModuleMoved={(path, pos) =>
+              setModulePositions((prev) => new Map(prev).set(path, pos))
+            }
+            onSymbolMoved={(payload, target) => void recordMove(payload, target)}
+            onFileMoved={(fromFile, toModule) => void recordFileMove(fromFile, toModule)}
+            onSelectFile={setSelectedFile}
+            onDrillModule={(path) => wsKey && setLevel({ kind: "module", ws: wsKey, path })}
+            onDrillFile={(path) => wsKey && setLevel({ kind: "file", ws: wsKey, path })}
+            onRelayout={() => setModulePositions(new Map())}
+            onCollapseAll={() => {
+              setExpandedModules(new Set());
+              setExpandedFiles(new Set());
+              setOpenCode(new Set());
+              setSelectedFile(null);
+            }}
+          />
+        ) : null}
       </div>
         </Pane>
 
-        {level?.kind === "file" && fileDetail ? (
+        {level?.kind === "file" && drilledFileDetail ? (
           <Pane defaultSize={320} minSize={224} maxSize={560}>
             <FilePanel
-              detail={fileDetail}
+              detail={drilledFileDetail}
               ws={level.ws}
               onNavigate={(p) => setLevel({ kind: "file", ws: level.ws, path: p })}
               onOpenFile={openInEditor}
               onStartJourney={onStartJourney}
-              dragSymbols={activeDraft != null}
+              draftActive={activeDraft != null}
             />
           </Pane>
         ) : null}
@@ -722,7 +748,7 @@ function CodeMapInner({
             />
           </Pane>
         ) : null}
-        {showDuplicates && level && (level.kind === "workspace" || level.kind === "module") ? (
+        {showDuplicates && level && level.kind !== "all" ? (
           <Pane defaultSize={384} minSize={260} maxSize={640}>
             <DuplicatesPanel
               ws={level.ws}
@@ -736,6 +762,191 @@ function CodeMapInner({
         ) : null}
       </Split>
     </div>
+    </MapActionsContext.Provider>
+  );
+}
+
+/* ------------------------- nested workspace canvas ------------------------ */
+
+const SNAP_STORAGE_KEY = "crystal:codemap:snap";
+
+function WorkspaceMapCanvas({
+  scene,
+  focus,
+  onModuleMoved,
+  onSymbolMoved,
+  onFileMoved,
+  onSelectFile,
+  onDrillModule,
+  onDrillFile,
+  onRelayout,
+  onCollapseAll,
+}: {
+  scene: MapScene;
+  focus: { id: string; nonce: number } | null;
+  onModuleMoved: (path: string, pos: { x: number; y: number }) => void;
+  onSymbolMoved: (payload: SymbolDragPayload, target: DropTarget) => void;
+  onFileMoved: (fromFile: string, toModule: string) => void;
+  onSelectFile: (path: string | null) => void;
+  onDrillModule: (path: string) => void;
+  onDrillFile: (path: string) => void;
+  onRelayout: () => void;
+  onCollapseAll: () => void;
+}) {
+  const [nodes, setNodes, onNodesChange] = useNodesState<MapRfNode>(scene.nodes);
+  const [snap, setSnap] = useState(() => {
+    try {
+      return localStorage.getItem(SNAP_STORAGE_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const toggleSnap = useCallback(() => {
+    setSnap((s) => {
+      try {
+        localStorage.setItem(SNAP_STORAGE_KEY, s ? "0" : "1");
+      } catch {
+        /* private mode */
+      }
+      return !s;
+    });
+  }, []);
+
+  useEffect(() => {
+    setNodes(scene.nodes);
+  }, [scene, setNodes]);
+
+  // Drill targets zoom into view once their node exists (details may lag).
+  const { fitView } = useReactFlow();
+  const focusReady = focus != null && scene.nodes.some((n) => n.id === focus.id);
+  useEffect(() => {
+    if (!focus || !focusReady) return;
+    const t = setTimeout(() => {
+      void fitView({ nodes: [{ id: focus.id }], padding: 0.35, duration: 450, maxZoom: 1.15 });
+    }, 60);
+    return () => clearTimeout(t);
+  }, [focus?.nonce, focusReady, fitView]);
+
+  const onNodeDragStop = useCallback(
+    (_evt: unknown, node: RfNode) => {
+      const data = node.data as MapRfNode["data"];
+      if (data.nodeKind === "module") {
+        onModuleMoved((data as ModuleNodeData).path, node.position);
+        return;
+      }
+      const abs = absolutePositionOf(nodes, node.id);
+      const center = abs
+        ? { x: abs.x + (node.width ?? 0) / 2, y: abs.y + (node.height ?? 0) / 2 }
+        : null;
+      if (data.nodeKind === "symbol") {
+        const d = data as SymbolNodeData;
+        if (center && !d.planned) {
+          const target = dropTargetAt(nodes, center, { file: d.file, module: d.module });
+          if (target) onSymbolMoved({ file: d.file, symbol: d.name }, target);
+        }
+      } else if (data.nodeKind === "file") {
+        const d = data as FileNodeData;
+        if (center && !d.planned) {
+          const target = fileDropTargetAt(nodes, center, d.path, d.module);
+          if (target) onFileMoved(d.path, target.module);
+        }
+      }
+      // The node's real home is derived — snap it back (planned ghosts render
+      // in the target once the intent lands on the draft).
+      setNodes(scene.nodes);
+    },
+    [nodes, scene, setNodes, onModuleMoved, onSymbolMoved, onFileMoved],
+  );
+
+  const onNodeClick = useCallback(
+    (_evt: unknown, node: RfNode) => {
+      const data = node.data as MapRfNode["data"];
+      if (data.nodeKind === "file") onSelectFile((data as FileNodeData).path);
+    },
+    [onSelectFile],
+  );
+
+  const onNodeDoubleClick = useCallback(
+    (_evt: unknown, node: RfNode) => {
+      const data = node.data as MapRfNode["data"];
+      if (data.nodeKind === "module") onDrillModule((data as ModuleNodeData).path);
+      else if (data.nodeKind === "file") onDrillFile((data as FileNodeData).path);
+    },
+    [onDrillModule, onDrillFile],
+  );
+
+  return (
+    <ReactFlow
+      nodes={nodes}
+      edges={scene.edges}
+      nodeTypes={mapNodeTypes}
+      onNodesChange={onNodesChange}
+      onNodeDragStop={onNodeDragStop}
+      onNodeClick={onNodeClick}
+      onNodeDoubleClick={onNodeDoubleClick}
+      onPaneClick={() => onSelectFile(null)}
+      fitView
+      fitViewOptions={{ padding: 0.15, maxZoom: 1 }}
+      minZoom={0.05}
+      maxZoom={2}
+      nodesConnectable={false}
+      panOnScroll
+      snapToGrid={snap}
+      snapGrid={[16, 16]}
+      proOptions={{ hideAttribution: true }}
+      className="bg-surface-0"
+    >
+      <Background variant={BackgroundVariant.Dots} gap={22} size={1.25} color="var(--color-edge-strong)" />
+      <Controls position="bottom-left" showInteractive={false} className="!rounded-lg !border !border-edge !bg-surface-2 !shadow-lg overflow-hidden" />
+      <MiniMap
+        position="bottom-right"
+        pannable
+        zoomable
+        className="!h-28 !w-40 !rounded-lg !border !border-edge !bg-surface-2"
+        nodeColor={(n) =>
+          (n.data as MapRfNode["data"]).nodeKind === "module"
+            ? "var(--color-surface-3)"
+            : "var(--color-crystal-500)"
+        }
+        maskColor="color-mix(in srgb, var(--color-surface-0) 75%, transparent)"
+      />
+      <Panel position="top-right" className="flex items-center gap-0.5 rounded-xl border border-edge bg-surface-2/95 p-1 shadow-xl shadow-black/30 backdrop-blur">
+        <Tooltip content={snap ? "Snap to grid: on" : "Snap to grid: off"}>
+          <button
+            type="button"
+            aria-pressed={snap}
+            onClick={toggleSnap}
+            className={cn(
+              "rounded-lg p-1.5 transition-colors",
+              snap ? "bg-crystal-500/15 text-crystal-300" : "text-ink-faint hover:text-ink",
+            )}
+            aria-label="Toggle snap to grid"
+          >
+            <LayoutGrid className="h-3.5 w-3.5" />
+          </button>
+        </Tooltip>
+        <Tooltip content="Re-layout — clear manual positions and pack everything neatly">
+          <button
+            type="button"
+            onClick={onRelayout}
+            className="rounded-lg p-1.5 text-ink-faint transition-colors hover:text-ink"
+            aria-label="Auto-layout"
+          >
+            <Rows3 className="h-3.5 w-3.5" />
+          </button>
+        </Tooltip>
+        <Tooltip content="Collapse everything back to modules">
+          <button
+            type="button"
+            onClick={onCollapseAll}
+            className="rounded-lg p-1.5 text-ink-faint transition-colors hover:text-ink"
+            aria-label="Collapse all"
+          >
+            <Shrink className="h-3.5 w-3.5" />
+          </button>
+        </Tooltip>
+      </Panel>
+    </ReactFlow>
   );
 }
 
@@ -806,33 +1017,21 @@ function CrossEdgePanel({
   );
 }
 
-const SYMBOL_TONES: Record<CodeSymbolKind, { label: string; tone: "violet" | "cyan" | "emerald" | "amber" | "blue" | "rose" | "slate" | "neutral" }> = {
-  function: { label: "ƒ", tone: "blue" },
-  component: { label: "⟨/⟩", tone: "cyan" },
-  class: { label: "C", tone: "amber" },
-  interface: { label: "I", tone: "emerald" },
-  enum: { label: "E", tone: "rose" },
-  type: { label: "T", tone: "violet" },
-  const: { label: "•", tone: "slate" },
-  default: { label: "d", tone: "neutral" },
-  reexport: { label: "↪", tone: "neutral" },
-};
-
 function FilePanel({
   detail,
   ws,
   onNavigate,
   onOpenFile,
   onStartJourney,
-  dragSymbols,
+  draftActive,
 }: {
   detail: CodeFileDetail;
   ws?: string;
   onNavigate: (path: string) => void;
   onOpenFile: (path: string) => void;
   onStartJourney?: (seed: { file: string; symbol: string }) => void;
-  /** Draft plan active — symbols can be dragged onto files/modules to record moves. */
-  dragSymbols?: boolean;
+  /** A draft plan is open — moves land on it instead of starting a new one. */
+  draftActive?: boolean;
 }) {
   const externals = detail.imports.filter((i) => i.external);
   const internals = detail.imports.filter((i) => i.resolved);
@@ -860,19 +1059,19 @@ function FilePanel({
       </div>
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
         <Section title={`Symbols (${symbols.length})`}>
-          {dragSymbols ? (
-            <div className="mb-1.5 rounded-lg border border-warn/30 bg-warn/10 px-2 py-1 text-[10px] text-warn">
-              Draft plan active — drag a symbol onto a file or module node to plan a move.
-            </div>
-          ) : null}
+          <div className="mb-1.5 rounded-lg border border-edge bg-surface-2 px-2 py-1 text-[10px] text-ink-faint">
+            {draftActive
+              ? "Draft plan active — drag a symbol onto a file or module node to plan a move."
+              : "Drag a symbol onto a file or module node to start a refactor plan."}
+          </div>
           {symbols.map((sym, i) => (
             <div key={`${sym.name}${i}`}>
               <div
                 className={cn(
                   "flex items-center gap-1.5 py-0.5 text-[11.5px]",
-                  dragSymbols && sym.kind !== "reexport" && "cursor-grab active:cursor-grabbing",
+                  sym.kind !== "reexport" && "cursor-grab active:cursor-grabbing",
                 )}
-                draggable={dragSymbols && sym.kind !== "reexport"}
+                draggable={sym.kind !== "reexport"}
                 onDragStart={(e) => {
                   e.dataTransfer.setData(
                     SYMBOL_DRAG_MIME,

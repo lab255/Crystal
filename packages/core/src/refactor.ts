@@ -25,6 +25,21 @@ export const MoveIntentSchema = z.object({
 });
 export type MoveIntent = z.infer<typeof MoveIntentSchema>;
 
+export const MoveFileIntentSchema = z.object({
+  id: z.string(),
+  kind: z.literal("moveFile"),
+  /** Workspace-relative file to relocate (all top-level symbols move with it). */
+  fromFile: z.string(),
+  /** Module path receiving the file. */
+  toModule: z.string(),
+  /**
+   * Exact destination path when known; the engine derives
+   * `<toModule>/(src/)?<basename>` when null.
+   */
+  toFile: z.string().nullish(),
+});
+export type MoveFileIntent = z.infer<typeof MoveFileIntentSchema>;
+
 export const HoistIntentSchema = z.object({
   id: z.string(),
   kind: z.literal("hoist"),
@@ -42,6 +57,7 @@ export type HoistIntent = z.infer<typeof HoistIntentSchema>;
 
 export const RefactorIntentSchema = z.discriminatedUnion("kind", [
   MoveIntentSchema,
+  MoveFileIntentSchema,
   HoistIntentSchema,
 ]);
 export type RefactorIntent = z.infer<typeof RefactorIntentSchema>;
@@ -53,6 +69,14 @@ export function createMoveIntent(
   toFile?: string | null,
 ): MoveIntent {
   return { id: uid("refactor"), kind: "move", symbol, fromFile, toModule, toFile: toFile ?? null };
+}
+
+export function createMoveFileIntent(
+  fromFile: string,
+  toModule: string,
+  toFile?: string | null,
+): MoveFileIntent {
+  return { id: uid("refactor"), kind: "moveFile", fromFile, toModule, toFile: toFile ?? null };
 }
 
 export function createHoistIntent(
@@ -124,7 +148,11 @@ export function validateRefactorIntents(
   };
   for (const intent of intents) {
     if (intent.kind === "move") check(intent, intent.fromFile, intent.symbol);
-    else for (const ref of intent.symbols) check(intent, ref.file, ref.symbol);
+    else if (intent.kind === "moveFile") {
+      if (!symbolIndex(intent.fromFile)) {
+        problems.push({ intent, problem: `${intent.fromFile} is no longer in the code map` });
+      }
+    } else for (const ref of intent.symbols) check(intent, ref.file, ref.symbol);
   }
   return problems;
 }
