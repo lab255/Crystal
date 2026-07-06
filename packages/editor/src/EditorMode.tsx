@@ -60,7 +60,14 @@ export function EditorMode() {
       setError(null);
       try {
         const { content, truncated } = await client.request("fs.read", { path });
-        setFiles((fs) => [...fs, { path, content, savedContent: content, truncated }]);
+        // Re-check inside the updater: a concurrent openFile for the same path
+        // (deep-link effect + open-file event) passes the guard above before
+        // either fetch lands, and must not append a second tab.
+        setFiles((fs) =>
+          fs.some((f) => f.path === path)
+            ? fs
+            : [...fs, { path, content, savedContent: content, truncated }],
+        );
         setActivePath(path);
       } catch (err) {
         setError((err as Error).message);

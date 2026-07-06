@@ -13,8 +13,8 @@
         "description": "pnpm workspace",
         "parentId": null,
         "position": {
-          "x": 50.05776173285204,
-          "y": 63.09747292418773
+          "x": 16,
+          "y": 16
         },
         "size": {
           "width": 820,
@@ -31,7 +31,7 @@
         "description": "Standalone shell — composes the SDK",
         "parentId": "node_workspace",
         "position": {
-          "x": 36,
+          "x": 314,
           "y": 64
         },
         "size": null,
@@ -55,8 +55,8 @@
         "description": "Bridge: fs, git, .crystal state, agent sessions",
         "parentId": "node_workspace",
         "position": {
-          "x": 474.83754512635375,
-          "y": 69.16245487364621
+          "x": 878,
+          "y": 64
         },
         "size": null,
         "tech": [
@@ -74,8 +74,8 @@
         "description": "",
         "parentId": "node_workspace",
         "position": {
-          "x": 36,
-          "y": 218
+          "x": 40,
+          "y": 184
         },
         "size": {
           "width": 748,
@@ -92,8 +92,8 @@
         "description": "Domain model + protocols",
         "parentId": "node_packages",
         "position": {
-          "x": 16,
-          "y": 46
+          "x": 40,
+          "y": 64
         },
         "size": null,
         "tech": [],
@@ -107,8 +107,8 @@
         "description": "Bridge client + stores",
         "parentId": "node_packages",
         "position": {
-          "x": 200,
-          "y": 46
+          "x": 40,
+          "y": 184
         },
         "size": null,
         "tech": [],
@@ -122,8 +122,8 @@
         "description": "The three modes",
         "parentId": "node_packages",
         "position": {
-          "x": 371.6101083032491,
-          "y": 40.8375451263538
+          "x": 40,
+          "y": 304
         },
         "size": null,
         "tech": [],
@@ -137,8 +137,8 @@
         "description": "Embeddable IDE",
         "parentId": "node_packages",
         "position": {
-          "x": 610,
-          "y": 46
+          "x": 40,
+          "y": 424
         },
         "size": null,
         "tech": [],
@@ -150,10 +150,10 @@
         "kind": "external",
         "label": "Claude Code CLI",
         "description": "Agent execution engine",
-        "parentId": null,
+        "parentId": "node_packages",
         "position": {
-          "x": 1014.4548736462091,
-          "y": 139.61732851985562
+          "x": 548.3191733639496,
+          "y": 5.740528128587812
         },
         "size": null,
         "tech": [
@@ -170,8 +170,8 @@
         "description": "Diagrams + boards, versioned with your code",
         "parentId": null,
         "position": {
-          "x": 1000,
-          "y": 280
+          "x": 326,
+          "y": 552
         },
         "size": null,
         "tech": [
@@ -187,8 +187,8 @@
         "description": "Run history per workspace",
         "parentId": null,
         "position": {
-          "x": 1000,
-          "y": 420
+          "x": 326,
+          "y": 672
         },
         "size": null,
         "tech": [
@@ -204,8 +204,8 @@
         "description": "Desktop shell",
         "parentId": null,
         "position": {
-          "x": 80,
-          "y": 500
+          "x": 326,
+          "y": 792
         },
         "size": null,
         "tech": [
@@ -315,9 +315,9 @@
       }
     ],
     "viewport": {
-      "x": 119.99905898850466,
-      "y": 174.40783930229838,
-      "zoom": 1.4583341021335745
+      "x": 416.65022935779814,
+      "y": 50.01834862385317,
+      "zoom": 0.9988532110091743
     }
   }
 }

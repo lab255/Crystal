@@ -28,11 +28,20 @@ export interface SplitProps extends Omit<SplitPaneProps, "onResize"> {
 export { Pane, type PaneProps };
 
 export function Split({ storageKey, children, ...rest }: SplitProps) {
-  const count = Children.toArray(children).length;
+  const panes = Children.toArray(children);
+  // SplitPane renders nothing (with a console warning) below two panes, but
+  // layouts with conditional side panels routinely collapse to one — render
+  // that lone pane's content full-size instead of disappearing the view.
+  if (panes.length < 2) {
+    const only = panes[0];
+    const content =
+      isValidElement<PaneProps>(only) && only.type === Pane ? only.props.children : only;
+    return <div className={cn("h-full w-full", rest.className)}>{content}</div>;
+  }
   // Remount when the pane count changes so persisted sizes re-load for the
   // matching layout variant (usePersistence reads storage on mount).
   return (
-    <PersistentSplit key={`${storageKey ?? ""}:${count}`} storageKey={storageKey} {...rest}>
+    <PersistentSplit key={`${storageKey ?? ""}:${panes.length}`} storageKey={storageKey} {...rest}>
       {children}
     </PersistentSplit>
   );
