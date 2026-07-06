@@ -19,6 +19,7 @@ import {
   Layers,
   Package,
   RadioTower,
+  Route,
   X,
 } from "lucide-react";
 import type {
@@ -99,6 +100,8 @@ export interface CodeMapViewProps {
   initialModule?: string;
   /** Where the user came from (e.g. an architecture diagram) — rendered as a leading breadcrumb. */
   origin?: { label: string; onExit: () => void };
+  /** "Start journey here…" on a symbol — opens the journey dialog in Diagrams. */
+  onStartJourney?: (seed: { file: string; symbol: string }) => void;
 }
 
 export function CodeMapView(props: CodeMapViewProps = {}) {
@@ -109,7 +112,7 @@ export function CodeMapView(props: CodeMapViewProps = {}) {
   );
 }
 
-function CodeMapInner({ initialModule, origin }: CodeMapViewProps) {
+function CodeMapInner({ initialModule, origin, onStartJourney }: CodeMapViewProps) {
   const { client } = useCrystal();
   const activeWs = useWorkspaces((s) => s.activeId);
   const workspaces = useWorkspaces((s) => s.workspaces);
@@ -510,6 +513,7 @@ function CodeMapInner({ initialModule, origin }: CodeMapViewProps) {
           ws={level.ws}
           onNavigate={(p) => setLevel({ kind: "file", ws: level.ws, path: p })}
           onOpenFile={openInEditor}
+          onStartJourney={onStartJourney}
         />
       ) : null}
       {level?.kind === "all" && crossEdge ? (
@@ -608,11 +612,13 @@ function FilePanel({
   ws,
   onNavigate,
   onOpenFile,
+  onStartJourney,
 }: {
   detail: CodeFileDetail;
   ws?: string;
   onNavigate: (path: string) => void;
   onOpenFile: (path: string) => void;
+  onStartJourney?: (seed: { file: string; symbol: string }) => void;
 }) {
   const externals = detail.imports.filter((i) => i.external);
   const internals = detail.imports.filter((i) => i.resolved);
@@ -658,6 +664,18 @@ function FilePanel({
                 </Badge>
                 <span className="min-w-0 flex-1 truncate font-mono text-ink">{sym.name}</span>
                 {sym.exported === false ? <Badge tone="neutral">int</Badge> : null}
+                {onStartJourney && sym.kind !== "reexport" && sym.kind !== "default" ? (
+                  <Tooltip content="Start journey here — trace this symbol's dataflow on the diagram">
+                    <button
+                      type="button"
+                      onClick={() => onStartJourney({ file: detail.path, symbol: sym.name })}
+                      className="shrink-0 rounded p-0.5 text-ink-faint hover:text-crystal-300"
+                      aria-label={`Start journey at ${sym.name}`}
+                    >
+                      <Route className="h-3 w-3" />
+                    </button>
+                  </Tooltip>
+                ) : null}
                 <span className="text-[9px] text-ink-faint">:{sym.line}</span>
               </div>
               {expanded === sym.name ? (

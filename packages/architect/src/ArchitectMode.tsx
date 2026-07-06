@@ -1,6 +1,6 @@
 import "@xyflow/react/dist/style.css";
 import "./architect.css";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Boxes,
   Check,
@@ -22,6 +22,7 @@ import {
   type ArchDraft,
   type ArchitectureGraph,
   type CodeMapSummary,
+  type CodeTrace,
 } from "@crystal/core";
 import { useConnectionState, useCrystal, useWorkspace, useWorkspaces } from "@crystal/client";
 import {
@@ -41,7 +42,9 @@ import {
 } from "@crystal/ui";
 import { ArchitectCanvas } from "./ArchitectCanvas.js";
 import { CodeMapView } from "./codemap/CodeMapView.js";
+import { projectTrace } from "./dataflow.js";
 import { InfraView } from "./InfraView.js";
+import { FlowStepsPanel, JourneysSection, type JourneySeed } from "./JourneyPanel.js";
 
 const EMPTY_ARCHITECTURES: never[] = [];
 const EMPTY_DRAFTS: never[] = [];
@@ -52,10 +55,18 @@ export function ArchitectMode() {
   const [view, setView] = useState<ArchitectView>("diagrams");
   // Set when the user zooms from a diagram node into its code module.
   const [drill, setDrill] = useState<{ module: string; from: string } | null>(null);
+  // "Start journey here…" from the code map prefills the journey dialog.
+  const [journeySeed, setJourneySeed] = useState<JourneySeed | null>(null);
 
   const drillIntoModule = useCallback((module: string, from: string) => {
     setDrill({ module, from });
     setView("codemap");
+  }, []);
+
+  const startJourneyFromCode = useCallback((seed: JourneySeed) => {
+    setJourneySeed(seed);
+    setDrill(null);
+    setView("diagrams");
   }, []);
 
   const tab = (v: ArchitectView, icon: React.ReactNode, label: React.ReactNode) => (
@@ -107,9 +118,15 @@ export function ArchitectMode() {
                   }
                 : undefined
             }
+            onStartJourney={startJourneyFromCode}
           />
         ) : (
-          <DiagramsView variant={view} onDrillIntoModule={drillIntoModule} />
+          <DiagramsView
+            variant={view}
+            onDrillIntoModule={drillIntoModule}
+            journeySeed={journeySeed}
+            onJourneySeedConsumed={() => setJourneySeed(null)}
+          />
         )}
       </div>
     </div>
@@ -119,9 +136,13 @@ export function ArchitectMode() {
 function DiagramsView({
   variant,
   onDrillIntoModule,
+  journeySeed,
+  onJourneySeedConsumed,
 }: {
   variant: "diagrams" | "infra";
   onDrillIntoModule: (module: string, from: string) => void;
+  journeySeed: JourneySeed | null;
+  onJourneySeedConsumed: () => void;
 }) {
   const architectures = useWorkspace((s) => s.info?.architectures ?? EMPTY_ARCHITECTURES);
   const archDrafts = useWorkspace((s) => s.info?.archDrafts ?? EMPTY_DRAFTS);
@@ -181,6 +202,75 @@ function DiagramsView({
       setDraftPath(null);
     }
   }, [draftPath, activeDraft, selected?.path]);
+
+  // The graph being edited right now — the draft's while a draft is open.
+  const effectiveGraph = activeDraft ? activeDraft.draft.graph : (selected?.graph ?? null);
+  const commitGraph = useCallback(
+    (graph: ArchitectureGraph) => {
+      if (activeDraft) {
+        updateArchDraft(activeDraft.path, {
+          ...activeDraft.draft,
+          graph,
+          updatedAt: new Date().toISOString(),
+        });
+      } else if (selected) {
+        updateArchitecture(selected.path, graph);
+      }
+    },
+    [activeDraft, selected, updateArchDraft, updateArchitecture],
+  );
+
+  /* ---- journeys / dataflow lens ---- */
+  const [activeJourneyId, setActiveJourneyId] = useState<string | null>(null);
+  const [journeyTrace, setJourneyTrace] = useState<CodeTrace | null>(null);
+  const [journeyError, setJourneyError] = useState<string | null>(null);
+  const [traceGeneration, setTraceGeneration] = useState(0);
+
+  const activeJourney = effectiveGraph?.journeys.find((j) => j.id === activeJourneyId) ?? null;
+  useEffect(() => {
+    if (activeJourneyId && !activeJourney) setActiveJourneyId(null);
+  }, [activeJourneyId, activeJourney]);
+
+  // The trace follows the code: re-trace whenever the map re-analyzes.
+  useEffect(
+    () =>
+      client.events.on("codemap.changed", ({ ws }) => {
+        if (!activeWs || ws === activeWs) setTraceGeneration((g) => g + 1);
+      }),
+    [client, activeWs],
+  );
+
+  const entryFile = activeJourney?.entry.file ?? null;
+  const entrySymbol = activeJourney?.entry.symbol ?? null;
+  useEffect(() => {
+    if (!entryFile || !entrySymbol) {
+      setJourneyTrace(null);
+      setJourneyError(null);
+      return;
+    }
+    let cancelled = false;
+    setJourneyError(null);
+    client
+      .request("codemap.trace", { file: entryFile, symbol: entrySymbol })
+      .then((trace) => !cancelled && setJourneyTrace(trace))
+      .catch((err: Error) => {
+        if (!cancelled) {
+          setJourneyTrace(null);
+          setJourneyError(err.message);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [client, entryFile, entrySymbol, traceGeneration]);
+
+  const flow = useMemo(
+    () =>
+      activeJourney && journeyTrace && codeSummary && effectiveGraph
+        ? projectTrace(journeyTrace, effectiveGraph, codeSummary)
+        : null,
+    [activeJourney, journeyTrace, codeSummary, effectiveGraph],
+  );
 
   useEffect(() => {
     if (!notice) return;
@@ -393,6 +483,16 @@ function DiagramsView({
                   Rearrange safely — drafts only touch the diagram when applied.
                 </div>
               ) : null}
+              {effectiveGraph ? (
+                <JourneysSection
+                  graph={effectiveGraph}
+                  activeJourneyId={activeJourneyId}
+                  onActivate={setActiveJourneyId}
+                  onGraphChange={commitGraph}
+                  seed={journeySeed}
+                  onSeedConsumed={onJourneySeedConsumed}
+                />
+              ) : null}
             </>
           ) : null}
         </div>
@@ -415,22 +515,13 @@ function DiagramsView({
               <ArchitectCanvas
                 key={activeDraft ? activeDraft.path : selected.path}
                 graph={activeDraft ? activeDraft.draft.graph : selected.graph}
-                onChange={(graph: ArchitectureGraph) => {
-                  if (activeDraft) {
-                    updateArchDraft(activeDraft.path, {
-                      ...activeDraft.draft,
-                      graph,
-                      updatedAt: new Date().toISOString(),
-                    });
-                  } else {
-                    updateArchitecture(selected.path, graph);
-                  }
-                }}
+                onChange={commitGraph}
                 codeSummary={codeSummary}
                 overlayOn={overlayOn}
                 onToggleOverlay={setOverlayOn}
                 onDrillIntoModule={(module) => onDrillIntoModule(module, selected.graph.name)}
                 draftMode={!!activeDraft}
+                flow={flow}
               />
               {activeDraft ? (
                 <DraftBar
@@ -480,6 +571,16 @@ function DiagramsView({
           </EmptyState>
         )}
       </main>
+
+      {variant === "diagrams" && activeJourney ? (
+        <FlowStepsPanel
+          journey={activeJourney}
+          trace={journeyTrace}
+          flow={flow}
+          error={journeyError}
+          onClose={() => setActiveJourneyId(null)}
+        />
+      ) : null}
 
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent

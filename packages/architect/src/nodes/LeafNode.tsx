@@ -13,12 +13,21 @@ export const LeafNode = memo(function LeafNode({ data, selected }: NodeProps<Arc
   return (
     <div
       className={cn(
-        "min-w-40 max-w-56 rounded-lg border bg-surface-2/95 px-3 py-2 shadow-md shadow-black/30",
+        "relative min-w-40 max-w-56 rounded-lg border bg-surface-2/95 px-3 py-2 shadow-md shadow-black/30",
         "transition-shadow",
         selected ? "border-crystal-400 shadow-lg shadow-crystal-500/20" : "border-edge-strong",
+        data.flow?.step === null && "opacity-30",
       )}
       style={{ borderLeftWidth: 3, borderLeftColor: accent }}
     >
+      {data.flow != null && data.flow.step !== null ? (
+        <span
+          className="absolute -left-2 -top-2 flex h-5 min-w-5 items-center justify-center rounded-full bg-crystal-500 px-1 font-mono text-[10px] font-bold text-white shadow-md"
+          title={data.flow.step === 0 ? "Journey entry" : `Reached at hop ${data.flow.step}`}
+        >
+          {data.flow.step === 0 ? "▶" : data.flow.step}
+        </span>
+      ) : null}
       <Handle type="target" position={Position.Left} className="!h-2 !w-2 !border-none !bg-edge-strong" />
       <div className="flex items-center gap-2">
         <Icon className="h-3.5 w-3.5 shrink-0" style={{ color: accent }} />

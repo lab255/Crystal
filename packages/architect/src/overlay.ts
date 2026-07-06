@@ -65,14 +65,16 @@ export function suggestModuleFor(node: ArchNode, modules: CodeModule[]): CodeMod
   );
 }
 
-export function computeOverlay(
+/**
+ * Link diagram nodes to code modules — explicit `codeModule` wins, then name
+ * matches; each module auto-links to at most one node. Shared by the code
+ * overlay and the dataflow projection.
+ */
+export function linkNodesToModules(
   graph: ArchitectureGraph,
   summary: CodeMapSummary,
-): OverlayResult {
+): Map<string, OverlayBadge> {
   const modulesByPath = new Map(summary.modules.map((m) => [m.path, m]));
-
-  // 1. Link nodes to modules — explicit codeModule wins, then name matches.
-  //    Each module auto-links to at most one node.
   const nodeBadges = new Map<string, OverlayBadge>();
   const takenModules = new Set<string>();
   const linkable = graph.nodes.filter((n) => n.kind !== "note");
@@ -93,6 +95,17 @@ export function computeOverlay(
       takenModules.add(match.path);
     }
   }
+  return nodeBadges;
+}
+
+export function computeOverlay(
+  graph: ArchitectureGraph,
+  summary: CodeMapSummary,
+): OverlayResult {
+  // 1. Link nodes to modules.
+  const nodeBadges = linkNodesToModules(graph, summary);
+  const takenModules = new Set([...nodeBadges.values()].map((b) => b.module));
+  const linkable = graph.nodes.filter((n) => n.kind !== "note");
 
   // Module → representative node (first linked node wins for edge overlay).
   const moduleToNode = new Map<string, string>();

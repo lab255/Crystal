@@ -67,7 +67,12 @@ export function accentOf(node: ArchNode): string {
 /* Core graph ⇄ react-flow conversion                                  */
 /* ------------------------------------------------------------------ */
 
-export type ArchRfNode = RfNode<{ arch: ArchNode; code?: OverlayBadge }>;
+/** Journey lens decoration: hop number reaching this node, or null = dimmed. */
+export interface FlowMark {
+  step: number | null;
+}
+
+export type ArchRfNode = RfNode<{ arch: ArchNode; code?: OverlayBadge; flow?: FlowMark }>;
 export type ArchRfEdge = RfEdge<{ kind: ArchEdgeKind }>;
 
 export function rfTypeFor(kind: ArchNodeKind): string {

@@ -14,14 +14,23 @@ export const ContainerNode = memo(function ContainerNode({
   return (
     <div
       className={cn(
-        "h-full w-full rounded-xl border-[1.5px] transition-colors",
+        "relative h-full w-full rounded-xl border-[1.5px] transition-colors",
         selected ? "border-crystal-400" : "border-edge-strong",
+        data.flow?.step === null && "opacity-30",
       )}
       style={{
         background: `color-mix(in srgb, ${accent} 4%, var(--color-surface-1) 60%)`,
         borderStyle: arch.kind === "group" ? "dashed" : "solid",
       }}
     >
+      {data.flow != null && data.flow.step !== null ? (
+        <span
+          className="absolute -left-2 -top-2 z-10 flex h-5 min-w-5 items-center justify-center rounded-full bg-crystal-500 px-1 font-mono text-[10px] font-bold text-white shadow-md"
+          title={data.flow.step === 0 ? "Journey entry" : `Reached at hop ${data.flow.step}`}
+        >
+          {data.flow.step === 0 ? "▶" : data.flow.step}
+        </span>
+      ) : null}
       <NodeResizer
         isVisible={selected}
         minWidth={220}

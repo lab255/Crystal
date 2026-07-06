@@ -52,6 +52,7 @@ import { LeafNode } from "./nodes/LeafNode.js";
 import { NoteNode } from "./nodes/NoteNode.js";
 import { Inspector } from "./Inspector.js";
 import { adoptAutoLinks, computeOverlay, suggestModuleFor, type OverlayResult } from "./overlay.js";
+import type { FlowProjection } from "./dataflow.js";
 import { requestOpenFile } from "./codemap/CodeMapView.js";
 import { PeekPanel } from "./snippets.js";
 import { Palette, DRAG_MIME, PALETTE_KINDS } from "./Palette.js";
@@ -71,9 +72,48 @@ export interface ArchitectCanvasProps {
   onDrillIntoModule?: (modulePath: string) => void;
   /** True while editing a draft plan — canvas gets a visual draft treatment. */
   draftMode?: boolean;
+  /** Active journey projection — decorates the canvas as a dataflow lens. */
+  flow?: FlowProjection | null;
 }
 
 const GHOST_STROKE = "var(--color-crystal-400)";
+const FLOW_STROKE = "var(--color-crystal-400)";
+
+/** Journey lens: highlight + number edges on the flow, dim the rest. */
+function applyFlowToEdges(edges: ArchRfEdge[], flow: FlowProjection): ArchRfEdge[] {
+  const decorated = edges.map((e): ArchRfEdge => {
+    const steps = flow.edgeSteps.get(e.id);
+    if (!steps) return { ...e, style: { ...e.style, opacity: 0.15 }, label: undefined };
+    return {
+      ...e,
+      animated: true,
+      label: steps.join(" · "),
+      style: { ...e.style, stroke: FLOW_STROKE, strokeWidth: 2.4, strokeDasharray: undefined, opacity: 1 },
+      labelStyle: { fill: FLOW_STROKE, fontSize: 10, fontWeight: 700 },
+      labelBgStyle: { fill: "var(--color-surface-1)", fillOpacity: 0.95 },
+      markerEnd: { type: MarkerType.ArrowClosed, color: FLOW_STROKE, width: 18, height: 18 },
+    };
+  });
+  for (const hop of flow.ghostHops) {
+    decorated.push({
+      id: `flow:${hop.step}`,
+      source: hop.source,
+      target: hop.target,
+      type: "default",
+      animated: true,
+      selectable: false,
+      deletable: false,
+      focusable: false,
+      data: { kind: "data" },
+      label: String(hop.step),
+      style: { stroke: FLOW_STROKE, strokeWidth: 2, strokeDasharray: "5 4", opacity: 0.9 },
+      labelStyle: { fill: FLOW_STROKE, fontSize: 10, fontWeight: 700 },
+      labelBgStyle: { fill: "var(--color-surface-1)", fillOpacity: 0.95 },
+      markerEnd: { type: MarkerType.ArrowClosed, color: FLOW_STROKE, width: 18, height: 18 },
+    });
+  }
+  return decorated;
+}
 
 /** Recolor drawn edges by overlay verdict and append dashed ghost edges. */
 function applyOverlayToEdges(edges: ArchRfEdge[], overlay: OverlayResult): ArchRfEdge[] {
@@ -132,6 +172,7 @@ function CanvasInner({
   onToggleOverlay,
   onDrillIntoModule,
   draftMode,
+  flow,
 }: ArchitectCanvasProps) {
   const [selectedNodes, setSelectedNodes] = useState<ReadonlySet<string>>(new Set());
   const [selectedEdges, setSelectedEdges] = useState<ReadonlySet<string>>(new Set());
@@ -160,17 +201,28 @@ function CanvasInner({
   );
 
   const rfNodes = useMemo(() => {
-    const nodes = toRfNodes(graph, selectedNodes);
-    if (!overlay) return nodes;
-    return nodes.map((n) => {
-      const code = overlay.nodeBadges.get(n.id);
-      return code ? { ...n, data: { ...n.data, code } } : n;
-    });
-  }, [graph, selectedNodes, overlay]);
+    let nodes = toRfNodes(graph, selectedNodes);
+    if (overlay) {
+      nodes = nodes.map((n) => {
+        const code = overlay.nodeBadges.get(n.id);
+        return code ? { ...n, data: { ...n.data, code } } : n;
+      });
+    }
+    if (flow) {
+      const stepOf = new Map(flow.nodeOrder.map((o) => [o.nodeId, o.firstStep]));
+      nodes = nodes.map((n) => ({
+        ...n,
+        data: { ...n.data, flow: { step: stepOf.get(n.id) ?? null } },
+      }));
+    }
+    return nodes;
+  }, [graph, selectedNodes, overlay, flow]);
   const rfEdges = useMemo(() => {
-    const edges = toRfEdges(graph, selectedEdges);
-    return overlay ? applyOverlayToEdges(edges, overlay) : edges;
-  }, [graph, selectedEdges, overlay]);
+    let edges = toRfEdges(graph, selectedEdges);
+    if (overlay) edges = applyOverlayToEdges(edges, overlay);
+    if (flow) edges = applyFlowToEdges(edges, flow);
+    return edges;
+  }, [graph, selectedEdges, overlay, flow]);
 
   const onNodesChange = useCallback(
     (changes: NodeChange<ArchRfNode>[]) => {
