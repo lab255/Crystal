@@ -17,7 +17,7 @@ import {
   type WorkspaceInfo,
   type WorkspaceManifest,
 } from "@crystal/core";
-import { isIgnoredDir, resolveInRoot, toRelPath } from "./paths.js";
+import { isIgnoredDir, resolveInRoot, toRelPath, workspaceIdFor } from "./paths.js";
 
 async function exists(p: string): Promise<boolean> {
   try {
@@ -64,7 +64,8 @@ export class WorkspaceStore {
       projects.push(await this.createProject("General"));
     }
 
-    return { root: path.resolve(this.root), manifest, architectures, projects };
+    const root = path.resolve(this.root);
+    return { id: workspaceIdFor(root), root, manifest, architectures, projects };
   }
 
   private async loadOrInitManifest(): Promise<WorkspaceManifest> {

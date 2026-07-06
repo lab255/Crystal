@@ -77,7 +77,10 @@ export function FileTree({
   useEffect(() => {
     void loadDir("");
     void loadGitStatus();
-    const dispose = client.events.on("fs.changed", () => {
+    const dispose = client.events.on("fs.changed", ({ ws }) => {
+      // Only the active workspace is shown here; other workspaces' events
+      // would just cause pointless refetch churn.
+      if (client.scope && ws !== client.scope) return;
       // Refresh only directories we currently show.
       setExpanded((exp) => {
         for (const dir of exp) void loadDir(dir);

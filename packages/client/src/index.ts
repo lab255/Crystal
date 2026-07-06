@@ -5,6 +5,11 @@ export {
   type WorkspaceStore,
 } from "./workspace-store.js";
 export {
+  createWorkspacesStore,
+  type WorkspacesState,
+  type WorkspacesStore,
+} from "./workspaces-store.js";
+export {
   createAgentStore,
   type AgentStartInput,
   type AgentState,
@@ -13,9 +18,11 @@ export {
 export {
   CrystalProvider,
   defaultBridgeUrl,
+  useActiveWorkspace,
   useAgents,
   useConnectionState,
   useCrystal,
   useWorkspace,
+  useWorkspaces,
   type CrystalContextValue,
 } from "./provider.js";

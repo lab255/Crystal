@@ -1,5 +1,6 @@
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import { memo } from "react";
+import { FolderGit2 } from "lucide-react";
 import { Badge, cn } from "@crystal/ui";
 import { KIND_META, accentOf, type ArchRfNode } from "../model.js";
 
@@ -35,6 +36,21 @@ export const LeafNode = memo(function LeafNode({ data, selected }: NodeProps<Arc
             </Badge>
           ))}
           {arch.tech.length > 4 ? <Badge tone="neutral">+{arch.tech.length - 4}</Badge> : null}
+        </div>
+      ) : null}
+      {data.code ? (
+        <div
+          className={cn(
+            "mt-1.5 flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[9.5px]",
+            data.code.auto
+              ? "border-dashed border-crystal-400/40 text-crystal-300/80"
+              : "border-crystal-400/40 bg-crystal-500/10 text-crystal-300",
+          )}
+          title={data.code.auto ? "Suggested by name match — not saved yet" : "Linked code module"}
+        >
+          <FolderGit2 className="h-2.5 w-2.5 shrink-0" />
+          <span className="truncate font-mono">{data.code.module}</span>
+          <span className="ml-auto shrink-0 opacity-70">{data.code.fileCount}f</span>
         </div>
       ) : null}
       <Handle type="source" position={Position.Right} className="!h-2 !w-2 !border-none !bg-edge-strong" />

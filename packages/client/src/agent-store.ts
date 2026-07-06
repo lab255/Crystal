@@ -70,7 +70,9 @@ export function createAgentStore(client: BridgeClient): AgentStore {
     });
   });
 
-  client.events.on("agent.runChanged", ({ run }) => {
+  client.events.on("agent.runChanged", ({ ws, run }) => {
+    // Runs list is scoped to the active workspace; ignore other workspaces'.
+    if (client.scope && ws !== client.scope) return;
     store.setState((s) => {
       const idx = s.runs.findIndex((r) => r.id === run.id);
       if (idx === -1) return { runs: [run, ...s.runs] };

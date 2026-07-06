@@ -10,30 +10,36 @@ import {
 import dagre from "@dagrejs/dagre";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  ArrowRightLeft,
   Boxes,
   ChevronRight,
   ExternalLink,
   FileCode2,
   FolderGit2,
+  Layers,
   Package,
   RadioTower,
+  X,
 } from "lucide-react";
 import type {
   CodeFileDetail,
   CodeMapSummary,
   CodeModuleDetail,
   CodeSymbolKind,
+  CrossWorkspaceEdge,
+  CrossWorkspaceMap,
 } from "@crystal/core";
-import { useCrystal } from "@crystal/client";
+import { useCrystal, useWorkspaces } from "@crystal/client";
 import { Badge, Button, EmptyState, Spinner, Tooltip, cn } from "@crystal/ui";
 import { CodeNode, type CodeRfNode } from "./CodeNode.js";
 
 const nodeTypes = { code: CodeNode };
 
 type Level =
-  | { kind: "workspace" }
-  | { kind: "module"; path: string }
-  | { kind: "file"; path: string };
+  | { kind: "all" }
+  | { kind: "workspace"; ws: string }
+  | { kind: "module"; ws: string; path: string }
+  | { kind: "file"; ws: string; path: string };
 
 const ACCENTS = [
   "var(--color-accent-violet)",
@@ -97,22 +103,41 @@ export function CodeMapView() {
 
 function CodeMapInner() {
   const { client } = useCrystal();
-  const [level, setLevel] = useState<Level>({ kind: "workspace" });
+  const activeWs = useWorkspaces((s) => s.activeId);
+  const workspaces = useWorkspaces((s) => s.workspaces);
+  const setActive = useWorkspaces((s) => s.setActive);
+
+  // Level is null until we know the active workspace to start from.
+  const [level, setLevelRaw] = useState<Level | null>(null);
   const [summary, setSummary] = useState<CodeMapSummary | null>(null);
   const [moduleDetail, setModuleDetail] = useState<CodeModuleDetail | null>(null);
   const [fileDetail, setFileDetail] = useState<CodeFileDetail | null>(null);
+  const [cross, setCross] = useState<CrossWorkspaceMap | null>(null);
+  const [crossEdge, setCrossEdge] = useState<CrossWorkspaceEdge | null>(null);
   const [loading, setLoading] = useState(true);
   const [pulse, setPulse] = useState(false);
 
+  useEffect(() => {
+    if (!level && activeWs) setLevelRaw({ kind: "workspace", ws: activeWs });
+  }, [level, activeWs]);
+
+  const setLevel = useCallback((next: Level) => {
+    setCrossEdge(null);
+    setLevelRaw(next);
+  }, []);
+
   const refetch = useCallback(async () => {
+    if (!level) return;
     setLoading(true);
     try {
-      if (level.kind === "workspace") {
-        setSummary(await client.request("codemap.get", {}));
+      if (level.kind === "all") {
+        setCross(await client.request("codemap.cross", {}));
+      } else if (level.kind === "workspace") {
+        setSummary(await client.request("codemap.get", { ws: level.ws }));
       } else if (level.kind === "module") {
-        setModuleDetail(await client.request("codemap.module", { path: level.path }));
+        setModuleDetail(await client.request("codemap.module", { ws: level.ws, path: level.path }));
       } else {
-        setFileDetail(await client.request("codemap.file", { path: level.path }));
+        setFileDetail(await client.request("codemap.file", { ws: level.ws, path: level.path }));
       }
     } catch {
       // Analyzer may briefly race a delete; the next codemap.changed refetches.
@@ -127,14 +152,51 @@ function CodeMapInner() {
 
   // Live updates: the server re-analyzes when code changes on disk.
   useEffect(() => {
-    return client.events.on("codemap.changed", () => {
+    return client.events.on("codemap.changed", ({ ws }) => {
+      if (level && level.kind !== "all" && ws !== level.ws) return;
       setPulse(true);
       setTimeout(() => setPulse(false), 1200);
       void refetch();
     });
-  }, [client, refetch]);
+  }, [client, refetch, level]);
+
+  // The open-workspace set changed — the cross map is stale.
+  useEffect(() => {
+    return client.events.on("workspaces.changed", () => {
+      if (level?.kind === "all") void refetch();
+    });
+  }, [client, refetch, level]);
 
   const { nodes, edges } = useMemo(() => {
+    if (!level) return { nodes: [] as CodeRfNode[], edges: [] as RfEdge[] };
+
+    if (level.kind === "all" && cross) {
+      const nodes: CodeRfNode[] = cross.workspaces.map((w) => ({
+        id: w.id,
+        type: "code",
+        position: { x: 0, y: 0 },
+        data: {
+          title: w.name,
+          subtitle: w.root,
+          accent: accentFor(w.id),
+          icon: Layers,
+          badge: `${w.fileTotal} files`,
+          emphasis: w.id === activeWs,
+        },
+      }));
+      const edges: RfEdge[] = cross.edges.map((e) => ({
+        id: `${e.source}->${e.target}`,
+        source: e.source,
+        target: e.target,
+        ...edgeStyle(e.weight),
+        label: `${e.packages.length} pkg / ${e.weight} imports`,
+        style: { stroke: "var(--color-crystal-400)", strokeWidth: Math.min(1.2 + Math.log2(e.weight + 1), 4), opacity: 0.9 },
+        markerEnd: { type: MarkerType.ArrowClosed, color: "var(--color-crystal-400)", width: 14, height: 14 },
+        labelStyle: { fill: "var(--color-crystal-400)", fontSize: 9 },
+      }));
+      return { nodes: layout(nodes, edges, { ranksep: 180 }), edges };
+    }
+
     if (level.kind === "workspace" && summary) {
       const nodes: CodeRfNode[] = summary.modules
         .filter((m) => m.fileCount > 0 || summary.deps.some((d) => d.source === m.path || d.target === m.path))
@@ -267,24 +329,52 @@ function CodeMapInner() {
     }
 
     return { nodes: [] as CodeRfNode[], edges: [] as RfEdge[] };
-  }, [level.kind, summary, moduleDetail, fileDetail]);
+  }, [level, summary, moduleDetail, fileDetail, cross, activeWs]);
 
   const onNodeClick = useCallback(
     (_evt: unknown, node: CodeRfNode) => {
-      if (level.kind === "workspace") {
-        setLevel({ kind: "module", path: node.id });
+      if (!level) return;
+      if (level.kind === "all") {
+        setLevel({ kind: "workspace", ws: node.id });
+      } else if (level.kind === "workspace") {
+        setLevel({ kind: "module", ws: level.ws, path: node.id });
       } else if (level.kind === "module") {
-        if (node.id.startsWith("mod:")) setLevel({ kind: "module", path: node.id.slice(4) });
-        else if (node.id !== "__module__") setLevel({ kind: "file", path: node.id });
-      } else if (node.id !== (level as { path: string }).path) {
-        setLevel({ kind: "file", path: node.id });
+        if (node.id.startsWith("mod:")) setLevel({ kind: "module", ws: level.ws, path: node.id.slice(4) });
+        else if (node.id !== "__module__") setLevel({ kind: "file", ws: level.ws, path: node.id });
+      } else if (node.id !== level.path) {
+        setLevel({ kind: "file", ws: level.ws, path: node.id });
       }
     },
-    [level],
+    [level, setLevel],
+  );
+
+  const onEdgeClick = useCallback(
+    (_evt: unknown, edge: RfEdge) => {
+      if (level?.kind !== "all" || !cross) return;
+      const hit = cross.edges.find((e) => `${e.source}->${e.target}` === edge.id);
+      setCrossEdge(hit ?? null);
+    },
+    [level, cross],
   );
 
   const moduleName = (p: string) =>
     summary?.modules.find((m) => m.path === p)?.name ?? (p === "." ? "(root)" : p);
+  const wsName = (id: string) =>
+    workspaces.find((w) => w.id === id)?.name ??
+    cross?.workspaces.find((w) => w.id === id)?.name ??
+    id;
+
+  const levelWs = level && level.kind !== "all" ? level.ws : null;
+
+  // Opening a file in the editor targets the active workspace — switch first
+  // when the map is browsing a different one.
+  const openInEditor = useCallback(
+    (path: string) => {
+      if (levelWs && levelWs !== activeWs) setActive(levelWs);
+      requestOpenFile(path);
+    },
+    [levelWs, activeWs, setActive],
+  );
 
   return (
     <div className="flex h-full min-h-0">
@@ -292,12 +382,29 @@ function CodeMapInner() {
         <div className="absolute left-3 top-3 z-10 flex items-center gap-1 rounded-xl border border-edge bg-surface-2/95 px-2.5 py-1.5 text-xs shadow-xl shadow-black/30 backdrop-blur">
           <button
             type="button"
-            className={cn("font-semibold", level.kind === "workspace" ? "text-ink" : "text-ink-muted hover:text-ink")}
-            onClick={() => setLevel({ kind: "workspace" })}
+            className={cn(
+              "flex items-center gap-1 font-semibold",
+              level?.kind === "all" ? "text-ink" : "text-ink-muted hover:text-ink",
+            )}
+            onClick={() => setLevel({ kind: "all" })}
+            title="All open workspaces and their cross-imports"
           >
-            Code map
+            <Layers className="h-3 w-3" />
+            Workspaces
           </button>
-          {level.kind !== "workspace" ? (
+          {level && level.kind !== "all" ? (
+            <>
+              <ChevronRight className="h-3 w-3 text-ink-faint" />
+              <button
+                type="button"
+                className={cn(level.kind === "workspace" ? "text-ink" : "text-ink-muted hover:text-ink")}
+                onClick={() => setLevel({ kind: "workspace", ws: level.ws })}
+              >
+                {wsName(level.ws)}
+              </button>
+            </>
+          ) : null}
+          {level && (level.kind === "module" || level.kind === "file") ? (
             <>
               <ChevronRight className="h-3 w-3 text-ink-faint" />
               <button
@@ -306,10 +413,8 @@ function CodeMapInner() {
                 onClick={() =>
                   setLevel({
                     kind: "module",
-                    path:
-                      level.kind === "module"
-                        ? level.path
-                        : (fileDetail?.module ?? "."),
+                    ws: level.ws,
+                    path: level.kind === "module" ? level.path : (fileDetail?.module ?? "."),
                   })
                 }
               >
@@ -317,7 +422,7 @@ function CodeMapInner() {
               </button>
             </>
           ) : null}
-          {level.kind === "file" ? (
+          {level?.kind === "file" ? (
             <>
               <ChevronRight className="h-3 w-3 text-ink-faint" />
               <span className="text-ink">{level.path.split("/").pop()}</span>
@@ -332,9 +437,15 @@ function CodeMapInner() {
           {loading ? <Spinner className="ml-1 h-3 w-3" /> : null}
         </div>
 
-        {moduleDetail?.truncated && level.kind === "module" ? (
+        {moduleDetail?.truncated && level?.kind === "module" ? (
           <div className="absolute left-3 top-12 z-10 rounded-lg border border-warn/30 bg-warn/10 px-2 py-1 text-[10px] text-warn">
             Large module — showing the {moduleDetail.files.length} most connected files
+          </div>
+        ) : null}
+
+        {level?.kind === "all" && cross && cross.workspaces.length < 2 && !loading ? (
+          <div className="absolute left-3 top-12 z-10 rounded-lg border border-edge bg-surface-2/95 px-2 py-1 text-[10px] text-ink-faint">
+            Open another workspace (status bar picker) to see cross-workspace imports
           </div>
         ) : null}
 
@@ -344,11 +455,12 @@ function CodeMapInner() {
           </EmptyState>
         ) : (
           <ReactFlow
-            key={`${level.kind}:${"path" in level ? level.path : ""}`}
+            key={level ? `${level.kind}:${"ws" in level ? level.ws : ""}:${"path" in level ? level.path : ""}` : "empty"}
             nodes={nodes}
             edges={edges}
             nodeTypes={nodeTypes}
             onNodeClick={onNodeClick}
+            onEdgeClick={onEdgeClick}
             fitView
             fitViewOptions={{ padding: 0.2, maxZoom: 1.15 }}
             minZoom={0.08}
@@ -364,10 +476,89 @@ function CodeMapInner() {
         )}
       </div>
 
-      {level.kind === "file" && fileDetail ? (
-        <FilePanel detail={fileDetail} onNavigate={(p) => setLevel({ kind: "file", path: p })} />
+      {level?.kind === "file" && fileDetail ? (
+        <FilePanel
+          detail={fileDetail}
+          onNavigate={(p) => setLevel({ kind: "file", ws: level.ws, path: p })}
+          onOpenFile={openInEditor}
+        />
+      ) : null}
+      {level?.kind === "all" && crossEdge ? (
+        <CrossEdgePanel
+          edge={crossEdge}
+          sourceName={wsName(crossEdge.source)}
+          targetName={wsName(crossEdge.target)}
+          onClose={() => setCrossEdge(null)}
+        />
       ) : null}
     </div>
+  );
+}
+
+/** Package-level breakdown of one workspace-pair import edge. */
+function CrossEdgePanel({
+  edge,
+  sourceName,
+  targetName,
+  onClose,
+}: {
+  edge: CrossWorkspaceEdge;
+  sourceName: string;
+  targetName: string;
+  onClose: () => void;
+}) {
+  return (
+    <aside className="flex w-80 shrink-0 flex-col border-l border-edge bg-surface-1">
+      <div className="border-b border-edge px-3 py-2.5">
+        <div className="flex items-center gap-2">
+          <ArrowRightLeft className="h-3.5 w-3.5 shrink-0 text-crystal-300" />
+          <div className="min-w-0 flex-1 truncate text-xs font-semibold text-ink">
+            {sourceName} <span className="text-ink-faint">imports from</span> {targetName}
+          </div>
+          <Button variant="ghost" size="icon-sm" onClick={onClose} aria-label="Close panel">
+            <X className="h-3.5 w-3.5" />
+          </Button>
+        </div>
+        <div className="mt-0.5 text-[10px] text-ink-faint">
+          {edge.weight} import{edge.weight !== 1 ? "s" : ""} across {edge.packages.length} package
+          {edge.packages.length !== 1 ? "s" : ""}
+        </div>
+      </div>
+      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
+        {edge.packages.map((pkg) => (
+          <div key={pkg.pkg}>
+            <div className="flex items-center gap-2">
+              <Package className="h-3 w-3 shrink-0 text-crystal-300" />
+              <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-ink">{pkg.pkg}</span>
+              <Badge tone="cyan">{pkg.count}×</Badge>
+            </div>
+            <div className="mb-1 mt-0.5 pl-5 text-[9.5px] text-ink-faint">
+              exported by <span className="font-mono">{pkg.toModule}</span>
+            </div>
+            <div className="space-y-1 pl-5">
+              {pkg.uses.map((use) => (
+                <div key={use.fromModule} className="rounded-lg border border-edge bg-surface-2 px-2 py-1">
+                  <div className="flex items-center gap-1.5">
+                    <span className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-ink-muted">
+                      {use.fromModule}
+                    </span>
+                    <span className="shrink-0 text-[9px] text-ink-faint">{use.count}×</span>
+                  </div>
+                  {use.names.length > 0 ? (
+                    <div className="mt-0.5 truncate text-[9.5px] text-prism-400" title={use.names.join(", ")}>
+                      {use.names.join(", ")}
+                    </div>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+        {edge.packages.length === 0 ? (
+          <div className="py-2 text-[11px] text-ink-faint">No package-level detail</div>
+        ) : null}
+      </div>
+    </aside>
   );
 }
 
@@ -386,9 +577,11 @@ const SYMBOL_TONES: Record<CodeSymbolKind, { label: string; tone: "violet" | "cy
 function FilePanel({
   detail,
   onNavigate,
+  onOpenFile,
 }: {
   detail: CodeFileDetail;
   onNavigate: (path: string) => void;
+  onOpenFile: (path: string) => void;
 }) {
   const externals = detail.imports.filter((i) => i.external);
   const internals = detail.imports.filter((i) => i.resolved);
@@ -406,7 +599,7 @@ function FilePanel({
           variant="secondary"
           size="xs"
           className="mt-2"
-          onClick={() => requestOpenFile(detail.path)}
+          onClick={() => onOpenFile(detail.path)}
         >
           <ExternalLink className="h-3 w-3" /> Open in editor
         </Button>

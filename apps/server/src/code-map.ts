@@ -51,6 +51,22 @@ function isCodeFile(name: string): boolean {
   return CODE_EXTENSIONS.has(ext) && !name.endsWith(".d.ts");
 }
 
+/** Package name of a bare specifier ("@scope/pkg/sub" → "@scope/pkg"). */
+export function packageNameOf(specifier: string): string | null {
+  if (specifier.startsWith(".") || specifier.startsWith("node:")) return null;
+  const parts = specifier.split("/");
+  return specifier.startsWith("@") ? parts.slice(0, 2).join("/") : (parts[0] ?? null);
+}
+
+/** What one workspace offers to / consumes from other workspaces. */
+export interface CrossSurface {
+  /** Package name → owning module path within this workspace. */
+  packages: Map<string, string>;
+  /** External (unresolved, non-relative) imports: fromModule + package + names. */
+  externalImports: { fromModule: string; pkg: string; names: string[] }[];
+  fileTotal: number;
+}
+
 function symbolKindFor(node: ts.Node, name: string, fileName: string): CodeSymbolKind {
   if (ts.isFunctionDeclaration(node)) {
     return /^[A-Z]/.test(name) && /\.[jt]sx$/.test(fileName) ? "component" : "function";
@@ -199,6 +215,7 @@ export class CodeMapAnalyzer {
   /** Full workspace pass (cheap on re-runs thanks to the mtime cache). */
   private async analyze(): Promise<void> {
     this.dirty = false;
+    this.packageNameToModule.clear();
     const moduleDirs = await this.discoverModules();
     const files = await this.collectFiles(moduleDirs);
 
@@ -441,6 +458,24 @@ export class CodeMapAnalyzer {
       edges: edges.filter((e) => shownSet.has(e.source) && shownSet.has(e.target)),
       moduleDeps,
       truncated,
+    };
+  }
+
+  /** Cross-workspace analysis input: published packages + external imports. */
+  async crossSurface(): Promise<CrossSurface> {
+    await this.ensureFresh();
+    const externalImports: CrossSurface["externalImports"] = [];
+    for (const record of this.records.values()) {
+      for (const imp of record.resolvedImports) {
+        if (imp.resolved) continue;
+        const pkg = packageNameOf(imp.specifier);
+        if (pkg) externalImports.push({ fromModule: record.module, pkg, names: imp.names });
+      }
+    }
+    return {
+      packages: new Map(this.packageNameToModule),
+      externalImports,
+      fileTotal: this.records.size,
     };
   }
 

@@ -1,6 +1,5 @@
-import fs from "node:fs";
-import path from "node:path";
 import { DEFAULT_BRIDGE_PORT } from "@crystal/core";
+import { canonicalRoot } from "./workspace-registry.js";
 import { startCrystalServer } from "./server.js";
 
 function argValue(flag: string): string | undefined {
@@ -8,19 +7,20 @@ function argValue(flag: string): string | undefined {
   return idx >= 0 ? process.argv[idx + 1] : undefined;
 }
 
-/** realpath expands Windows 8.3 short paths, which crash libuv's recursive fs watcher. */
-function canonical(p: string): string {
-  try {
-    return fs.realpathSync.native(p);
-  } catch {
-    return path.resolve(p);
+/** All values of a repeatable flag, e.g. `--root a --root b`. */
+function argValues(flag: string): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < process.argv.length - 1; i++) {
+    if (process.argv[i] === flag && process.argv[i + 1]) out.push(process.argv[i + 1]!);
   }
+  return out;
 }
 
-const root = canonical(argValue("--root") ?? process.cwd());
+const roots = argValues("--root").map(canonicalRoot);
+if (roots.length === 0) roots.push(canonicalRoot(process.cwd()));
 const port = Number(argValue("--port") ?? process.env.CRYSTAL_PORT ?? DEFAULT_BRIDGE_PORT);
 
-startCrystalServer({ root, port }).catch((err) => {
+startCrystalServer({ root: roots, port }).catch((err) => {
   console.error("[crystal] failed to start:", err);
   process.exit(1);
 });

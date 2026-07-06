@@ -1,6 +1,6 @@
 import "@xyflow/react/dist/style.css";
 import "./architect.css";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   Boxes,
   Check,
@@ -11,8 +11,8 @@ import {
   Plus,
   Trash2,
 } from "lucide-react";
-import type { ArchitectureGraph } from "@crystal/core";
-import { useWorkspace } from "@crystal/client";
+import type { ArchitectureGraph, CodeMapSummary } from "@crystal/core";
+import { useConnectionState, useCrystal, useWorkspace, useWorkspaces } from "@crystal/client";
 import {
   Button,
   Dialog,
@@ -82,6 +82,32 @@ function DiagramsView() {
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [newName, setNewName] = useState("");
+
+  // Live code map for the diagram overlay — kept fresh by codemap.changed.
+  const { client } = useCrystal();
+  const connection = useConnectionState();
+  const activeWs = useWorkspaces((s) => s.activeId);
+  const [overlayOn, setOverlayOn] = useState(false);
+  const [codeSummary, setCodeSummary] = useState<CodeMapSummary | null>(null);
+
+  const fetchSummary = useCallback(async () => {
+    try {
+      setCodeSummary(await client.request("codemap.get", {}));
+    } catch {
+      // Bridge closed or workspace has no analyzable code; overlay stays off.
+    }
+  }, [client]);
+
+  useEffect(() => {
+    if (connection === "open") void fetchSummary();
+  }, [fetchSummary, connection]);
+  useEffect(
+    () =>
+      client.events.on("codemap.changed", ({ ws }) => {
+        if (!activeWs || ws === activeWs) void fetchSummary();
+      }),
+    [client, fetchSummary, activeWs],
+  );
 
   const selected =
     architectures.find((a) => a.path === selectedPath) ?? architectures[0] ?? null;
@@ -180,6 +206,9 @@ function DiagramsView() {
           <ArchitectCanvas
             graph={selected.graph}
             onChange={(graph: ArchitectureGraph) => updateArchitecture(selected.path, graph)}
+            codeSummary={codeSummary}
+            overlayOn={overlayOn}
+            onToggleOverlay={setOverlayOn}
           />
         ) : (
           <EmptyState

@@ -22,6 +22,7 @@ import {
   StickyNote,
   type LucideIcon,
 } from "lucide-react";
+import type { OverlayBadge } from "./overlay.js";
 
 /* ------------------------------------------------------------------ */
 /* Presentation metadata per node kind                                 */
@@ -66,7 +67,7 @@ export function accentOf(node: ArchNode): string {
 /* Core graph ⇄ react-flow conversion                                  */
 /* ------------------------------------------------------------------ */
 
-export type ArchRfNode = RfNode<{ arch: ArchNode }>;
+export type ArchRfNode = RfNode<{ arch: ArchNode; code?: OverlayBadge }>;
 export type ArchRfEdge = RfEdge<{ kind: ArchEdgeKind }>;
 
 export function rfTypeFor(kind: ArchNodeKind): string {

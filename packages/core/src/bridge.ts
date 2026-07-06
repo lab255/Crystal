@@ -1,6 +1,11 @@
 import type { ArchitectureGraph } from "./architecture.js";
 import type { AgentRun, RunEvent } from "./agent.js";
-import type { CodeFileDetail, CodeMapSummary, CodeModuleDetail } from "./codemap.js";
+import type {
+  CodeFileDetail,
+  CodeMapSummary,
+  CodeModuleDetail,
+  CrossWorkspaceMap,
+} from "./codemap.js";
 import type { Project } from "./project.js";
 import type { WorkspaceManifest } from "./workspace.js";
 
@@ -12,7 +17,28 @@ import type { WorkspaceManifest } from "./workspace.js";
  * Requests:  { id, type: "req", method, params }
  * Responses: { id, type: "res", ok: true, result } | { id, type: "res", ok: false, error }
  * Events:    { type: "evt", event, payload }
+ *
+ * The server can host several workspaces at once. Workspace-scoped methods
+ * accept an optional `ws` (workspace id from `workspaces.list`); omitting it
+ * targets the server's default workspace. `BridgeClient.setScope` injects the
+ * active workspace automatically, so call sites only pass `ws` explicitly
+ * when reaching across workspaces.
  */
+
+/** Optional workspace scope, present on every workspace-scoped method. */
+export interface WsScope {
+  ws?: string;
+}
+
+/** One open workspace on the bridge server. */
+export interface WorkspaceDescriptor {
+  /** Stable id derived from the canonical root path. */
+  id: string;
+  /** Absolute root path on the host. */
+  root: string;
+  /** Manifest name (falls back to the root directory name). */
+  name: string;
+}
 
 export interface FileEntry {
   name: string;
@@ -35,6 +61,8 @@ export interface GitStatusResult {
 }
 
 export interface WorkspaceInfo {
+  /** Workspace id (matches `WorkspaceDescriptor.id`). */
+  id: string;
   /** Absolute root path on the host. */
   root: string;
   manifest: WorkspaceManifest;
@@ -44,22 +72,31 @@ export interface WorkspaceInfo {
 
 /** Method name → { params, result }. The single source of truth for both sides. */
 export interface BridgeMethods {
-  "workspace.get": { params: Record<string, never>; result: WorkspaceInfo };
-  "workspace.saveManifest": { params: { manifest: WorkspaceManifest }; result: { ok: true } };
-  "arch.save": { params: { path: string; graph: ArchitectureGraph }; result: { ok: true } };
-  "arch.create": { params: { name: string }; result: { path: string; graph: ArchitectureGraph } };
-  "arch.delete": { params: { path: string }; result: { ok: true } };
-  "project.save": { params: { path: string; project: Project }; result: { ok: true } };
-  "project.create": { params: { name: string }; result: { path: string; project: Project } };
-  "fs.list": { params: { path: string }; result: { entries: FileEntry[] } };
-  "fs.read": { params: { path: string }; result: { content: string; truncated: boolean } };
-  "fs.write": { params: { path: string; content: string }; result: { ok: true } };
-  "fs.mkdir": { params: { path: string }; result: { ok: true } };
-  "fs.rename": { params: { from: string; to: string }; result: { ok: true } };
-  "fs.delete": { params: { path: string }; result: { ok: true } };
-  "git.status": { params: { repoPath: string }; result: GitStatusResult };
+  "workspaces.list": {
+    params: Record<string, never>;
+    result: { workspaces: WorkspaceDescriptor[]; defaultWs: string };
+  };
+  "workspaces.open": { params: { root: string }; result: { workspace: WorkspaceDescriptor } };
+  "workspaces.close": { params: { ws: string }; result: { ok: true } };
+  "workspace.get": { params: WsScope; result: WorkspaceInfo };
+  "workspace.saveManifest": {
+    params: WsScope & { manifest: WorkspaceManifest };
+    result: { ok: true };
+  };
+  "arch.save": { params: WsScope & { path: string; graph: ArchitectureGraph }; result: { ok: true } };
+  "arch.create": { params: WsScope & { name: string }; result: { path: string; graph: ArchitectureGraph } };
+  "arch.delete": { params: WsScope & { path: string }; result: { ok: true } };
+  "project.save": { params: WsScope & { path: string; project: Project }; result: { ok: true } };
+  "project.create": { params: WsScope & { name: string }; result: { path: string; project: Project } };
+  "fs.list": { params: WsScope & { path: string }; result: { entries: FileEntry[] } };
+  "fs.read": { params: WsScope & { path: string }; result: { content: string; truncated: boolean } };
+  "fs.write": { params: WsScope & { path: string; content: string }; result: { ok: true } };
+  "fs.mkdir": { params: WsScope & { path: string }; result: { ok: true } };
+  "fs.rename": { params: WsScope & { from: string; to: string }; result: { ok: true } };
+  "fs.delete": { params: WsScope & { path: string }; result: { ok: true } };
+  "git.status": { params: WsScope & { repoPath: string }; result: GitStatusResult };
   "agent.start": {
-    params: {
+    params: WsScope & {
       prompt: string;
       cwd?: string;
       taskId?: string | null;
@@ -72,20 +109,30 @@ export interface BridgeMethods {
     };
     result: { run: AgentRun };
   };
-  "agent.cancel": { params: { runId: string }; result: { ok: true } };
-  "agent.list": { params: Record<string, never>; result: { runs: AgentRun[] } };
-  "agent.events": { params: { runId: string }; result: { events: RunEvent[] } };
+  "agent.cancel": { params: WsScope & { runId: string }; result: { ok: true } };
+  "agent.list": { params: WsScope; result: { runs: AgentRun[] } };
+  "agent.events": { params: WsScope & { runId: string }; result: { events: RunEvent[] } };
   "agent.diff": {
-    params: { runId: string };
+    params: WsScope & { runId: string };
     result: { diff: string; stat: string; worktreePath: string | null };
   };
-  "agent.cleanupWorktree": { params: { runId: string }; result: { ok: true } };
-  "codemap.get": { params: Record<string, never>; result: CodeMapSummary };
-  "codemap.module": { params: { path: string }; result: CodeModuleDetail };
-  "codemap.file": { params: { path: string }; result: CodeFileDetail };
+  "agent.cleanupWorktree": { params: WsScope & { runId: string }; result: { ok: true } };
+  "codemap.get": { params: WsScope; result: CodeMapSummary };
+  "codemap.module": { params: WsScope & { path: string }; result: CodeModuleDetail };
+  "codemap.file": { params: WsScope & { path: string }; result: CodeFileDetail };
+  /** Import/export graph across every open workspace. */
+  "codemap.cross": { params: Record<string, never>; result: CrossWorkspaceMap };
 }
 
 export type BridgeMethodName = keyof BridgeMethods;
+
+/** Methods that ignore workspace scope (registry-level operations). */
+export const UNSCOPED_METHODS: readonly BridgeMethodName[] = [
+  "workspaces.list",
+  "workspaces.open",
+  "workspaces.close",
+  "codemap.cross",
+];
 
 export interface BridgeRequest<M extends BridgeMethodName = BridgeMethodName> {
   id: string;
@@ -98,14 +145,16 @@ export type BridgeResponse<M extends BridgeMethodName = BridgeMethodName> =
   | { id: string; type: "res"; ok: true; result: BridgeMethods[M]["result"] }
   | { id: string; type: "res"; ok: false; error: { message: string; code?: string } };
 
-/** Server → client push events. */
+/** Server → client push events. `ws` identifies the workspace they concern. */
 export interface BridgeEvents {
   "agent.event": RunEvent;
-  "agent.runChanged": { run: AgentRun };
-  "fs.changed": { paths: string[] };
-  "workspace.changed": Record<string, never>;
+  "agent.runChanged": { ws: string; run: AgentRun };
+  "fs.changed": { ws: string; paths: string[] };
+  "workspace.changed": { ws: string };
   /** The derived code map was re-analyzed after source changes. */
-  "codemap.changed": Record<string, never>;
+  "codemap.changed": { ws: string };
+  /** The set of open workspaces changed (opened/closed/renamed). */
+  "workspaces.changed": Record<string, never>;
 }
 
 export type BridgeEventName = keyof BridgeEvents;

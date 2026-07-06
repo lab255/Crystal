@@ -20,6 +20,11 @@ always run things through pnpm.
   `core` is pure TS (no React, no Node APIs) — it defines the domain model, the `.crystal`
   file envelope, the bridge protocol (`BridgeMethods` in `packages/core/src/bridge.ts` is
   the single source of truth for both client and server) and the Claude stream-json parser.
+- The server hosts multiple workspaces (`WorkspaceRegistry`, one runtime per root). Every
+  workspace-scoped bridge method takes an optional `ws` id; `BridgeClient.setScope` injects
+  the active workspace automatically, so only cross-workspace call sites (e.g. the code
+  map's "all workspaces" level) pass `ws` explicitly. Debounced saves must capture `ws` at
+  schedule time — a flush can land after the user switches workspaces.
 - Packages are consumed **as TypeScript source** (`main: ./src/index.ts`); Vite compiles
   them in the app build. There is no per-package build step.
 - Ambient types shared by all packages live in `types/globals.d.ts` (wired via

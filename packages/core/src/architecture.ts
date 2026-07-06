@@ -45,6 +45,11 @@ export const ArchNodeSchema = z.object({
   tech: z.array(z.string()).default([]),
   /** Link to a repo in the workspace manifest (by repo id). */
   repoId: z.string().nullish(),
+  /**
+   * Link to a code-map module (module path within this workspace, e.g.
+   * "packages/core"). Drives the live code overlay on the diagram.
+   */
+  codeModule: z.string().nullish(),
   /** External URL (dashboard, docs, repo…). */
   href: z.string().nullish(),
   /** Accent color token override (named token, not raw css). */

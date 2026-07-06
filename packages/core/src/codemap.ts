@@ -100,3 +100,59 @@ export interface CodeFileDetail {
   /** Workspace-relative paths of files importing this one. */
   importedBy: string[];
 }
+
+/* ------------------------------------------------------------------ */
+/* Cross-workspace imports                                             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * When several workspaces are open, an import in workspace A whose package
+ * name is published by workspace B is a cross-workspace edge: A imports what
+ * B exports. The map below aggregates those per workspace pair.
+ */
+
+/** One consuming module's use of a cross-workspace package. */
+export interface CrossImportUse {
+  /** Module path in the importing workspace. */
+  fromModule: string;
+  /** Number of import statements. */
+  count: number;
+  /** Imported names, deduplicated ("default" / "* as x" included). */
+  names: string[];
+}
+
+/** All uses of one exported package along a workspace-pair edge. */
+export interface CrossPackageUse {
+  /** Package name as imported (e.g. "@crystal/core"). */
+  pkg: string;
+  /** Module path in the exporting workspace that owns the package. */
+  toModule: string;
+  count: number;
+  uses: CrossImportUse[];
+}
+
+export interface CrossWorkspaceEdge {
+  /** Importing workspace id. */
+  source: string;
+  /** Exporting workspace id. */
+  target: string;
+  /** Total import statements crossing this pair. */
+  weight: number;
+  packages: CrossPackageUse[];
+}
+
+export interface CrossWorkspaceNode {
+  /** Workspace id. */
+  id: string;
+  name: string;
+  root: string;
+  fileTotal: number;
+  /** Package names this workspace publishes (importable surface). */
+  packages: string[];
+}
+
+export interface CrossWorkspaceMap {
+  workspaces: CrossWorkspaceNode[];
+  edges: CrossWorkspaceEdge[];
+  generatedAt: string;
+}

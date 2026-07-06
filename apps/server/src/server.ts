@@ -1,5 +1,4 @@
 import http from "node:http";
-import fsSync from "node:fs";
 import path from "node:path";
 import { WebSocketServer, WebSocket } from "ws";
 import {
@@ -12,14 +11,9 @@ import {
   type BridgeRequest,
   type BridgeResponse,
 } from "@crystal/core";
-import { AgentManager } from "./agent-manager.js";
-import { CodeMapAnalyzer } from "./code-map.js";
 import { deleteAt, listDir, mkdirAt, readFileCapped, renameAt, writeFileAt } from "./fs-api.js";
 import { gitStatus } from "./git.js";
-import { appDataDir, isIgnoredDir } from "./paths.js";
-import { WorkspaceStore } from "./workspace-store.js";
-
-const CODE_FILE_RE = /\.(ts|tsx|js|jsx|mjs|cjs)$/;
+import { WorkspaceRegistry } from "./workspace-registry.js";
 
 type Handlers = {
   [M in BridgeMethodName]: (
@@ -33,78 +27,120 @@ export interface CrystalServer {
 }
 
 export async function startCrystalServer(opts: {
-  root: string;
+  /** Roots to open at startup; the first becomes the default workspace. */
+  root: string | string[];
   port: number;
+  /** Also reopen workspaces persisted by a previous run (default true). */
+  restorePersisted?: boolean;
+  /** Override where the open-workspace set persists; null disables it. */
+  persistFile?: string | null;
 }): Promise<CrystalServer> {
-  const store = new WorkspaceStore(opts.root);
-  const agents = new AgentManager(opts.root, appDataDir(opts.root));
-  const codemap = new CodeMapAnalyzer(opts.root);
+  // Declared ahead of the registry: opening the startup workspaces already
+  // broadcasts, and `broadcast` (hoisted) closes over this set.
+  const clients = new Set<WebSocket>();
 
-  // Warm the workspace (creates .crystal/ on first run) before accepting clients.
-  await store.load();
+  const registry = new WorkspaceRegistry(
+    (event, payload) => broadcast(event, payload),
+    opts.persistFile,
+  );
+
+  // Open CLI roots first (first one is the default), then persisted ones.
+  for (const root of Array.isArray(opts.root) ? opts.root : [opts.root]) {
+    await registry.open(root);
+  }
+  if (opts.restorePersisted !== false) await registry.restorePersisted();
 
   const handlers: Handlers = {
-    "workspace.get": () => store.load(),
-    "workspace.saveManifest": async ({ manifest }) => {
-      await store.saveManifest(manifest);
-      broadcast("workspace.changed", {});
+    "workspaces.list": async () => ({
+      workspaces: registry.list(),
+      defaultWs: registry.defaultWs,
+    }),
+    "workspaces.open": async ({ root }) => ({
+      workspace: (await registry.open(root)).descriptor(),
+    }),
+    "workspaces.close": async ({ ws }) => {
+      await registry.close(ws);
       return { ok: true };
     },
-    "arch.save": async ({ path: p, graph }) => {
-      await store.saveArchitecture(p, graph);
+    "workspace.get": async ({ ws }) => {
+      const rt = registry.get(ws);
+      const info = await rt.store.load();
+      rt.name = info.manifest.name;
+      return info;
+    },
+    "workspace.saveManifest": async ({ ws, manifest }) => {
+      const rt = registry.get(ws);
+      await rt.store.saveManifest(manifest);
+      if (rt.name !== manifest.name) {
+        rt.name = manifest.name;
+        broadcast("workspaces.changed", {});
+      }
+      broadcast("workspace.changed", { ws: rt.id });
       return { ok: true };
     },
-    "arch.create": ({ name }) => store.createArchitecture(name),
-    "arch.delete": async ({ path: p }) => {
-      await store.deleteArchitecture(p);
-      broadcast("workspace.changed", {});
+    "arch.save": async ({ ws, path: p, graph }) => {
+      await registry.get(ws).store.saveArchitecture(p, graph);
       return { ok: true };
     },
-    "project.save": async ({ path: p, project }) => {
-      await store.saveProject(p, project);
+    "arch.create": ({ ws, name }) => registry.get(ws).store.createArchitecture(name),
+    "arch.delete": async ({ ws, path: p }) => {
+      const rt = registry.get(ws);
+      await rt.store.deleteArchitecture(p);
+      broadcast("workspace.changed", { ws: rt.id });
       return { ok: true };
     },
-    "project.create": ({ name }) => store.createProject(name),
-    "fs.list": async ({ path: p }) => ({ entries: await listDir(opts.root, p) }),
-    "fs.read": ({ path: p }) => readFileCapped(opts.root, p),
-    "fs.write": async ({ path: p, content }) => {
-      await writeFileAt(opts.root, p, content);
+    "project.save": async ({ ws, path: p, project }) => {
+      await registry.get(ws).store.saveProject(p, project);
       return { ok: true };
     },
-    "fs.mkdir": async ({ path: p }) => {
-      await mkdirAt(opts.root, p);
+    "project.create": ({ ws, name }) => registry.get(ws).store.createProject(name),
+    "fs.list": async ({ ws, path: p }) => ({
+      entries: await listDir(registry.get(ws).root, p),
+    }),
+    "fs.read": ({ ws, path: p }) => readFileCapped(registry.get(ws).root, p),
+    "fs.write": async ({ ws, path: p, content }) => {
+      await writeFileAt(registry.get(ws).root, p, content);
       return { ok: true };
     },
-    "fs.rename": async ({ from, to }) => {
-      await renameAt(opts.root, from, to);
+    "fs.mkdir": async ({ ws, path: p }) => {
+      await mkdirAt(registry.get(ws).root, p);
       return { ok: true };
     },
-    "fs.delete": async ({ path: p }) => {
-      await deleteAt(opts.root, p);
+    "fs.rename": async ({ ws, from, to }) => {
+      await renameAt(registry.get(ws).root, from, to);
       return { ok: true };
     },
-    "git.status": ({ repoPath }) => gitStatus(opts.root, repoPath),
-    "agent.start": async (params) => ({ run: await agents.start(params) }),
-    "agent.cancel": async ({ runId }) => {
-      await agents.cancel(runId);
+    "fs.delete": async ({ ws, path: p }) => {
+      await deleteAt(registry.get(ws).root, p);
       return { ok: true };
     },
-    "agent.list": async () => ({ runs: await agents.list() }),
-    "agent.events": async ({ runId }) => ({ events: await agents.eventsFor(runId) }),
-    "agent.diff": ({ runId }) => agents.diff(runId),
-    "agent.cleanupWorktree": async ({ runId }) => {
-      await agents.cleanupWorktree(runId);
+    "git.status": ({ ws, repoPath }) => gitStatus(registry.get(ws).root, repoPath),
+    "agent.start": async ({ ws, ...params }) => ({
+      run: await registry.get(ws).agents.start(params),
+    }),
+    "agent.cancel": async ({ ws, runId }) => {
+      await registry.get(ws).agents.cancel(runId);
       return { ok: true };
     },
-    "codemap.get": () => codemap.summary(),
-    "codemap.module": ({ path: p }) => codemap.moduleDetail(p),
-    "codemap.file": ({ path: p }) => codemap.fileDetail(p),
+    "agent.list": async ({ ws }) => ({ runs: await registry.get(ws).agents.list() }),
+    "agent.events": async ({ ws, runId }) => ({
+      events: await registry.get(ws).agents.eventsFor(runId),
+    }),
+    "agent.diff": ({ ws, runId }) => registry.get(ws).agents.diff(runId),
+    "agent.cleanupWorktree": async ({ ws, runId }) => {
+      await registry.get(ws).agents.cleanupWorktree(runId);
+      return { ok: true };
+    },
+    "codemap.get": ({ ws }) => registry.get(ws).codemap.summary(),
+    "codemap.module": ({ ws, path: p }) => registry.get(ws).codemap.moduleDetail(p),
+    "codemap.file": ({ ws, path: p }) => registry.get(ws).codemap.fileDetail(p),
+    "codemap.cross": () => registry.crossMap(),
   };
 
   const httpServer = http.createServer((req, res) => {
     if (req.url === "/health") {
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ ok: true, root: opts.root }));
+      res.end(JSON.stringify({ ok: true, roots: registry.list().map((w) => w.root) }));
       return;
     }
     res.writeHead(404);
@@ -112,7 +148,6 @@ export async function startCrystalServer(opts: {
   });
 
   const wss = new WebSocketServer({ server: httpServer, path: BRIDGE_PATH });
-  const clients = new Set<WebSocket>();
 
   function broadcast<E extends BridgeEventName>(event: E, payload: BridgeEvents[E]): void {
     const msg: BridgeEventMessage<E> = { type: "evt", event, payload };
@@ -120,34 +155,6 @@ export async function startCrystalServer(opts: {
     for (const ws of clients) {
       if (ws.readyState === WebSocket.OPEN) ws.send(text);
     }
-  }
-
-  agents.events.on("event", (payload) => broadcast("agent.event", payload));
-  agents.events.on("runChanged", (payload) => broadcast("agent.runChanged", payload));
-
-  // Debounced recursive file watcher → fs.changed events.
-  const pendingPaths = new Set<string>();
-  let watchTimer: NodeJS.Timeout | null = null;
-  let watcher: fsSync.FSWatcher | null = null;
-  try {
-    watcher = fsSync.watch(opts.root, { recursive: true }, (_evt, filename) => {
-      if (!filename) return;
-      const rel = filename.split(path.sep).join("/");
-      if (rel.split("/").some((part) => isIgnoredDir(part))) return;
-      pendingPaths.add(rel);
-      watchTimer ??= setTimeout(() => {
-        watchTimer = null;
-        const paths = [...pendingPaths];
-        pendingPaths.clear();
-        broadcast("fs.changed", { paths });
-        if (paths.some((p) => CODE_FILE_RE.test(p))) {
-          codemap.invalidate();
-          broadcast("codemap.changed", {});
-        }
-      }, 250);
-    });
-  } catch (err) {
-    console.warn("[crystal] fs watch unavailable:", (err as Error).message);
   }
 
   wss.on("connection", (ws) => {
@@ -194,14 +201,15 @@ export async function startCrystalServer(opts: {
     httpServer.listen(opts.port, "127.0.0.1", () => resolve());
   });
 
+  const roots = registry.list().map((w) => path.resolve(w.root));
   console.log(
-    `[crystal] bridge server on ws://127.0.0.1:${opts.port}${BRIDGE_PATH} (root: ${path.resolve(opts.root)})`,
+    `[crystal] bridge server on ws://127.0.0.1:${opts.port}${BRIDGE_PATH} (workspaces: ${roots.join(", ")})`,
   );
 
   return {
     port: opts.port,
     close: async () => {
-      watcher?.close();
+      registry.closeAll();
       wss.close();
       await new Promise<void>((resolve) => httpServer.close(() => resolve()));
     },

@@ -1,9 +1,10 @@
 import { Suspense, lazy, useEffect, useState } from "react";
 import { Boxes, Code2, Gem, KanbanSquare, type LucideIcon } from "lucide-react";
-import { useAgents, useConnectionState, useWorkspace } from "@crystal/client";
+import { useAgents, useConnectionState, useWorkspace, useWorkspaces } from "@crystal/client";
 import { Spinner, StatusDot, Tooltip, TooltipProvider, cn } from "@crystal/ui";
 import { CommandPalette } from "./CommandPalette.js";
 import { CRYSTAL_MODES, MODE_LABELS, type CrystalMode } from "./modes.js";
+import { WorkspacePicker } from "./WorkspacePicker.js";
 
 // Each mode is a lazy chunk: react-flow/dagre and Monaco only download when
 // their mode is first opened. Once visited, a mode stays mounted so canvas and
@@ -45,8 +46,7 @@ export function CrystalShell({ initialMode, onModeChange, hideStatusBar }: Cryst
   const [paletteOpen, setPaletteOpen] = useState(false);
 
   const connection = useConnectionState();
-  const workspaceName = useWorkspace((s) => s.info?.manifest.name);
-  const workspaceRoot = useWorkspace((s) => s.info?.root);
+  const activeWsId = useWorkspaces((s) => s.activeId);
   const saving = useWorkspace((s) => Object.keys(s.pendingSaves).length > 0);
   const wsError = useWorkspace((s) => s.error);
   const runningRuns = useAgents((s) => s.runs.filter((r) => r.status === "running").length);
@@ -140,10 +140,11 @@ export function CrystalShell({ initialMode, onModeChange, hideStatusBar }: Cryst
                 </div>
               }
             >
+              {/* Keyed by workspace: switching remounts modes with fresh, correctly-scoped state. */}
               {CRYSTAL_MODES.filter((m) => visited.has(m)).map((m) => {
                 const ModeComponent = MODE_COMPONENTS[m];
                 return (
-                  <div key={m} className={cn("h-full", mode !== m && "hidden")}>
+                  <div key={`${m}:${activeWsId ?? ""}`} className={cn("h-full", mode !== m && "hidden")}>
                     <ModeComponent />
                   </div>
                 );
@@ -162,11 +163,7 @@ export function CrystalShell({ initialMode, onModeChange, hideStatusBar }: Cryst
               />
               {connection === "open" ? "bridge" : connection}
             </span>
-            {workspaceName ? (
-              <Tooltip content={workspaceRoot ?? ""}>
-                <span className="text-ink-muted">{workspaceName}</span>
-              </Tooltip>
-            ) : null}
+            <WorkspacePicker />
             {saving ? <span className="text-info">saving…</span> : null}
             {wsError ? <span className="max-w-96 truncate text-danger">{wsError}</span> : null}
             <span className="ml-auto flex items-center gap-3">

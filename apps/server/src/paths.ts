@@ -18,6 +18,15 @@ export function toRelPath(root: string, abs: string): string {
   return path.relative(root, abs).split(path.sep).join("/");
 }
 
+/** Stable workspace id derived from the canonical root path. */
+export function workspaceIdFor(root: string): string {
+  return crypto
+    .createHash("sha1")
+    .update(path.resolve(root).toLowerCase())
+    .digest("hex")
+    .slice(0, 12);
+}
+
 /** Per-workspace app-data directory (run history, ephemeral state). */
 export function appDataDir(root: string): string {
   const hash = crypto

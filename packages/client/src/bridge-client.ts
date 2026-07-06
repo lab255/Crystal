@@ -1,5 +1,6 @@
 import {
   Emitter,
+  UNSCOPED_METHODS,
   uid,
   type BridgeEventName,
   type BridgeEvents,
@@ -34,11 +35,24 @@ export class BridgeClient {
   private closedByUser = false;
   private retryDelay = 500;
   private _state: ConnectionState = "closed";
+  private scopeWs: string | null = null;
 
   constructor(readonly url: string) {}
 
   get state(): ConnectionState {
     return this._state;
+  }
+
+  /**
+   * Default workspace scope: injected as `ws` into every workspace-scoped
+   * request that doesn't already carry one. Set to the active workspace id.
+   */
+  setScope(ws: string | null): void {
+    this.scopeWs = ws;
+  }
+
+  get scope(): string | null {
+    return this.scopeWs;
   }
 
   connect(): void {
@@ -124,7 +138,13 @@ export class BridgeClient {
       return Promise.reject(new Error("Bridge not connected"));
     }
     const id = uid("req");
-    const req: BridgeRequest<M> = { id, type: "req", method, params };
+    const scoped =
+      this.scopeWs !== null &&
+      !(UNSCOPED_METHODS as readonly string[]).includes(method) &&
+      (params as { ws?: string }).ws === undefined
+        ? ({ ...params, ws: this.scopeWs } as BridgeMethods[M]["params"])
+        : params;
+    const req: BridgeRequest<M> = { id, type: "req", method, params: scoped };
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);

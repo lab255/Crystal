@@ -94,9 +94,12 @@ export function createWorkspaceStore(client: BridgeClient): WorkspaceStore {
             ),
           },
         });
+        // Capture the workspace now: a flush after the user switches
+        // workspaces must still write to the one the edit was made in.
+        const ws = info.id;
         schedule(path, async () => {
           const latest = get().info?.architectures.find((a) => a.path === path);
-          if (latest) await client.request("arch.save", { path, graph: latest.graph });
+          if (latest) await client.request("arch.save", { ws, path, graph: latest.graph });
         });
       },
 
@@ -131,9 +134,10 @@ export function createWorkspaceStore(client: BridgeClient): WorkspaceStore {
             projects: info.projects.map((p) => (p.path === path ? { ...p, project } : p)),
           },
         });
+        const ws = info.id;
         schedule(path, async () => {
           const latest = get().info?.projects.find((p) => p.path === path);
-          if (latest) await client.request("project.save", { path, project: latest.project });
+          if (latest) await client.request("project.save", { ws, path, project: latest.project });
         });
       },
 

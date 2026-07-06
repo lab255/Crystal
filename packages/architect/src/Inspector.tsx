@@ -9,6 +9,7 @@ import {
   type ArchNode,
   type ArchNodeKind,
   type ArchitectureGraph,
+  type CodeModule,
 } from "@crystal/core";
 import { useWorkspace } from "@crystal/client";
 import { Button, Input, Textarea, cn } from "@crystal/ui";
@@ -34,12 +35,15 @@ export function Inspector({
   graph,
   node,
   edge,
+  codeModules,
   onGraphChange,
   onClearSelection,
 }: {
   graph: ArchitectureGraph;
   node?: ArchNode;
   edge?: ArchEdge;
+  /** Code-map modules of the active workspace, for linking nodes to code. */
+  codeModules?: CodeModule[];
   onGraphChange: (graph: ArchitectureGraph) => void;
   onClearSelection: () => void;
 }) {
@@ -55,7 +59,13 @@ export function Inspector({
       </div>
       <div className="max-h-[60vh] space-y-3 overflow-y-auto p-3">
         {node ? (
-          <NodeEditor node={node} graph={graph} onGraphChange={onGraphChange} onDeleted={onClearSelection} />
+          <NodeEditor
+            node={node}
+            graph={graph}
+            codeModules={codeModules}
+            onGraphChange={onGraphChange}
+            onDeleted={onClearSelection}
+          />
         ) : edge ? (
           <EdgeEditor edge={edge} graph={graph} onGraphChange={onGraphChange} onDeleted={onClearSelection} />
         ) : null}
@@ -69,11 +79,13 @@ const EMPTY_REPOS: never[] = [];
 function NodeEditor({
   node,
   graph,
+  codeModules,
   onGraphChange,
   onDeleted,
 }: {
   node: ArchNode;
   graph: ArchitectureGraph;
+  codeModules?: CodeModule[];
   onGraphChange: (graph: ArchitectureGraph) => void;
   onDeleted: () => void;
 }) {
@@ -142,6 +154,22 @@ function NodeEditor({
           placeholder="rust, postgres, ecs"
         />
       </Field>
+      {codeModules && codeModules.length > 0 && node.kind !== "note" ? (
+        <Field label="Code module">
+          <select
+            className={selectClasses}
+            value={node.codeModule ?? ""}
+            onChange={(e) => patch({ codeModule: e.target.value || null })}
+          >
+            <option value="">None</option>
+            {codeModules.map((m) => (
+              <option key={m.path} value={m.path}>
+                {m.name} {m.path !== "." ? `(${m.path})` : ""}
+              </option>
+            ))}
+          </select>
+        </Field>
+      ) : null}
       {repos.length > 0 ? (
         <Field label="Linked repo">
           <select

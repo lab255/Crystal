@@ -36,6 +36,17 @@ export const ContainerNode = memo(function ContainerNode({
       >
         <Icon className="h-3.5 w-3.5" style={{ color: accent }} />
         <span className="truncate text-xs font-semibold text-ink">{arch.label}</span>
+        {data.code ? (
+          <span
+            className={cn(
+              "shrink-0 rounded-md border px-1 font-mono text-[9px] text-crystal-300",
+              data.code.auto ? "border-dashed border-crystal-400/40 opacity-80" : "border-crystal-400/40 bg-crystal-500/10",
+            )}
+            title={data.code.auto ? "Suggested by name match — not saved yet" : "Linked code module"}
+          >
+            {data.code.module} · {data.code.fileCount}f
+          </span>
+        ) : null}
         <span className="ml-auto text-[10px] uppercase tracking-wider text-ink-faint">
           {KIND_META[arch.kind].label}
         </span>

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { LayoutGrid, Maximize2 } from "lucide-react";
+import { LayoutGrid, Maximize2, Radar } from "lucide-react";
 import type { ArchEdgeKind, ArchitectureGraph } from "@crystal/core";
 import { Button, Tooltip, cn } from "@crystal/ui";
 import { EDGE_KIND_STYLE } from "./model.js";
@@ -11,6 +11,8 @@ export function Toolbar({
   onAutoLayout,
   onFitView,
   onRename,
+  overlayOn,
+  onToggleOverlay,
 }: {
   graph: ArchitectureGraph;
   defaultEdgeKind: ArchEdgeKind;
@@ -18,6 +20,8 @@ export function Toolbar({
   onAutoLayout: () => void;
   onFitView: () => void;
   onRename: (name: string) => void;
+  overlayOn?: boolean;
+  onToggleOverlay?: (on: boolean) => void;
 }) {
   const [name, setName] = useState(graph.name);
   useEffect(() => setName(graph.name), [graph.id, graph.name]);
@@ -71,6 +75,27 @@ export function Toolbar({
           <Maximize2 className="h-3.5 w-3.5" />
         </Button>
       </Tooltip>
+      {onToggleOverlay ? (
+        <>
+          <div className="h-4 w-px bg-edge" />
+          <Tooltip content="Code overlay — compare this diagram against live imports from source">
+            <button
+              type="button"
+              aria-pressed={overlayOn}
+              onClick={() => onToggleOverlay(!overlayOn)}
+              className={cn(
+                "flex h-6 items-center gap-1.5 rounded-md px-1.5 text-[11px] transition-colors",
+                overlayOn
+                  ? "bg-crystal-500/20 text-crystal-300"
+                  : "text-ink-faint hover:text-ink-muted",
+              )}
+            >
+              <Radar className="h-3.5 w-3.5" />
+              code
+            </button>
+          </Tooltip>
+        </>
+      ) : null}
     </div>
   );
 }
