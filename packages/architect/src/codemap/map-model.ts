@@ -136,7 +136,18 @@ export interface SymbolNodeData extends Record<string, unknown> {
   moveLabel?: string;
 }
 
-export type MapNodeData = ModuleNodeData | FileNodeData | SymbolNodeData;
+/** "+N more files" chip inside a capped expanded module (unified canvas). */
+export interface OverflowNodeData extends Record<string, unknown> {
+  nodeKind: "overflow";
+  /** Diagram node whose module is capped — the toggle target. */
+  nodeId: string;
+  /** Files hidden by the cap (0 while showing all). */
+  hidden: number;
+  showingAll: boolean;
+  accent: string;
+}
+
+export type MapNodeData = ModuleNodeData | FileNodeData | SymbolNodeData | OverflowNodeData;
 export type MapRfNode = RfNode<MapNodeData>;
 
 /* ---- scene input ---- */

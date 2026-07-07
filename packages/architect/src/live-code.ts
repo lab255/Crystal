@@ -26,12 +26,24 @@ import { moduleFlavorOf, roleOfFile, roleRank } from "./code-roles.js";
  * source) as ephemeral react-flow children. Everything here is derived view
  * state — nothing is written to the architecture graph, so expanding is pure
  * zoom, not an edit.
+ *
+ * Detail is summarized, not exhaustive: a module shows only its most connected
+ * files (a "+N more" chip reveals the rest), files being refactored always
+ * stay visible, and dense modules draw only the import edges that matter to
+ * the refactor at hand. Fully expanded must stay readable — that is the state
+ * you refactor in.
  */
 
 /** Vertical room for the diagram container's header above the file grid. */
 export const ARCH_CODE_HEADER_H = 44;
 /** Container size while the module detail is still loading. */
 export const CODE_LOADING_SIZE = { width: 260, height: 96 };
+/** File cards per expanded module before the "+N more files" chip. */
+export const LIVE_FILE_CAP = 14;
+/** Modules showing more files than this draw only refactor-relevant import edges. */
+export const EDGE_FULL_LIMIT = 10;
+/** Geometry of the "+N more files" chip. */
+export const OVERFLOW_CHIP_H = 30;
 
 export interface CodeContentInput extends FileBuildInput {
   /** Diagram node id → module path expanded into live code. */
@@ -39,6 +51,8 @@ export interface CodeContentInput extends FileBuildInput {
   moduleDetails: ReadonlyMap<string, CodeModuleDetail>;
   /** Move intents on the active draft — rendered as ghosts/marks. */
   moves: readonly MoveLikeIntent[];
+  /** Diagram node ids showing every file despite the cap. */
+  showAllFiles?: ReadonlySet<string>;
 }
 
 export interface CodeContent {
@@ -66,18 +80,53 @@ export function buildCodeContent(input: CodeContentInput): CodeContent {
       continue;
     }
 
+    // A file the user is refactoring (expanded, or on a move intent) never
+    // hides behind the cap — dragging it is the whole point of the view.
+    const pinned = (path: string): boolean =>
+      input.expandedFiles.has(path) ||
+      input.moves.some((m) => m.fromFile === path || (m.kind === "move" && m.toFile === path));
+
+    // Importance = intra-module connectivity first, public surface second.
+    const degree = new Map<string, number>();
+    for (const e of detail.edges) {
+      degree.set(e.source, (degree.get(e.source) ?? 0) + 1);
+      degree.set(e.target, (degree.get(e.target) ?? 0) + 1);
+    }
+    const importance = (f: CodeFileSummary): number =>
+      (degree.get(f.path) ?? 0) * 2 + f.exportCount;
+
+    const showAll = input.showAllFiles?.has(nodeId) ?? false;
+    let summaries = detail.files;
+    if (!showAll && summaries.length > LIVE_FILE_CAP) {
+      const keep = new Set(
+        [...summaries].sort((a, b) => importance(b) - importance(a)).slice(0, LIVE_FILE_CAP).map((f) => f.path),
+      );
+      for (const f of summaries) if (pinned(f.path)) keep.add(f.path);
+      summaries = summaries.filter((f) => keep.has(f.path));
+    }
+    const hiddenCount = detail.files.length - summaries.length;
+
     const flavor = moduleFlavorOf(detail.files.map(relPathOf));
-    const files = detail.files.map((f) => ({
+    const files = summaries.map((f) => ({
       built: buildFile(f.path, f.name, modulePath, f.exportCount, input, input.moves),
       rank: roleRank(roleOfFile(relPathOf(f), flavor), flavor),
     }));
-    const shownFiles = new Set(detail.files.map((f) => f.path));
+    const shownFiles = new Set(summaries.map((f) => f.path));
+    const allFiles = new Set(detail.files.map((f) => f.path));
 
     // Ghost cards for whole files planned to move INTO this module.
     for (const mv of input.moves) {
       if (mv.kind !== "moveFile" || mv.toModule !== modulePath) continue;
-      if (shownFiles.has(mv.fromFile)) continue;
+      if (allFiles.has(mv.fromFile)) continue;
       files.push({ built: plannedFileCard(mv, modulePath), rank: Number.POSITIVE_INFINITY });
+    }
+
+    // Capped module: a chip that reveals the rest (or folds them again).
+    if (detail.files.length > LIVE_FILE_CAP) {
+      files.push({
+        built: overflowChip(nodeId, hiddenCount, showAll, accentFor(modulePath)),
+        rank: Number.POSITIVE_INFINITY,
+      });
     }
 
     const packed = packRoleBands(files);
@@ -99,8 +148,13 @@ export function buildCodeContent(input: CodeContentInput): CodeContent {
       height: ARCH_CODE_HEADER_H + packed.height + MODULE_PAD,
     });
 
+    // Edge declutter: small modules draw their full import web; dense ones
+    // only the edges touching a file the user is working with — everything
+    // else is hairball, not information.
+    const dense = shownFiles.size > EDGE_FULL_LIMIT;
     for (const e of detail.edges) {
       if (!shownFiles.has(e.source) || !shownFiles.has(e.target)) continue;
+      if (dense && !pinned(e.source) && !pinned(e.target)) continue;
       edges.push({
         id: `code:${e.source}->${e.target}`,
         source: fileId(e.source),
@@ -148,6 +202,27 @@ function packRoleBands(files: readonly { built: BuiltFile; rank: number }[]): {
     y += packed.height + BAND_GAP_Y;
   }
   return { pos, width, height: files.length ? y - BAND_GAP_Y : 0 };
+}
+
+/** Id of a module's "+N more files" chip (recognized as a code child by the canvas). */
+export const overflowChipId = (nodeId: string) => `morefiles:${nodeId}`;
+
+function overflowChip(nodeId: string, hidden: number, showingAll: boolean, accent: string): BuiltFile {
+  return {
+    node: {
+      id: overflowChipId(nodeId),
+      type: "codeOverflow",
+      position: { x: 0, y: 0 },
+      width: FILE_COLLAPSED_W,
+      height: OVERFLOW_CHIP_H,
+      draggable: false,
+      selectable: false,
+      data: { nodeKind: "overflow", nodeId, hidden, showingAll, accent },
+    } as MapRfNode,
+    symbols: [],
+    w: FILE_COLLAPSED_W,
+    h: OVERFLOW_CHIP_H,
+  };
 }
 
 function plannedFileCard(mv: MoveFileIntent, modulePath: string) {

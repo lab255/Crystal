@@ -102,13 +102,20 @@ const nodeTypes = {
   note: NoteNode,
   codeFile: mapNodeTypes.codeFile,
   codeSymbol: mapNodeTypes.codeSymbol,
+  codeOverflow: mapNodeTypes.codeOverflow,
 };
 
 type CanvasNode = ArchRfNode | MapRfNode;
 
 /** Ephemeral live-code children carry map-model ids, never graph node ids. */
 function isCodeChildId(id: string): boolean {
-  return id.startsWith("f:") || id.startsWith("s:") || id.startsWith("plan:") || id.startsWith("planfile:");
+  return (
+    id.startsWith("f:") ||
+    id.startsWith("s:") ||
+    id.startsWith("plan:") ||
+    id.startsWith("planfile:") ||
+    id.startsWith("morefiles:")
+  );
 }
 
 export interface ArchitectCanvasProps {
@@ -148,7 +155,14 @@ const FLOW_STROKE = "var(--color-crystal-400)";
  * by one as you keep zooming (center of attention first), instead of everything
  * in view ballooning at once. Each auto-expansion remembers the threshold it
  * fired at and folds up individually once zoom drops a fixed hysteresis below
- * it, which staggers the collapse the same way. Manual expansions stay put.
+ * it, which staggers the collapse the same way.
+ *
+ * Detail also *leaves*: auto-expansions fold when they scroll out of view, and
+ * hard ceilings bound how many stay open at once, so a long zoomed-in session
+ * reads like a spotlight instead of accreting symbol soup. Manual expansions
+ * are the user's own focus statement — they don't count against ceilings, are
+ * never auto-folded, and folding everything LOD opened elsewhere when one is
+ * made keeps the working area readable.
  */
 const LOD_MODULE_EXPAND_ZOOM = 1.15;
 const LOD_FILE_EXPAND_ZOOM = 1.7;
@@ -159,6 +173,14 @@ const LOD_HYSTERESIS = 0.3;
 /** New expansions per evaluation pass — keeps a deep zoom from fetching everything at once. */
 const LOD_MODULE_BUDGET = 6;
 const LOD_FILE_BUDGET = 16;
+/**
+ * Ceilings on what LOD keeps open at once. Auto-expansions that scroll out of
+ * view fold up (freeing their slot), so detail follows the viewport instead of
+ * accreting until the whole canvas is symbol soup. Manual expansions don't
+ * count against the ceilings and are never folded.
+ */
+const LOD_MAX_AUTO_MODULES = 4;
+const LOD_MAX_AUTO_FILES = 24;
 
 /** Journey lens: highlight + number edges on the flow, dim the rest. */
 function applyFlowToEdges(edges: ArchRfEdge[], flow: FlowProjection): ArchRfEdge[] {
@@ -302,6 +324,8 @@ function CanvasInner({
   const [codeExpanded, setCodeExpanded] = useState<ReadonlyMap<string, string>>(() => new Map());
   const [expandedFiles, setExpandedFiles] = useState<ReadonlySet<string>>(() => new Set());
   const [openCode, setOpenCode] = useState<ReadonlySet<string>>(() => new Set());
+  /** Diagram nodes showing every file despite the per-module cap. */
+  const [showAllFiles, setShowAllFiles] = useState<ReadonlySet<string>>(() => new Set());
   /** In-flight drag positions for code children (they snap back on drop). */
   const [dragOverrides, setDragOverrides] = useState<ReadonlyMap<string, { x: number; y: number }>>(
     () => new Map(),
@@ -395,9 +419,19 @@ function CanvasInner({
         expandedFiles,
         openCode,
         moves,
+        showAllFiles,
       }),
-    [expanded, moduleDetailMap, fileDetailMap, expandedFiles, openCode, moves],
+    [expanded, moduleDetailMap, fileDetailMap, expandedFiles, openCode, moves, showAllFiles],
   );
+
+  const toggleAllFiles = useCallback((nodeId: string) => {
+    setShowAllFiles((prev) => {
+      const next = new Set(prev);
+      if (next.has(nodeId)) next.delete(nodeId);
+      else next.add(nodeId);
+      return next;
+    });
+  }, []);
 
   const toggleFile = useCallback((path: string) => {
     setExpandedFiles((prev) => {
@@ -633,7 +667,19 @@ function CanvasInner({
       const module = moduleForNode(id);
       if (!module) return;
       lodSuppressedNodes.current.delete(id);
-      setCodeExpanded((prev) => new Map(prev).set(id, module));
+      // Expanding by hand signals focus: fold what LOD opened elsewhere so the
+      // canvas stays readable around the node being worked on. Other manual
+      // expansions stay — cross-module refactors need several open at once.
+      const autoOthers = [...autoExpandedNodes.current.keys()].filter((k) => k !== id);
+      for (const k of autoOthers) {
+        autoExpandedNodes.current.delete(k);
+        lodSuppressedNodes.current.add(k);
+      }
+      setCodeExpanded((prev) => {
+        const next = new Map(prev);
+        for (const k of autoOthers) next.delete(k);
+        return next.set(id, module);
+      });
       scheduleFocus(id);
     },
     [codeExpanded, moduleForNode, scheduleFocus],
@@ -761,14 +807,16 @@ function CanvasInner({
   /* ------------- dynamic level of detail: zoom in expands, zoom out collapses ------------- */
 
   /**
-   * One LOD pass for a viewport. Expansion: every on-screen candidate whose
-   * staggered threshold (base zoom + distance-from-center penalty) the current
-   * zoom clears opens up, most central first, within the per-pass budget.
-   * Collapse: each auto-expansion folds up individually once zoom drops the
-   * hysteresis below the threshold it opened at — unless it would immediately
-   * requalify where it sits now (it drifted toward the center since), in which
-   * case its anchor is lowered instead of flickering closed and open again.
-   * Only automatic expansions are ever collapsed — manual ones stay put.
+   * One LOD pass for a viewport, folds before expansions so freed ceiling
+   * slots are reusable within the pass. Collapse: an auto-expansion folds when
+   * it leaves the viewport, or once zoom drops the hysteresis below the
+   * threshold it opened at — unless it would immediately requalify where it
+   * sits now (it drifted toward the center since), in which case its anchor is
+   * lowered instead of flickering closed and open again. Expansion: every
+   * on-screen candidate whose staggered threshold (base zoom +
+   * distance-from-center penalty) the current zoom clears opens up, most
+   * central first, within the per-pass budget and the global auto-expansion
+   * ceiling. Only automatic expansions are ever collapsed — manual ones stay.
    */
   const evaluateLod = useCallback(
     (vp: Viewport) => {
@@ -806,6 +854,34 @@ function CanvasInner({
         return base + Math.min(Math.hypot(dx, dy), 1) * LOD_STAGGER;
       };
 
+      // Drops first so folded expansions free ceiling slots for this pass.
+      const nodeDrops: string[] = [];
+      for (const [id, threshold] of autoExpandedNodes.current) {
+        const n = byId.get(id);
+        // Off-screen (or deleted) auto-expansions fold — detail follows the
+        // viewport; panning back re-expands them within the ceiling.
+        if (!n || !inView(boundsOf(n))) {
+          nodeDrops.push(id);
+          continue;
+        }
+        if (vp.zoom > threshold - LOD_HYSTERESIS) continue;
+        const now = thresholdFor(n, LOD_MODULE_EXPAND_ZOOM);
+        if (vp.zoom >= now) {
+          autoExpandedNodes.current.set(id, now);
+          continue;
+        }
+        nodeDrops.push(id);
+      }
+      if (nodeDrops.length > 0) {
+        for (const id of nodeDrops) autoExpandedNodes.current.delete(id);
+        setCodeExpanded((prev) => {
+          const next = new Map(prev);
+          for (const id of nodeDrops) next.delete(id);
+          return next;
+        });
+      }
+      if (vp.zoom <= LOD_MODULE_EXPAND_ZOOM - LOD_HYSTERESIS) lodSuppressedNodes.current.clear();
+
       const moduleCands: { id: string; threshold: number }[] = [];
       for (const n of live) {
         const data = n.data as Partial<ArchRfNode["data"]>;
@@ -822,6 +898,7 @@ function CanvasInner({
       const nodeAdds = new Map<string, string>();
       for (const c of moduleCands) {
         if (nodeAdds.size >= LOD_MODULE_BUDGET) break;
+        if (autoExpandedNodes.current.size >= LOD_MAX_AUTO_MODULES) break;
         const module = moduleForNode(c.id);
         if (!module) continue;
         nodeAdds.set(c.id, module);
@@ -835,28 +912,32 @@ function CanvasInner({
         });
       }
 
-      const nodeDrops: string[] = [];
-      for (const [id, threshold] of autoExpandedNodes.current) {
-        if (vp.zoom > threshold - LOD_HYSTERESIS) continue;
-        const n = byId.get(id);
-        if (n) {
-          const now = thresholdFor(n, LOD_MODULE_EXPAND_ZOOM);
-          if (vp.zoom >= now) {
-            autoExpandedNodes.current.set(id, now);
-            continue;
-          }
+      // Files: same shape — fold what left the viewport (or whose module
+      // folded), then expand within budget and ceiling.
+      const fileDrops: string[] = [];
+      for (const [path, threshold] of autoExpandedFiles.current) {
+        const n = byId.get(fileId(path));
+        if (!n || !inView(boundsOf(n))) {
+          fileDrops.push(path);
+          continue;
         }
-        nodeDrops.push(id);
+        if (vp.zoom > threshold - LOD_HYSTERESIS) continue;
+        const now = thresholdFor(n, LOD_FILE_EXPAND_ZOOM);
+        if (vp.zoom >= now) {
+          autoExpandedFiles.current.set(path, now);
+          continue;
+        }
+        fileDrops.push(path);
       }
-      if (nodeDrops.length > 0) {
-        for (const id of nodeDrops) autoExpandedNodes.current.delete(id);
-        setCodeExpanded((prev) => {
-          const next = new Map(prev);
-          for (const id of nodeDrops) next.delete(id);
+      if (fileDrops.length > 0) {
+        for (const path of fileDrops) autoExpandedFiles.current.delete(path);
+        setExpandedFiles((prev) => {
+          const next = new Set(prev);
+          for (const path of fileDrops) next.delete(path);
           return next;
         });
       }
-      if (vp.zoom <= LOD_MODULE_EXPAND_ZOOM - LOD_HYSTERESIS) lodSuppressedNodes.current.clear();
+      if (vp.zoom <= LOD_FILE_EXPAND_ZOOM - LOD_HYSTERESIS) lodSuppressedFiles.current.clear();
 
       const fileCands: { path: string; threshold: number }[] = [];
       for (const n of live) {
@@ -870,38 +951,20 @@ function CanvasInner({
         if (vp.zoom >= threshold) fileCands.push({ path, threshold });
       }
       fileCands.sort((a, b) => a.threshold - b.threshold);
-      const fileAdds = fileCands.slice(0, LOD_FILE_BUDGET);
+      const fileAdds: { path: string; threshold: number }[] = [];
+      for (const c of fileCands) {
+        if (fileAdds.length >= LOD_FILE_BUDGET) break;
+        if (autoExpandedFiles.current.size >= LOD_MAX_AUTO_FILES) break;
+        fileAdds.push(c);
+        autoExpandedFiles.current.set(c.path, c.threshold);
+      }
       if (fileAdds.length > 0) {
-        for (const f of fileAdds) autoExpandedFiles.current.set(f.path, f.threshold);
         setExpandedFiles((prev) => {
           const next = new Set(prev);
           for (const f of fileAdds) next.add(f.path);
           return next;
         });
       }
-
-      const fileDrops: string[] = [];
-      for (const [path, threshold] of autoExpandedFiles.current) {
-        if (vp.zoom > threshold - LOD_HYSTERESIS) continue;
-        const n = byId.get(fileId(path));
-        if (n) {
-          const now = thresholdFor(n, LOD_FILE_EXPAND_ZOOM);
-          if (vp.zoom >= now) {
-            autoExpandedFiles.current.set(path, now);
-            continue;
-          }
-        }
-        fileDrops.push(path);
-      }
-      if (fileDrops.length > 0) {
-        for (const path of fileDrops) autoExpandedFiles.current.delete(path);
-        setExpandedFiles((prev) => {
-          const next = new Set(prev);
-          for (const path of fileDrops) next.delete(path);
-          return next;
-        });
-      }
-      if (vp.zoom <= LOD_FILE_EXPAND_ZOOM - LOD_HYSTERESIS) lodSuppressedFiles.current.clear();
     },
     [getNodes, moduleForNode],
   );
@@ -1361,10 +1424,11 @@ function CanvasInner({
       toggleModule: () => {},
       toggleFile,
       toggleCode,
+      toggleAllFiles,
       startJourney: onStartJourney,
       dropSymbol: (payload, target) => void onRecordMove?.(payload, target),
     }),
-    [toggleFile, toggleCode, onStartJourney, onRecordMove],
+    [toggleFile, toggleCode, toggleAllFiles, onStartJourney, onRecordMove],
   );
 
   const selectedNode =

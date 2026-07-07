@@ -3,7 +3,10 @@ import type { CodeFileDetail, CodeModuleDetail } from "@crystal/core";
 import {
   ARCH_CODE_HEADER_H,
   CODE_LOADING_SIZE,
+  EDGE_FULL_LIMIT,
+  LIVE_FILE_CAP,
   buildCodeContent,
+  overflowChipId,
   unifiedDropTargetAt,
   type CodeContentInput,
   type HitTestNode,
@@ -112,6 +115,77 @@ describe("buildCodeContent", () => {
     expect(topOf("services/api/src/services/pricing.ts")).toBeLessThan(
       topOf("services/api/src/db/client.ts"),
     );
+  });
+
+  it("caps a large module at the most connected files and adds an overflow chip", () => {
+    const paths = Array.from({ length: LIVE_FILE_CAP + 6 }, (_, i) => `packages/core/src/f${i}.ts`);
+    // f0 is a hub: everyone imports it, so it must survive the cap.
+    const edges = paths.slice(1).map((p): [string, string] => [p, paths[0]!]);
+    const detail = moduleDetail("packages/core", paths, edges);
+    const content = buildCodeContent(
+      input({
+        expanded: new Map([["node_1", "packages/core"]]),
+        moduleDetails: new Map([["packages/core", detail]]),
+      }),
+    );
+    const files = content.nodes.filter((n) => n.data.nodeKind === "file");
+    expect(files).toHaveLength(LIVE_FILE_CAP);
+    expect(files.some((n) => n.id === fileId(paths[0]!))).toBe(true);
+    const chip = content.nodes.find((n) => n.id === overflowChipId("node_1"));
+    expect(chip).toBeDefined();
+    expect(chip!.data).toMatchObject({ nodeKind: "overflow", hidden: 6, showingAll: false, nodeId: "node_1" });
+  });
+
+  it("shows every file when the node is in showAllFiles, chip flips to 'show fewer'", () => {
+    const paths = Array.from({ length: LIVE_FILE_CAP + 6 }, (_, i) => `packages/core/src/f${i}.ts`);
+    const detail = moduleDetail("packages/core", paths);
+    const content = buildCodeContent(
+      input({
+        expanded: new Map([["node_1", "packages/core"]]),
+        moduleDetails: new Map([["packages/core", detail]]),
+        showAllFiles: new Set(["node_1"]),
+      }),
+    );
+    expect(content.nodes.filter((n) => n.data.nodeKind === "file")).toHaveLength(paths.length);
+    const chip = content.nodes.find((n) => n.id === overflowChipId("node_1"));
+    expect(chip!.data).toMatchObject({ hidden: 0, showingAll: true });
+  });
+
+  it("keeps refactor-relevant files visible above the cap", () => {
+    const paths = Array.from({ length: LIVE_FILE_CAP + 6 }, (_, i) => `packages/core/src/f${i}.ts`);
+    // The last file has no connectivity — it would be capped out…
+    const loner = paths[paths.length - 1]!;
+    const edges = paths.slice(1, -1).map((p): [string, string] => [p, paths[0]!]);
+    const detail = moduleDetail("packages/core", paths, edges);
+    const content = buildCodeContent(
+      input({
+        expanded: new Map([["node_1", "packages/core"]]),
+        moduleDetails: new Map([["packages/core", detail]]),
+        // …but it's mid-refactor (expanded + being moved), so it stays.
+        expandedFiles: new Set([loner]),
+      }),
+    );
+    const files = content.nodes.filter((n) => n.data.nodeKind === "file");
+    expect(files.some((n) => n.id === fileId(loner))).toBe(true);
+    expect(files.length).toBe(LIVE_FILE_CAP + 1); // cap + the pinned ride-along
+  });
+
+  it("declutters edges in dense modules to those touching refactor-relevant files", () => {
+    const paths = Array.from({ length: EDGE_FULL_LIMIT + 2 }, (_, i) => `packages/core/src/f${i}.ts`);
+    const edges: [string, string][] = [
+      [paths[1]!, paths[2]!], // noise
+      [paths[3]!, paths[0]!], // touches the expanded file
+    ];
+    const detail = moduleDetail("packages/core", paths, edges);
+    const content = buildCodeContent(
+      input({
+        expanded: new Map([["node_1", "packages/core"]]),
+        moduleDetails: new Map([["packages/core", detail]]),
+        expandedFiles: new Set([paths[0]!]),
+      }),
+    );
+    expect(content.edges).toHaveLength(1);
+    expect(content.edges[0]!.target).toBe(fileId(paths[0]!));
   });
 
   it("renders a ghost card for a file planned to move into the module", () => {

@@ -19,6 +19,7 @@ import type {
   FileNodeData,
   MapRfNode,
   ModuleNodeData,
+  OverflowNodeData,
   SymbolNodeData,
 } from "./map-model.js";
 
@@ -47,6 +48,8 @@ export interface MapActions {
   toggleModule(path: string): void;
   toggleFile(path: string): void;
   toggleCode(file: string, symbol: string): void;
+  /** Show all / only the most connected files of a capped module (unified canvas). */
+  toggleAllFiles?(nodeId: string): void;
   startJourney?(seed: { file: string; symbol: string }): void;
   /** HTML5 drop (FilePanel symbol drag) onto a file/module node. */
   dropSymbol(payload: SymbolDragPayload, target: DropTarget): void;
@@ -324,8 +327,42 @@ export const SymbolNode = memo(function SymbolNode({ data, selected }: NodeProps
   );
 });
 
+/* ------------------------- capped-module overflow -------------------------- */
+
+export const OverflowNode = memo(function OverflowNode({ data }: NodeProps<MapRfNode>) {
+  const d = data as OverflowNodeData;
+  const actions = useMapActions();
+
+  return (
+    <button
+      type="button"
+      className="nodrag flex h-full w-full items-center justify-center gap-1 rounded-lg border border-dashed border-edge-strong bg-surface-2/60 text-[10px] text-ink-faint transition-colors hover:border-crystal-400 hover:text-ink"
+      onClick={(e) => {
+        e.stopPropagation();
+        actions.toggleAllFiles?.(d.nodeId);
+      }}
+      title={
+        d.showingAll
+          ? "Show only the most connected files"
+          : "Show every file in this module (files being refactored always stay visible)"
+      }
+    >
+      {d.showingAll ? (
+        <>
+          <ChevronDown className="h-3 w-3 rotate-180" /> show fewer files
+        </>
+      ) : (
+        <>
+          <ChevronRight className="h-3 w-3" /> +{d.hidden} more files
+        </>
+      )}
+    </button>
+  );
+});
+
 export const mapNodeTypes = {
   codeModule: ModuleNode,
   codeFile: FileNode,
   codeSymbol: SymbolNode,
+  codeOverflow: OverflowNode,
 };
