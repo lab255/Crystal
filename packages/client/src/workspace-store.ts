@@ -24,6 +24,12 @@ export interface WorkspaceState {
   /** Optimistically update + debounce-persist an architecture draft. */
   updateArchDraft(path: string, draft: ArchDraft): void;
   createArchDraft(draft: ArchDraft): Promise<{ path: string; draft: ArchDraft }>;
+  /** Server-side: snapshot a git ref's code architecture into a review draft. */
+  createArchDraftFromRef(
+    archPath: string,
+    ref: string,
+    repoPath?: string,
+  ): Promise<{ path: string; draft: ArchDraft }>;
   deleteArchDraft(path: string): Promise<void>;
   /** Optimistically update + debounce-persist a project board. */
   updateProject(path: string, project: Project): void;
@@ -148,6 +154,13 @@ export function createWorkspaceStore(client: BridgeClient): WorkspaceStore {
 
       async createArchDraft(draft) {
         const created = await client.request("archdraft.create", { draft });
+        const info = get().info;
+        if (info) set({ info: { ...info, archDrafts: [...info.archDrafts, created] } });
+        return created;
+      },
+
+      async createArchDraftFromRef(archPath, ref, repoPath) {
+        const created = await client.request("archdraft.fromRef", { archPath, ref, repoPath });
         const info = get().info;
         if (info) set({ info: { ...info, archDrafts: [...info.archDrafts, created] } });
         return created;

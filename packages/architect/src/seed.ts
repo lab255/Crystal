@@ -1,11 +1,11 @@
 import {
+  archKindForCodeModule,
   createArchNode,
+  significantModules,
   type ArchEdge,
   type ArchNode,
-  type ArchNodeKind,
   type ArchitectureGraph,
   type CodeMapSummary,
-  type CodeModule,
   uid,
 } from "@crystal/core";
 import { autoLayout, fitContainersToChildren } from "./layout.js";
@@ -24,24 +24,11 @@ function topDirOf(modulePath: string): string | null {
   return modulePath.includes("/") ? (modulePath.split("/")[0] ?? null) : null;
 }
 
-function kindForModule(module: CodeModule): ArchNodeKind {
-  const underApps = module.path === "apps" || module.path.startsWith("apps/");
-  if (underApps) {
-    return /web|ui|front|desktop/i.test(`${module.name} ${module.path}`)
-      ? "frontend"
-      : "service";
-  }
-  return "repo";
-}
-
 export function seedFromCodeMap(
   base: ArchitectureGraph,
   summary: CodeMapSummary,
 ): ArchitectureGraph {
-  const hasSubmodules = summary.modules.some((m) => m.path !== "." && m.fileCount > 0);
-  const modules = summary.modules.filter(
-    (m) => m.fileCount > 0 && !(m.path === "." && hasSubmodules),
-  );
+  const modules = significantModules(summary.modules);
 
   // Top-level dirs with enough modules become containers ("apps", "packages"…).
   const dirCounts = new Map<string, number>();
@@ -67,7 +54,7 @@ export function seedFromCodeMap(
   for (const m of modules) {
     const dir = topDirOf(m.path);
     const parentId = dir ? (groupIdByDir.get(dir) ?? null) : null;
-    const node = createArchNode(kindForModule(m), m.name, { x: 0, y: 0 }, parentId);
+    const node = createArchNode(archKindForCodeModule(m), m.name, { x: 0, y: 0 }, parentId);
     nodes.push({
       ...node,
       description: `${m.fileCount} ${m.fileCount === 1 ? "file" : "files"}`,

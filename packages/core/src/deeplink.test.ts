@@ -94,6 +94,18 @@ describe("round trips", () => {
     expect(roundTrip(link)).toEqual(link);
   });
 
+  it("draft review round-trips, and review without a draft is dropped", () => {
+    const link: DeepLink = {
+      ws: "abc",
+      mode: "architect",
+      architect: { view: "diagrams", draft: ".crystal/architecture/drafts/plan.json", review: true },
+    };
+    expect(roundTrip(link)).toEqual(link);
+    // review is a lens on a draft — meaningless (and omitted) without one
+    expect(formatDeepLink({ mode: "architect", architect: { review: true } })).toBe("#/architect/diagrams");
+    expect(parseDeepLink("#/architect/diagrams?review=1").architect?.review).toBeUndefined();
+  });
+
   it("architect infra keeps the shared diagram selection", () => {
     const link: DeepLink = {
       ws: "abc",

@@ -7,8 +7,10 @@ import {
   CloudUpload,
   FolderGit2,
   GitBranch,
+  GitCompareArrows,
   GitMerge,
   Globe2,
+  History,
   MoreHorizontal,
   PencilRuler,
   Plus,
@@ -60,6 +62,8 @@ import { JourneyProfilePanel } from "./ProfilePanel.js";
 import { useRefactorIntents } from "./refactor-intents.js";
 import { buildHoistPrompt } from "./refactor-prompts.js";
 import { ApplyRefactorsDialog, RefactorChip, useIntentProblems } from "./RefactorPanel.js";
+import { ReviewDialog } from "./ReviewDialog.js";
+import { ReviewView } from "./ReviewView.js";
 import { canSeedFromCodeMap, seedFromCodeMap } from "./seed.js";
 import { SurveySection } from "./SurveyPanel.js";
 
@@ -89,7 +93,8 @@ export function ArchitectMode() {
   // Lifted here so the code map sees the open draft (drag-refactor targets it).
   const draftPath = useNav((l) => l.architect?.draft) ?? null;
   const setDraftPath = useCallback(
-    (path: string | null) => nav({ architect: { draft: path } }),
+    // Leaving draft mode also leaves review mode — review is a draft lens.
+    (path: string | null) => nav({ architect: path ? { draft: path } : { draft: null, review: false } }),
     [nav],
   );
 
@@ -232,6 +237,14 @@ function DiagramsView({
   const [notice, setNotice] = useState<string | null>(null);
   const [applyDialogOpen, setApplyDialogOpen] = useState(false);
   const [applyBusy, setApplyBusy] = useState(false);
+  const [reviewDialogOpen, setReviewDialogOpen] = useState(false);
+
+  // Split-pane draft review (deep-linkable: ?draft=…&review=1).
+  const reviewOn = useNav((l) => l.architect?.review) ?? false;
+  const setReviewOn = useCallback(
+    (on: boolean) => nav({ architect: { review: on } }),
+    [nav],
+  );
 
   // Live code map for the diagram overlay — kept fresh by codemap.changed.
   const { client } = useCrystal();
@@ -603,16 +616,28 @@ function DiagramsView({
                 <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-faint">
                   Draft plans
                 </span>
-                <Tooltip content={`New draft plan of “${selected.graph.name}”`}>
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    onClick={() => void startDraft()}
-                    aria-label="New draft plan"
-                  >
-                    <Plus className="h-3.5 w-3.5" />
-                  </Button>
-                </Tooltip>
+                <div className="flex items-center">
+                  <Tooltip content="Review a commit or branch — its code architecture becomes a draft, diffed against this diagram">
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      onClick={() => setReviewDialogOpen(true)}
+                      aria-label="Review a commit or branch"
+                    >
+                      <History className="h-3.5 w-3.5" />
+                    </Button>
+                  </Tooltip>
+                  <Tooltip content={`New draft plan of “${selected.graph.name}”`}>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      onClick={() => void startDraft()}
+                      aria-label="New draft plan"
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                    </Button>
+                  </Tooltip>
+                </div>
               </div>
               {selectedDrafts.map((d) => (
                 <div
@@ -695,32 +720,39 @@ function DiagramsView({
               key={selected.path}
               graph={selected.graph}
               onChange={(graph) => updateArchitecture(selected.path, graph)}
+              summary={codeSummary}
             />
           ) : (
             <>
-              <ArchitectCanvas
-                key={activeDraft ? activeDraft.path : selected.path}
-                graph={activeDraft ? activeDraft.draft.graph : selected.graph}
-                onChange={commitGraph}
-                codeSummary={codeSummary}
-                overlayOn={overlayOn}
-                onToggleOverlay={setOverlayOn}
-                draftMode={!!activeDraft}
-                flow={flow}
-                moves={moves}
-                onStartJourney={onStartJourney}
-                onRecordMove={(payload, target) => void recordMove(payload, target)}
-                onRecordFileMove={(fromFile, toModule) => void recordFileMove(fromFile, toModule)}
-                onOpenFullMap={onOpenFullMap}
-                expandRequest={expandRequest}
-                onUnresolvedExpand={(module, file) => onOpenFullMap({ module, file })}
-                showDuplicates={showDuplicates}
-                onToggleDuplicates={setShowDuplicates}
-              />
+              {activeDraft && reviewOn ? (
+                <ReviewView key={activeDraft.path} draft={activeDraft.draft} />
+              ) : (
+                <ArchitectCanvas
+                  key={activeDraft ? activeDraft.path : selected.path}
+                  graph={activeDraft ? activeDraft.draft.graph : selected.graph}
+                  onChange={commitGraph}
+                  codeSummary={codeSummary}
+                  overlayOn={overlayOn}
+                  onToggleOverlay={setOverlayOn}
+                  draftMode={!!activeDraft}
+                  flow={flow}
+                  moves={moves}
+                  onStartJourney={onStartJourney}
+                  onRecordMove={(payload, target) => void recordMove(payload, target)}
+                  onRecordFileMove={(fromFile, toModule) => void recordFileMove(fromFile, toModule)}
+                  onOpenFullMap={onOpenFullMap}
+                  expandRequest={expandRequest}
+                  onUnresolvedExpand={(module, file) => onOpenFullMap({ module, file })}
+                  showDuplicates={showDuplicates}
+                  onToggleDuplicates={setShowDuplicates}
+                />
+              )}
               {activeDraft ? (
                 <DraftBar
                   draft={activeDraft.draft}
                   stale={draftStale(activeDraft.draft)}
+                  reviewOn={reviewOn}
+                  onToggleReview={() => setReviewOn(!reviewOn)}
                   onRename={(name) =>
                     updateArchDraft(activeDraft.path, {
                       ...activeDraft.draft,
@@ -843,6 +875,18 @@ function DiagramsView({
         ) : null}
       </Split>
 
+      {selected ? (
+        <ReviewDialog
+          open={reviewDialogOpen}
+          onOpenChange={setReviewDialogOpen}
+          archPath={selected.path}
+          onCreated={(path) => {
+            setDraftPath(path);
+            setReviewOn(true);
+          }}
+        />
+      ) : null}
+
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent
           title="New architecture"
@@ -938,6 +982,8 @@ function SeedChoice({
 function DraftBar({
   draft,
   stale,
+  reviewOn,
+  onToggleReview,
   onRename,
   onApply,
   onRebase,
@@ -947,6 +993,8 @@ function DraftBar({
 }: {
   draft: ArchDraft;
   stale: boolean;
+  reviewOn: boolean;
+  onToggleReview: () => void;
   onRename: (name: string) => void;
   onApply: () => void;
   onRebase: () => void;
@@ -970,6 +1018,22 @@ function DraftBar({
         aria-label="Draft name"
       />
       {refactorChip}
+      <Tooltip
+        content={
+          reviewOn
+            ? "Back to editing the draft on the canvas"
+            : "Review — draft and base side by side, every change listed"
+        }
+      >
+        <Button
+          variant={reviewOn ? "secondary" : "ghost"}
+          size="xs"
+          onClick={onToggleReview}
+          aria-pressed={reviewOn}
+        >
+          <GitCompareArrows className="h-3 w-3" /> Review
+        </Button>
+      </Tooltip>
       {stale ? (
         <Tooltip content="The diagram changed underneath this draft — replay your changes onto the latest version">
           <Button variant="secondary" size="xs" onClick={onRebase}>

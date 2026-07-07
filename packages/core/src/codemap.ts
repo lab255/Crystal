@@ -11,6 +11,8 @@
  * changes — the diagram follows the code, not the other way around.
  */
 
+import type { CodeExternalDep } from "./external-services.js";
+
 export interface CodeModule {
   /** Workspace-relative path of the module root ("." for the workspace root). */
   path: string;
@@ -31,6 +33,12 @@ export interface CodeModuleDep {
 export interface CodeMapSummary {
   modules: CodeModule[];
   deps: CodeModuleDep[];
+  /**
+   * External services detected from the codebase's npm imports (databases,
+   * caches, queues, SaaS APIs…) — see `external-services.ts`. Optional so
+   * older/partial summaries stay valid; absent means "not analyzed".
+   */
+  externals?: CodeExternalDep[];
   fileTotal: number;
   generatedAt: string;
 }

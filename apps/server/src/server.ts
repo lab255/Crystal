@@ -11,8 +11,10 @@ import {
   type BridgeRequest,
   type BridgeResponse,
 } from "@crystal/core";
+import { applyCodeSnapshotToGraph, createArchDraft } from "@crystal/core";
 import { deleteAt, listDir, mkdirAt, readFileCapped, renameAt, writeFileAt } from "./fs-api.js";
-import { gitStatus } from "./git.js";
+import { gitLog, gitStatus } from "./git.js";
+import { snapshotAtRef } from "./ref-snapshot.js";
 import { WorkspaceRegistry } from "./workspace-registry.js";
 
 type Handlers = {
@@ -90,6 +92,25 @@ export async function startCrystalServer(opts: {
       return { ok: true };
     },
     "archdraft.create": ({ ws, draft }) => registry.get(ws).store.createArchDraft(draft),
+    "archdraft.fromRef": async ({ ws, archPath, ref, repoPath }) => {
+      const rt = registry.get(ws);
+      const info = await rt.store.load();
+      const arch = info.architectures.find((a) => a.path === archPath);
+      if (!arch) throw new Error(`Unknown architecture: ${archPath}`);
+      const snapshot = await snapshotAtRef(rt.root, repoPath ?? ".", ref);
+      // Long hashes make unreadable names; prefer the resolved short hash.
+      const refLabel = /^[0-9a-f]{12,}$/i.test(ref) ? snapshot.commit : ref;
+      const draft = createArchDraft(
+        `Review ${refLabel}`,
+        archPath,
+        arch.graph,
+        new Date().toISOString(),
+      );
+      const graph = applyCodeSnapshotToGraph(arch.graph, snapshot);
+      const created = await rt.store.createArchDraft({ ...draft, graph });
+      broadcast("workspace.changed", { ws: rt.id });
+      return created;
+    },
     "archdraft.save": async ({ ws, path: p, draft }) => {
       await registry.get(ws).store.saveArchDraft(p, draft);
       return { ok: true };
@@ -126,6 +147,7 @@ export async function startCrystalServer(opts: {
       return { ok: true };
     },
     "git.status": ({ ws, repoPath }) => gitStatus(registry.get(ws).root, repoPath),
+    "git.log": ({ ws, repoPath, limit }) => gitLog(registry.get(ws).root, repoPath ?? ".", limit),
     "agent.start": async ({ ws, ...params }) => ({
       run: await registry.get(ws).agents.start(params),
     }),

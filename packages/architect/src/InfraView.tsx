@@ -15,21 +15,24 @@ import {
   type NodeProps,
 } from "@xyflow/react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
-import { Cloud, Gauge, Globe2, GripVertical, Laptop, MapPin, Play, Plus, Server, Skull, Unplug, X } from "lucide-react";
+import { Cloud, Gauge, Globe2, GripVertical, Laptop, MapPin, Play, Plus, Server, Skull, Unplug, Waypoints, X } from "lucide-react";
 import {
+  ARCH_KIND_OF_CATEGORY,
   createLocalEnvironment,
   uid,
   updateNodePlacement,
   type ArchEnvironment,
   type ArchNode,
   type ArchitectureGraph,
+  type CodeMapSummary,
 } from "@crystal/core";
 import { Badge, Button, EmptyState, Input, Tooltip, cn } from "@crystal/ui";
 import { CodeNode, type CodeNodeData, type CodeRfNode } from "./codemap/CodeNode.js";
 import { InlineRename } from "./ContextMenu.js";
 import { updateNode } from "./graph-ops.js";
 import { infraGroups, knownTargets, layerBands, placedEdges } from "./infra.js";
-import { EDGE_KIND_STYLE, KIND_META, accentOf } from "./model.js";
+import { detectedExternals, detectedInternalEdges, externalNodeId } from "./infra-deps.js";
+import { ACCENT_CSS, EDGE_KIND_STYLE, KIND_META, accentOf } from "./model.js";
 import { SimActionsContext, SimEditor, SimPanel, applyTrafficToEdges, useSimActions } from "./SimPanel.js";
 import {
   initialSimTickState,
@@ -63,11 +66,13 @@ interface GroupData extends Record<string, unknown> {
   simActive: boolean;
   /** How many members are currently crashed. */
   deadCount: number;
+  /** Synthetic container for detected external services — not a drop target. */
+  detected?: boolean;
 }
 type GroupRfNode = RfNode<GroupData>;
 
 const InfraGroupNode = memo(function InfraGroupNode({ data }: NodeProps<GroupRfNode>) {
-  const Icon = data.local ? Laptop : Cloud;
+  const Icon = data.detected ? Waypoints : data.local ? Laptop : Cloud;
   const actions = useSimActions();
   const allDead = data.count > 0 && data.deadCount === data.count;
   return (
@@ -161,6 +166,8 @@ interface TargetPrompt {
 export function InfraView(props: {
   graph: ArchitectureGraph;
   onChange: (graph: ArchitectureGraph) => void;
+  /** Live code map — powers the detected-dependency overlay (service map). */
+  summary?: CodeMapSummary | null;
 }) {
   return (
     <ReactFlowProvider>
@@ -172,9 +179,11 @@ export function InfraView(props: {
 function InfraInner({
   graph,
   onChange,
+  summary = null,
 }: {
   graph: ArchitectureGraph;
   onChange: (graph: ArchitectureGraph) => void;
+  summary?: CodeMapSummary | null;
 }) {
   const [envId, setEnvId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -264,6 +273,18 @@ function InfraInner({
     [graph, activeEnv?.id],
   );
   const targets = useMemo(() => knownTargets(graph), [graph]);
+
+  /* ---- detected dependencies (service-map overlay from the live code map) ---- */
+  const [depsOn, setDepsOn] = useState(true);
+  const depsAvailable =
+    summary != null && (summary.deps.length > 0 || (summary.externals?.length ?? 0) > 0);
+  const detected = useMemo(() => {
+    if (!depsOn || !summary || !activeEnv) return { externals: [], internal: [] };
+    return {
+      externals: detectedExternals(graph, activeEnv.id, summary),
+      internal: detectedInternalEdges(graph, activeEnv.id, summary),
+    };
+  }, [depsOn, summary, graph, activeEnv]);
 
   const addEnvironment = () => {
     const name = newEnvName.trim();
@@ -388,6 +409,67 @@ function InfraInner({
       bandY = cursorY + rowMaxH + GROUP_GAP + 8;
     }
 
+    // Detected external services sit in their own synthetic band at the
+    // bottom — where the traffic ends up, past the data tier.
+    if (detected.externals.length > 0) {
+      nodes.push({
+        id: "band:external",
+        type: "bandlabel",
+        position: { x: -110, y: bandY + 6 },
+        draggable: false,
+        selectable: false,
+        data: { label: "external" },
+      });
+      const n = detected.externals.length;
+      const cols = Math.max(1, Math.min(4, Math.ceil(Math.sqrt(n))));
+      const rows = Math.ceil(n / cols);
+      const width = GROUP_PAD * 2 + cols * CELL_W + (cols - 1) * CELL_GAP;
+      const height = GROUP_HEADER + GROUP_PAD + rows * CELL_H + (rows - 1) * CELL_GAP + GROUP_PAD;
+      const groupId = "target:__detected__";
+      nodes.push({
+        id: groupId,
+        type: "infragroup",
+        position: { x: 0, y: bandY },
+        width,
+        height,
+        zIndex: -1,
+        draggable: false,
+        selectable: false,
+        data: {
+          target: "Detected from code",
+          count: n,
+          local: isLocal,
+          memberIds: [],
+          simActive: false,
+          deadCount: 0,
+          detected: true,
+        },
+      });
+      detected.externals.forEach(({ dep }, j) => {
+        const kind = ARCH_KIND_OF_CATEGORY[dep.category];
+        const meta = KIND_META[kind];
+        nodes.push({
+          id: externalNodeId(dep),
+          type: "code",
+          parentId: groupId,
+          draggable: false,
+          selectable: false,
+          position: {
+            x: GROUP_PAD + (j % cols) * (CELL_W + CELL_GAP),
+            y: GROUP_HEADER + GROUP_PAD + Math.floor(j / cols) * (CELL_H + CELL_GAP),
+          },
+          data: {
+            title: dep.name,
+            subtitle: dep.packages.slice(0, 3).join(", "),
+            accent: ACCENT_CSS[meta.defaultAccent],
+            icon: meta.icon,
+            badge: `×${dep.weight}`,
+            boundary: true,
+          },
+        });
+      });
+    }
+
     const edges: RfEdge[] = placedEdges(graph, activeEnv.id).map((e) => {
       const style = EDGE_KIND_STYLE[e.kind];
       return {
@@ -401,8 +483,47 @@ function InfraInner({
         markerEnd: { type: MarkerType.ArrowClosed, color: style.stroke, width: 14, height: 14 },
       };
     });
+
+    // Detected edges render dashed and muted — the code's testimony, visually
+    // distinct from the user's drawn arrows.
+    const detectedStyle = {
+      stroke: "var(--color-accent-slate)",
+      strokeWidth: 1.2,
+      strokeDasharray: "3 3",
+      opacity: 0.6,
+    };
+    const detectedEdge = (id: string, source: string, target: string, weight: number): RfEdge => ({
+      id,
+      source,
+      target,
+      label: `×${weight}`,
+      style: detectedStyle,
+      labelStyle: { fill: "var(--color-ink-faint)", fontSize: 8.5 },
+      labelBgStyle: { fill: "var(--color-surface-1)", fillOpacity: 0.85 },
+      markerEnd: {
+        type: MarkerType.ArrowClosed,
+        color: "var(--color-accent-slate)",
+        width: 12,
+        height: 12,
+      },
+    });
+    for (const e of detected.internal) {
+      edges.push(detectedEdge(`det:${e.source}->${e.target}`, e.source, e.target, e.weight));
+    }
+    for (const { dep, clients } of detected.externals) {
+      for (const client of clients) {
+        edges.push(
+          detectedEdge(
+            `det:${client.nodeId}->${externalNodeId(dep)}`,
+            client.nodeId,
+            externalNodeId(dep),
+            client.weight,
+          ),
+        );
+      }
+    }
     return { nodes, edges };
-  }, [graph, groups, activeEnv, selectedId, simOn]);
+  }, [graph, groups, activeEnv, selectedId, simOn, detected]);
 
   // Drag needs live node state; the derived scene resets it (drop snaps back
   // unless the placement actually changed, in which case the scene moves it).
@@ -438,6 +559,7 @@ function InfraInner({
     (point: { x: number; y: number }): string | null => {
       for (const n of nodes) {
         if (n.type !== "infragroup") continue;
+        if ((n.data as GroupData).detected) continue; // not a real deployment target
         const w = n.width ?? 0;
         const h = n.height ?? 0;
         if (
@@ -629,6 +751,24 @@ function InfraInner({
               <Plus className="h-3.5 w-3.5" />
             </Button>
           )}
+          {depsAvailable ? (
+            <>
+              <div className="mx-0.5 h-4 w-px bg-edge" />
+              <button
+                type="button"
+                aria-pressed={depsOn}
+                onClick={() => setDepsOn(!depsOn)}
+                title="Map dependencies detected from the code — module imports between placed components, plus the external services (databases, queues, APIs…) their packages imply"
+                className={cn(
+                  "flex h-6 items-center gap-1.5 rounded-lg px-2 text-[11px] transition-colors",
+                  depsOn ? "bg-crystal-500/15 text-crystal-300" : "text-ink-faint hover:text-ink-muted",
+                )}
+              >
+                <Waypoints className="h-3.5 w-3.5" />
+                deps
+              </button>
+            </>
+          ) : null}
           {groups.length > 0 ? (
             <>
               <div className="mx-0.5 h-4 w-px bg-edge" />

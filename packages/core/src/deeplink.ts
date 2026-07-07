@@ -31,6 +31,8 @@ export interface ArchitectLink {
   diagram?: string;
   /** Open draft plan `.crystal` file path. */
   draft?: string;
+  /** Split-pane review of the open draft (diff against its base). */
+  review?: boolean;
   /** Active journey id (dataflow lens). */
   journey?: string;
   /** Live code-map overlay toggle. */
@@ -101,6 +103,7 @@ export function formatDeepLink(link: DeepLink): string {
     } else {
       if (a.diagram) add("diagram", a.diagram);
       if (a.draft) add("draft", a.draft);
+      if (a.draft && a.review) add("review", "1");
       if (a.journey) add("journey", a.journey);
       if (a.overlay) add("overlay", "1");
     }
@@ -140,6 +143,7 @@ export function parseDeepLink(hash: string): DeepLink {
     if (diagram) a.diagram = diagram;
     const draft = params.get("draft");
     if (draft) a.draft = draft;
+    if (draft && params.get("review") === "1") a.review = true;
     const journey = params.get("journey");
     if (journey) a.journey = journey;
     if (params.get("overlay") === "1") a.overlay = true;

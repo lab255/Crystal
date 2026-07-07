@@ -67,6 +67,18 @@ export interface GitStatusResult {
   files: GitFileStatus[];
 }
 
+/** One commit from `git.log` — enough to pick a review point. */
+export interface GitCommit {
+  hash: string;
+  shortHash: string;
+  subject: string;
+  author: string;
+  /** ISO-8601 author date. */
+  date: string;
+  /** Branch/tag decorations pointing at this commit (e.g. "origin/main"). */
+  refs: string[];
+}
+
 export interface WorkspaceInfo {
   /** Workspace id (matches `WorkspaceDescriptor.id`). */
   id: string;
@@ -100,6 +112,15 @@ export interface BridgeMethods {
     result: { path: string; draft: ArchDraft };
   };
   "archdraft.save": { params: WsScope & { path: string; draft: ArchDraft }; result: { ok: true } };
+  /**
+   * Review a git ref (commit / branch / PR head) architecturally: snapshot the
+   * module + import graph at the ref, project it onto the architecture, and
+   * persist the result as a draft (base = current graph) for split-pane review.
+   */
+  "archdraft.fromRef": {
+    params: WsScope & { archPath: string; ref: string; repoPath?: string };
+    result: { path: string; draft: ArchDraft };
+  };
   "archdraft.delete": { params: WsScope & { path: string }; result: { ok: true } };
   "project.save": { params: WsScope & { path: string; project: Project }; result: { ok: true } };
   "project.create": { params: WsScope & { name: string }; result: { path: string; project: Project } };
@@ -110,6 +131,11 @@ export interface BridgeMethods {
   "fs.rename": { params: WsScope & { from: string; to: string }; result: { ok: true } };
   "fs.delete": { params: WsScope & { path: string }; result: { ok: true } };
   "git.status": { params: WsScope & { repoPath: string }; result: GitStatusResult };
+  /** Recent commits of a repo (newest first) — the pick list for arch review. */
+  "git.log": {
+    params: WsScope & { repoPath?: string; limit?: number };
+    result: { commits: GitCommit[]; branch: string | null };
+  };
   "agent.start": {
     params: WsScope & {
       prompt: string;
