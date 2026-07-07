@@ -1,0 +1,436 @@
+{
+  "crystal": 1,
+  "kind": "archdraft",
+  "data": {
+    "id": "draft_1c556f8f0a10",
+    "name": "Refactor plan",
+    "archPath": ".crystal/architecture/harborview.json",
+    "base": {
+      "id": "arch_69ad95cd3c59",
+      "name": "HarborView",
+      "description": "",
+      "nodes": [
+        {
+          "id": "node_c99effad4538",
+          "kind": "group",
+          "label": "packages/",
+          "description": "",
+          "parentId": null,
+          "position": {
+            "x": 16,
+            "y": 16
+          },
+          "size": {
+            "width": 1392,
+            "height": 1226
+          },
+          "tech": [],
+          "placements": {}
+        },
+        {
+          "id": "node_36c9b3fe2ffe",
+          "kind": "group",
+          "label": "services/",
+          "description": "",
+          "parentId": null,
+          "position": {
+            "x": 1456,
+            "y": 305
+          },
+          "size": {
+            "width": 1392,
+            "height": 648
+          },
+          "tech": [],
+          "placements": {}
+        },
+        {
+          "id": "node_ddaf9de6d242",
+          "kind": "frontend",
+          "label": "@harborview/web",
+          "description": "14 files",
+          "parentId": null,
+          "position": {
+            "x": 2896,
+            "y": 322
+          },
+          "size": null,
+          "tech": [],
+          "codeModule": "apps/web",
+          "placements": {}
+        },
+        {
+          "id": "node_b41c451870a4",
+          "kind": "repo",
+          "label": "@harborview/core",
+          "description": "12 files",
+          "parentId": "node_c99effad4538",
+          "position": {
+            "x": 40,
+            "y": 642
+          },
+          "size": null,
+          "tech": [],
+          "codeModule": "packages/core",
+          "placements": {}
+        },
+        {
+          "id": "node_c8fbe9584a63",
+          "kind": "repo",
+          "label": "@harborview/db",
+          "description": "6 files",
+          "parentId": "node_c99effad4538",
+          "position": {
+            "x": 40,
+            "y": 91
+          },
+          "size": null,
+          "tech": [],
+          "codeModule": "packages/db",
+          "placements": {}
+        },
+        {
+          "id": "node_a3110a3a5314",
+          "kind": "repo",
+          "label": "@harborview/queue",
+          "description": "7 files",
+          "parentId": "node_c99effad4538",
+          "position": {
+            "x": 728,
+            "y": 64
+          },
+          "size": null,
+          "tech": [],
+          "codeModule": "packages/queue",
+          "placements": {}
+        },
+        {
+          "id": "node_438a656173a9",
+          "kind": "repo",
+          "label": "@harborview/api",
+          "description": "12 files",
+          "parentId": "node_36c9b3fe2ffe",
+          "position": {
+            "x": 40,
+            "y": 64
+          },
+          "size": null,
+          "tech": [],
+          "codeModule": "services/api",
+          "placements": {}
+        },
+        {
+          "id": "node_67c19d95bb75",
+          "kind": "repo",
+          "label": "@harborview/worker",
+          "description": "8 files",
+          "parentId": "node_36c9b3fe2ffe",
+          "position": {
+            "x": 728,
+            "y": 91
+          },
+          "size": null,
+          "tech": [],
+          "codeModule": "services/worker",
+          "placements": {}
+        }
+      ],
+      "edges": [
+        {
+          "id": "edge_a674bde1a9ea",
+          "source": "node_ddaf9de6d242",
+          "target": "node_b41c451870a4",
+          "kind": "dependency",
+          "label": "×5"
+        },
+        {
+          "id": "edge_884ae8dde5b0",
+          "source": "node_c8fbe9584a63",
+          "target": "node_b41c451870a4",
+          "kind": "dependency",
+          "label": "×3"
+        },
+        {
+          "id": "edge_677ef08b0afc",
+          "source": "node_438a656173a9",
+          "target": "node_c8fbe9584a63",
+          "kind": "dependency",
+          "label": "×1"
+        },
+        {
+          "id": "edge_738cc6d36228",
+          "source": "node_438a656173a9",
+          "target": "node_a3110a3a5314",
+          "kind": "dependency",
+          "label": "×2"
+        },
+        {
+          "id": "edge_46a68cbdec54",
+          "source": "node_438a656173a9",
+          "target": "node_b41c451870a4",
+          "kind": "dependency",
+          "label": "×3"
+        },
+        {
+          "id": "edge_39d95e8ba300",
+          "source": "node_67c19d95bb75",
+          "target": "node_a3110a3a5314",
+          "kind": "dependency",
+          "label": "×5"
+        }
+      ],
+      "environments": [
+        {
+          "id": "env_391eccd5a79e",
+          "name": "Local",
+          "kind": "local"
+        }
+      ],
+      "journeys": [
+        {
+          "id": "journey_51859d1175c4",
+          "name": "createBooking",
+          "description": "",
+          "entry": {
+            "file": "packages/core/src/booking.ts",
+            "symbol": "createBooking"
+          }
+        },
+        {
+          "id": "journey_a682812e7a3c",
+          "name": "cancelBooking",
+          "description": "",
+          "entry": {
+            "file": "packages/core/src/booking.ts",
+            "symbol": "cancelBooking"
+          }
+        }
+      ],
+      "facets": [],
+      "viewport": {
+        "x": 780.6304452122781,
+        "y": -409.94217410365786,
+        "zoom": 1.524133511475559
+      }
+    },
+    "graph": {
+      "id": "arch_69ad95cd3c59",
+      "name": "HarborView",
+      "description": "",
+      "nodes": [
+        {
+          "id": "node_c99effad4538",
+          "kind": "group",
+          "label": "packages/",
+          "description": "",
+          "parentId": null,
+          "position": {
+            "x": 16,
+            "y": 16
+          },
+          "size": {
+            "width": 1392,
+            "height": 1226
+          },
+          "tech": [],
+          "placements": {}
+        },
+        {
+          "id": "node_36c9b3fe2ffe",
+          "kind": "group",
+          "label": "services/",
+          "description": "",
+          "parentId": null,
+          "position": {
+            "x": 1456,
+            "y": 305
+          },
+          "size": {
+            "width": 1392,
+            "height": 648
+          },
+          "tech": [],
+          "placements": {}
+        },
+        {
+          "id": "node_ddaf9de6d242",
+          "kind": "frontend",
+          "label": "@harborview/web",
+          "description": "14 files",
+          "parentId": null,
+          "position": {
+            "x": 2896,
+            "y": 322
+          },
+          "size": null,
+          "tech": [],
+          "codeModule": "apps/web",
+          "placements": {}
+        },
+        {
+          "id": "node_b41c451870a4",
+          "kind": "repo",
+          "label": "@harborview/core",
+          "description": "12 files",
+          "parentId": "node_c99effad4538",
+          "position": {
+            "x": 40,
+            "y": 642
+          },
+          "size": null,
+          "tech": [],
+          "codeModule": "packages/core",
+          "placements": {}
+        },
+        {
+          "id": "node_c8fbe9584a63",
+          "kind": "repo",
+          "label": "@harborview/db",
+          "description": "6 files",
+          "parentId": "node_c99effad4538",
+          "position": {
+            "x": 40,
+            "y": 91
+          },
+          "size": null,
+          "tech": [],
+          "codeModule": "packages/db",
+          "placements": {}
+        },
+        {
+          "id": "node_a3110a3a5314",
+          "kind": "repo",
+          "label": "@harborview/queue",
+          "description": "7 files",
+          "parentId": "node_c99effad4538",
+          "position": {
+            "x": 728,
+            "y": 64
+          },
+          "size": null,
+          "tech": [],
+          "codeModule": "packages/queue",
+          "placements": {}
+        },
+        {
+          "id": "node_438a656173a9",
+          "kind": "repo",
+          "label": "@harborview/api",
+          "description": "12 files",
+          "parentId": "node_36c9b3fe2ffe",
+          "position": {
+            "x": 40,
+            "y": 64
+          },
+          "size": null,
+          "tech": [],
+          "codeModule": "services/api",
+          "placements": {}
+        },
+        {
+          "id": "node_67c19d95bb75",
+          "kind": "repo",
+          "label": "@harborview/worker",
+          "description": "8 files",
+          "parentId": "node_36c9b3fe2ffe",
+          "position": {
+            "x": 728,
+            "y": 91
+          },
+          "size": null,
+          "tech": [],
+          "codeModule": "services/worker",
+          "placements": {}
+        }
+      ],
+      "edges": [
+        {
+          "id": "edge_a674bde1a9ea",
+          "source": "node_ddaf9de6d242",
+          "target": "node_b41c451870a4",
+          "kind": "dependency",
+          "label": "×5"
+        },
+        {
+          "id": "edge_884ae8dde5b0",
+          "source": "node_c8fbe9584a63",
+          "target": "node_b41c451870a4",
+          "kind": "dependency",
+          "label": "×3"
+        },
+        {
+          "id": "edge_677ef08b0afc",
+          "source": "node_438a656173a9",
+          "target": "node_c8fbe9584a63",
+          "kind": "dependency",
+          "label": "×1"
+        },
+        {
+          "id": "edge_738cc6d36228",
+          "source": "node_438a656173a9",
+          "target": "node_a3110a3a5314",
+          "kind": "dependency",
+          "label": "×2"
+        },
+        {
+          "id": "edge_46a68cbdec54",
+          "source": "node_438a656173a9",
+          "target": "node_b41c451870a4",
+          "kind": "dependency",
+          "label": "×3"
+        },
+        {
+          "id": "edge_39d95e8ba300",
+          "source": "node_67c19d95bb75",
+          "target": "node_a3110a3a5314",
+          "kind": "dependency",
+          "label": "×5"
+        }
+      ],
+      "environments": [
+        {
+          "id": "env_391eccd5a79e",
+          "name": "Local",
+          "kind": "local"
+        }
+      ],
+      "journeys": [
+        {
+          "id": "journey_51859d1175c4",
+          "name": "createBooking",
+          "description": "",
+          "entry": {
+            "file": "packages/core/src/booking.ts",
+            "symbol": "createBooking"
+          }
+        },
+        {
+          "id": "journey_a682812e7a3c",
+          "name": "cancelBooking",
+          "description": "",
+          "entry": {
+            "file": "packages/core/src/booking.ts",
+            "symbol": "cancelBooking"
+          }
+        }
+      ],
+      "facets": [],
+      "viewport": {
+        "x": 155.54545454545462,
+        "y": 207.4431818181818,
+        "zoom": 0.4659090909090909
+      }
+    },
+    "refactors": [
+      {
+        "id": "refactor_c4c6896606d0",
+        "kind": "moveFile",
+        "fromFile": "packages/core/src/cancellation.ts",
+        "toModule": "packages/db",
+        "toFile": null
+      }
+    ],
+    "createdAt": "2026-07-07T07:18:58.046Z",
+    "updatedAt": "2026-07-07T07:20:29.531Z"
+  }
+}

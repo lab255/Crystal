@@ -13,6 +13,7 @@ import {
 import type { CodeSymbolKind } from "@crystal/core";
 import { Badge, Spinner, Tooltip, cn } from "@crystal/ui";
 import { SymbolSnippet } from "../snippets.js";
+import { highlightAttrs } from "../use-highlight.js";
 import { SYMBOL_DRAG_MIME, type SymbolDragPayload } from "./CodeNode.js";
 import type {
   DropTarget,
@@ -123,6 +124,7 @@ export const ModuleNode = memo(function ModuleNode({ data, selected }: NodeProps
         dragOver && "ring-2 ring-warn",
       )}
       style={{ background: `color-mix(in srgb, ${d.accent} 5%, var(--color-surface-1) 55%)` }}
+      {...highlightAttrs({ module: d.path })}
       {...dropProps}
     >
       {d.intentMark ? <IntentBadge mark={d.intentMark} /> : null}
@@ -197,6 +199,7 @@ export const FileNode = memo(function FileNode({ data, selected }: NodeProps<Map
             ? `Pending move ${d.moveLabel} (draft)`
             : `${d.path} — drag onto another module to plan a file move`
       }
+      {...highlightAttrs({ file: d.path, module: d.module })}
       {...dropProps}
     >
       {d.intentMark ? <IntentBadge mark={d.intentMark} /> : null}
@@ -273,6 +276,7 @@ export const SymbolNode = memo(function SymbolNode({ data, selected }: NodeProps
             ? `Pending move ${d.moveLabel} (draft)`
             : `${d.name} :${d.line}${draggable ? " — drag onto another file or module to plan a move" : ""}`
       }
+      {...highlightAttrs({ file: d.file, symbol: d.name, module: d.module })}
     >
       <div className="flex h-7 items-center gap-1 px-1">
         <Badge tone={tone.tone} className="w-7 shrink-0 justify-center font-mono">

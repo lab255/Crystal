@@ -36,7 +36,11 @@ export interface CodeArchSnapshot {
   fileTotal: number;
 }
 
-/** Diagram node kind for a code module (shared by seeding and ref review). */
+/**
+ * Diagram node kind for a code module (shared by seeding and ref review).
+ * A workspace package is a `package` — it only counts as a repository when
+ * it is versioned separately from the workspace (its own `.git`).
+ */
 export function archKindForCodeModule(module: CodeModule): ArchNodeKind {
   const underApps = module.path === "apps" || module.path.startsWith("apps/");
   if (underApps) {
@@ -44,7 +48,7 @@ export function archKindForCodeModule(module: CodeModule): ArchNodeKind {
       ? "frontend"
       : "service";
   }
-  return "repo";
+  return module.versioned ? "repo" : "package";
 }
 
 function topDirOf(modulePath: string): string | null {

@@ -241,7 +241,7 @@ describe("buildCodeContent", () => {
 });
 
 describe("buildBlockPreview", () => {
-  it("summarizes the module: totals plus every file under the cap", () => {
+  it("summarizes the module: totals plus every file", () => {
     const detail = moduleDetail("packages/core", [
       "packages/core/src/a.ts",
       "packages/core/src/b.ts",
@@ -249,18 +249,16 @@ describe("buildBlockPreview", () => {
     const preview = buildBlockPreview(detail);
     expect(preview.totalFiles).toBe(2);
     expect(preview.totalExports).toBe(2); // helper gives 1 export per file
-    expect(preview.more).toBe(0);
     expect(preview.files.map((f) => f.name).sort()).toEqual(["a.ts", "b.ts"]);
   });
 
-  it("caps at the same file count expansion shows and ranks hubs first", () => {
+  it("includes every file (no cap) and ranks hubs first", () => {
     const paths = Array.from({ length: LIVE_FILE_CAP + 6 }, (_, i) => `packages/core/src/f${i}.ts`);
     // f0 is a hub: everyone imports it — it must lead the preview.
     const edges = paths.slice(1).map((p): [string, string] => [p, paths[0]!]);
     const preview = buildBlockPreview(moduleDetail("packages/core", paths, edges));
-    expect(preview.files).toHaveLength(LIVE_FILE_CAP);
+    expect(preview.files).toHaveLength(LIVE_FILE_CAP + 6);
     expect(preview.files[0]!.name).toBe("f0.ts");
-    expect(preview.more).toBe(6);
   });
 });
 

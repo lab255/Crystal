@@ -1,11 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ArrowDownLeft, ArrowUpRight, FileCode2, Trash2, X } from "lucide-react";
 import {
   ARCH_EDGE_KINDS,
   ARCH_LAYERS,
   ARCH_NODE_KINDS,
   DEFAULT_LAYER_OF_KIND,
+  ancestorsOf,
   isContainerKind,
+  matchHighlight,
   type ArchEdge,
   type ArchEdgeKind,
   type ArchLayer,
@@ -14,11 +16,13 @@ import {
   type ArchitectureGraph,
   type CodeModule,
   type CodeModuleDetail,
+  type HighlightRef,
 } from "@crystal/core";
 import { useWorkspace } from "@crystal/client";
 import { Button, Input, Textarea, cn } from "@crystal/ui";
 import { deleteEdges, deleteNodes, updateEdge, updateNode } from "./graph-ops.js";
 import { ACCENT_CSS, EDGE_KIND_STYLE, KIND_META, type AccentName } from "./model.js";
+import { highlightAttrs, hlClass, useViewHighlight } from "./use-highlight.js";
 
 /**
  * What the side pane explains about the selected node beyond its own fields:
@@ -93,6 +97,7 @@ export function Inspector({
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
         {node ? (
           <>
+            <AncestryBreadcrumb graph={graph} node={node} onFocusNode={onFocusNode} />
             <NodeEditor
               node={node}
               graph={graph}
@@ -106,6 +111,41 @@ export function Inspector({
           <EdgeEditor edge={edge} graph={graph} onGraphChange={onGraphChange} onDeleted={onClearSelection} />
         ) : null}
       </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Containment chain of the selected node                              */
+/* ------------------------------------------------------------------ */
+
+function AncestryBreadcrumb({
+  graph,
+  node,
+  onFocusNode,
+}: {
+  graph: ArchitectureGraph;
+  node: ArchNode;
+  onFocusNode?: (id: string) => void;
+}) {
+  const ancestors = useMemo(() => ancestorsOf(graph, node.id), [graph, node.id]);
+  if (ancestors.length === 0) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-x-1 gap-y-0.5 text-[10px]">
+      {ancestors.map((a) => (
+        <span key={a.id} className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => onFocusNode?.(a.id)}
+            className="max-w-36 truncate text-ink-faint hover:text-ink-muted"
+            title={`Show ${a.label} on canvas`}
+          >
+            {a.label}
+          </button>
+          <span className="text-ink-faint">›</span>
+        </span>
+      ))}
+      <span className="max-w-36 truncate text-ink">{node.label}</span>
     </div>
   );
 }
@@ -128,12 +168,21 @@ function RelationRow({
   hint,
   nodeId,
   onFocusNode,
+  hlRef,
+  hl,
+  onHover,
 }: {
   direction: "out" | "in";
   label: string;
   hint?: string;
   nodeId: string | null;
   onFocusNode?: (id: string) => void;
+  /** Cross-view identity of this relation (see use-highlight.ts). */
+  hlRef?: HighlightRef;
+  /** Highlight classes when the row matches the external hover/pin. */
+  hl?: string;
+  /** Publish (`hlRef`) or clear (`null`) the inspector's hover. */
+  onHover?: (ref: HighlightRef | null) => void;
 }) {
   const color = direction === "out" ? HOVER_OUT : HOVER_IN;
   const Arrow = direction === "out" ? ArrowUpRight : ArrowDownLeft;
@@ -143,11 +192,15 @@ function RelationRow({
       type="button"
       disabled={!clickable}
       onClick={() => clickable && onFocusNode(nodeId)}
+      onMouseEnter={hlRef && onHover ? () => onHover(hlRef) : undefined}
+      onMouseLeave={onHover ? () => onHover(null) : undefined}
       title={clickable ? "Show on canvas" : "Not on this diagram"}
       className={cn(
         "flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-[11px]",
         clickable ? "text-ink-muted hover:bg-surface-active hover:text-ink" : "cursor-default text-ink-muted",
+        hl,
       )}
+      {...(hlRef ? highlightAttrs(hlRef) : undefined)}
     >
       <Arrow className="h-3 w-3 shrink-0" style={{ color }} />
       <span className="min-w-0 flex-1 truncate">{label}</span>
@@ -164,6 +217,11 @@ function NodeInsightSections({
   onFocusNode?: (id: string) => void;
 }) {
   const { module, detail, uses, usedBy, imports, importedBy } = insight;
+  const { hover, hoverSource, pinned, setHover } = useViewHighlight("inspector");
+  // Hovers this panel published echo back through the store — skip them.
+  const externalHover = hoverSource !== "inspector" ? hover : null;
+  const hlFor = (el: HighlightRef) =>
+    hlClass(matchHighlight(externalHover, el), matchHighlight(pinned, el));
   const totalExports = detail ? detail.files.reduce((s, f) => s + f.exportCount, 0) : null;
   const topExports = detail
     ? [...detail.files].sort((a, b) => b.exportCount - a.exportCount).filter((f) => f.exportCount > 0).slice(0, 3)
@@ -182,6 +240,9 @@ function NodeInsightSections({
               hint={EDGE_KIND_STYLE[u.kind].label.toLowerCase()}
               nodeId={u.nodeId}
               onFocusNode={onFocusNode}
+              hlRef={{ node: u.nodeId, label: u.label }}
+              hl={hlFor({ node: u.nodeId })}
+              onHover={setHover}
             />
           ))}
           {usedBy.map((u, i) => (
@@ -192,6 +253,9 @@ function NodeInsightSections({
               hint={EDGE_KIND_STYLE[u.kind].label.toLowerCase()}
               nodeId={u.nodeId}
               onFocusNode={onFocusNode}
+              hlRef={{ node: u.nodeId, label: u.label }}
+              hl={hlFor({ node: u.nodeId })}
+              onHover={setHover}
             />
           ))}
         </div>
@@ -236,6 +300,9 @@ function NodeInsightSections({
               hint={`×${d.weight}`}
               nodeId={d.nodeId}
               onFocusNode={onFocusNode}
+              hlRef={{ module: d.module }}
+              hl={hlFor({ module: d.module })}
+              onHover={setHover}
             />
           ))}
           {importedBy.map((d) => (
@@ -246,6 +313,9 @@ function NodeInsightSections({
               hint={`×${d.weight}`}
               nodeId={d.nodeId}
               onFocusNode={onFocusNode}
+              hlRef={{ module: d.module }}
+              hl={hlFor({ module: d.module })}
+              onHover={setHover}
             />
           ))}
           {topExports.length > 0 ? (

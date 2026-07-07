@@ -16,6 +16,11 @@ import {
 import { BridgeClient, type ConnectionState } from "./bridge-client.js";
 import { createAgentStore, type AgentState, type AgentStore } from "./agent-store.js";
 import { createFleetStore, type FleetState, type FleetStore } from "./fleet-store.js";
+import {
+  createHighlightStore,
+  type HighlightState,
+  type HighlightStore,
+} from "./highlight-store.js";
 import { createNavStore, type NavPatch, type NavStore } from "./nav-store.js";
 import {
   createTerminalsStore,
@@ -41,6 +46,7 @@ export interface CrystalContextValue {
   fleetStore: FleetStore;
   terminalsStore: TerminalsStore;
   navStore: NavStore;
+  highlightStore: HighlightStore;
 }
 
 const CrystalContext = createContext<CrystalContextValue | null>(null);
@@ -71,6 +77,7 @@ export function CrystalProvider({
       fleetStore: createFleetStore(client),
       terminalsStore: createTerminalsStore(client),
       navStore: createNavStore(),
+      highlightStore: createHighlightStore(),
     };
   }, [url]);
 
@@ -204,4 +211,19 @@ export function useNav<T>(selector: (link: DeepLink) => T): T {
 export function useNavUpdate(): (patch: NavPatch) => void {
   const { navStore } = useCrystal();
   return navStore.getState().update;
+}
+
+/**
+ * Select from the ephemeral cross-view hover highlight. Subscribing
+ * components light up elements whose identity matches (see `matchHighlight`).
+ */
+export function useHighlight<T>(selector: (s: HighlightState) => T): T {
+  const { highlightStore } = useCrystal();
+  return useStore(highlightStore, selector);
+}
+
+/** Stable publisher for the hover highlight (see `HighlightState.setHover`). */
+export function useHighlightUpdate(): HighlightState["setHover"] {
+  const { highlightStore } = useCrystal();
+  return highlightStore.getState().setHover;
 }

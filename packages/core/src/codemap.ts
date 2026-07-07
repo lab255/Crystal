@@ -19,6 +19,13 @@ export interface CodeModule {
   /** Display name (package.json name or directory name). */
   name: string;
   fileCount: number;
+  /**
+   * True when this module is versioned independently of the workspace — it
+   * has its own `.git` (a nested/sub repository). Workspace packages that
+   * ride the host repo's history are packages, not repositories; this flag
+   * is what distinguishes them. Optional so cached summaries stay valid.
+   */
+  versioned?: boolean;
 }
 
 export interface CodeModuleDep {

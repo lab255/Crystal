@@ -41,3 +41,6 @@ verified so far ride on vitest + the socket surface underneath.
   watch mode when started as above.
 - `getApplicableRefactors`' 5th arg is a refactor *kind* ("refactor.move.file"),
   not a display name — a wrong value silently disables the LS path (bit us once).
+- The code-map summary method is `codemap.get` (there is no `codemap.summary`),
+  and `workspaces.open` resolves to `{ workspace: { id, root, name } }` — the
+  ws id for scoped calls is `result.workspace.id`.

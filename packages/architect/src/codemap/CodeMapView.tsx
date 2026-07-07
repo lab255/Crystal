@@ -24,6 +24,7 @@ import {
   Layers,
   LayoutGrid,
   Package,
+  Pin,
   RadioTower,
   Route,
   Rows3,
@@ -31,12 +32,14 @@ import {
   X,
 } from "lucide-react";
 import {
+  matchHighlight,
   type CodeFileDetail,
   type CodeMapLevelLink,
   type CodeMapSummary,
   type CodeModuleDetail,
   type CrossWorkspaceEdge,
   type CrossWorkspaceMap,
+  type HighlightRef,
   type RefactorIntent,
 } from "@crystal/core";
 import { useCrystal, useNav, useNavUpdate, useWorkspaces } from "@crystal/client";
@@ -54,6 +57,7 @@ import {
 } from "@crystal/ui";
 import { useRefactorIntents } from "../refactor-intents.js";
 import { SymbolSnippet } from "../snippets.js";
+import { hlClass, useViewHighlight } from "../use-highlight.js";
 import { CodeNode, SYMBOL_DRAG_MIME, type CodeRfNode, type SymbolDragPayload } from "./CodeNode.js";
 import { DuplicatesPanel } from "./DuplicatesPanel.js";
 import {
@@ -93,6 +97,15 @@ function layoutCross(nodes: CodeRfNode[], edges: RfEdge[]): CodeRfNode[] {
     const pos = g.node(n.id);
     return { ...n, position: { x: pos.x - 95, y: pos.y - 20 } };
   });
+}
+
+/** Cross-view identity of a map node (see use-highlight.ts). */
+function mapHlRef(data: MapRfNode["data"]): HighlightRef | null {
+  if (data.nodeKind === "module") return { module: data.path, label: data.name };
+  if (data.nodeKind === "file") return { file: data.path, module: data.module, label: data.name };
+  if (data.nodeKind === "symbol")
+    return { file: data.file, symbol: data.name, module: data.module, label: data.name };
+  return null;
 }
 
 /** Fires a cross-mode "open this file in the editor" request handled by the shell. */
@@ -332,6 +345,12 @@ function CodeMapInner({
     [nav],
   );
 
+  /* ---- cross-view highlight ---- */
+
+  const { hover, hoverSource, pinned, setHover, pin } = useViewHighlight("codemap");
+  // Hovers this map published echo back through the store — only ring foreign ones.
+  const externalHover = hoverSource !== "codemap" ? hover : null;
+
   /* ---- scenes ---- */
 
   const moduleDetailMap = useMemo(() => {
@@ -497,6 +516,12 @@ function CodeMapInner({
           },
           {
             type: "item",
+            label: "Pin highlight",
+            icon: Pin,
+            onSelect: () => pin({ module: d.path, label: d.name }),
+          },
+          {
+            type: "item",
             label: "Copy path",
             icon: CopyIcon,
             hint: d.path,
@@ -528,6 +553,12 @@ function CodeMapInner({
             icon: Boxes,
             disabled: !onRevealInDiagram,
             onSelect: () => onRevealInDiagram?.(d.module, d.path),
+          },
+          {
+            type: "item",
+            label: "Pin highlight",
+            icon: Pin,
+            onSelect: () => pin({ file: d.path, module: d.module, label: d.name }),
           },
           {
             type: "item",
@@ -571,6 +602,12 @@ function CodeMapInner({
           },
           {
             type: "item",
+            label: "Pin highlight",
+            icon: Pin,
+            onSelect: () => pin({ file: d.file, symbol: d.name, module: d.module, label: d.name }),
+          },
+          {
+            type: "item",
             label: "Copy reference",
             icon: CopyIcon,
             hint: d.name,
@@ -580,7 +617,7 @@ function CodeMapInner({
       }
       return [];
     },
-    [wsKey, setLevel, toggleModule, toggleCode, openInEditor, onStartJourney, onRevealInDiagram],
+    [wsKey, setLevel, toggleModule, toggleCode, openInEditor, onStartJourney, onRevealInDiagram, pin],
   );
 
   const onCrossNodeClick = useCallback(
@@ -753,6 +790,10 @@ function CodeMapInner({
             scene={scene}
             focus={focus}
             menuFor={menuFor}
+            externalHover={externalHover}
+            pinned={pinned}
+            onHoverNode={setHover}
+            onPinNode={pin}
             onModuleMoved={(path, pos) =>
               setModulePositions((prev) => new Map(prev).set(path, pos))
             }
@@ -829,6 +870,10 @@ function WorkspaceMapCanvas({
   onRelayout,
   onCollapseAll,
   menuFor,
+  externalHover,
+  pinned,
+  onHoverNode,
+  onPinNode,
 }: {
   scene: MapScene;
   focus: { id: string; nonce: number } | null;
@@ -842,6 +887,14 @@ function WorkspaceMapCanvas({
   onCollapseAll: () => void;
   /** Entries for a node's right-click menu (empty array = no menu). */
   menuFor?: (data: MapRfNode["data"]) => MenuEntry[];
+  /** Cross-view hover published by another surface (own echoes filtered out). */
+  externalHover: HighlightRef | null;
+  /** Deep-linked pinned highlight (`sel` param). */
+  pinned: HighlightRef | null;
+  /** Publish (`ref`) or clear (`null`) this map's hover. */
+  onHoverNode: (ref: HighlightRef | null) => void;
+  /** Pin a highlight into the deep link, or clear it with `null`. */
+  onPinNode: (ref: HighlightRef | null) => void;
 }) {
   const [nodes, setNodes, onNodesChange] = useNodesState<MapRfNode>(scene.nodes);
   const [snap, setSnap] = useState(() => {
@@ -912,9 +965,32 @@ function WorkspaceMapCanvas({
     (_evt: unknown, node: RfNode) => {
       const data = node.data as MapRfNode["data"];
       if (data.nodeKind === "file") onSelectFile((data as FileNodeData).path);
+      const el = mapHlRef(data);
+      if (el) onPinNode(el);
     },
-    [onSelectFile],
+    [onSelectFile, onPinNode],
   );
+
+  const onNodeMouseEnter = useCallback(
+    (_evt: unknown, node: RfNode) => {
+      const el = mapHlRef(node.data as MapRfNode["data"]);
+      if (el) onHoverNode(el);
+    },
+    [onHoverNode],
+  );
+  const onNodeMouseLeave = useCallback(() => onHoverNode(null), [onHoverNode]);
+
+  // Cross-view highlight: ring nodes matching the hover published by another
+  // surface or the deep-linked pinned selection (kin = same lineage).
+  const displayNodes = useMemo(() => {
+    if (!externalHover && !pinned) return nodes;
+    return nodes.map((n) => {
+      const el = mapHlRef(n.data);
+      if (!el) return n;
+      const cls = hlClass(matchHighlight(externalHover, el), matchHighlight(pinned, el));
+      return cls ? { ...n, className: cn(n.className, cls) } : n;
+    });
+  }, [nodes, externalHover, pinned]);
 
   const onNodeDoubleClick = useCallback(
     (_evt: unknown, node: RfNode) => {
@@ -940,7 +1016,7 @@ function WorkspaceMapCanvas({
   return (
     <>
     <ReactFlow
-      nodes={nodes}
+      nodes={displayNodes}
       edges={scene.edges}
       nodeTypes={mapNodeTypes}
       onNodesChange={onNodesChange}
@@ -948,7 +1024,12 @@ function WorkspaceMapCanvas({
       onNodeClick={onNodeClick}
       onNodeDoubleClick={onNodeDoubleClick}
       onNodeContextMenu={onNodeContextMenu}
-      onPaneClick={() => onSelectFile(null)}
+      onNodeMouseEnter={onNodeMouseEnter}
+      onNodeMouseLeave={onNodeMouseLeave}
+      onPaneClick={() => {
+        onSelectFile(null);
+        onPinNode(null);
+      }}
       fitView
       fitViewOptions={{ padding: 0.15, maxZoom: 1 }}
       minZoom={0.05}

@@ -132,6 +132,21 @@ describe("round trips", () => {
     }
   });
 
+  it("pinned highlight travels on every architect subview", () => {
+    const diagrams: DeepLink = {
+      ws: "abc",
+      mode: "architect",
+      architect: { view: "diagrams", sel: "sym:packages/core/src/booking.ts#createBooking" },
+    };
+    expect(roundTrip(diagrams)).toEqual(diagrams);
+    const codemap: DeepLink = {
+      ws: "abc",
+      mode: "architect",
+      architect: { view: "codemap", codemap: { kind: "workspace", ws: "abc" }, sel: "mod:packages/core" },
+    };
+    expect(roundTrip(codemap)).toEqual(codemap);
+  });
+
   it("orchestrate board and runs", () => {
     const board: DeepLink = {
       ws: "abc",

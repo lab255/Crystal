@@ -43,6 +43,12 @@ export interface ArchitectLink {
   codemap?: CodeMapLevelLink;
   /** Duplicates panel open. */
   duplicates?: boolean;
+  /**
+   * Pinned cross-view highlight — a clicked component, encoded via
+   * `formatHighlightSel` (highlight.ts) so the selection survives reloads
+   * and travels in shared links. All architect subviews honor it.
+   */
+  sel?: string;
 }
 
 export interface OrchestrateLink {
@@ -110,6 +116,7 @@ export function formatDeepLink(link: DeepLink): string {
       if (a.journey) add("journey", a.journey);
       if (a.overlay) add("overlay", "1");
     }
+    if (a.sel) add("sel", a.sel);
   } else if (mode === "orchestrate") {
     const o = link.orchestrate ?? {};
     const tab = o.tab ?? "board";
@@ -154,6 +161,8 @@ export function parseDeepLink(hash: string): DeepLink {
     if (journey) a.journey = journey;
     if (params.get("overlay") === "1") a.overlay = true;
     if (params.get("dups") === "1") a.duplicates = true;
+    const sel = params.get("sel");
+    if (sel) a.sel = sel;
     const at = params.get("at");
     const mws = params.get("mws") ?? ws;
     const path = params.get("path");

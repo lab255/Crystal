@@ -52,8 +52,8 @@
         },
         "size": null,
         "tech": [],
-        "placements": {},
-        "codeModule": "apps/web"
+        "codeModule": "apps/web",
+        "placements": {}
       },
       {
         "id": "node_b41c451870a4",
@@ -67,8 +67,8 @@
         },
         "size": null,
         "tech": [],
-        "placements": {},
-        "codeModule": "packages/core"
+        "codeModule": "packages/core",
+        "placements": {}
       },
       {
         "id": "node_c8fbe9584a63",
@@ -82,8 +82,8 @@
         },
         "size": null,
         "tech": [],
-        "placements": {},
-        "codeModule": "packages/db"
+        "codeModule": "packages/db",
+        "placements": {}
       },
       {
         "id": "node_a3110a3a5314",
@@ -97,8 +97,8 @@
         },
         "size": null,
         "tech": [],
-        "placements": {},
-        "codeModule": "packages/queue"
+        "codeModule": "packages/queue",
+        "placements": {}
       },
       {
         "id": "node_438a656173a9",
@@ -112,8 +112,8 @@
         },
         "size": null,
         "tech": [],
-        "placements": {},
-        "codeModule": "services/api"
+        "codeModule": "services/api",
+        "placements": {}
       },
       {
         "id": "node_67c19d95bb75",
@@ -127,8 +127,8 @@
         },
         "size": null,
         "tech": [],
-        "placements": {},
-        "codeModule": "services/worker"
+        "codeModule": "services/worker",
+        "placements": {}
       }
     ],
     "edges": [
@@ -204,9 +204,9 @@
     ],
     "facets": [],
     "viewport": {
-      "x": 700.4077407740774,
-      "y": 2.581458145814622,
-      "zoom": 0.7515751575157515
+      "x": 780.6304452122781,
+      "y": -409.94217410365786,
+      "zoom": 1.524133511475559
     }
   }
 }

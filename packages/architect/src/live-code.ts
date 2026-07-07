@@ -83,14 +83,15 @@ function fileImportanceOf(detail: CodeModuleDetail): (f: CodeFileSummary) => num
 }
 
 /**
- * What a collapsed, code-linked block shows at medium zoom: its most important
- * files as chips. Pure summary — the reserved slot's geometry never changes,
- * the box just uses its area for information instead of empty space.
+ * What a collapsed, code-linked block shows at medium zoom: the module's
+ * files as chips — all of them, importance-ranked, sized to fit the slot.
+ * Pure summary — the reserved slot's geometry never changes, the box just
+ * uses its area for information instead of empty space. When fitting every
+ * chip would push the words below the legibility threshold, `LeafNode`
+ * swaps the same area for the high-level overview instead of truncating.
  */
 export interface BlockPreview {
   files: { name: string; dir: string; exports: number }[];
-  /** Files beyond the preview cap. */
-  more: number;
   totalFiles: number;
   totalExports: number;
 }
@@ -98,12 +99,8 @@ export interface BlockPreview {
 export function buildBlockPreview(detail: CodeModuleDetail): BlockPreview {
   const importance = fileImportanceOf(detail);
   const ranked = [...detail.files].sort((a, b) => importance(b) - importance(a));
-  const files = ranked
-    .slice(0, LIVE_FILE_CAP)
-    .map((f) => ({ name: f.name, dir: f.dir, exports: f.exportCount }));
   return {
-    files,
-    more: detail.files.length - files.length,
+    files: ranked.map((f) => ({ name: f.name, dir: f.dir, exports: f.exportCount })),
     totalFiles: detail.files.length,
     totalExports: detail.files.reduce((s, f) => s + f.exportCount, 0),
   };

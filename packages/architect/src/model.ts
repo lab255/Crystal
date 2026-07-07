@@ -8,6 +8,7 @@ import {
   type ArchNode,
   type ArchNodeKind,
   type ArchitectureGraph,
+  type HighlightRef,
 } from "@crystal/core";
 import {
   AppWindow,
@@ -17,6 +18,7 @@ import {
   GitBranch,
   Globe,
   Network,
+  Package,
   Rows3,
   Server,
   StickyNote,
@@ -45,6 +47,7 @@ export const KIND_META: Record<ArchNodeKind, KindMeta> = {
   group: { label: "Group", icon: Folder, defaultAccent: "slate" },
   service: { label: "Service", icon: Server, defaultAccent: "violet" },
   repo: { label: "Repository", icon: GitBranch, defaultAccent: "slate" },
+  package: { label: "Package", icon: Package, defaultAccent: "violet" },
   datastore: { label: "Datastore", icon: Database, defaultAccent: "emerald" },
   cache: { label: "Cache", icon: Zap, defaultAccent: "rose" },
   queue: { label: "Queue", icon: Rows3, defaultAccent: "amber" },
@@ -97,6 +100,11 @@ export type ArchRfNode = RfNode<{
   codeExpanded?: boolean;
   /** Expanded, but the module detail is still loading. */
   codeLoading?: boolean;
+  /**
+   * Structured cross-view identity (node id, containment chain, code links)
+   * stamped onto the DOM as data attributes — see use-highlight.ts.
+   */
+  hlRef?: HighlightRef;
 }>;
 export type ArchRfEdge = RfEdge<{ kind: ArchEdgeKind; lane?: number }>;
 

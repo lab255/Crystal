@@ -44,6 +44,7 @@ export const KIND_SIM_DEFAULTS: Partial<Record<ArchNodeKind, KindSimDefaults>> =
   loadbalancer: { capacityRps: 25_000, latencyMs: 1 },
   service: { capacityRps: 1000, latencyMs: 25 },
   repo: { capacityRps: 1000, latencyMs: 25 },
+  package: { capacityRps: 1000, latencyMs: 25 },
   datastore: { capacityRps: 600, latencyMs: 8 },
   cache: { capacityRps: 20_000, latencyMs: 1, cacheHitRate: 0.85 },
   queue: { capacityRps: 15_000, latencyMs: 2 },

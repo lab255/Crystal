@@ -33,6 +33,11 @@ export {
 } from "./terminal-store.js";
 export { createNavStore, type NavPatch, type NavState, type NavStore } from "./nav-store.js";
 export {
+  createHighlightStore,
+  type HighlightState,
+  type HighlightStore,
+} from "./highlight-store.js";
+export {
   CrystalProvider,
   defaultBridgeUrl,
   useActiveWorkspace,
@@ -40,6 +45,8 @@ export {
   useConnectionState,
   useCrystal,
   useFleet,
+  useHighlight,
+  useHighlightUpdate,
   useNav,
   useNavUpdate,
   useTerminals,

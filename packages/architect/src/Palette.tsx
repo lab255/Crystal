@@ -14,6 +14,7 @@ export const PALETTE_KINDS: ArchNodeKind[] = [
   "datastore",
   "cache",
   "queue",
+  "package",
   "repo",
   "external",
   "note",

@@ -31,10 +31,14 @@ function graph(nodes: ArchNode[], edges: ArchEdge[] = []): ArchitectureGraph {
 }
 
 describe("archKindForCodeModule", () => {
-  it("keeps the seed heuristic: apps split frontend/service, everything else repo", () => {
+  it("apps split frontend/service, everything else is a package", () => {
     expect(archKindForCodeModule(mod("apps/web", 1, "@x/web"))).toBe("frontend");
     expect(archKindForCodeModule(mod("apps/server", 1, "@x/server"))).toBe("service");
-    expect(archKindForCodeModule(mod("packages/core", 1, "@x/core"))).toBe("repo");
+    expect(archKindForCodeModule(mod("packages/core", 1, "@x/core"))).toBe("package");
+  });
+
+  it("a separately-versioned module is a repository", () => {
+    expect(archKindForCodeModule({ ...mod("vendor/lib", 1, "lib"), versioned: true })).toBe("repo");
   });
 });
 

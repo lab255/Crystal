@@ -54,7 +54,7 @@ export function expandNodeIntoCode(
   if (detail.files.length <= MAX_FILE_CHILDREN) {
     const idByFile = new Map<string, string>();
     for (const f of detail.files) {
-      const child = createArchNode("repo", f.name, { x: 0, y: 0 }, nodeId);
+      const child = createArchNode("package", f.name, { x: 0, y: 0 }, nodeId);
       children.push({
         ...child,
         description: f.dir,
@@ -83,7 +83,7 @@ export function expandNodeIntoCode(
     const idByCluster = new Map<string, string>();
     for (const [key, { count }] of [...clusters.entries()].sort()) {
       const label = key === "." ? "(root)" : `${key}/`;
-      const child = createArchNode("repo", label, { x: 0, y: 0 }, nodeId);
+      const child = createArchNode("package", label, { x: 0, y: 0 }, nodeId);
       children.push({
         ...child,
         description: `${count} ${count === 1 ? "file" : "files"}`,

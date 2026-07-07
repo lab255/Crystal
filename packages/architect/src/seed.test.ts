@@ -48,7 +48,7 @@ describe("seedFromCodeMap", () => {
     expect(web.kind).toBe("frontend");
     expect(web.description).toBe("12 files");
     expect(linked.find((n) => n.codeModule === "apps/server")!.kind).toBe("service");
-    expect(linked.find((n) => n.codeModule === "packages/core")!.kind).toBe("repo");
+    expect(linked.find((n) => n.codeModule === "packages/core")!.kind).toBe("package");
   });
 
   it("groups modules by top-level directory", () => {

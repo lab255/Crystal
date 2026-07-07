@@ -2,6 +2,7 @@ import { Handle, NodeResizer, Position, type NodeProps } from "@xyflow/react";
 import { memo } from "react";
 import { Spinner, cn } from "@crystal/ui";
 import { KIND_META, accentOf, type ArchRfNode } from "../model.js";
+import { highlightAttrs } from "../use-highlight.js";
 
 export const ContainerNode = memo(function ContainerNode({
   data,
@@ -13,6 +14,9 @@ export const ContainerNode = memo(function ContainerNode({
 
   return (
     <div
+      {...highlightAttrs(
+        data.hlRef ?? { node: arch.id, module: arch.codeModule ?? undefined },
+      )}
       className={cn(
         "relative h-full w-full rounded-xl border-[1.5px] transition-colors",
         selected ? "border-crystal-400" : "border-edge-strong",

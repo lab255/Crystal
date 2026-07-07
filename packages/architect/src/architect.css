@@ -119,3 +119,69 @@
     opacity: 0;
   }
 }
+
+/* Cross-view highlight (see use-highlight.ts). The same three classes work
+   on react-flow nodes, flamegraph frames, table rows and step chips:
+   hl-hover — the entity under the cursor in *another* view (bright ring);
+   hl-kin   — same lineage (its file, its module, a container of it);
+   hl-pin   — the deep-linked pinned selection (persistent ring). */
+.hl-hover {
+  box-shadow:
+    0 0 0 2px var(--color-crystal-400),
+    0 0 16px color-mix(in srgb, var(--color-crystal-400) 55%, transparent);
+  border-radius: inherit;
+  transition: box-shadow 120ms ease;
+}
+
+.hl-kin {
+  box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--color-crystal-400) 45%, transparent);
+  border-radius: inherit;
+  transition: box-shadow 120ms ease;
+}
+
+.hl-pin {
+  box-shadow:
+    0 0 0 2px var(--color-prism-400),
+    0 0 12px color-mix(in srgb, var(--color-prism-400) 45%, transparent);
+  border-radius: inherit;
+}
+
+.hl-hover.hl-pin {
+  box-shadow:
+    0 0 0 2px var(--color-crystal-400),
+    0 0 0 4px color-mix(in srgb, var(--color-prism-400) 70%, transparent),
+    0 0 16px color-mix(in srgb, var(--color-crystal-400) 55%, transparent);
+}
+
+/* react-flow nodes carry the class on the node wrapper; the visual card is
+   the first child, so project the ring onto it (the wrapper has no radius). */
+.react-flow__node.hl-hover,
+.react-flow__node.hl-kin,
+.react-flow__node.hl-pin {
+  box-shadow: none;
+}
+
+.react-flow__node.hl-hover > * {
+  box-shadow:
+    0 0 0 2px var(--color-crystal-400),
+    0 0 16px color-mix(in srgb, var(--color-crystal-400) 55%, transparent);
+  transition: box-shadow 120ms ease;
+}
+
+.react-flow__node.hl-kin > * {
+  box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--color-crystal-400) 45%, transparent);
+  transition: box-shadow 120ms ease;
+}
+
+.react-flow__node.hl-pin > * {
+  box-shadow:
+    0 0 0 2px var(--color-prism-400),
+    0 0 12px color-mix(in srgb, var(--color-prism-400) 45%, transparent);
+}
+
+.react-flow__node.hl-hover.hl-pin > * {
+  box-shadow:
+    0 0 0 2px var(--color-crystal-400),
+    0 0 0 4px color-mix(in srgb, var(--color-prism-400) 70%, transparent),
+    0 0 16px color-mix(in srgb, var(--color-crystal-400) 55%, transparent);
+}

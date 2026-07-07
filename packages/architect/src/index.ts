@@ -12,3 +12,17 @@ export {
   type OverlayResult,
 } from "./overlay.js";
 export { buildSurveyPrompt, type SurveyKind } from "./survey-prompts.js";
+export {
+  crossViewEntries,
+  highlightAttrs,
+  hlClass,
+  useViewHighlight,
+  type CrossViewActions,
+} from "./use-highlight.js";
+export {
+  LOD_MIN_TEXT_DEFAULT,
+  LOD_MIN_TEXT_RANGE,
+  fileExpandZoom,
+  moduleExpandZoom,
+  useLodConfig,
+} from "./lod-config.js";

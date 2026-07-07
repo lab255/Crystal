@@ -13,11 +13,12 @@ import {
 import type {
   ArchitectureGraph,
   CodeTrace,
+  HighlightRef,
   Journey,
   JourneySuggestion,
   SymbolSearchHit,
 } from "@crystal/core";
-import { uid } from "@crystal/core";
+import { matchHighlight, uid } from "@crystal/core";
 import { useCrystal, useWorkspaces } from "@crystal/client";
 import {
   Badge,
@@ -34,8 +35,11 @@ import {
   Tooltip,
   cn,
 } from "@crystal/ui";
+import { ContextMenu } from "./ContextMenu.js";
+import { requestOpenFile } from "./codemap/CodeMapView.js";
 import type { FlowProjection } from "./dataflow.js";
 import { SymbolSnippet } from "./snippets.js";
+import { crossViewEntries, highlightAttrs, hlClass, useViewHighlight } from "./use-highlight.js";
 
 /** Prefill for the journey dialog ("Start journey here…" from the code map). */
 export interface JourneySeed {
@@ -373,6 +377,15 @@ export function FlowStepsPanel({
   onSelectStep?: (step: CodeTrace["steps"][number]) => void;
 }) {
   const [expanded, setExpanded] = useState<string | null>(null);
+  const { hover, hoverSource, pinned, setHover, pin } = useViewHighlight("journey");
+  // Don't ring our own rows from our own hover — other views handle that.
+  const crossHover = hoverSource === "journey" ? null : hover;
+  const [menu, setMenu] = useState<{
+    x: number;
+    y: number;
+    ref: HighlightRef;
+    step: CodeTrace["steps"][number];
+  } | null>(null);
   const partial = trace ? trace.truncated || trace.unresolvedCalls.length > 0 : false;
   const unmapped = new Set(flow?.unmappedSteps.map((s) => `${s.ref.file}#${s.ref.symbol}`));
 
@@ -408,13 +421,32 @@ export function FlowStepsPanel({
         ) : null}
         {trace?.steps.map((step) => {
           const key = `${step.ref.file}#${step.ref.symbol}`;
+          const el: HighlightRef = {
+            file: step.ref.file,
+            symbol: step.ref.symbol,
+            module: step.module,
+            label: step.ref.symbol,
+          };
           return (
             <div key={key} style={{ paddingLeft: Math.min(step.depth, 6) * 10 }}>
-              <div className="group flex w-full items-center gap-1.5 rounded-md px-1 py-0.5 hover:bg-surface-2">
+              <div
+                className={cn(
+                  "group flex w-full items-center gap-1.5 rounded-md px-1 py-0.5 hover:bg-surface-2",
+                  hlClass(matchHighlight(crossHover, el), matchHighlight(pinned, el)),
+                )}
+                onMouseEnter={() => setHover(el)}
+                onMouseLeave={() => setHover(null)}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  setMenu({ x: e.clientX, y: e.clientY, ref: el, step });
+                }}
+                {...highlightAttrs(el)}
+              >
                 <button
                   type="button"
                   onClick={() => {
                     setExpanded(expanded === key ? null : key);
+                    pin(el);
                     onSelectStep?.(step);
                   }}
                   title={onSelectStep ? "Show on the diagram" : undefined}
@@ -461,6 +493,20 @@ export function FlowStepsPanel({
           </div>
         ) : null}
       </div>
+      {menu ? (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          entries={crossViewEntries(menu.ref, {
+            pin,
+            pinned,
+            revealOnDiagram: onSelectStep ? () => onSelectStep(menu.step) : undefined,
+            openInCodeMap: onOpenStep ? () => onOpenStep(menu.step) : undefined,
+            openFile: requestOpenFile,
+          })}
+          onClose={() => setMenu(null)}
+        />
+      ) : null}
     </aside>
   );
 }

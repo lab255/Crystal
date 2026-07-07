@@ -21,6 +21,7 @@ import {
   Expand,
   ExternalLink,
   FolderGit2,
+  GitFork,
   Layers,
   LayoutGrid,
   Maximize2,
@@ -28,6 +29,8 @@ import {
   Package,
   Paintbrush,
   Pencil,
+  Pin,
+  PinOff,
   Plus,
   Route,
   Rows3,
@@ -37,10 +40,14 @@ import {
 } from "lucide-react";
 import {
   ARCH_EDGE_KINDS,
+  ancestorsOf,
   createArchFacet,
   descendantsOf,
+  enrichHighlight,
   filterGraphToFacet,
+  formatHighlightSel,
   isContainerKind,
+  matchHighlight,
   uid,
   type ArchEdgeKind,
   type ArchNodeKind,
@@ -48,6 +55,7 @@ import {
   type CodeFileDetail,
   type CodeMapSummary,
   type CodeModuleDetail,
+  type HighlightRef,
 } from "@crystal/core";
 import {
   addEdge as opAddEdge,
@@ -115,6 +123,8 @@ import { BusbarEdge } from "./BusbarEdge.js";
 import { PeekPanel } from "./snippets.js";
 import { Palette, DRAG_MIME, PALETTE_KINDS } from "./Palette.js";
 import { Toolbar } from "./Toolbar.js";
+import { fileExpandZoom, moduleExpandZoom, useLodConfig } from "./lod-config.js";
+import { hlClass, useViewHighlight } from "./use-highlight.js";
 
 const nodeTypes = {
   container: ContainerNode,
@@ -192,9 +202,11 @@ const HOVER_IN_STROKE = "var(--color-accent-emerald)";
  * are the user's own focus statement — they don't count against ceilings, are
  * never auto-folded, and folding everything LOD opened elsewhere when one is
  * made keeps the working area readable.
+ *
+ * The base expand thresholds are not fixed zooms: they derive from the
+ * configurable legibility knob (`lod-config.ts`) — detail expands in once its
+ * words would render comfortably above the minimum on-screen text height.
  */
-const LOD_MODULE_EXPAND_ZOOM = 1.15;
-const LOD_FILE_EXPAND_ZOOM = 1.7;
 /** Extra zoom required at the viewport corner vs its center. */
 const LOD_STAGGER = 0.45;
 /** Auto-expansions collapse this far below the zoom that opened them. */
@@ -423,6 +435,11 @@ function CanvasInner({
   const [lodOn, setLodOn] = useState(true);
   const lodOnRef = useRef(lodOn);
   lodOnRef.current = lodOn;
+  // Expand thresholds derive from the legibility knob: detail opens once its
+  // words would render comfortably above the minimum on-screen text height.
+  const minTextPx = useLodConfig((s) => s.minTextPx);
+  const lodModuleZoom = moduleExpandZoom(minTextPx);
+  const lodFileZoom = fileExpandZoom(minTextPx);
   /** id/path → the staggered threshold the expansion fired at (its collapse anchor). */
   const autoExpandedNodes = useRef(new Map<string, number>());
   const autoExpandedFiles = useRef(new Map<string, number>());
@@ -567,6 +584,74 @@ function CanvasInner({
   );
 
   /**
+   * Code anchor of a node: file-linked nodes (legacy "Expand code") resolve to
+   * their file plus its owning module; everything else falls back to the
+   * module link.
+   */
+  const codeRefForNode = useCallback(
+    (id: string): { module: string; file?: string } | null => {
+      const g = graphRef.current;
+      const node = g.nodes.find((n) => n.id === id);
+      if (!node || node.kind === "note") return null;
+      if (node.codeFile) {
+        const file = node.codeFile;
+        let parent = node.parentId ? g.nodes.find((n) => n.id === node.parentId) : undefined;
+        while (parent && !parent.codeModule) {
+          parent = parent.parentId ? g.nodes.find((n) => n.id === parent!.parentId) : undefined;
+        }
+        const byPrefix = codeSummary?.modules
+          .filter((m) => m.path !== "." && file.startsWith(`${m.path}/`))
+          .sort((a, b) => b.path.length - a.path.length)[0]?.path;
+        const module =
+          parent?.codeModule ??
+          byPrefix ??
+          (codeSummary?.modules.some((m) => m.path === ".") ? "." : null);
+        return module ? { module, file } : null;
+      }
+      const module = moduleForNode(id);
+      return module ? { module } : null;
+    },
+    [moduleForNode, codeSummary],
+  );
+
+  /* ---------------- cross-view highlight ---------------- */
+
+  const {
+    hover: extHover,
+    hoverSource,
+    pinned,
+    setHover: publishHover,
+    pin,
+  } = useViewHighlight("canvas");
+
+  /** Structured cross-view identity of a diagram node (see use-highlight.ts). */
+  const hlRefFor = useCallback(
+    (id: string): HighlightRef => {
+      const g = graphRef.current;
+      const node = g.nodes.find((n) => n.id === id);
+      const ref = codeRefForNode(id);
+      const chain = ancestorsOf(g, id).map((n) => n.id);
+      return {
+        node: id,
+        nodePath: chain.length ? chain : undefined,
+        module: ref?.module,
+        file: ref?.file,
+        label: node?.label,
+      };
+    },
+    [codeRefForNode],
+  );
+
+  /** Identity of an ephemeral live-code child (file card / symbol chip). */
+  const hlRefForChild = useCallback((data: Partial<MapNodeData>): HighlightRef | null => {
+    if (data.nodeKind === "file" && data.path)
+      return { file: data.path, module: data.module, label: data.name };
+    if (data.nodeKind === "symbol" && data.file && data.name)
+      return { file: data.file, symbol: data.name, module: data.module, label: data.name };
+    return null;
+  }, []);
+
+  /**
    * Reserved LOD footprints: every code-linked node renders collapsed at the
    * size its module-level expansion needs (`estimateModuleFootprint` always
    * contains the real packing). Level of detail then swaps content inside a
@@ -658,21 +743,31 @@ function CanvasInner({
   }, [hovered, viewGraph, overlay, codeContent]);
 
   // A short dwell before the spotlight engages — sweeping the cursor across
-  // the canvas shouldn't strobe the whole diagram.
+  // the canvas shouldn't strobe the whole diagram. The same dwell publishes
+  // the hover to the cross-view highlight store, so the flamegraph, journey
+  // steps and code map light up whatever the cursor rests on here.
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onNodeMouseEnter = useCallback(
     (_evt: unknown, node: RfNode) => {
       if (hoverTimer.current) clearTimeout(hoverTimer.current);
       if (dragActive) return;
-      hoverTimer.current = setTimeout(() => setHovered(node.id), 180);
+      hoverTimer.current = setTimeout(() => {
+        setHovered(node.id);
+        publishHover(
+          isCodeChildId(node.id)
+            ? hlRefForChild(node.data as Partial<MapNodeData>)
+            : hlRefFor(node.id),
+        );
+      }, 180);
     },
-    [dragActive],
+    [dragActive, publishHover, hlRefFor, hlRefForChild],
   );
   const onNodeMouseLeave = useCallback(() => {
     if (hoverTimer.current) clearTimeout(hoverTimer.current);
     hoverTimer.current = null;
     setHovered(null);
-  }, []);
+    publishHover(null);
+  }, [publishHover]);
   useEffect(
     () => () => {
       if (hoverTimer.current) clearTimeout(hoverTimer.current);
@@ -726,8 +821,21 @@ function CanvasInner({
     return out;
   }, [expanded, codeContent, viewGraph, slotSizes, dragActive]);
 
+  /** Cross-view identity per diagram node, stamped into node data (DOM attrs). */
+  const nodeHlRefs = useMemo(() => {
+    const m = new Map<string, HighlightRef>();
+    for (const n of viewGraph.nodes) m.set(n.id, hlRefFor(n.id));
+    return m;
+  }, [viewGraph, hlRefFor]);
+
+  /** Hover published by another surface — this canvas echoes its own via the lens. */
+  const externalHover = hoverSource !== "canvas" ? extHover : null;
+
   const rfNodes = useMemo<CanvasNode[]>(() => {
-    let nodes: CanvasNode[] = toRfNodes(viewGraph, selectedNodes, slotSizes);
+    let nodes: CanvasNode[] = toRfNodes(viewGraph, selectedNodes, slotSizes).map((n) => {
+      const hlRef = nodeHlRefs.get(n.id);
+      return hlRef ? ({ ...n, data: { ...n.data, hlRef } } as ArchRfNode) : n;
+    });
     if (overlay) {
       nodes = nodes.map((n) => {
         const code = overlay.nodeBadges.get(n.id);
@@ -813,8 +921,21 @@ function CanvasInner({
         lit(n.id) ? n : ({ ...n, className: cn(n.className, "arch-hover-dim") } as CanvasNode),
       );
     }
+    if (externalHover || pinned) {
+      // Cross-view highlight: ring whatever matches the hover published by
+      // another surface (flamegraph frame, journey step, code-map chip) or
+      // the deep-linked pinned selection. Kin = same lineage, softer ring.
+      nodes = nodes.map((n) => {
+        const el =
+          (n.data as { hlRef?: HighlightRef }).hlRef ??
+          hlRefForChild(n.data as Partial<MapNodeData>);
+        if (!el) return n;
+        const cls = hlClass(matchHighlight(externalHover, el), matchHighlight(pinned, el));
+        return cls ? ({ ...n, className: cn(n.className, cls) } as CanvasNode) : n;
+      });
+    }
     return nodes;
-  }, [viewGraph, selectedNodes, slotSizes, overlay, blockPreviews, flow, expanded, codeContent, dragOverrides, displacements, dragActive, hoverNeighborhood, flashId]);
+  }, [viewGraph, selectedNodes, slotSizes, overlay, blockPreviews, flow, expanded, codeContent, dragOverrides, displacements, dragActive, hoverNeighborhood, flashId, nodeHlRefs, externalHover, pinned, hlRefForChild]);
 
   const rfEdges = useMemo(() => {
     let edges = [...toRfEdges(viewGraph, selectedEdges), ...(codeContent.edges as ArchRfEdge[])];
@@ -920,37 +1041,6 @@ function CanvasInner({
       commit(opAddEdge(graphRef.current, connection.source, connection.target, defaultEdgeKind));
     },
     [commit, defaultEdgeKind],
-  );
-
-  /**
-   * Code anchor of a node: file-linked nodes (legacy "Expand code") resolve to
-   * their file plus its owning module; everything else falls back to the
-   * module link.
-   */
-  const codeRefForNode = useCallback(
-    (id: string): { module: string; file?: string } | null => {
-      const g = graphRef.current;
-      const node = g.nodes.find((n) => n.id === id);
-      if (!node || node.kind === "note") return null;
-      if (node.codeFile) {
-        const file = node.codeFile;
-        let parent = node.parentId ? g.nodes.find((n) => n.id === node.parentId) : undefined;
-        while (parent && !parent.codeModule) {
-          parent = parent.parentId ? g.nodes.find((n) => n.id === parent!.parentId) : undefined;
-        }
-        const byPrefix = codeSummary?.modules
-          .filter((m) => m.path !== "." && file.startsWith(`${m.path}/`))
-          .sort((a, b) => b.path.length - a.path.length)[0]?.path;
-        const module =
-          parent?.codeModule ??
-          byPrefix ??
-          (codeSummary?.modules.some((m) => m.path === ".") ? "." : null);
-        return module ? { module, file } : null;
-      }
-      const module = moduleForNode(id);
-      return module ? { module } : null;
-    },
-    [moduleForNode, codeSummary],
   );
 
   /**
@@ -1193,7 +1283,7 @@ function CanvasInner({
           continue;
         }
         if (vp.zoom > threshold - LOD_HYSTERESIS) continue;
-        const now = thresholdFor(n, LOD_MODULE_EXPAND_ZOOM);
+        const now = thresholdFor(n, lodModuleZoom);
         if (vp.zoom >= now) {
           autoExpandedNodes.current.set(id, now);
           continue;
@@ -1208,7 +1298,7 @@ function CanvasInner({
           return next;
         });
       }
-      if (vp.zoom <= LOD_MODULE_EXPAND_ZOOM - LOD_HYSTERESIS) lodSuppressedNodes.current.clear();
+      if (vp.zoom <= lodModuleZoom - LOD_HYSTERESIS) lodSuppressedNodes.current.clear();
 
       const moduleCands: { id: string; threshold: number }[] = [];
       for (const n of live) {
@@ -1219,7 +1309,7 @@ function CanvasInner({
         if (expandedRef.current.has(n.id) || autoExpandedNodes.current.has(n.id)) continue;
         if (lodSuppressedNodes.current.has(n.id)) continue;
         if (!inView(boundsOf(n))) continue;
-        const threshold = thresholdFor(n, LOD_MODULE_EXPAND_ZOOM);
+        const threshold = thresholdFor(n, lodModuleZoom);
         if (vp.zoom >= threshold) moduleCands.push({ id: n.id, threshold });
       }
       moduleCands.sort((a, b) => a.threshold - b.threshold);
@@ -1250,7 +1340,7 @@ function CanvasInner({
           continue;
         }
         if (vp.zoom > threshold - LOD_HYSTERESIS) continue;
-        const now = thresholdFor(n, LOD_FILE_EXPAND_ZOOM);
+        const now = thresholdFor(n, lodFileZoom);
         if (vp.zoom >= now) {
           autoExpandedFiles.current.set(path, now);
           continue;
@@ -1265,7 +1355,7 @@ function CanvasInner({
           return next;
         });
       }
-      if (vp.zoom <= LOD_FILE_EXPAND_ZOOM - LOD_HYSTERESIS) lodSuppressedFiles.current.clear();
+      if (vp.zoom <= lodFileZoom - LOD_HYSTERESIS) lodSuppressedFiles.current.clear();
 
       const fileCands: { path: string; threshold: number }[] = [];
       for (const n of live) {
@@ -1275,7 +1365,7 @@ function CanvasInner({
         if (expandedFilesRef.current.has(path) || autoExpandedFiles.current.has(path)) continue;
         if (lodSuppressedFiles.current.has(path)) continue;
         if (!inView(boundsOf(n))) continue;
-        const threshold = thresholdFor(n, LOD_FILE_EXPAND_ZOOM);
+        const threshold = thresholdFor(n, lodFileZoom);
         if (vp.zoom >= threshold) fileCands.push({ path, threshold });
       }
       fileCands.sort((a, b) => a.threshold - b.threshold);
@@ -1294,8 +1384,18 @@ function CanvasInner({
         });
       }
     },
-    [getNodes, moduleForNode],
+    [getNodes, moduleForNode, lodModuleZoom, lodFileZoom],
   );
+
+  // Turning the legibility knob re-judges the current viewport immediately —
+  // the slider gives live feedback instead of waiting for the next pan/zoom.
+  const lastLodThresholds = useRef({ module: lodModuleZoom, file: lodFileZoom });
+  useEffect(() => {
+    const last = lastLodThresholds.current;
+    if (last.module === lodModuleZoom && last.file === lodFileZoom) return;
+    lastLodThresholds.current = { module: lodModuleZoom, file: lodFileZoom };
+    evaluateLod(getViewport());
+  }, [lodModuleZoom, lodFileZoom, evaluateLod, getViewport]);
 
   // Evaluate while the gesture is in flight (rAF-throttled, and only once the
   // viewport has moved meaningfully), so detail appears as you zoom, not after.
@@ -1380,6 +1480,21 @@ function CanvasInner({
     },
     [commit, fitView, slotSizes],
   );
+
+  // A click pins the highlight into the deep link (`sel=`): it survives
+  // reloads, travels in shared URLs, and every other surface rings it.
+  const onNodeClick = useCallback(
+    (_evt: unknown, node: RfNode) => {
+      if (isCodeChildId(node.id)) {
+        const ref = hlRefForChild(node.data as Partial<MapNodeData>);
+        if (ref) pin(ref);
+        return;
+      }
+      pin(hlRefFor(node.id));
+    },
+    [pin, hlRefFor, hlRefForChild],
+  );
+  const onPaneClick = useCallback(() => pin(null), [pin]);
 
   const onNodeDoubleClick = useCallback(
     (_evt: unknown, node: RfNode) => {
@@ -1582,6 +1697,49 @@ function CanvasInner({
         });
       }
 
+      // Pin + hierarchy: the cross-view traversal entries. The chain walks
+      // the containment annotations every rendered element carries.
+      const nodeRef = hlRefFor(node.id);
+      const pinnedHere =
+        pinned != null && formatHighlightSel(pinned) === formatHighlightSel(nodeRef);
+      const chain = ancestorsOf(g, node.id);
+      const traversalEntries: MenuEntry[] = [
+        pinnedHere
+          ? { type: "item", label: "Unpin highlight", icon: PinOff, onSelect: () => pin(null) }
+          : {
+              type: "item",
+              label: "Pin highlight",
+              icon: Pin,
+              hint: "sel in URL",
+              onSelect: () => pin(nodeRef),
+            },
+        ...(chain.length
+          ? [
+              {
+                type: "submenu",
+                label: "Hierarchy",
+                icon: GitFork,
+                hint: `${chain.length + 1} levels`,
+                entries: [
+                  ...chain.map<MenuEntry>((a) => ({
+                    type: "item",
+                    label: a.label,
+                    hint: KIND_META[a.kind].label,
+                    onSelect: () => focusNode(a.id),
+                  })),
+                  {
+                    type: "item",
+                    label: node.label,
+                    hint: KIND_META[node.kind].label,
+                    checked: true,
+                    onSelect: () => focusNode(node.id),
+                  },
+                ],
+              } satisfies MenuEntry,
+            ]
+          : []),
+      ];
+
       return [
         { type: "heading", label: node.label },
         {
@@ -1592,6 +1750,8 @@ function CanvasInner({
         },
         { type: "item", label: "Duplicate", icon: Copy, onSelect: () => duplicateNode(node.id) },
         ...facetEntries,
+        { type: "separator" },
+        ...traversalEntries,
         { type: "separator" },
         {
           type: "item",
@@ -1697,6 +1857,13 @@ function CanvasInner({
         },
         {
           type: "item",
+          label: "Pin highlight",
+          icon: Pin,
+          disabled: !!d.planned,
+          onSelect: () => pin({ file: d.path, module: d.module, label: d.name }),
+        },
+        {
+          type: "item",
           label: "Open in editor",
           icon: ExternalLink,
           onSelect: () => requestOpenFile(d.path),
@@ -1744,6 +1911,13 @@ function CanvasInner({
           icon: Route,
           disabled: !onStartJourney || !journeyable || !!d.planned,
           onSelect: () => onStartJourney?.({ file: d.file, symbol: d.name }),
+        },
+        {
+          type: "item",
+          label: "Pin highlight",
+          icon: Pin,
+          disabled: !!d.planned,
+          onSelect: () => pin({ file: d.file, symbol: d.name, module: d.module, label: d.name }),
         },
         {
           type: "item",
@@ -1865,6 +2039,9 @@ function CanvasInner({
     updateFacetMembers,
     selectedNodes,
     nav,
+    hlRefFor,
+    pin,
+    pinned,
   ]);
 
   const mapActions = useMemo<MapActions>(
@@ -1948,6 +2125,29 @@ function CanvasInner({
     return () => clearTimeout(timer);
   }, [highlightRequest, viewGraph, focusNode]);
 
+  // A pinned highlight arriving from another surface (or a shared URL)
+  // reveals itself: resolve to a diagram node, select, pan, pulse. Pins made
+  // by clicking on this canvas already have their node selected — skipped.
+  const selectedNodesRef = useRef(selectedNodes);
+  selectedNodesRef.current = selectedNodes;
+  const lastPinKey = useRef<string | null>(null);
+  useEffect(() => {
+    const key = pinned ? formatHighlightSel(pinned) : null;
+    if (key === lastPinKey.current) return;
+    lastPinKey.current = key;
+    if (!pinned) return;
+    const nodeId =
+      pinned.node && viewGraph.nodes.some((n) => n.id === pinned.node)
+        ? pinned.node
+        : (enrichHighlight(pinned, { graph: viewGraph, modules: codeSummary?.modules ?? null })
+            .node ?? null);
+    if (!nodeId || selectedNodesRef.current.has(nodeId)) return;
+    focusNode(nodeId);
+    setFlashId(nodeId);
+    const timer = setTimeout(() => setFlashId(null), 1300);
+    return () => clearTimeout(timer);
+  }, [pinned, viewGraph, codeSummary, focusNode]);
+
   return (
     <MapActionsContext.Provider value={mapActions}>
     <div
@@ -1969,6 +2169,8 @@ function CanvasInner({
         onConnect={onConnect}
         onNodeDragStart={onNodeDragStart}
         onNodeDragStop={onNodeDragStop}
+        onNodeClick={onNodeClick}
+        onPaneClick={onPaneClick}
         onNodeDoubleClick={onNodeDoubleClick}
         onNodeMouseEnter={onNodeMouseEnter}
         onNodeMouseLeave={onNodeMouseLeave}

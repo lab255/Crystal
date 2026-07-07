@@ -5,6 +5,7 @@ import {
   buildFlameTree,
   flameTreeFromCodeTrace,
   layerOfNode,
+  matchHighlight,
   parseCrystalFile,
   type ArchLayer,
   type ArchitectureGraph,
@@ -13,10 +14,14 @@ import {
   type CodeTraceStep,
   type FlameNode,
   type FileEntry,
+  type HighlightRef,
   type TraceProfile,
 } from "@crystal/core";
 import { useCrystal } from "@crystal/client";
 import { Badge, Tooltip, cn, type BadgeTone } from "@crystal/ui";
+import { ContextMenu } from "./ContextMenu.js";
+import { requestOpenFile } from "./codemap/CodeMapView.js";
+import { crossViewEntries, highlightAttrs, hlClass, useViewHighlight } from "./use-highlight.js";
 import { linkNodesToModules } from "./overlay.js";
 
 /**
@@ -247,6 +252,14 @@ interface FrameRect {
   row: number;
 }
 
+/** Right-click state shared by the flamegraph and the call-profile table. */
+interface HlMenuState {
+  x: number;
+  y: number;
+  ref: HighlightRef;
+  step?: CodeTraceStep;
+}
+
 function FlameGraph({
   root,
   unit,
@@ -263,6 +276,11 @@ function FlameGraph({
 }) {
   const [focus, setFocus] = useState<FlameNode>(root);
   useEffect(() => setFocus(root), [root]);
+
+  const { hover, hoverSource, pinned, setHover, pin } = useViewHighlight("profile");
+  // Don't ring our own frames from our own hover — other views handle that.
+  const crossHover = hoverSource === "profile" ? null : hover;
+  const [menu, setMenu] = useState<HlMenuState | null>(null);
 
   const stepByKey = useMemo(
     () => new Map(trace.steps.map((s) => [`${s.ref.file}#${s.ref.symbol}`, s])),
@@ -309,6 +327,14 @@ function FlameGraph({
         {rects.map((r) => {
           const key = r.node.file ? `${r.node.file}#${r.node.symbol ?? r.node.name}` : r.node.name;
           const step = r.node.file && r.node.symbol ? stepByKey.get(`${r.node.file}#${r.node.symbol}`) : undefined;
+          const el: HighlightRef | null = r.node.file
+            ? {
+                file: r.node.file,
+                symbol: r.node.symbol ?? undefined,
+                module: step?.module,
+                label: r.node.symbol ?? r.node.name,
+              }
+            : null;
           const pct = ((r.node.total / root.total) * 100).toFixed(1);
           return (
             <button
@@ -316,11 +342,26 @@ function FlameGraph({
               type="button"
               onClick={() => {
                 setFocus(r.node);
+                if (el) pin(el);
                 if (step) onSelectFrame?.(step);
               }}
               onDoubleClick={() => step && onOpenFrame?.(step)}
+              onMouseEnter={el ? () => setHover(el) : undefined}
+              onMouseLeave={el ? () => setHover(null) : undefined}
+              onContextMenu={
+                el
+                  ? (e) => {
+                      e.preventDefault();
+                      setMenu({ x: e.clientX, y: e.clientY, ref: el, step });
+                    }
+                  : undefined
+              }
+              {...(el ? highlightAttrs(el) : undefined)}
               title={`${r.node.name} — ${fmt(r.node.total)} total (${pct}%), ${fmt(r.node.self)} self${r.node.calls != null ? `, ×${r.node.calls} calls` : ""}${r.node.file ? `\n${r.node.file}` : ""}${step && onSelectFrame ? "\nClick: show on the diagram" : ""}${step && onOpenFrame ? "\nDouble-click: open in code map" : ""}`}
-              className="absolute overflow-hidden whitespace-nowrap rounded-[3px] border border-black/20 px-1 text-left font-mono text-[10px] leading-[18px] text-black/75 transition-[filter] hover:brightness-110"
+              className={cn(
+                "absolute overflow-hidden whitespace-nowrap rounded-[3px] border border-black/20 px-1 text-left font-mono text-[10px] leading-[18px] text-black/75 transition-[filter] hover:brightness-110",
+                el && hlClass(matchHighlight(crossHover, el), matchHighlight(pinned, el)),
+              )}
               style={{
                 left: `${r.left * 100}%`,
                 width: `calc(${r.width * 100}% - 1px)`,
@@ -334,6 +375,21 @@ function FlameGraph({
           );
         })}
       </div>
+      {menu ? (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          entries={crossViewEntries(menu.ref, {
+            pin,
+            pinned,
+            revealOnDiagram:
+              menu.step && onSelectFrame ? () => onSelectFrame(menu.step!) : undefined,
+            openInCodeMap: menu.step && onOpenFrame ? () => onOpenFrame(menu.step!) : undefined,
+            openFile: (f) => requestOpenFile(f),
+          })}
+          onClose={() => setMenu(null)}
+        />
+      ) : null}
     </div>
   );
 }
@@ -364,6 +420,11 @@ function CallProfile({
   onSelectStep?: (step: CodeTraceStep) => void;
 }) {
   const key = (ref: { file: string; symbol: string }) => `${ref.file}#${ref.symbol}`;
+
+  const { hover, hoverSource, pinned, setHover, pin } = useViewHighlight("profile");
+  // Don't ring our own rows from our own hover — other views handle that.
+  const crossHover = hoverSource === "profile" ? null : hover;
+  const [menu, setMenu] = useState<HlMenuState | null>(null);
 
   const { fanIn, fanOut } = useMemo(() => {
     const fanIn = new Map<string, number>();
@@ -448,11 +509,31 @@ function CallProfile({
           {trace.steps.map((step) => {
             const k = key(step.ref);
             const layer = layerOfStep(step);
+            const el: HighlightRef = {
+              file: step.ref.file,
+              symbol: step.ref.symbol,
+              module: step.module,
+              label: step.ref.symbol,
+            };
             return (
               <tr
                 key={k}
-                className={cn("group hover:bg-surface-2", onSelectStep && "cursor-pointer")}
-                onClick={() => onSelectStep?.(step)}
+                className={cn(
+                  "group rounded-md hover:bg-surface-2",
+                  onSelectStep && "cursor-pointer",
+                  hlClass(matchHighlight(crossHover, el), matchHighlight(pinned, el)),
+                )}
+                onClick={() => {
+                  pin(el);
+                  onSelectStep?.(step);
+                }}
+                onMouseEnter={() => setHover(el)}
+                onMouseLeave={() => setHover(null)}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  setMenu({ x: e.clientX, y: e.clientY, ref: el, step });
+                }}
+                {...highlightAttrs(el)}
                 title={onSelectStep ? "Show on the diagram" : undefined}
               >
                 <td className="max-w-64 truncate px-1.5 py-0.5 font-mono text-ink" title={step.ref.file}>
@@ -496,6 +577,21 @@ function CallProfile({
           {trace.unresolvedCalls.length} dynamic/instance-method call
           {trace.unresolvedCalls.length > 1 ? "s" : ""} could not be traced.
         </div>
+      ) : null}
+      {menu ? (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          entries={crossViewEntries(menu.ref, {
+            pin,
+            pinned,
+            revealOnDiagram:
+              menu.step && onSelectStep ? () => onSelectStep(menu.step!) : undefined,
+            openInCodeMap: menu.step && onOpenStep ? () => onOpenStep(menu.step!) : undefined,
+            openFile: (f) => requestOpenFile(f),
+          })}
+          onClose={() => setMenu(null)}
+        />
       ) : null}
     </div>
   );
