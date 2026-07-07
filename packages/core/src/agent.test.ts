@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { LineBuffer, parseClaudeStreamLine } from "./agent.js";
+import {
+  LineBuffer,
+  QUESTION_MARKER,
+  apiRatePerMin,
+  createAgentRun,
+  extractQuestions,
+  parseClaudeStreamLine,
+  rollupRunsUsage,
+  usageTotalTokens,
+  type AgentRun,
+} from "./agent.js";
 
 describe("parseClaudeStreamLine", () => {
   it("parses system init", () => {
@@ -91,6 +101,120 @@ describe("parseClaudeStreamLine", () => {
 
   it("ignores partial stream_event deltas", () => {
     expect(parseClaudeStreamLine(JSON.stringify({ type: "stream_event", event: {} }))).toEqual([]);
+  });
+
+  it("extracts per-turn usage from assistant messages (one API call each)", () => {
+    const line = JSON.stringify({
+      type: "assistant",
+      message: {
+        usage: {
+          input_tokens: 12,
+          output_tokens: 34,
+          cache_read_input_tokens: 560,
+          cache_creation_input_tokens: 78,
+        },
+        content: [{ type: "text", text: "Working on it." }],
+      },
+    });
+    expect(parseClaudeStreamLine(line)).toEqual([
+      {
+        type: "usage",
+        inputTokens: 12,
+        outputTokens: 34,
+        cacheReadTokens: 560,
+        cacheCreationTokens: 78,
+      },
+      { type: "text", text: "Working on it." },
+    ]);
+    // user messages (tool results) never bill usage
+    const userLine = JSON.stringify({
+      type: "user",
+      message: { usage: { input_tokens: 5 }, content: "ignored" },
+    });
+    expect(parseClaudeStreamLine(userLine)).toEqual([{ type: "text", text: "ignored" }]);
+  });
+
+  it("turns marked assistant lines into question events", () => {
+    const line = JSON.stringify({
+      type: "assistant",
+      message: {
+        content: [
+          {
+            type: "text",
+            text: `I checked both options.\n${QUESTION_MARKER} Should the API stay backwards compatible?`,
+          },
+        ],
+      },
+    });
+    const events = parseClaudeStreamLine(line);
+    expect(events).toContainEqual({
+      type: "question",
+      text: "Should the API stay backwards compatible?",
+    });
+    // The marker only speaks for the agent — user/tool text never raises one.
+    const echoed = JSON.stringify({
+      type: "user",
+      message: { content: `${QUESTION_MARKER} echoed back` },
+    });
+    expect(parseClaudeStreamLine(echoed).some((e) => e.type === "question")).toBe(false);
+  });
+});
+
+describe("extractQuestions", () => {
+  it("finds marked lines and ignores everything else", () => {
+    const text = [
+      "Some progress notes.",
+      `${QUESTION_MARKER} Keep the old endpoint?`,
+      `  ${QUESTION_MARKER} Second question `,
+      `${QUESTION_MARKER}`,
+      "no marker here",
+    ].join("\n");
+    expect(extractQuestions(text)).toEqual(["Keep the old endpoint?", "Second question"]);
+  });
+});
+
+describe("usage rollups", () => {
+  const run = (patch: Partial<AgentRun>): AgentRun => ({
+    ...createAgentRun({ prompt: "x" }),
+    ...patch,
+  });
+
+  it("sums every run touching a task, whatever its purpose", () => {
+    const runs = [
+      run({
+        purpose: "implement",
+        usage: { inputTokens: 100, outputTokens: 50, cacheReadTokens: 10, cacheCreationTokens: 5, apiCalls: 3 },
+        costUsd: 0.5,
+        durationMs: 60_000,
+      }),
+      run({
+        purpose: "code-review",
+        usage: { inputTokens: 20, outputTokens: 10, cacheReadTokens: 0, cacheCreationTokens: 0, apiCalls: 1 },
+        costUsd: 0.1,
+        durationMs: 30_000,
+      }),
+      // Legacy run recorded before usage tracking: turns count as API calls.
+      run({ purpose: "merge", turns: 2, costUsd: 0.05 }),
+    ];
+    const rollup = rollupRunsUsage(runs);
+    expect(rollup.usage).toEqual({
+      inputTokens: 120,
+      outputTokens: 60,
+      cacheReadTokens: 10,
+      cacheCreationTokens: 5,
+      apiCalls: 6,
+    });
+    expect(rollup.costUsd).toBeCloseTo(0.65);
+    expect(rollup.activeMs).toBe(90_000);
+    expect(rollup.runCount).toBe(3);
+    expect(usageTotalTokens(rollup.usage)).toBe(195);
+    // 6 calls over 1.5 active minutes
+    expect(apiRatePerMin(rollup.usage, rollup.activeMs)).toBeCloseTo(4);
+  });
+
+  it("reports no rate when nothing ran", () => {
+    const rollup = rollupRunsUsage([]);
+    expect(apiRatePerMin(rollup.usage, rollup.activeMs)).toBeNull();
   });
 });
 

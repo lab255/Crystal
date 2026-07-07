@@ -723,12 +723,31 @@
           "kind": "local"
         }
       ],
-      "journeys": [],
+      "journeys": [
+        {
+          "id": "journey_57f97a41a2d9",
+          "name": "SurveySection",
+          "description": "",
+          "entry": {
+            "file": "packages/architect/src/SurveyPanel.tsx",
+            "symbol": "SurveySection"
+          }
+        },
+        {
+          "id": "journey_cdad43e5b6c0",
+          "name": "WorkspaceCard",
+          "description": "",
+          "entry": {
+            "file": "packages/sdk/src/overview/WorkspaceCard.tsx",
+            "symbol": "WorkspaceCard"
+          }
+        }
+      ],
       "facets": [],
       "viewport": {
-        "x": 47.30000000000007,
-        "y": -366.9499999999998,
-        "zoom": 1.15
+        "x": 608.8391812865498,
+        "y": 96.94152046783631,
+        "zoom": 0.3786549707602339
       }
     },
     "refactors": [
@@ -785,6 +804,6 @@
       }
     ],
     "createdAt": "2026-07-07T03:50:24.786Z",
-    "updatedAt": "2026-07-07T06:40:39.908Z"
+    "updatedAt": "2026-07-07T08:28:15.337Z"
   }
 }

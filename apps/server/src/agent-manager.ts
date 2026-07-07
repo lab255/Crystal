@@ -5,12 +5,14 @@ import {
   Emitter,
   LineBuffer,
   createAgentRun,
+  emptyUsage,
   nowIso,
   parseClaudeStreamLine,
   type AgentEvent,
   type AgentIsolation,
   type AgentRun,
   type RunEvent,
+  type RunPurpose,
 } from "@crystal/core";
 import { runGit } from "./git.js";
 import { resolveInRoot } from "./paths.js";
@@ -23,6 +25,14 @@ export interface AgentStartParams {
   repoId?: string | null;
   resumeSessionId?: string | null;
   isolation?: AgentIsolation;
+  /** Agent profile attribution (model/skills are resolved by the caller). */
+  agentId?: string | null;
+  purpose?: RunPurpose | null;
+  tags?: string[];
+  /** Claude model alias/id for `--model` (from the dispatched agent profile). */
+  model?: string | null;
+  /** Skill names woven into the prompt (from the dispatched agent profile). */
+  skills?: string[];
 }
 
 const MAX_DIFF_BYTES = 1024 * 1024;
@@ -137,6 +147,7 @@ export class AgentManager {
       "--permission-mode",
       "acceptEdits",
     ];
+    if (params.model) args.push("--model", params.model);
     if (params.resumeSessionId) args.push("--resume", params.resumeSessionId);
 
     let child: ChildProcessWithoutNullStreams;
@@ -157,8 +168,13 @@ export class AgentManager {
     run.startedAt = nowIso();
     this.emitRunChanged(run);
 
-    // Prompt goes over stdin — no shell quoting of user text, ever.
-    child.stdin.write(params.prompt);
+    // Prompt goes over stdin — no shell quoting of user text, ever. Specialist
+    // skills ride along as a trailing directive.
+    let prompt = params.prompt;
+    if (params.skills?.length) {
+      prompt += `\n\nUse these skills where relevant: ${params.skills.map((s) => `/${s}`).join(", ")}.`;
+    }
+    child.stdin.write(prompt);
     child.stdin.end();
 
     const stdout = new LineBuffer();
@@ -254,6 +270,17 @@ export class AgentManager {
     if (event.type === "init") {
       run.sessionId = event.sessionId;
       run.model = event.model;
+      this.emitRunChanged(run);
+    } else if (event.type === "usage") {
+      // One usage event per assistant turn — the run's bill is their sum.
+      const u = run.usage ?? emptyUsage();
+      run.usage = {
+        inputTokens: u.inputTokens + event.inputTokens,
+        outputTokens: u.outputTokens + event.outputTokens,
+        cacheReadTokens: u.cacheReadTokens + event.cacheReadTokens,
+        cacheCreationTokens: u.cacheCreationTokens + event.cacheCreationTokens,
+        apiCalls: u.apiCalls + 1,
+      };
       this.emitRunChanged(run);
     } else if (event.type === "result") {
       run.costUsd = event.costUsd;

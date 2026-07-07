@@ -7,6 +7,8 @@ export * from "./arch-review.js";
 export * from "./external-services.js";
 export * from "./refactor.js";
 export * from "./project.js";
+export * from "./tags.js";
+export * from "./agent-profile.js";
 export * from "./todo.js";
 export * from "./terminal.js";
 export * from "./workspace.js";

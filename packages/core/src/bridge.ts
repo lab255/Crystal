@@ -1,6 +1,7 @@
+import type { AgentRoster } from "./agent-profile.js";
 import type { ArchDraft } from "./arch-draft.js";
 import type { ArchitectureGraph } from "./architecture.js";
-import type { AgentRun, RunEvent } from "./agent.js";
+import type { AgentRun, RunEvent, RunPurpose } from "./agent.js";
 import type {
   CodeFileDetail,
   CodeMapSummary,
@@ -129,6 +130,9 @@ export interface BridgeMethods {
   /** The workspace's todo list (`.crystal/todos.json`; empty list if the file is absent). */
   "todos.get": { params: WsScope; result: { todos: TodoList } };
   "todos.save": { params: WsScope & { todos: TodoList }; result: { ok: true } };
+  /** The agent roster (`.crystal/agents.json`; seeded defaults when absent). */
+  "agents.get": { params: WsScope; result: { roster: AgentRoster } };
+  "agents.save": { params: WsScope & { roster: AgentRoster }; result: { ok: true } };
   "fs.list": { params: WsScope & { path: string }; result: { entries: FileEntry[] } };
   "fs.read": { params: WsScope & { path: string }; result: { content: string; truncated: boolean } };
   "fs.write": { params: WsScope & { path: string; content: string }; result: { ok: true } };
@@ -152,6 +156,12 @@ export interface BridgeMethods {
       resumeSessionId?: string | null;
       /** "worktree" executes the run in a disposable git worktree. */
       isolation?: "none" | "worktree";
+      /** Agent profile to dispatch to — the server resolves model + skills from the roster. */
+      agentId?: string | null;
+      /** Attribution: why this run touches its task (implement, code-review, merge, …). */
+      purpose?: RunPurpose | null;
+      /** Dimensional tags stamped onto the run for attribution (see tags.ts). */
+      tags?: string[];
     };
     result: { run: AgentRun };
   };
@@ -254,6 +264,8 @@ export interface BridgeEvents {
   "workspace.changed": { ws: string };
   /** A workspace's todo list was saved (payload carries the new list). */
   "todos.changed": { ws: string; todos: TodoList };
+  /** A workspace's agent roster was saved (payload carries the new roster). */
+  "agents.changed": { ws: string; roster: AgentRoster };
   /** Terminal output/echo chunk (sequenced per terminal). */
   "terminal.data": { ws: string; chunk: TerminalChunk };
   /** A terminal was created, resized, exited or killed. */

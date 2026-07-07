@@ -24,6 +24,46 @@ export type AgentRunStatus = z.infer<typeof AgentRunStatusSchema>;
 export const AgentIsolationSchema = z.enum(["none", "worktree"]);
 export type AgentIsolation = z.infer<typeof AgentIsolationSchema>;
 
+/**
+ * Why a run touched its task. Every kind of turn — implementation, code
+ * review, security review, merging, CI gates, fixes, release — is attributed
+ * to the owning task so cost rolls up across the task's whole lifecycle.
+ */
+export const RUN_PURPOSES = [
+  "implement",
+  "code-review",
+  "security-review",
+  "merge",
+  "ci",
+  "fix",
+  "release",
+  "question",
+] as const;
+export const RunPurposeSchema = z.enum(RUN_PURPOSES);
+export type RunPurpose = z.infer<typeof RunPurposeSchema>;
+
+/** Cumulative token/API usage across a run's turns. */
+export const AgentUsageSchema = z.object({
+  inputTokens: z.number().default(0),
+  outputTokens: z.number().default(0),
+  cacheReadTokens: z.number().default(0),
+  cacheCreationTokens: z.number().default(0),
+  /** API calls observed (one per assistant turn). */
+  apiCalls: z.number().default(0),
+});
+export type AgentUsage = z.infer<typeof AgentUsageSchema>;
+
+export function emptyUsage(): AgentUsage {
+  return { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, apiCalls: 0 };
+}
+
+export function usageTotalTokens(usage: AgentUsage | null | undefined): number {
+  if (!usage) return 0;
+  return (
+    usage.inputTokens + usage.outputTokens + usage.cacheReadTokens + usage.cacheCreationTokens
+  );
+}
+
 export const AgentRunSchema = z.object({
   id: z.string(),
   /** Optional links back into the PM board. */
@@ -38,10 +78,18 @@ export const AgentRunSchema = z.object({
   /** Absolute host path of the run's worktree (null once cleaned up). */
   worktreePath: z.string().nullish(),
   prompt: z.string(),
+  /** Agent profile that executed this run (see agent-profile.ts). */
+  agentId: z.string().nullish(),
+  /** Why this run touched the task (see RUN_PURPOSES). */
+  purpose: RunPurposeSchema.nullish(),
+  /** Dimensional tags for attribution (see tags.ts). */
+  tags: z.array(z.string()).default([]),
   status: AgentRunStatusSchema.default("queued"),
   /** Claude Code session id (for --resume). */
   sessionId: z.string().nullish(),
   model: z.string().nullish(),
+  /** Cumulative token/API usage across the run's turns. */
+  usage: AgentUsageSchema.nullish(),
   costUsd: z.number().nullish(),
   turns: z.number().nullish(),
   durationMs: z.number().nullish(),
@@ -60,6 +108,9 @@ export function createAgentRun(init: {
   projectId?: string | null;
   repoId?: string | null;
   isolation?: AgentIsolation;
+  agentId?: string | null;
+  purpose?: RunPurpose | null;
+  tags?: string[];
 }): AgentRun {
   return AgentRunSchema.parse({
     id: uid("run"),
@@ -69,8 +120,52 @@ export function createAgentRun(init: {
     projectId: init.projectId ?? null,
     repoId: init.repoId ?? null,
     isolation: init.isolation ?? "none",
+    agentId: init.agentId ?? null,
+    purpose: init.purpose ?? null,
+    tags: init.tags ?? [],
     createdAt: nowIso(),
   });
+}
+
+/** Every run attributed to a task, whatever its purpose (implement, review, merge, CI, …). */
+export function runsForTask(taskId: string, runs: AgentRun[]): AgentRun[] {
+  return runs.filter((r) => r.taskId === taskId);
+}
+
+/**
+ * Cumulative usage/cost across a set of runs — a task's token cost is the sum
+ * of every turn that touched it. `activeMs` sums CLI-reported run durations;
+ * pre-usage-tracking runs contribute their `turns` count as API calls.
+ */
+export function rollupRunsUsage(runs: AgentRun[]): {
+  usage: AgentUsage;
+  costUsd: number;
+  activeMs: number;
+  runCount: number;
+} {
+  const usage = emptyUsage();
+  let costUsd = 0;
+  let activeMs = 0;
+  for (const run of runs) {
+    if (run.usage) {
+      usage.inputTokens += run.usage.inputTokens;
+      usage.outputTokens += run.usage.outputTokens;
+      usage.cacheReadTokens += run.usage.cacheReadTokens;
+      usage.cacheCreationTokens += run.usage.cacheCreationTokens;
+      usage.apiCalls += run.usage.apiCalls;
+    } else if (run.turns != null) {
+      usage.apiCalls += run.turns;
+    }
+    if (run.costUsd != null) costUsd += run.costUsd;
+    if (run.durationMs != null) activeMs += run.durationMs;
+  }
+  return { usage, costUsd, activeMs, runCount: runs.length };
+}
+
+/** API call rate in calls/minute over active run time (null when unknowable). */
+export function apiRatePerMin(usage: AgentUsage, activeMs: number): number | null {
+  if (activeMs <= 0 || usage.apiCalls === 0) return null;
+  return usage.apiCalls / (activeMs / 60_000);
 }
 
 /* ------------------------------------------------------------------ */
@@ -92,9 +187,34 @@ export type AgentEvent =
       durationMs: number | null;
       sessionId: string | null;
     }
+  | {
+      type: "usage";
+      inputTokens: number;
+      outputTokens: number;
+      cacheReadTokens: number;
+      cacheCreationTokens: number;
+    }
+  | { type: "question"; text: string }
   | { type: "stderr"; text: string }
   | { type: "status"; status: AgentRunStatus; message?: string }
   | { type: "unknown"; raw: unknown };
+
+/**
+ * Line prefix an agent prints to request user input mid-task. The parser
+ * turns marked lines into `question` events; the board surfaces them as async
+ * questions for the task's human owner, whose answer resumes the session.
+ */
+export const QUESTION_MARKER = "CRYSTAL_QUESTION:";
+
+/** Question texts marked with QUESTION_MARKER in a block of agent output. */
+export function extractQuestions(text: string): string[] {
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.trimStart())
+    .filter((line) => line.startsWith(QUESTION_MARKER))
+    .map((line) => line.slice(QUESTION_MARKER.length).trim())
+    .filter(Boolean);
+}
 
 /** An event as broadcast by the server: sequenced within a run. */
 export interface RunEvent {
@@ -170,19 +290,43 @@ export function parseClaudeStreamLine(line: string): AgentEvent[] {
     case "assistant":
     case "user": {
       const message = m.message as Record<string, unknown> | undefined;
+      const isAssistant = m.type === "assistant";
+      const events: AgentEvent[] = [];
+      // Each assistant message is one API call; its usage block is the turn's
+      // token bill, accumulated per run for task-level cost attribution.
+      const usage =
+        isAssistant && message?.usage && typeof message.usage === "object"
+          ? (message.usage as Record<string, unknown>)
+          : null;
+      if (usage) {
+        events.push({
+          type: "usage",
+          inputTokens: asNumber(usage.input_tokens) ?? 0,
+          outputTokens: asNumber(usage.output_tokens) ?? 0,
+          cacheReadTokens: asNumber(usage.cache_read_input_tokens) ?? 0,
+          cacheCreationTokens: asNumber(usage.cache_creation_input_tokens) ?? 0,
+        });
+      }
+      const pushText = (text: string) => {
+        events.push({ type: "text", text });
+        if (!isAssistant) return;
+        for (const question of extractQuestions(text)) {
+          events.push({ type: "question", text: question });
+        }
+      };
       const content = message?.content;
       if (typeof content === "string") {
-        return content ? [{ type: "text", text: content }] : [];
+        if (content) pushText(content);
+        return events;
       }
-      if (!Array.isArray(content)) return [];
-      const events: AgentEvent[] = [];
+      if (!Array.isArray(content)) return events;
       for (const rawBlock of content) {
         if (!rawBlock || typeof rawBlock !== "object") continue;
         const block = rawBlock as Record<string, unknown>;
         switch (block.type) {
           case "text": {
             const text = asString(block.text);
-            if (text) events.push({ type: "text", text });
+            if (text) pushText(text);
             break;
           }
           case "thinking": {

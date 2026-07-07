@@ -1,13 +1,16 @@
 import { useState } from "react";
-import { Plus, X } from "lucide-react";
+import { KanbanSquare, Plus, X } from "lucide-react";
 import {
+  createTask,
   createTodoItem,
+  matchAgent,
   nextLight,
   nowIso,
   sortTodos,
+  type Project,
   type TodoItem,
 } from "@crystal/core";
-import { useFleet } from "@crystal/client";
+import { useCrystal, useFleet } from "@crystal/client";
 import { TrafficLightDot, cn } from "@crystal/ui";
 
 /**
@@ -17,6 +20,7 @@ import { TrafficLightDot, cn } from "@crystal/ui";
  */
 export function TodoSection({ ws, todos }: { ws: string; todos: TodoItem[] }) {
   const setTodos = useFleet((s) => s.setTodos);
+  const { client, workspaceStore, workspacesStore } = useCrystal();
   const [draft, setDraft] = useState("");
 
   const update = (id: string, patch: Partial<TodoItem>) => {
@@ -35,6 +39,52 @@ export function TodoSection({ ws, todos }: { ws: string; todos: TodoItem[] }) {
     if (!text) return;
     setTodos(ws, [...todos, createTodoItem(text)]);
     setDraft("");
+  };
+
+  /**
+   * Promote a todo to a board task instead of acting on it directly: the task
+   * lands in the workspace's first project, owned by the tag-matched agent
+   * (or the default generic one) and the roster's default human, and the todo
+   * is marked done. Dispatch happens later, from the board.
+   */
+  const promote = async (t: TodoItem) => {
+    const { roster } = await client.request("agents.get", { ws });
+    const labels = ["source:todo"];
+    const makeTask = (project: Project) => {
+      const task = createTask(t.text);
+      task.description = t.note;
+      task.labels = labels;
+      task.owners = {
+        agentId: matchAgent(labels, roster)?.id ?? null,
+        human: roster.defaultHuman || null,
+      };
+      task.order =
+        Math.max(0, ...project.tasks.filter((x) => x.status === "backlog").map((x) => x.order)) + 1;
+      return task;
+    };
+    // The active workspace's board lives in the workspace store — go through
+    // it so a pending debounced save can't clobber the new task. Any other
+    // workspace saves directly over the bridge with an explicit `ws`.
+    const isActive = workspacesStore.getState().activeId === ws;
+    const activeInfo = isActive ? workspaceStore.getState().info : null;
+    if (activeInfo) {
+      const entry = activeInfo.projects[0];
+      if (!entry) return;
+      workspaceStore.getState().updateProject(entry.path, {
+        ...entry.project,
+        tasks: [...entry.project.tasks, makeTask(entry.project)],
+      });
+    } else {
+      const info = await client.request("workspace.get", { ws });
+      const entry = info.projects[0];
+      if (!entry) return;
+      await client.request("project.save", {
+        ws,
+        path: entry.path,
+        project: { ...entry.project, tasks: [...entry.project.tasks, makeTask(entry.project)] },
+      });
+    }
+    update(t.id, { done: true });
   };
 
   return (
@@ -71,6 +121,17 @@ export function TodoSection({ ws, todos }: { ws: string; todos: TodoItem[] }) {
                 t.done && "line-through",
               )}
             />
+            {!t.done ? (
+              <button
+                type="button"
+                onClick={() => void promote(t)}
+                aria-label="Promote to a board task"
+                title="Promote to a board task (assigned to an agent + human)"
+                className="shrink-0 rounded p-0.5 text-ink-faint opacity-0 hover:text-crystal-300 group-hover/todo:opacity-100"
+              >
+                <KanbanSquare className="h-3 w-3" />
+              </button>
+            ) : null}
             <button
               type="button"
               onClick={() => remove(t.id)}

@@ -126,6 +126,13 @@ export async function startCrystalServer(opts: {
       return { ok: true };
     },
     "project.create": ({ ws, name }) => registry.get(ws).store.createProject(name),
+    "agents.get": async ({ ws }) => ({ roster: await registry.get(ws).store.loadAgents() }),
+    "agents.save": async ({ ws, roster }) => {
+      const rt = registry.get(ws);
+      await rt.store.saveAgents(roster);
+      broadcast("agents.changed", { ws: rt.id, roster });
+      return { ok: true };
+    },
     "todos.get": async ({ ws }) => ({ todos: await registry.get(ws).store.loadTodos() }),
     "todos.save": async ({ ws, todos }) => {
       const rt = registry.get(ws);
@@ -155,9 +162,22 @@ export async function startCrystalServer(opts: {
     },
     "git.status": ({ ws, repoPath }) => gitStatus(registry.get(ws).root, repoPath),
     "git.log": ({ ws, repoPath, limit }) => gitLog(registry.get(ws).root, repoPath ?? ".", limit),
-    "agent.start": async ({ ws, ...params }) => ({
-      run: await registry.get(ws).agents.start(params),
-    }),
+    "agent.start": async ({ ws, ...params }) => {
+      const rt = registry.get(ws);
+      // Resolve the dispatch profile server-side so model + skills always
+      // follow the roster on disk, whatever the client knew.
+      let model: string | null = null;
+      let skills: string[] = [];
+      if (params.agentId) {
+        const roster = await rt.store.loadAgents();
+        const profile = roster.agents.find((a) => a.id === params.agentId);
+        if (profile) {
+          model = profile.model;
+          skills = profile.skills;
+        }
+      }
+      return { run: await rt.agents.start({ ...params, model, skills }) };
+    },
     "agent.cancel": async ({ ws, runId }) => {
       await registry.get(ws).agents.cancel(runId);
       return { ok: true };

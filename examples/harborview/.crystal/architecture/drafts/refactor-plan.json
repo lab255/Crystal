@@ -412,13 +412,22 @@
             "file": "packages/core/src/booking.ts",
             "symbol": "cancelBooking"
           }
+        },
+        {
+          "id": "journey_4f361f1865dc",
+          "name": "sendEmail",
+          "description": "",
+          "entry": {
+            "file": "services/worker/src/processors/email.ts",
+            "symbol": "sendEmail"
+          }
         }
       ],
       "facets": [],
       "viewport": {
-        "x": 155.54545454545462,
-        "y": 207.4431818181818,
-        "zoom": 0.4659090909090909
+        "x": 125.00454545454545,
+        "y": 264.8036931818182,
+        "zoom": 0.37471590909090907
       }
     },
     "refactors": [
@@ -431,6 +440,6 @@
       }
     ],
     "createdAt": "2026-07-07T07:18:58.046Z",
-    "updatedAt": "2026-07-07T07:20:29.531Z"
+    "updatedAt": "2026-07-07T11:04:37.183Z"
   }
 }

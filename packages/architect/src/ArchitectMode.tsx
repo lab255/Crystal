@@ -21,13 +21,17 @@ import {
 import {
   createArchDraft as newArchDraft,
   createArchFacet,
+  createEpic,
+  createTask,
   graphsEqual,
+  matchAgent,
   mergeGraphs,
   type ArchDraft,
   type ArchitectureGraph,
   type CodeMapSummary,
   type CodeTrace,
   type CodeTraceStep,
+  type TaskItem,
 } from "@crystal/core";
 import {
   useConnectionState,
@@ -73,6 +77,7 @@ import { SurveySection } from "./SurveyPanel.js";
 const EMPTY_ARCHITECTURES: never[] = [];
 const EMPTY_DRAFTS: never[] = [];
 const EMPTY_REFACTORS: never[] = [];
+const EMPTY_PROJECTS: never[] = [];
 
 type ArchitectView = "diagrams" | "infra" | "codemap";
 
@@ -227,6 +232,9 @@ function DiagramsView({
   const updateArchDraft = useWorkspace((s) => s.updateArchDraft);
   const createDraftFile = useWorkspace((s) => s.createArchDraft);
   const deleteArchDraft = useWorkspace((s) => s.deleteArchDraft);
+  const projects = useWorkspace((s) => s.info?.projects ?? EMPTY_PROJECTS);
+  const updateProject = useWorkspace((s) => s.updateProject);
+  const roster = useWorkspace((s) => s.roster);
 
   const nav = useNavUpdate();
   const infoLoaded = useWorkspace((s) => s.info != null);
@@ -473,10 +481,10 @@ function DiagramsView({
       setApplyDialogOpen(true);
       return;
     }
-    void finalizeApply({ worktree: true });
+    void finalizeApply();
   }
 
-  async function finalizeApply(opts: { worktree: boolean }) {
+  async function finalizeApply() {
     if (!activeDraft || !selected) return;
     setApplyBusy(true);
     try {
@@ -511,25 +519,62 @@ function DiagramsView({
           notes.push(`refactor engine error: ${(err as Error).message}`);
         }
       }
-      for (const hoist of hoists) {
-        const sources = await Promise.all(
-          hoist.symbols.map(async (s) => {
-            try {
-              const src = await client.request("codemap.symbolSource", { file: s.file, symbol: s.symbol });
-              return { ...s, startLine: src.startLine, endLine: src.endLine, text: src.text };
-            } catch {
-              return { ...s };
+      // Hoists become board tasks, not immediate agent runs: the plan lands as
+      // an epic on the project board, each task owned by the tag-matched
+      // specialist (or default generic agent) + the default human, carrying
+      // its prepared prompt for dispatch from the board.
+      if (hoists.length > 0) {
+        const target = projects[0];
+        if (!target) {
+          notes.push("no project board — hoists skipped");
+        } else {
+          const epic = createEpic(activeDraft.draft.name);
+          const baseOrder =
+            Math.max(0, ...target.project.tasks.map((t) => t.order)) + 1;
+          const tasks: TaskItem[] = [];
+          for (const [i, hoist] of hoists.entries()) {
+            const sources = await Promise.all(
+              hoist.symbols.map(async (s) => {
+                try {
+                  const src = await client.request("codemap.symbolSource", { file: s.file, symbol: s.symbol });
+                  return { ...s, startLine: src.startLine, endLine: src.endLine, text: src.text };
+                } catch {
+                  return { ...s };
+                }
+              }),
+            );
+            const name = hoist.newName ?? hoist.symbols[0]?.symbol ?? "symbol";
+            const labels = ["kind:refactor", "source:draft"];
+            const task = createTask(`Hoist ${name} → ${hoist.targetModule}`);
+            task.description = `Consolidate ${hoist.symbols.length} duplicate implementation${
+              hoist.symbols.length > 1 ? "s" : ""
+            } into ${hoist.targetModule}. Planned in draft "${activeDraft.draft.name}".`;
+            task.labels = labels;
+            task.epicId = epic.id;
+            task.size = "s";
+            task.agentPrompt = buildHoistPrompt(hoist, sources);
+            task.links = {
+              nodeIds: [],
+              repoIds: [],
+              files: [...new Set(hoist.symbols.map((s) => s.file))],
+            };
+            if (roster) {
+              task.owners = {
+                agentId: matchAgent(labels, roster)?.id ?? null,
+                human: roster.defaultHuman || null,
+              };
             }
-          }),
-        );
-        try {
-          await client.request("agent.start", {
-            prompt: buildHoistPrompt(hoist, sources),
-            isolation: opts.worktree ? "worktree" : "none",
+            task.order = baseOrder + i;
+            tasks.push(task);
+          }
+          updateProject(target.path, {
+            ...target.project,
+            epics: [...target.project.epics, epic],
+            tasks: [...target.project.tasks, ...tasks],
           });
-          notes.push(`hoist → ${hoist.targetModule}: agent run started`);
-        } catch (err) {
-          notes.push(`hoist → ${hoist.targetModule} failed to start: ${(err as Error).message}`);
+          notes.push(
+            `${tasks.length} hoist${tasks.length > 1 ? "s" : ""} queued on the board (epic "${epic.name}")`,
+          );
         }
       }
 
@@ -819,7 +864,7 @@ function DiagramsView({
                 open={applyDialogOpen}
                 onOpenChange={(open) => !applyBusy && setApplyDialogOpen(open)}
                 intents={draftRefactors}
-                onConfirm={(opts) => void finalizeApply(opts)}
+                onConfirm={() => void finalizeApply()}
                 busy={applyBusy}
               />
             </>

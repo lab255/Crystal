@@ -59,6 +59,10 @@ export interface OrchestrateLink {
   task?: string;
   /** Selected agent run id (runs tab). */
   run?: string;
+  /** Board grouping: "status" (default), "epic", or "tag:<dimension>". */
+  group?: string;
+  /** Board sort key: "manual" (default), "priority", "size", "tokens" or "cost". */
+  sort?: string;
 }
 
 export interface CodeLink {
@@ -123,6 +127,8 @@ export function formatDeepLink(link: DeepLink): string {
     path += `/${tab}`;
     if (o.project) add("project", o.project);
     if (tab === "board" && o.task) add("task", o.task);
+    if (tab === "board" && o.group) add("group", o.group);
+    if (tab === "board" && o.sort) add("sort", o.sort);
     if (tab === "runs" && o.run) add("run", o.run);
   } else if (mode === "code") {
     if (link.code?.file) add("file", link.code.file);
@@ -180,6 +186,10 @@ export function parseDeepLink(hash: string): DeepLink {
     if (project) o.project = project;
     const task = params.get("task");
     if (task) o.task = task;
+    const group = params.get("group");
+    if (group) o.group = group;
+    const sort = params.get("sort");
+    if (sort) o.sort = sort;
     const run = params.get("run");
     if (run) o.run = run;
     if (Object.keys(o).length) link.orchestrate = o;

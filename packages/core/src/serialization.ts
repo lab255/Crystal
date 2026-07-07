@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { AgentRosterSchema, type AgentRoster } from "./agent-profile.js";
 import { ArchDraftSchema, type ArchDraft } from "./arch-draft.js";
 import { ArchitectureGraphSchema, type ArchitectureGraph } from "./architecture.js";
 import { ProjectSchema, type Project } from "./project.js";
@@ -31,11 +32,21 @@ export type CrystalFileKind =
   | "workspace"
   | "survey"
   | "trace"
-  | "todos";
+  | "todos"
+  | "agents";
 
 const EnvelopeSchema = z.object({
   crystal: z.number(),
-  kind: z.enum(["architecture", "archdraft", "project", "workspace", "survey", "trace", "todos"]),
+  kind: z.enum([
+    "architecture",
+    "archdraft",
+    "project",
+    "workspace",
+    "survey",
+    "trace",
+    "todos",
+    "agents",
+  ]),
   data: z.unknown(),
 });
 
@@ -47,6 +58,7 @@ const DATA_SCHEMAS = {
   survey: ArchSurveySchema,
   trace: TraceProfileSchema,
   todos: TodoListSchema,
+  agents: AgentRosterSchema,
 } as const;
 
 export interface KindDataMap {
@@ -57,6 +69,7 @@ export interface KindDataMap {
   survey: ArchSurvey;
   trace: TraceProfile;
   todos: TodoList;
+  agents: AgentRoster;
 }
 
 /**

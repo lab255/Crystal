@@ -5,6 +5,7 @@ import {
   ChevronDown,
   ChevronRight,
   CircleCheck,
+  CircleHelp,
   CircleX,
   GitBranch,
   RefreshCw,
@@ -12,10 +13,10 @@ import {
   Trash2,
   Wrench,
 } from "lucide-react";
-import type { AgentEvent, AgentRun, RunEvent } from "@crystal/core";
+import { usageTotalTokens, type AgentEvent, type AgentRun, type RunEvent } from "@crystal/core";
 import { useAgents, useCrystal } from "@crystal/client";
 import { Badge, Button, Spinner, StatusDot, Tooltip, cn } from "@crystal/ui";
-import { formatCost, formatDuration } from "./prompt.js";
+import { formatCost, formatDuration, formatTokens } from "./prompt.js";
 
 /** Live (or historical) view of a single agent run. */
 export function RunView({ run }: { run: AgentRun }) {
@@ -42,8 +43,11 @@ export function RunView({ run }: { run: AgentRun }) {
         <div className="min-w-0 flex-1">
           <div className="truncate text-xs font-medium text-ink">{run.prompt.split("\n")[0]}</div>
           <div className="mt-0.5 flex items-center gap-2 text-[10px] text-ink-faint">
+            {run.purpose ? <Badge tone="violet">{run.purpose}</Badge> : null}
             {run.model ? <span>{run.model}</span> : null}
             <span>{formatCost(run.costUsd)}</span>
+            {run.usage ? <span>{formatTokens(usageTotalTokens(run.usage))} tok</span> : null}
+            {run.usage?.apiCalls ? <span>{run.usage.apiCalls} calls</span> : null}
             <span>{formatDuration(run.durationMs)}</span>
             {run.turns != null ? <span>{run.turns} turns</span> : null}
             <span className="font-mono">{run.cwd}</span>
@@ -236,6 +240,21 @@ function EventRow({ runEvent }: { runEvent: RunEvent }) {
           </div>
         </div>
       );
+    case "question":
+      return (
+        <div className="flex items-start gap-2 rounded-lg border border-warn/30 bg-warn/10 px-3 py-2 text-xs leading-relaxed text-ink">
+          <CircleHelp className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warn" />
+          <div className="min-w-0">
+            <span className="whitespace-pre-wrap">{event.text}</span>
+            <div className="mt-1 text-[10px] text-ink-faint">
+              Waiting for the human owner — answer it from the task on the board.
+            </div>
+          </div>
+        </div>
+      );
+    // Per-turn token bookkeeping; the header shows the accumulated total.
+    case "usage":
+      return null;
     case "stderr":
       return <div className="px-1 font-mono text-[10px] text-warn/80">{event.text}</div>;
     case "status":

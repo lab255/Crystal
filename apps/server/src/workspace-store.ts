@@ -1,14 +1,17 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import {
+  AGENTS_FILE,
   ARCHITECTURE_DIR,
   ARCH_DRAFTS_DIR,
+  AgentRosterSchema,
   CRYSTAL_DIR,
   PROJECTS_DIR,
   TODOS_FILE,
   TodoListSchema,
   WORKSPACE_FILE,
   createArchitectureGraph,
+  createDefaultRoster,
   createProject,
   createRepoRef,
   createTodoList,
@@ -16,6 +19,7 @@ import {
   parseCrystalFile,
   serializeCrystalFile,
   slugify,
+  type AgentRoster,
   type ArchDraft,
   type ArchitectureGraph,
   type Project,
@@ -175,6 +179,22 @@ export class WorkspaceStore {
     const file = resolveInRoot(this.root, TODOS_FILE);
     await fs.mkdir(path.dirname(file), { recursive: true });
     await fs.writeFile(file, serializeCrystalFile("todos", parsed), "utf8");
+  }
+
+  /** Load the agent roster (seeded defaults when the file doesn't exist yet). */
+  async loadAgents(): Promise<AgentRoster> {
+    const file = resolveInRoot(this.root, AGENTS_FILE);
+    if (!(await exists(file))) return createDefaultRoster();
+    return parseCrystalFile("agents", await fs.readFile(file, "utf8"));
+  }
+
+  async saveAgents(roster: AgentRoster): Promise<void> {
+    // Validate before writing — a bad payload must not corrupt the file for
+    // every later read.
+    const parsed = AgentRosterSchema.parse(roster);
+    const file = resolveInRoot(this.root, AGENTS_FILE);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, serializeCrystalFile("agents", parsed), "utf8");
   }
 
   async saveProject(relPath: string, project: Project): Promise<void> {

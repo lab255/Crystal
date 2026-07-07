@@ -1,5 +1,7 @@
 import { createStore, type StoreApi } from "zustand/vanilla";
+import { AGENTS_FILE } from "@crystal/core";
 import type {
+  AgentRoster,
   ArchDraft,
   ArchitectureGraph,
   Project,
@@ -10,6 +12,8 @@ import type { BridgeClient } from "./bridge-client.js";
 
 export interface WorkspaceState {
   info: WorkspaceInfo | null;
+  /** Agent roster (`.crystal/agents.json`) — dispatch profiles + default human. */
+  roster: AgentRoster | null;
   loading: boolean;
   error: string | null;
   /** Paths with unsaved (debounced, in-flight) changes. */
@@ -34,6 +38,8 @@ export interface WorkspaceState {
   /** Optimistically update + debounce-persist a project board. */
   updateProject(path: string, project: Project): void;
   createProject(name: string): Promise<{ path: string; project: Project }>;
+  /** Optimistically update + debounce-persist the agent roster. */
+  updateRoster(roster: AgentRoster): void;
   /** Flush all debounced saves immediately. */
   flush(): Promise<void>;
 }
@@ -74,6 +80,7 @@ export function createWorkspaceStore(client: BridgeClient): WorkspaceStore {
 
     return {
       info: null,
+      roster: null,
       loading: false,
       error: null,
       pendingSaves: {},
@@ -81,8 +88,11 @@ export function createWorkspaceStore(client: BridgeClient): WorkspaceStore {
       async refresh() {
         set({ loading: true });
         try {
-          const info = await client.request("workspace.get", {});
-          set({ info, loading: false, error: null });
+          const [info, agents] = await Promise.all([
+            client.request("workspace.get", {}),
+            client.request("agents.get", {}),
+          ]);
+          set({ info, roster: agents.roster, loading: false, error: null });
         } catch (err) {
           set({ loading: false, error: (err as Error).message });
         }
@@ -199,6 +209,17 @@ export function createWorkspaceStore(client: BridgeClient): WorkspaceStore {
         return created;
       },
 
+      updateRoster(roster) {
+        const info = get().info;
+        set({ roster });
+        if (!info) return;
+        const ws = info.id;
+        schedule(AGENTS_FILE, async () => {
+          const latest = get().roster;
+          if (latest) await client.request("agents.save", { ws, roster: latest });
+        });
+      },
+
       async flush() {
         const all = [...flushers.values()];
         for (const timer of timers.values()) clearTimeout(timer);
@@ -207,6 +228,12 @@ export function createWorkspaceStore(client: BridgeClient): WorkspaceStore {
         await Promise.all(all.map((f) => f()));
       },
     };
+  });
+
+  // Another client (or the server seeding defaults) saved the roster.
+  client.events.on("agents.changed", ({ ws, roster }) => {
+    if (client.scope && ws !== client.scope) return;
+    store.setState({ roster });
   });
 
   return store;

@@ -154,7 +154,8 @@ export function RefactorChip({
 
 /**
  * Confirmation shown when applying a draft that carries refactor intents:
- * moves preview through the engine, hoists are handed to an agent run.
+ * moves preview through the engine, hoists are queued as agent-owned tasks on
+ * the project board (dispatched from there, not at apply time).
  */
 export function ApplyRefactorsDialog({
   open,
@@ -166,14 +167,13 @@ export function ApplyRefactorsDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   intents: RefactorIntent[];
-  onConfirm: (opts: { worktree: boolean }) => void;
+  onConfirm: () => void;
   busy: boolean;
 }) {
   const { client } = useCrystal();
   const [plans, setPlans] = useState<RefactorPlan[] | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
-  const [worktree, setWorktree] = useState(true);
 
   const hoists = useMemo(() => intents.filter((i) => i.kind === "hoist"), [intents]);
 
@@ -205,7 +205,7 @@ export function ApplyRefactorsDialog({
       </Badge>
     ) : (
       <Badge tone="violet">
-        <Bot className="h-2.5 w-2.5" /> agent run
+        <Bot className="h-2.5 w-2.5" /> board task
       </Badge>
     );
 
@@ -213,7 +213,7 @@ export function ApplyRefactorsDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         title="Apply draft with refactors"
-        description="The diagram changes apply first; then moves run through the refactor engine and hoists start agent runs."
+        description="The diagram changes apply first; then moves run through the refactor engine and hoists are queued on the project board, assigned to an agent for dispatch."
       >
         <div className="max-h-[50vh] space-y-2 overflow-y-auto">
           {previewError ? <div className="text-[11px] text-warn">{previewError}</div> : null}
@@ -271,15 +271,11 @@ export function ApplyRefactorsDialog({
           })}
         </div>
         {hoists.length > 0 ? (
-          <label className="mt-2 flex items-center gap-2 text-[11px] text-ink-muted">
-            <input
-              type="checkbox"
-              checked={worktree}
-              onChange={(e) => setWorktree(e.target.checked)}
-              className="accent-[var(--color-crystal-500)]"
-            />
-            Run hoist agent{hoists.length > 1 ? "s" : ""} in an isolated git worktree
-          </label>
+          <div className="mt-2 text-[11px] text-ink-muted">
+            {hoists.length} hoist{hoists.length > 1 ? "s" : ""} will be queued on the project
+            board as agent-owned task{hoists.length > 1 ? "s" : ""} under an epic named after
+            this draft.
+          </div>
         ) : null}
         <div className="mt-3 flex justify-end gap-2">
           <DialogClose asChild>
@@ -287,8 +283,8 @@ export function ApplyRefactorsDialog({
               Cancel
             </Button>
           </DialogClose>
-          <Tooltip content="Apply the diagram, execute moves, start hoist agents, close the draft">
-            <Button variant="primary" size="sm" disabled={busy || !plans} onClick={() => onConfirm({ worktree })}>
+          <Tooltip content="Apply the diagram, execute moves, queue hoist tasks on the board, close the draft">
+            <Button variant="primary" size="sm" disabled={busy || !plans} onClick={onConfirm}>
               {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
               Apply everything
             </Button>

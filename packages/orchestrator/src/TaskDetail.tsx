@@ -1,21 +1,34 @@
 import { useEffect, useMemo, useState } from "react";
-import { ExternalLink, Play, Trash2, X } from "lucide-react";
+import { Bot, CircleHelp, ExternalLink, Play, Send, Trash2, X } from "lucide-react";
 import {
+  RUN_PURPOSES,
+  TASK_SIZES,
   TASK_STATUSES,
   TASK_STATUS_LABELS,
+  apiRatePerMin,
+  createEpic,
+  matchAgent,
   nowIso,
+  openQuestions,
+  rollupRunsUsage,
+  usageTotalTokens,
   type Project,
+  type RunPurpose,
   type TaskItem,
   type TaskPriority,
+  type TaskQuestion,
+  type TaskSize,
   type TaskStatus,
 } from "@crystal/core";
 import { useAgents, useWorkspace } from "@crystal/client";
-import { Badge, Button, Input, StatusDot, Textarea, cn } from "@crystal/ui";
-import { buildTaskPrompt, formatCost } from "./prompt.js";
+import { Badge, Button, StatusDot, Textarea, cn } from "@crystal/ui";
+import { buildTaskPrompt, formatCost, formatTokens } from "./prompt.js";
 
 const selectClasses =
   "w-full h-8 rounded-lg border border-edge bg-surface-1 px-2 text-[13px] text-ink " +
   "focus:border-crystal-500/60 focus:outline-none";
+
+const NEW_EPIC = "__new_epic__";
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -44,13 +57,18 @@ export function TaskDetail({
   onOpenRun: (runId: string) => void;
 }) {
   const info = useWorkspace((s) => s.info);
+  const roster = useWorkspace((s) => s.roster);
   const runs = useAgents((s) => s.runs);
   const startRun = useAgents((s) => s.start);
 
   const [title, setTitle] = useState(task.title);
   const [description, setDescription] = useState(task.description);
+  const [human, setHuman] = useState(task.owners.human ?? "");
+  const [tagDraft, setTagDraft] = useState("");
+  const [epicDraft, setEpicDraft] = useState<string | null>(null);
   const [prompt, setPrompt] = useState("");
   const [promptDirty, setPromptDirty] = useState(false);
+  const [purpose, setPurpose] = useState<RunPurpose>("implement");
   const [cwd, setCwd] = useState(".");
   const [isolate, setIsolate] = useState(false);
   const [starting, setStarting] = useState(false);
@@ -58,13 +76,23 @@ export function TaskDetail({
   useEffect(() => {
     setTitle(task.title);
     setDescription(task.description);
+    setHuman(task.owners.human ?? "");
     setPromptDirty(false);
+    setEpicDraft(null);
+    setTagDraft("");
   }, [task.id]);
 
   const defaultPrompt = useMemo(() => buildTaskPrompt(task, info), [task, info]);
   const effectivePrompt = promptDirty ? prompt : defaultPrompt;
 
   const taskRuns = runs.filter((r) => r.taskId === task.id);
+  const rollup = useMemo(() => rollupRunsUsage(taskRuns), [taskRuns]);
+  const callRate = apiRatePerMin(rollup.usage, rollup.activeMs);
+
+  // The dispatch target: the assigned agent, else the tag-matched one.
+  const dispatchAgent =
+    roster?.agents.find((a) => a.id === task.owners.agentId) ??
+    (roster ? matchAgent(task.labels, roster) : null);
 
   function patchTask(patch: Partial<TaskItem>): void {
     onProjectChange({
@@ -80,6 +108,27 @@ export function TaskDetail({
     onClose();
   }
 
+  function addTag(): void {
+    const tag = tagDraft.trim();
+    if (!tag || task.labels.includes(tag)) {
+      setTagDraft("");
+      return;
+    }
+    patchTask({ labels: [...task.labels, tag] });
+    setTagDraft("");
+  }
+
+  function createNewEpic(name: string): void {
+    const epic = createEpic(name);
+    onProjectChange({
+      ...project,
+      epics: [...project.epics, epic],
+      tasks: project.tasks.map((t) =>
+        t.id === task.id ? { ...t, epicId: epic.id, updatedAt: nowIso() } : t,
+      ),
+    });
+  }
+
   async function runAgent(): Promise<void> {
     setStarting(true);
     try {
@@ -91,6 +140,9 @@ export function TaskDetail({
         projectId: project.id,
         repoId,
         isolation: isolate ? "worktree" : "none",
+        agentId: dispatchAgent?.id ?? null,
+        purpose,
+        tags: task.labels,
       });
       patchTask({
         runIds: [...task.runIds, run.id],
@@ -100,6 +152,32 @@ export function TaskDetail({
     } finally {
       setStarting(false);
     }
+  }
+
+  /** Record the answer, then resume the asking session as a "question" turn. */
+  async function answerQuestion(question: TaskQuestion, answer: string): Promise<void> {
+    const answered = task.questions.map((q) =>
+      q.id === question.id ? { ...q, answer, answeredAt: nowIso() } : q,
+    );
+    const originRun = runs.find((r) => r.id === question.runId);
+    if (!originRun?.sessionId) {
+      patchTask({ questions: answered });
+      return;
+    }
+    const run = await startRun({
+      prompt: `Answer to your question "${question.text}":\n\n${answer}\n\nContinue the task.`,
+      cwd: originRun.cwd,
+      taskId: task.id,
+      projectId: project.id,
+      repoId: originRun.repoId,
+      resumeSessionId: originRun.sessionId,
+      isolation: "none",
+      agentId: originRun.agentId ?? dispatchAgent?.id ?? null,
+      purpose: "question",
+      tags: task.labels,
+    });
+    patchTask({ questions: answered, runIds: [...task.runIds, run.id] });
+    onOpenRun(run.id);
   }
 
   return (
@@ -155,6 +233,88 @@ export function TaskDetail({
               ))}
             </select>
           </Field>
+          <Field label="Size">
+            <select
+              className={selectClasses}
+              value={task.size ?? ""}
+              onChange={(e) =>
+                patchTask({ size: e.target.value ? (e.target.value as TaskSize) : null })
+              }
+            >
+              <option value="">—</option>
+              {TASK_SIZES.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Epic">
+            {epicDraft !== null ? (
+              <input
+                autoFocus
+                value={epicDraft}
+                onChange={(e) => setEpicDraft(e.target.value)}
+                onBlur={() => {
+                  if (epicDraft.trim()) createNewEpic(epicDraft.trim());
+                  setEpicDraft(null);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") e.currentTarget.blur();
+                  else if (e.key === "Escape") setEpicDraft(null);
+                }}
+                placeholder="Epic name…"
+                className={cn(selectClasses, "placeholder:text-ink-faint")}
+                aria-label="New epic name"
+              />
+            ) : (
+              <select
+                className={selectClasses}
+                value={task.epicId ?? ""}
+                onChange={(e) => {
+                  if (e.target.value === NEW_EPIC) setEpicDraft("");
+                  else patchTask({ epicId: e.target.value || null });
+                }}
+              >
+                <option value="">—</option>
+                {project.epics.map((epic) => (
+                  <option key={epic.id} value={epic.id}>
+                    {epic.name}
+                  </option>
+                ))}
+                <option value={NEW_EPIC}>+ New epic…</option>
+              </select>
+            )}
+          </Field>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          <Field label="Agent owner">
+            <select
+              className={cn(selectClasses, !task.owners.agentId && "text-warn")}
+              value={task.owners.agentId ?? ""}
+              onChange={(e) =>
+                patchTask({ owners: { ...task.owners, agentId: e.target.value || null } })
+              }
+            >
+              <option value="">auto (match tags)</option>
+              {(roster?.agents ?? []).map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name} · {a.model}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Human owner">
+            <input
+              value={human}
+              onChange={(e) => setHuman(e.target.value)}
+              onBlur={() => patchTask({ owners: { ...task.owners, human: human.trim() || null } })}
+              placeholder={roster?.defaultHuman || "who's accountable?"}
+              className={cn(selectClasses, !task.owners.human && "border-warn/40")}
+              aria-label="Human owner"
+            />
+          </Field>
         </div>
 
         <Field label="Description">
@@ -165,6 +325,35 @@ export function TaskDetail({
             rows={4}
             placeholder="Details, acceptance criteria…"
           />
+        </Field>
+
+        <Field label="Tags">
+          <div className="flex flex-wrap items-center gap-1.5">
+            {task.labels.map((label) => (
+              <button
+                key={label}
+                type="button"
+                title="Remove tag"
+                onClick={() => patchTask({ labels: task.labels.filter((l) => l !== label) })}
+              >
+                <Badge className="cursor-pointer">{label} ×</Badge>
+              </button>
+            ))}
+            <input
+              value={tagDraft}
+              onChange={(e) => setTagDraft(e.target.value)}
+              onBlur={addTag}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  addTag();
+                }
+              }}
+              placeholder="dimension:value"
+              className="h-6 w-28 rounded-md border border-edge bg-surface-1 px-1.5 text-[11px] text-ink outline-none placeholder:text-ink-faint focus:border-crystal-500/60"
+              aria-label="Add tag"
+            />
+          </div>
         </Field>
 
         {info && info.manifest.repos.length > 0 ? (
@@ -199,6 +388,16 @@ export function TaskDetail({
 
         {info ? <NodeLinks task={task} patchTask={patchTask} /> : null}
 
+        {task.questions.length > 0 ? (
+          <Field label={`Questions (${openQuestions(task).length} open)`}>
+            <div className="space-y-1.5">
+              {task.questions.map((q) => (
+                <QuestionRow key={q.id} question={q} onAnswer={answerQuestion} />
+              ))}
+            </div>
+          </Field>
+        ) : null}
+
         <div className="rounded-xl border border-crystal-500/25 bg-crystal-500/5 p-2.5">
           <div className="mb-1.5 flex items-center justify-between">
             <span className="text-[10px] font-semibold uppercase tracking-wider text-crystal-300">
@@ -227,6 +426,18 @@ export function TaskDetail({
           <div className="mt-2 flex items-center gap-2">
             <select
               className={cn(selectClasses, "h-7 flex-1 text-xs")}
+              value={purpose}
+              onChange={(e) => setPurpose(e.target.value as RunPurpose)}
+              aria-label="Run purpose"
+            >
+              {RUN_PURPOSES.map((p) => (
+                <option key={p} value={p}>
+                  {p}
+                </option>
+              ))}
+            </select>
+            <select
+              className={cn(selectClasses, "h-7 flex-1 text-xs")}
               value={cwd}
               onChange={(e) => setCwd(e.target.value)}
               aria-label="Working directory"
@@ -249,6 +460,14 @@ export function TaskDetail({
               <Play className="h-3 w-3" /> Run
             </Button>
           </div>
+          <div className="mt-1.5 flex items-center gap-1 text-[11px] text-ink-muted">
+            <Bot className="h-3 w-3 shrink-0" />
+            {dispatchAgent
+              ? `Dispatches to ${dispatchAgent.name} (${dispatchAgent.model}${
+                  dispatchAgent.skills.length ? ` + ${dispatchAgent.skills.join(", ")}` : ""
+                })`
+              : "No agent profile — CLI default model"}
+          </div>
           <label className="mt-2 flex cursor-pointer items-center gap-1.5 text-[11px] text-ink-muted">
             <input
               type="checkbox"
@@ -262,6 +481,25 @@ export function TaskDetail({
         </div>
 
         {taskRuns.length > 0 ? (
+          <Field label="Cost to date">
+            <div className="grid grid-cols-2 gap-x-3 gap-y-1 rounded-lg border border-edge bg-surface-2 px-2.5 py-2 text-[11px]">
+              <span className="text-ink-faint">Cost</span>
+              <span className="text-right text-ink">{formatCost(rollup.costUsd)}</span>
+              <span className="text-ink-faint">Tokens</span>
+              <span className="text-right text-ink">
+                {formatTokens(usageTotalTokens(rollup.usage))}
+              </span>
+              <span className="text-ink-faint">API calls</span>
+              <span className="text-right text-ink">{rollup.usage.apiCalls || "—"}</span>
+              <span className="text-ink-faint">API rate</span>
+              <span className="text-right text-ink">
+                {callRate != null ? `${callRate.toFixed(1)}/min` : "—"}
+              </span>
+            </div>
+          </Field>
+        ) : null}
+
+        {taskRuns.length > 0 ? (
           <Field label={`Runs (${taskRuns.length})`}>
             <div className="space-y-1">
               {taskRuns.map((run) => (
@@ -273,7 +511,8 @@ export function TaskDetail({
                 >
                   <StatusDot status={run.status} />
                   <span className="min-w-0 flex-1 truncate text-[11px] text-ink-muted">
-                    {new Date(run.createdAt).toLocaleTimeString()} · {run.status}
+                    {new Date(run.createdAt).toLocaleTimeString()} ·{" "}
+                    {run.purpose ?? "implement"} · {run.status}
                   </span>
                   <span className="text-[10px] text-ink-faint">{formatCost(run.costUsd)}</span>
                   <ExternalLink className="h-3 w-3 text-ink-faint" />
@@ -284,6 +523,58 @@ export function TaskDetail({
         ) : null}
       </div>
     </aside>
+  );
+}
+
+function QuestionRow({
+  question,
+  onAnswer,
+}: {
+  question: TaskQuestion;
+  onAnswer: (question: TaskQuestion, answer: string) => Promise<void>;
+}) {
+  const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
+  const answered = question.answer != null;
+
+  return (
+    <div
+      className={cn(
+        "rounded-lg border px-2.5 py-2",
+        answered ? "border-edge bg-surface-2 opacity-70" : "border-warn/30 bg-warn/5",
+      )}
+    >
+      <div className="flex items-start gap-1.5 text-[11px] leading-snug text-ink">
+        <CircleHelp className={cn("mt-0.5 h-3 w-3 shrink-0", answered ? "text-ink-faint" : "text-warn")} />
+        <span className="whitespace-pre-wrap">{question.text}</span>
+      </div>
+      {answered ? (
+        <div className="mt-1 pl-4.5 text-[11px] text-ink-muted">↳ {question.answer}</div>
+      ) : (
+        <div className="mt-1.5 flex items-end gap-1.5">
+          <Textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            rows={2}
+            placeholder="Your answer…"
+            className="text-[11px]"
+            aria-label="Answer"
+          />
+          <Button
+            variant="primary"
+            size="sm"
+            disabled={sending || !draft.trim()}
+            onClick={() => {
+              setSending(true);
+              void onAnswer(question, draft.trim()).finally(() => setSending(false));
+            }}
+            aria-label="Send answer and resume the agent"
+          >
+            <Send className="h-3 w-3" />
+          </Button>
+        </div>
+      )}
+    </div>
   );
 }
 

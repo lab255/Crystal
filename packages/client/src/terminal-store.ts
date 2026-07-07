@@ -95,8 +95,11 @@ export function agentEventToChunk(event: AgentEvent): { stream: TerminalStream; 
     }
     case "status":
       return event.message ? { stream: "system", text: `${event.message}\n` } : null;
+    case "question":
+      return { stream: "system", text: `? ${event.text} (answer from the task on the board)\n` };
     case "init":
     case "thinking":
+    case "usage":
     case "unknown":
       return null;
   }

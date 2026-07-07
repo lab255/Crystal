@@ -1,5 +1,5 @@
 import { createStore, type StoreApi } from "zustand/vanilla";
-import type { AgentRun, RunEvent } from "@crystal/core";
+import type { AgentRun, RunEvent, RunPurpose } from "@crystal/core";
 import type { BridgeClient } from "./bridge-client.js";
 
 export interface AgentStartInput {
@@ -10,6 +10,12 @@ export interface AgentStartInput {
   repoId?: string | null;
   resumeSessionId?: string | null;
   isolation?: "none" | "worktree";
+  /** Agent profile to dispatch to (model + skills resolve server-side). */
+  agentId?: string | null;
+  /** Attribution: why this run touches its task. */
+  purpose?: RunPurpose | null;
+  /** Dimensional tags stamped onto the run. */
+  tags?: string[];
 }
 
 export interface AgentState {

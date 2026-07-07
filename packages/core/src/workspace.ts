@@ -44,6 +44,8 @@ export const ARCH_DRAFTS_DIR = `${ARCHITECTURE_DIR}/drafts`;
 export const PROJECTS_DIR = `${CRYSTAL_DIR}/projects`;
 /** Per-workspace todo list with traffic-light statuses (see todo.ts). */
 export const TODOS_FILE = `${CRYSTAL_DIR}/todos.json`;
+/** Agent roster — dispatch profiles and the default human owner (see agent-profile.ts). */
+export const AGENTS_FILE = `${CRYSTAL_DIR}/agents.json`;
 /** Where survey agents drop their findings for import (see survey.ts). */
 export const SURVEYS_DIR = `${CRYSTAL_DIR}/surveys`;
 /** Where runtime trace profiles are dropped for the flamegraph view. */
