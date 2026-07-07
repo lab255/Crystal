@@ -163,11 +163,19 @@ export interface BridgeMethods {
     result: { diff: string; stat: string; worktreePath: string | null };
   };
   "agent.cleanupWorktree": { params: WsScope & { runId: string }; result: { ok: true } };
-  /** Spawn a line-mode shell terminal in the workspace (cwd relative to the root). */
-  "terminal.create": { params: WsScope & { cwd?: string }; result: { terminal: TerminalInfo } };
+  /** Spawn a PTY shell terminal in the workspace (cwd relative to the root). */
+  "terminal.create": {
+    params: WsScope & { cwd?: string; cols?: number; rows?: number };
+    result: { terminal: TerminalInfo };
+  };
   "terminal.list": { params: WsScope; result: { terminals: TerminalInfo[] } };
-  /** Write to the terminal's stdin (include the trailing newline to run a command). */
+  /** Write raw bytes to the PTY (keystrokes, control chars like \x03, or whole lines ending in \r). */
   "terminal.input": { params: WsScope & { terminalId: string; data: string }; result: { ok: true } };
+  /** Resize the PTY (last writer wins — the new size broadcasts via `terminal.changed`). */
+  "terminal.resize": {
+    params: WsScope & { terminalId: string; cols: number; rows: number };
+    result: { ok: true };
+  };
   /** Kill the terminal's process (if running) and drop it from the list. */
   "terminal.kill": { params: WsScope & { terminalId: string }; result: { ok: true } };
   /** Replay buffer of a terminal (capped) — catch up before listening to `terminal.data`. */
@@ -248,7 +256,7 @@ export interface BridgeEvents {
   "todos.changed": { ws: string; todos: TodoList };
   /** Terminal output/echo chunk (sequenced per terminal). */
   "terminal.data": { ws: string; chunk: TerminalChunk };
-  /** A terminal was created, exited or killed. */
+  /** A terminal was created, resized, exited or killed. */
   "terminal.changed": { ws: string; terminal: TerminalInfo };
   /** The derived code map was re-analyzed after source changes. */
   "codemap.changed": { ws: string };

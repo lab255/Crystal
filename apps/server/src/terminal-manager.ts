@@ -1,4 +1,5 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn as spawnProcess } from "node:child_process";
+import { spawn as spawnPty, type IPty } from "@lydell/node-pty";
 import {
   Emitter,
   nowIso,
@@ -12,9 +13,14 @@ import { resolveInRoot, toRelPath } from "./paths.js";
 /** Replay buffer cap per terminal — enough scrollback without unbounded memory. */
 const MAX_BUFFER_CHUNKS = 2000;
 
+const DEFAULT_COLS = 100;
+const DEFAULT_ROWS = 30;
+const MIN_DIM = 2;
+const MAX_DIM = 500;
+
 interface TerminalRecord {
   info: TerminalInfo;
-  child: ChildProcessWithoutNullStreams | null;
+  pty: IPty | null;
   chunks: TerminalChunk[];
   seq: number;
 }
@@ -25,12 +31,18 @@ function defaultShell(): string {
     : (process.env.SHELL ?? "/bin/bash");
 }
 
+function clampDim(value: number | undefined, fallback: number): number {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.min(MAX_DIM, Math.max(MIN_DIM, Math.floor(value as number)));
+}
+
 /**
- * Line-mode terminals for one workspace: a persistent shell per terminal with
- * piped stdio (no PTY — interactive TUIs won't render, but builds, tests, git
- * and dev servers work fine). Output is buffered for replay and emitted as
- * sequenced chunks; exited terminals stay listed (scrollback intact) until
- * killed.
+ * PTY terminals for one workspace: a persistent shell per terminal running on
+ * a real pseudo-terminal (ConPTY on Windows), so interactive CLIs and TUIs
+ * work. Raw output (ANSI included, input echoed by the PTY) is buffered for
+ * replay and emitted as sequenced chunks; exited terminals stay listed
+ * (scrollback intact) until killed. The session is shared: every bridge
+ * client receives the same stream and any of them may write or resize.
  */
 export class TerminalManager {
   readonly events = new Emitter<{
@@ -46,7 +58,7 @@ export class TerminalManager {
     return [...this.terminals.values()].map((r) => ({ ...r.info }));
   }
 
-  create(cwd = "."): TerminalInfo {
+  create(cwd = ".", cols?: number, rows?: number): TerminalInfo {
     const cwdAbs = resolveInRoot(this.root, cwd);
     const shell = defaultShell();
     const info: TerminalInfo = {
@@ -56,61 +68,63 @@ export class TerminalManager {
       status: "running",
       exitCode: null,
       createdAt: nowIso(),
+      cols: clampDim(cols, DEFAULT_COLS),
+      rows: clampDim(rows, DEFAULT_ROWS),
     };
-    const record: TerminalRecord = { info, child: null, chunks: [], seq: 0 };
+    const record: TerminalRecord = { info, pty: null, chunks: [], seq: 0 };
     this.terminals.set(info.id, record);
 
-    let child: ChildProcessWithoutNullStreams;
+    let pty: IPty;
     try {
-      child = spawn(shell, [], {
+      pty = spawnPty(shell, [], {
+        name: "xterm-256color",
+        cols: info.cols,
+        rows: info.rows,
         cwd: cwdAbs,
-        env: { ...process.env, FORCE_COLOR: "0", TERM: "dumb" },
-        stdio: ["pipe", "pipe", "pipe"],
-        windowsHide: true,
+        env: process.env as Record<string, string>,
       });
     } catch (err) {
       this.exit(record, null, `Failed to spawn ${shell}: ${(err as Error).message}`);
       return { ...info };
     }
-    record.child = child;
+    record.pty = pty;
 
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (text: string) => this.push(record, "stdout", text));
-    child.stderr.setEncoding("utf8");
-    child.stderr.on("data", (text: string) => this.push(record, "stderr", text));
-    child.on("error", (err) => {
-      this.exit(record, null, `Failed to spawn ${shell}: ${err.message}`);
-    });
-    child.on("close", (code) => {
-      this.exit(record, code ?? null, `\n[terminal exited with code ${code ?? "?"}]\n`);
+    pty.onData((text) => this.push(record, "stdout", text));
+    pty.onExit(({ exitCode }) => {
+      this.exit(record, exitCode ?? null, `\r\n[terminal exited with code ${exitCode ?? "?"}]\r\n`);
     });
 
     this.events.emit("changed", { terminal: { ...info } });
     return { ...info };
   }
 
-  /** Write to the terminal's stdin, echoing it into the transcript. */
+  /** Write raw bytes (keystrokes/control chars) to the PTY — it echoes them itself. */
   input(terminalId: string, data: string): void {
     const record = this.get(terminalId);
-    if (record.info.status !== "running" || !record.child) {
+    if (record.info.status !== "running" || !record.pty) {
       throw new Error(`Terminal ${terminalId} is not running`);
     }
-    this.push(record, "input", data);
-    record.child.stdin.write(data);
+    record.pty.write(data);
+  }
+
+  /** Resize the PTY. Last writer wins; the new size broadcasts via `changed`. */
+  resize(terminalId: string, cols: number, rows: number): void {
+    const record = this.get(terminalId);
+    const nextCols = clampDim(cols, record.info.cols);
+    const nextRows = clampDim(rows, record.info.rows);
+    if (nextCols === record.info.cols && nextRows === record.info.rows) return;
+    record.info.cols = nextCols;
+    record.info.rows = nextRows;
+    if (record.info.status === "running" && record.pty) {
+      record.pty.resize(nextCols, nextRows);
+    }
+    this.events.emit("changed", { terminal: { ...record.info } });
   }
 
   /** Kill the process (if still running) and drop the terminal from the list. */
   kill(terminalId: string): void {
     const record = this.get(terminalId);
-    const child = record.child;
-    if (record.info.status === "running" && child?.pid) {
-      // Same tree-kill as agent runs: shells spawn children of their own.
-      if (process.platform === "win32") {
-        spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { shell: false });
-      } else {
-        child.kill("SIGTERM");
-      }
-    }
+    this.killTree(record);
     this.terminals.delete(terminalId);
     record.info.status = "exited";
     record.info.exitCode ??= null;
@@ -124,16 +138,23 @@ export class TerminalManager {
   /** Server shutdown: kill every child without broadcasting. */
   disposeAll(): void {
     for (const record of this.terminals.values()) {
-      const child = record.child;
-      if (record.info.status === "running" && child?.pid) {
-        if (process.platform === "win32") {
-          spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { shell: false });
-        } else {
-          child.kill("SIGTERM");
-        }
-      }
+      this.killTree(record);
     }
     this.terminals.clear();
+  }
+
+  private killTree(record: TerminalRecord): void {
+    const pty = record.pty;
+    if (record.info.status !== "running" || !pty) return;
+    // Same tree-kill as agent runs: shells spawn children of their own.
+    if (process.platform === "win32") {
+      spawnProcess("taskkill", ["/pid", String(pty.pid), "/T", "/F"], { shell: false });
+    }
+    try {
+      pty.kill();
+    } catch {
+      /* already dead */
+    }
   }
 
   private get(terminalId: string): TerminalRecord {

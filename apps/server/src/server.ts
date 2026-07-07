@@ -171,12 +171,16 @@ export async function startCrystalServer(opts: {
       await registry.get(ws).agents.cleanupWorktree(runId);
       return { ok: true };
     },
-    "terminal.create": async ({ ws, cwd }) => ({
-      terminal: registry.get(ws).terminals.create(cwd),
+    "terminal.create": async ({ ws, cwd, cols, rows }) => ({
+      terminal: registry.get(ws).terminals.create(cwd, cols, rows),
     }),
     "terminal.list": async ({ ws }) => ({ terminals: registry.get(ws).terminals.list() }),
     "terminal.input": async ({ ws, terminalId, data }) => {
       registry.get(ws).terminals.input(terminalId, data);
+      return { ok: true };
+    },
+    "terminal.resize": async ({ ws, terminalId, cols, rows }) => {
+      registry.get(ws).terminals.resize(terminalId, cols, rows);
       return { ok: true };
     },
     "terminal.kill": async ({ ws, terminalId }) => {

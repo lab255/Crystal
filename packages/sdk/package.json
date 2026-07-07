@@ -19,6 +19,8 @@
     "@crystal/editor": "workspace:*",
     "@crystal/orchestrator": "workspace:*",
     "@crystal/ui": "workspace:*",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "lucide-react": "^0.469.0"
   },
   "peerDependencies": {
@@ -30,8 +32,8 @@
     "@types/react-dom": "^19.0.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "typescript": "^5.5.4",
-    "tsup": "^8.3.5"
+    "tsup": "^8.3.5",
+    "typescript": "^5.5.4"
   },
   "files": [
     "dist",

@@ -10,11 +10,13 @@ import {
   Tooltip,
   cn,
 } from "@crystal/ui";
+import { XtermView } from "./XtermView.js";
 
 /**
  * Bottom terminal panel — tabs span every open workspace, so you can run
  * commands or drive agents in one project while looking at another. Two tab
- * kinds: shells (server-hosted, line-mode) and agent consoles (each prompt
+ * kinds: shells (server-hosted PTYs rendered with xterm.js — interactive,
+ * shared live across every connected client) and agent consoles (each prompt
  * starts/resumes a Claude run in that workspace).
  */
 export function TerminalPanel({ onClose }: { onClose: () => void }) {
@@ -109,7 +111,13 @@ export function TerminalPanel({ onClose }: { onClose: () => void }) {
       </div>
 
       {active ? (
-        <TerminalView key={active.id} tab={active} />
+        active.kind === "shell" ? (
+          <div key={active.id} className="min-h-0 flex-1 px-2 py-1">
+            <XtermView tab={active} />
+          </div>
+        ) : (
+          <AgentConsoleView key={active.id} tab={active} />
+        )
       ) : (
         <div className="flex flex-1 items-center justify-center text-xs text-ink-faint">
           No terminals — open one with{" "}
@@ -127,7 +135,7 @@ const STREAM_STYLES: Record<TermChunk["stream"], string> = {
   system: "text-ink-faint italic",
 };
 
-function TerminalView({ tab }: { tab: TerminalTab }) {
+function AgentConsoleView({ tab }: { tab: TerminalTab }) {
   const chunks = useTerminals((s) => s.chunksByTab[tab.id]);
   const send = useTerminals((s) => s.send);
   const cancelAgent = useTerminals((s) => s.cancelAgent);
@@ -157,7 +165,7 @@ function TerminalView({ tab }: { tab: TerminalTab }) {
     }
   }
 
-  const busy = tab.kind === "agent" && tab.activeRunId != null;
+  const busy = tab.activeRunId != null;
   const dead = tab.status === "exited";
 
   return (
@@ -179,9 +187,7 @@ function TerminalView({ tab }: { tab: TerminalTab }) {
         }}
         className="flex shrink-0 items-center gap-2 border-t border-edge px-3 py-1.5"
       >
-        <span className="font-mono text-[11px] text-crystal-300">
-          {tab.kind === "agent" ? "✦" : "❯"}
-        </span>
+        <span className="font-mono text-[11px] text-crystal-300">✦</span>
         <input
           value={line}
           onChange={(e) => setLine(e.target.value)}
@@ -198,13 +204,7 @@ function TerminalView({ tab }: { tab: TerminalTab }) {
             }
           }}
           placeholder={
-            dead
-              ? "terminal exited"
-              : busy
-                ? "agent is working…"
-                : tab.kind === "agent"
-                  ? "Prompt the agent in this project…"
-                  : "Run a command…"
+            dead ? "console closed" : busy ? "agent is working…" : "Prompt the agent in this project…"
           }
           disabled={dead || busy}
           spellCheck={false}

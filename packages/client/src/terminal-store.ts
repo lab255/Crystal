@@ -31,6 +31,9 @@ export interface TerminalTab {
   status: "running" | "exited";
   /** Workspace-relative working directory (shells). */
   cwd: string;
+  /** Server-side PTY size (shells) — shared across clients, last resizer wins. */
+  cols: number | null;
+  rows: number | null;
   /** Claude session id to resume for the next prompt (agent consoles). */
   sessionId: string | null;
   /** Run currently executing in this console (agent consoles). */
@@ -44,11 +47,15 @@ export interface TerminalsState {
 
   /** Sync shell tabs with the server's terminals for the given workspaces. */
   refresh(wsIds: string[]): Promise<void>;
-  openShell(ws: string, cwd?: string): Promise<string>;
+  openShell(ws: string, cwd?: string, cols?: number, rows?: number): Promise<string>;
   openAgentConsole(ws: string): string;
   setActive(tabId: string | null): void;
-  /** Send a line: shell → stdin (newline appended); agent → start/resume a run. */
+  /** Send a line: shell → PTY input (CR appended); agent → start/resume a run. */
   send(tabId: string, text: string): Promise<void>;
+  /** Write raw bytes to a shell's PTY (keystrokes, control chars — no newline added). */
+  write(tabId: string, data: string): Promise<void>;
+  /** Resize a shell's PTY (shared: broadcasts to every client via terminal.changed). */
+  resize(tabId: string, cols: number, rows: number): Promise<void>;
   /** Cancel the agent run executing in a console tab. */
   cancelAgent(tabId: string): Promise<void>;
   closeTab(tabId: string): Promise<void>;
@@ -144,18 +151,23 @@ export function createTerminalsStore(client: BridgeClient): TerminalsStore {
             kind: "shell" as const,
             status: info.status,
             cwd: info.cwd,
+            cols: info.cols,
+            rows: info.rows,
             sessionId: null,
             activeRunId: null,
           }));
         const serverIds = new Set(server.map(({ info }) => info.id));
-        const statusById = new Map(server.map(({ info }) => [info.id, info.status]));
+        const infoById = new Map(server.map(({ info }) => [info.id, info]));
         // Shells gone from the server (killed elsewhere, server restart) drop;
         // agent consoles are client-local and always survive.
         const kept = s.tabs
           .filter((t) => t.kind === "agent" || (serverIds.has(t.id) && wsIds.includes(t.ws)))
           .map((t) => {
-            const status = statusById.get(t.id);
-            return status && status !== t.status ? { ...t, status } : t;
+            const info = infoById.get(t.id);
+            if (!info) return t;
+            return info.status !== t.status || info.cols !== t.cols || info.rows !== t.rows
+              ? { ...t, status: info.status, cols: info.cols, rows: info.rows }
+              : t;
           });
         const tabs = [...kept, ...added];
         return {
@@ -189,8 +201,8 @@ export function createTerminalsStore(client: BridgeClient): TerminalsStore {
       );
     },
 
-    async openShell(ws, cwd) {
-      const { terminal } = await client.request("terminal.create", { ws, cwd });
+    async openShell(ws, cwd, cols, rows) {
+      const { terminal } = await client.request("terminal.create", { ws, cwd, cols, rows });
       set((s) => ({
         tabs: s.tabs.some((t) => t.id === terminal.id)
           ? s.tabs
@@ -202,6 +214,8 @@ export function createTerminalsStore(client: BridgeClient): TerminalsStore {
                 kind: "shell",
                 status: terminal.status,
                 cwd: terminal.cwd,
+                cols: terminal.cols,
+                rows: terminal.rows,
                 sessionId: null,
                 activeRunId: null,
               },
@@ -216,7 +230,17 @@ export function createTerminalsStore(client: BridgeClient): TerminalsStore {
       set((s) => ({
         tabs: [
           ...s.tabs,
-          { id, ws, kind: "agent", status: "running", cwd: ".", sessionId: null, activeRunId: null },
+          {
+            id,
+            ws,
+            kind: "agent",
+            status: "running",
+            cwd: ".",
+            cols: null,
+            rows: null,
+            sessionId: null,
+            activeRunId: null,
+          },
         ],
         activeTabId: id,
       }));
@@ -231,10 +255,11 @@ export function createTerminalsStore(client: BridgeClient): TerminalsStore {
       const tab = get().tabs.find((t) => t.id === tabId);
       if (!tab) throw new Error(`Unknown terminal tab: ${tabId}`);
       if (tab.kind === "shell") {
+        // \r is what a real Enter key sends to a PTY.
         await client.request("terminal.input", {
           ws: tab.ws,
           terminalId: tab.id,
-          data: `${text}\n`,
+          data: `${text}\r`,
         });
         return;
       }
@@ -247,6 +272,20 @@ export function createTerminalsStore(client: BridgeClient): TerminalsStore {
       });
       tabByRunId.set(run.id, tabId);
       patchTab(tabId, { activeRunId: run.id });
+    },
+
+    async write(tabId, data) {
+      const tab = get().tabs.find((t) => t.id === tabId);
+      if (!tab || tab.kind !== "shell") throw new Error(`Not a shell tab: ${tabId}`);
+      await client.request("terminal.input", { ws: tab.ws, terminalId: tab.id, data });
+    },
+
+    async resize(tabId, cols, rows) {
+      const tab = get().tabs.find((t) => t.id === tabId);
+      if (!tab || tab.kind !== "shell") return;
+      if (tab.cols === cols && tab.rows === rows) return;
+      patchTab(tabId, { cols, rows });
+      await client.request("terminal.resize", { ws: tab.ws, terminalId: tab.id, cols, rows });
     },
 
     async cancelAgent(tabId) {
@@ -312,6 +351,8 @@ export function createTerminalsStore(client: BridgeClient): TerminalsStore {
               kind: "shell" as const,
               status: terminal.status,
               cwd: terminal.cwd,
+              cols: terminal.cols,
+              rows: terminal.rows,
               sessionId: null,
               activeRunId: null,
             },
@@ -319,7 +360,12 @@ export function createTerminalsStore(client: BridgeClient): TerminalsStore {
         };
       }
       const tabs = [...s.tabs];
-      tabs[idx] = { ...tabs[idx]!, status: terminal.status };
+      tabs[idx] = {
+        ...tabs[idx]!,
+        status: terminal.status,
+        cols: terminal.cols,
+        rows: terminal.rows,
+      };
       return { tabs };
     });
   });

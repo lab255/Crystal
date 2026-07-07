@@ -1,0 +1,788 @@
+{
+  "crystal": 1,
+  "kind": "archdraft",
+  "data": {
+    "id": "draft_2e44f7429e25",
+    "name": "Refactor plan",
+    "archPath": ".crystal/architecture/crystal.json",
+    "base": {
+      "id": "arch_55c11b1d7347",
+      "name": "Crystal",
+      "description": "",
+      "nodes": [
+        {
+          "id": "node_c687f5e095fb",
+          "kind": "group",
+          "label": "apps/",
+          "description": "",
+          "parentId": null,
+          "position": {
+            "x": 0,
+            "y": 0
+          },
+          "size": {
+            "width": 264,
+            "height": 292
+          },
+          "tech": [],
+          "placements": {}
+        },
+        {
+          "id": "node_ee44861d5f2a",
+          "kind": "group",
+          "label": "packages/",
+          "description": "",
+          "parentId": null,
+          "position": {
+            "x": 0,
+            "y": 328
+          },
+          "size": {
+            "width": 1134,
+            "height": 547
+          },
+          "tech": [],
+          "placements": {}
+        },
+        {
+          "id": "node_0ca44ca43426",
+          "kind": "service",
+          "label": "@crystal/server",
+          "description": "14 files",
+          "parentId": "node_c687f5e095fb",
+          "position": {
+            "x": 296,
+            "y": 48
+          },
+          "size": null,
+          "tech": [],
+          "codeModule": "apps/server",
+          "placements": {
+            "env_4e6d8d5974e3": {
+              "target": "database",
+              "runtime": ""
+            }
+          }
+        },
+        {
+          "id": "node_e0d4e0a12d90",
+          "kind": "frontend",
+          "label": "@crystal/web",
+          "description": "2 files",
+          "parentId": "node_c687f5e095fb",
+          "position": {
+            "x": 24,
+            "y": 48
+          },
+          "size": null,
+          "tech": [],
+          "codeModule": "apps/web",
+          "placements": {
+            "env_4e6d8d5974e3": {
+              "target": "cdn",
+              "runtime": ""
+            }
+          }
+        },
+        {
+          "id": "node_4806fb807167",
+          "kind": "repo",
+          "label": "@crystal/architect",
+          "description": "41 files",
+          "parentId": "node_ee44861d5f2a",
+          "position": {
+            "x": 24,
+            "y": 48
+          },
+          "size": null,
+          "tech": [],
+          "codeModule": "packages/architect",
+          "placements": {
+            "env_4e6d8d5974e3": {
+              "target": "ecs",
+              "runtime": ""
+            }
+          }
+        },
+        {
+          "id": "node_b5bdcf4990e2",
+          "kind": "repo",
+          "label": "@crystal/client",
+          "description": "9 files",
+          "parentId": "node_ee44861d5f2a",
+          "position": {
+            "x": 968,
+            "y": 48
+          },
+          "size": null,
+          "tech": [],
+          "codeModule": "packages/client",
+          "placements": {
+            "env_4e6d8d5974e3": {
+              "target": "ecs",
+              "runtime": ""
+            }
+          }
+        },
+        {
+          "id": "node_b4e60cab8fff",
+          "kind": "repo",
+          "label": "@crystal/core",
+          "description": "24 files",
+          "parentId": "node_ee44861d5f2a",
+          "position": {
+            "x": 260,
+            "y": 168
+          },
+          "size": null,
+          "tech": [],
+          "codeModule": "packages/core",
+          "placements": {
+            "env_4e6d8d5974e3": {
+              "target": "database",
+              "runtime": ""
+            }
+          }
+        },
+        {
+          "id": "node_9abce7327c17",
+          "kind": "repo",
+          "label": "@crystal/editor",
+          "description": "7 files",
+          "parentId": "node_ee44861d5f2a",
+          "position": {
+            "x": 496,
+            "y": 48
+          },
+          "size": null,
+          "tech": [],
+          "codeModule": "packages/editor",
+          "placements": {
+            "env_4e6d8d5974e3": {
+              "target": "ecs",
+              "runtime": ""
+            }
+          }
+        },
+        {
+          "id": "node_6a2ad29ddede",
+          "kind": "repo",
+          "label": "@crystal/orchestrator",
+          "description": "7 files",
+          "parentId": "node_ee44861d5f2a",
+          "position": {
+            "x": 24,
+            "y": 168
+          },
+          "size": null,
+          "tech": [],
+          "codeModule": "packages/orchestrator",
+          "placements": {
+            "env_4e6d8d5974e3": {
+              "target": "database",
+              "runtime": ""
+            }
+          }
+        },
+        {
+          "id": "node_f0e8ea5654b4",
+          "kind": "repo",
+          "label": "@crystal/sdk",
+          "description": "9 files",
+          "parentId": "node_ee44861d5f2a",
+          "position": {
+            "x": 732,
+            "y": 48
+          },
+          "size": null,
+          "tech": [],
+          "codeModule": "packages/sdk",
+          "placements": {
+            "env_4e6d8d5974e3": {
+              "target": "database",
+              "runtime": ""
+            }
+          }
+        },
+        {
+          "id": "node_be33858f6b30",
+          "kind": "repo",
+          "label": "@crystal/ui",
+          "description": "18 files",
+          "parentId": "node_ee44861d5f2a",
+          "position": {
+            "x": 260,
+            "y": 48
+          },
+          "size": null,
+          "tech": [],
+          "codeModule": "packages/ui",
+          "placements": {
+            "env_4e6d8d5974e3": {
+              "target": "ecs",
+              "runtime": ""
+            }
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "edge_0f80ef031711",
+          "source": "node_0ca44ca43426",
+          "target": "node_b4e60cab8fff",
+          "kind": "dependency",
+          "label": "×10"
+        },
+        {
+          "id": "edge_88e63cfc26d1",
+          "source": "node_e0d4e0a12d90",
+          "target": "node_f0e8ea5654b4",
+          "kind": "dependency",
+          "label": "×1"
+        },
+        {
+          "id": "edge_fb118277064f",
+          "source": "node_4806fb807167",
+          "target": "node_b4e60cab8fff",
+          "kind": "dependency",
+          "label": "×37"
+        },
+        {
+          "id": "edge_a3ada29426e3",
+          "source": "node_4806fb807167",
+          "target": "node_b5bdcf4990e2",
+          "kind": "dependency",
+          "label": "×10"
+        },
+        {
+          "id": "edge_8dcb0966c323",
+          "source": "node_4806fb807167",
+          "target": "node_be33858f6b30",
+          "kind": "dependency",
+          "label": "×19"
+        },
+        {
+          "id": "edge_d0d3fd939a3b",
+          "source": "node_b5bdcf4990e2",
+          "target": "node_b4e60cab8fff",
+          "kind": "dependency",
+          "label": "×6"
+        },
+        {
+          "id": "edge_d615560eecfc",
+          "source": "node_9abce7327c17",
+          "target": "node_b5bdcf4990e2",
+          "kind": "dependency",
+          "label": "×3"
+        },
+        {
+          "id": "edge_c3398daf9c1b",
+          "source": "node_9abce7327c17",
+          "target": "node_be33858f6b30",
+          "kind": "dependency",
+          "label": "×3"
+        },
+        {
+          "id": "edge_a55387d423e2",
+          "source": "node_9abce7327c17",
+          "target": "node_b4e60cab8fff",
+          "kind": "dependency",
+          "label": "×2"
+        },
+        {
+          "id": "edge_3dd6797c6c05",
+          "source": "node_6a2ad29ddede",
+          "target": "node_b4e60cab8fff",
+          "kind": "dependency",
+          "label": "×5"
+        },
+        {
+          "id": "edge_1bc99ce59804",
+          "source": "node_6a2ad29ddede",
+          "target": "node_b5bdcf4990e2",
+          "kind": "dependency",
+          "label": "×4"
+        },
+        {
+          "id": "edge_1348a566b326",
+          "source": "node_6a2ad29ddede",
+          "target": "node_be33858f6b30",
+          "kind": "dependency",
+          "label": "×4"
+        },
+        {
+          "id": "edge_fe0ad95c0a42",
+          "source": "node_f0e8ea5654b4",
+          "target": "node_b5bdcf4990e2",
+          "kind": "dependency",
+          "label": "×6"
+        },
+        {
+          "id": "edge_e1ed0b99c188",
+          "source": "node_f0e8ea5654b4",
+          "target": "node_be33858f6b30",
+          "kind": "dependency",
+          "label": "×3"
+        },
+        {
+          "id": "edge_8c63fd0be2c3",
+          "source": "node_f0e8ea5654b4",
+          "target": "node_b4e60cab8fff",
+          "kind": "dependency",
+          "label": "×4"
+        },
+        {
+          "id": "edge_268f1ffdcd89",
+          "source": "node_f0e8ea5654b4",
+          "target": "node_4806fb807167",
+          "kind": "dependency",
+          "label": "×1"
+        },
+        {
+          "id": "edge_8c35127bd8b9",
+          "source": "node_f0e8ea5654b4",
+          "target": "node_6a2ad29ddede",
+          "kind": "dependency",
+          "label": "×1"
+        },
+        {
+          "id": "edge_39ef9b1d701a",
+          "source": "node_f0e8ea5654b4",
+          "target": "node_9abce7327c17",
+          "kind": "dependency",
+          "label": "×1"
+        }
+      ],
+      "environments": [
+        {
+          "id": "env_4e6d8d5974e3",
+          "name": "Local",
+          "kind": "local"
+        }
+      ],
+      "journeys": [],
+      "viewport": {
+        "x": 460.1680344915617,
+        "y": 360.2719987704535,
+        "zoom": 0.8238125950157733
+      }
+    },
+    "graph": {
+      "id": "arch_55c11b1d7347",
+      "name": "Crystal",
+      "description": "",
+      "nodes": [
+        {
+          "id": "node_c687f5e095fb",
+          "kind": "group",
+          "label": "apps/",
+          "description": "",
+          "parentId": null,
+          "position": {
+            "x": 0,
+            "y": 0
+          },
+          "size": {
+            "width": 264,
+            "height": 292
+          },
+          "tech": [],
+          "placements": {}
+        },
+        {
+          "id": "node_ee44861d5f2a",
+          "kind": "group",
+          "label": "packages/",
+          "description": "",
+          "parentId": null,
+          "position": {
+            "x": 0,
+            "y": 328
+          },
+          "size": {
+            "width": 1134,
+            "height": 547
+          },
+          "tech": [],
+          "placements": {}
+        },
+        {
+          "id": "node_0ca44ca43426",
+          "kind": "service",
+          "label": "@crystal/server",
+          "description": "14 files",
+          "parentId": "node_c687f5e095fb",
+          "position": {
+            "x": 296,
+            "y": 48
+          },
+          "size": null,
+          "tech": [],
+          "codeModule": "apps/server",
+          "placements": {
+            "env_4e6d8d5974e3": {
+              "target": "database",
+              "runtime": ""
+            }
+          }
+        },
+        {
+          "id": "node_e0d4e0a12d90",
+          "kind": "frontend",
+          "label": "@crystal/web",
+          "description": "2 files",
+          "parentId": "node_c687f5e095fb",
+          "position": {
+            "x": 24,
+            "y": 48
+          },
+          "size": null,
+          "tech": [],
+          "codeModule": "apps/web",
+          "placements": {
+            "env_4e6d8d5974e3": {
+              "target": "cdn",
+              "runtime": ""
+            }
+          }
+        },
+        {
+          "id": "node_4806fb807167",
+          "kind": "repo",
+          "label": "@crystal/architect",
+          "description": "41 files",
+          "parentId": "node_ee44861d5f2a",
+          "position": {
+            "x": 24,
+            "y": 48
+          },
+          "size": null,
+          "tech": [],
+          "codeModule": "packages/architect",
+          "placements": {
+            "env_4e6d8d5974e3": {
+              "target": "ecs",
+              "runtime": ""
+            }
+          }
+        },
+        {
+          "id": "node_b5bdcf4990e2",
+          "kind": "repo",
+          "label": "@crystal/client",
+          "description": "9 files",
+          "parentId": "node_ee44861d5f2a",
+          "position": {
+            "x": 968,
+            "y": 48
+          },
+          "size": null,
+          "tech": [],
+          "codeModule": "packages/client",
+          "placements": {
+            "env_4e6d8d5974e3": {
+              "target": "ecs",
+              "runtime": ""
+            }
+          }
+        },
+        {
+          "id": "node_b4e60cab8fff",
+          "kind": "repo",
+          "label": "@crystal/core",
+          "description": "24 files",
+          "parentId": "node_ee44861d5f2a",
+          "position": {
+            "x": 260,
+            "y": 168
+          },
+          "size": null,
+          "tech": [],
+          "codeModule": "packages/core",
+          "placements": {
+            "env_4e6d8d5974e3": {
+              "target": "database",
+              "runtime": ""
+            }
+          }
+        },
+        {
+          "id": "node_9abce7327c17",
+          "kind": "repo",
+          "label": "@crystal/editor",
+          "description": "7 files",
+          "parentId": "node_ee44861d5f2a",
+          "position": {
+            "x": 496,
+            "y": 48
+          },
+          "size": null,
+          "tech": [],
+          "codeModule": "packages/editor",
+          "placements": {
+            "env_4e6d8d5974e3": {
+              "target": "ecs",
+              "runtime": ""
+            }
+          }
+        },
+        {
+          "id": "node_6a2ad29ddede",
+          "kind": "repo",
+          "label": "@crystal/orchestrator",
+          "description": "7 files",
+          "parentId": "node_ee44861d5f2a",
+          "position": {
+            "x": 24,
+            "y": 168
+          },
+          "size": null,
+          "tech": [],
+          "codeModule": "packages/orchestrator",
+          "placements": {
+            "env_4e6d8d5974e3": {
+              "target": "database",
+              "runtime": ""
+            }
+          }
+        },
+        {
+          "id": "node_f0e8ea5654b4",
+          "kind": "repo",
+          "label": "@crystal/sdk",
+          "description": "9 files",
+          "parentId": "node_ee44861d5f2a",
+          "position": {
+            "x": 732,
+            "y": 48
+          },
+          "size": null,
+          "tech": [],
+          "codeModule": "packages/sdk",
+          "placements": {
+            "env_4e6d8d5974e3": {
+              "target": "database",
+              "runtime": ""
+            }
+          }
+        },
+        {
+          "id": "node_be33858f6b30",
+          "kind": "repo",
+          "label": "@crystal/ui",
+          "description": "18 files",
+          "parentId": "node_ee44861d5f2a",
+          "position": {
+            "x": 260,
+            "y": 48
+          },
+          "size": null,
+          "tech": [],
+          "codeModule": "packages/ui",
+          "placements": {
+            "env_4e6d8d5974e3": {
+              "target": "ecs",
+              "runtime": ""
+            }
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "edge_0f80ef031711",
+          "source": "node_0ca44ca43426",
+          "target": "node_b4e60cab8fff",
+          "kind": "dependency",
+          "label": "×10"
+        },
+        {
+          "id": "edge_88e63cfc26d1",
+          "source": "node_e0d4e0a12d90",
+          "target": "node_f0e8ea5654b4",
+          "kind": "dependency",
+          "label": "×1"
+        },
+        {
+          "id": "edge_fb118277064f",
+          "source": "node_4806fb807167",
+          "target": "node_b4e60cab8fff",
+          "kind": "dependency",
+          "label": "×37"
+        },
+        {
+          "id": "edge_a3ada29426e3",
+          "source": "node_4806fb807167",
+          "target": "node_b5bdcf4990e2",
+          "kind": "dependency",
+          "label": "×10"
+        },
+        {
+          "id": "edge_8dcb0966c323",
+          "source": "node_4806fb807167",
+          "target": "node_be33858f6b30",
+          "kind": "dependency",
+          "label": "×19"
+        },
+        {
+          "id": "edge_d0d3fd939a3b",
+          "source": "node_b5bdcf4990e2",
+          "target": "node_b4e60cab8fff",
+          "kind": "dependency",
+          "label": "×6"
+        },
+        {
+          "id": "edge_d615560eecfc",
+          "source": "node_9abce7327c17",
+          "target": "node_b5bdcf4990e2",
+          "kind": "dependency",
+          "label": "×3"
+        },
+        {
+          "id": "edge_c3398daf9c1b",
+          "source": "node_9abce7327c17",
+          "target": "node_be33858f6b30",
+          "kind": "dependency",
+          "label": "×3"
+        },
+        {
+          "id": "edge_a55387d423e2",
+          "source": "node_9abce7327c17",
+          "target": "node_b4e60cab8fff",
+          "kind": "dependency",
+          "label": "×2"
+        },
+        {
+          "id": "edge_3dd6797c6c05",
+          "source": "node_6a2ad29ddede",
+          "target": "node_b4e60cab8fff",
+          "kind": "dependency",
+          "label": "×5"
+        },
+        {
+          "id": "edge_1bc99ce59804",
+          "source": "node_6a2ad29ddede",
+          "target": "node_b5bdcf4990e2",
+          "kind": "dependency",
+          "label": "×4"
+        },
+        {
+          "id": "edge_1348a566b326",
+          "source": "node_6a2ad29ddede",
+          "target": "node_be33858f6b30",
+          "kind": "dependency",
+          "label": "×4"
+        },
+        {
+          "id": "edge_fe0ad95c0a42",
+          "source": "node_f0e8ea5654b4",
+          "target": "node_b5bdcf4990e2",
+          "kind": "dependency",
+          "label": "×6"
+        },
+        {
+          "id": "edge_e1ed0b99c188",
+          "source": "node_f0e8ea5654b4",
+          "target": "node_be33858f6b30",
+          "kind": "dependency",
+          "label": "×3"
+        },
+        {
+          "id": "edge_8c63fd0be2c3",
+          "source": "node_f0e8ea5654b4",
+          "target": "node_b4e60cab8fff",
+          "kind": "dependency",
+          "label": "×4"
+        },
+        {
+          "id": "edge_268f1ffdcd89",
+          "source": "node_f0e8ea5654b4",
+          "target": "node_4806fb807167",
+          "kind": "dependency",
+          "label": "×1"
+        },
+        {
+          "id": "edge_8c35127bd8b9",
+          "source": "node_f0e8ea5654b4",
+          "target": "node_6a2ad29ddede",
+          "kind": "dependency",
+          "label": "×1"
+        },
+        {
+          "id": "edge_39ef9b1d701a",
+          "source": "node_f0e8ea5654b4",
+          "target": "node_9abce7327c17",
+          "kind": "dependency",
+          "label": "×1"
+        }
+      ],
+      "environments": [
+        {
+          "id": "env_4e6d8d5974e3",
+          "name": "Local",
+          "kind": "local"
+        }
+      ],
+      "journeys": [],
+      "viewport": {
+        "x": 7.51062406693552,
+        "y": -579.7938688317995,
+        "zoom": 1.9243725005000876
+      }
+    },
+    "refactors": [
+      {
+        "id": "refactor_388dab021eb5",
+        "kind": "hoist",
+        "symbols": [
+          {
+            "file": "examples/harborview/apps/web/src/format.ts",
+            "symbol": "formatCurrency"
+          },
+          {
+            "file": "examples/harborview/services/worker/src/format.ts",
+            "symbol": "formatCurrency"
+          }
+        ],
+        "targetModule": "packages/architect",
+        "targetFile": null,
+        "newName": "formatCurrency"
+      },
+      {
+        "id": "refactor_3320ef15502a",
+        "kind": "hoist",
+        "symbols": [
+          {
+            "file": "examples/harborview/packages/queue/src/util.ts",
+            "symbol": "retryWithBackoff"
+          },
+          {
+            "file": "examples/harborview/services/api/src/util.ts",
+            "symbol": "retryWithBackoff"
+          }
+        ],
+        "targetModule": "packages/architect",
+        "targetFile": null,
+        "newName": "retryWithBackoff"
+      },
+      {
+        "id": "refactor_370183d2f072",
+        "kind": "hoist",
+        "symbols": [
+          {
+            "file": "examples/harborview/services/api/src/config.ts",
+            "symbol": "parseEnvInt"
+          },
+          {
+            "file": "examples/harborview/services/worker/src/config.ts",
+            "symbol": "parseEnvInt"
+          }
+        ],
+        "targetModule": "packages/architect",
+        "targetFile": null,
+        "newName": "parseEnvInt"
+      }
+    ],
+    "createdAt": "2026-07-07T03:50:24.786Z",
+    "updatedAt": "2026-07-07T03:50:55.762Z"
+  }
+}
