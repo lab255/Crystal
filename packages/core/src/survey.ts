@@ -305,6 +305,7 @@ export function surveyToArchitecture(
         description: j.description,
         entry: j.entry,
       })),
+      facets: [],
       viewport: null,
     },
     warnings,

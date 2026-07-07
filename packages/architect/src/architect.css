@@ -77,6 +77,13 @@
   animation: lod-enter 240ms ease-out;
 }
 
+/* Ephemeral push-aside: siblings displaced by an expanded container glide to
+   their offset position and slide home on collapse. The class is dropped
+   while a drag is in flight so grabbed nodes stay glued to the cursor. */
+.react-flow__node.arch-displaced:not(.dragging) {
+  transition: transform 240ms ease;
+}
+
 @keyframes lod-enter {
   from {
     opacity: 0;

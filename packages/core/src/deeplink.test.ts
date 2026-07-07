@@ -86,6 +86,7 @@ describe("round trips", () => {
       architect: {
         view: "diagrams",
         diagram: ".crystal/architecture/my api.crystal",
+        facet: "facet-auth1",
         draft: ".crystal/arch-drafts/plan&1.crystal",
         journey: "j-1",
         overlay: true,

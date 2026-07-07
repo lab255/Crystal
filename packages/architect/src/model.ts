@@ -25,6 +25,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import type { OverlayBadge } from "./overlay.js";
+import { assignLanes, isBusbarScale } from "./edge-routing.js";
 
 /* ------------------------------------------------------------------ */
 /* Presentation metadata per node kind                                 */
@@ -80,12 +81,18 @@ export type ArchRfNode = RfNode<{
   arch: ArchNode;
   code?: OverlayBadge;
   flow?: FlowMark;
+  /**
+   * Reserved level-of-detail footprint: the node renders collapsed at the
+   * exact size its live-code expansion will occupy, so detail arriving with
+   * zoom fills a box that never moves or grows.
+   */
+  slot?: { width: number; height: number };
   /** Node is expanded into live code (unified view) — renders as a container. */
   codeExpanded?: boolean;
   /** Expanded, but the module detail is still loading. */
   codeLoading?: boolean;
 }>;
-export type ArchRfEdge = RfEdge<{ kind: ArchEdgeKind }>;
+export type ArchRfEdge = RfEdge<{ kind: ArchEdgeKind; lane?: number }>;
 
 export function rfTypeFor(kind: ArchNodeKind): string {
   if (isContainerKind(kind)) return "container";
@@ -96,6 +103,7 @@ export function rfTypeFor(kind: ArchNodeKind): string {
 export function toRfNodes(
   graph: ArchitectureGraph,
   selectedIds: ReadonlySet<string>,
+  slots?: ReadonlyMap<string, { width: number; height: number }>,
 ): ArchRfNode[] {
   return topoOrderNodes(graph).map((n) => {
     const container = isContainerKind(n.kind);
@@ -112,6 +120,13 @@ export function toRfNodes(
       node.width = n.size?.width ?? 420;
       node.height = n.size?.height ?? 280;
       node.zIndex = -1;
+    } else {
+      const slot = slots?.get(n.id);
+      if (slot) {
+        node.width = slot.width;
+        node.height = slot.height;
+        node.data.slot = slot;
+      }
     }
     return node;
   });
@@ -131,6 +146,20 @@ export function toRfEdges(
   graph: ArchitectureGraph,
   selectedIds: ReadonlySet<string>,
 ): ArchRfEdge[] {
+  // Small diagrams read best with curves; past the threshold, orthogonal
+  // bus-bar routing keeps the dependency web sorted and legible.
+  const busbar = isBusbarScale(graph.edges.length);
+  const byId = new Map(graph.nodes.map((n) => [n.id, n]));
+  const absX = (id: string): number => {
+    let x = 0;
+    let cur = byId.get(id);
+    while (cur) {
+      x += cur.position.x;
+      cur = cur.parentId ? byId.get(cur.parentId) : undefined;
+    }
+    return x;
+  };
+  const lanes = busbar ? assignLanes(graph.edges, absX) : null;
   return graph.edges.map((e) => {
     const style = EDGE_KIND_STYLE[e.kind];
     return {
@@ -139,8 +168,8 @@ export function toRfEdges(
       target: e.target,
       label: e.label || undefined,
       selected: selectedIds.has(e.id),
-      data: { kind: e.kind },
-      type: "default",
+      data: { kind: e.kind, lane: lanes?.get(e.id) ?? 0 },
+      type: busbar ? "busbar" : "default",
       style: {
         stroke: style.stroke,
         strokeWidth: 1.5,

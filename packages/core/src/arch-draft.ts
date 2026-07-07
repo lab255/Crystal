@@ -69,6 +69,7 @@ export function graphsEqual(a: ArchitectureGraph, b: ArchitectureGraph): boolean
       edges: [...g.edges].sort((x, y) => x.id.localeCompare(y.id)),
       environments: g.environments,
       journeys: g.journeys,
+      facets: g.facets,
     });
   return norm(a) === norm(b);
 }
@@ -270,6 +271,16 @@ export function mergeGraphs(
     conflicts,
   );
 
+  // Facets may reference nodes that didn't survive — visibility helpers skip
+  // dangling ids, so membership lists are merged as-is.
+  const facets = mergeById(
+    base.facets,
+    ours.facets,
+    theirs.facets,
+    (f) => `facet "${f.name}"`,
+    conflicts,
+  );
+
   return {
     graph: {
       ...theirs,
@@ -277,6 +288,7 @@ export function mergeGraphs(
       description: ours.description !== base.description ? ours.description : theirs.description,
       environments,
       journeys,
+      facets,
       nodes: fixedNodes,
       edges,
       viewport: ours.viewport ?? theirs.viewport,

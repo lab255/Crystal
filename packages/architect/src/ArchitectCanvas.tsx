@@ -21,6 +21,7 @@ import {
   Expand,
   ExternalLink,
   FolderGit2,
+  Layers,
   LayoutGrid,
   Maximize2,
   MoveUpRight,
@@ -35,6 +36,9 @@ import {
 } from "lucide-react";
 import {
   ARCH_EDGE_KINDS,
+  createArchFacet,
+  descendantsOf,
+  filterGraphToFacet,
   isContainerKind,
   uid,
   type ArchEdgeKind,
@@ -55,7 +59,7 @@ import {
   updateEdge,
   updateNode,
 } from "./graph-ops.js";
-import { useCrystal, useWorkspaces } from "@crystal/client";
+import { useCrystal, useNav, useNavUpdate, useWorkspaces } from "@crystal/client";
 import { cn } from "@crystal/ui";
 import { ContextMenu, InlineRename, type MenuEntry } from "./ContextMenu.js";
 import { collapseNode, hasGeneratedChildren } from "./expand.js";
@@ -91,7 +95,14 @@ import {
   type SymbolNodeData,
 } from "./codemap/map-model.js";
 import { MapActionsContext, mapNodeTypes, type MapActions } from "./codemap/map-nodes.js";
-import { buildCodeContent, unifiedDropTargetAt, type HitTestNode } from "./live-code.js";
+import {
+  buildCodeContent,
+  estimateModuleFootprint,
+  unifiedDropTargetAt,
+  type HitTestNode,
+} from "./live-code.js";
+import { resolveCollisions, type DisplaceRect } from "./displace.js";
+import { BusbarEdge } from "./BusbarEdge.js";
 import { PeekPanel } from "./snippets.js";
 import { Palette, DRAG_MIME, PALETTE_KINDS } from "./Palette.js";
 import { Toolbar } from "./Toolbar.js";
@@ -103,6 +114,10 @@ const nodeTypes = {
   codeFile: mapNodeTypes.codeFile,
   codeSymbol: mapNodeTypes.codeSymbol,
   codeOverflow: mapNodeTypes.codeOverflow,
+};
+
+const edgeTypes = {
+  busbar: BusbarEdge,
 };
 
 type CanvasNode = ArchRfNode | MapRfNode;
@@ -315,6 +330,52 @@ function CanvasInner({
     [onChange],
   );
 
+  /* ---------------- facets: named lenses over the same diagram ---------------- */
+
+  const nav = useNavUpdate();
+  const activeFacetId = useNav((l) => l.architect?.facet) ?? null;
+  const activeFacet = useMemo(
+    () => graph.facets.find((f) => f.id === activeFacetId) ?? null,
+    [graph, activeFacetId],
+  );
+  /**
+   * What the canvas renders: the active facet's slice of the graph. All
+   * mutations still commit against the full graph — a facet only filters,
+   * geometry and content stay shared with every other facet.
+   */
+  const viewGraph = useMemo(
+    () => (activeFacet ? filterGraphToFacet(graph, activeFacet) : graph),
+    [graph, activeFacet],
+  );
+
+  const updateFacetMembers = useCallback(
+    (facetId: string, mutate: (nodeIds: readonly string[]) => string[]) => {
+      const g = graphRef.current;
+      commit({
+        ...g,
+        facets: g.facets.map((f) => (f.id === facetId ? { ...f, nodeIds: mutate(f.nodeIds) } : f)),
+      });
+    },
+    [commit],
+  );
+
+  /** New nodes join the active facet — otherwise they'd be born invisible. */
+  const adoptIntoActiveFacet = useCallback(
+    (g: ArchitectureGraph, nodeId: string): ArchitectureGraph => {
+      const facet = g.facets.find((f) => f.id === activeFacetId);
+      // An empty facet still shows everything; adopting the first member
+      // would suddenly hide the rest of the diagram mid-edit.
+      if (!facet || facet.nodeIds.length === 0) return g;
+      return {
+        ...g,
+        facets: g.facets.map((f) =>
+          f.id === facet.id ? { ...f, nodeIds: [...f.nodeIds, nodeId] } : f,
+        ),
+      };
+    },
+    [activeFacetId],
+  );
+
   /* ---------------- live code expansion (the unified "zoom in") ---------------- */
 
   const { client } = useCrystal();
@@ -362,13 +423,14 @@ function CanvasInner({
     [client, activeWs],
   );
 
-  // Only nodes that still exist expand; a deleted node drops its code children.
+  // Only nodes that still exist (and the facet shows) expand; a deleted or
+  // hidden node drops its code children.
   const expanded = useMemo(() => {
-    const ids = new Set(graph.nodes.map((n) => n.id));
+    const ids = new Set(viewGraph.nodes.map((n) => n.id));
     const m = new Map<string, string>();
     for (const [id, module] of codeExpanded) if (ids.has(id)) m.set(id, module);
     return m as ReadonlyMap<string, string>;
-  }, [codeExpanded, graph]);
+  }, [codeExpanded, viewGraph]);
   expandedRef.current = expanded;
 
   useEffect(() => {
@@ -469,12 +531,96 @@ function CanvasInner({
   /* ---------------- overlay + scene ---------------- */
 
   const overlay = useMemo(
-    () => (overlayOn && codeSummary ? computeOverlay(graph, codeSummary) : null),
-    [overlayOn, codeSummary, graph],
+    () => (overlayOn && codeSummary ? computeOverlay(viewGraph, codeSummary) : null),
+    [overlayOn, codeSummary, viewGraph],
   );
 
+  /** Module a node maps to: explicit link, then overlay match, then name match. */
+  const moduleForNode = useCallback(
+    (id: string): string | null => {
+      const fromExpansion = expanded.get(id);
+      if (fromExpansion) return fromExpansion;
+      const node = graphRef.current.nodes.find((n) => n.id === id);
+      if (!node || node.kind === "note") return null;
+      if (node.codeModule) return node.codeModule;
+      const badge = overlay?.nodeBadges.get(id);
+      if (badge) return badge.module;
+      if (codeSummary) return suggestModuleFor(node, codeSummary.modules)?.path ?? null;
+      return null;
+    },
+    [expanded, overlay, codeSummary],
+  );
+
+  /**
+   * Reserved LOD footprints: every code-linked node renders collapsed at the
+   * size its module-level expansion needs (`estimateModuleFootprint` always
+   * contains the real packing). Level of detail then swaps content inside a
+   * fixed box — nothing moves, nothing reflows, no empty reserved gaps.
+   */
+  const slotSizes = useMemo(() => {
+    const m = new Map<string, { width: number; height: number }>();
+    if (!codeSummary) return m;
+    const fileCounts = new Map(codeSummary.modules.map((mod) => [mod.path, mod.fileCount]));
+    // The full graph, not the facet's slice — auto-layout must reserve for
+    // hidden nodes too, or leaving a facet would land on overlaps.
+    for (const n of graph.nodes) {
+      if (isContainerKind(n.kind) || n.kind === "note" || n.codeFile) continue;
+      const module = moduleForNode(n.id);
+      const count = module ? fileCounts.get(module) : undefined;
+      if (count) m.set(n.id, estimateModuleFootprint(count));
+    }
+    return m;
+  }, [graph, codeSummary, moduleForNode]);
+
+  /* --------------- ephemeral push-aside for expanded containers --------------- */
+
+  const [dragActive, setDragActive] = useState(false);
+  const displaceRef = useRef<ReadonlyMap<string, { dx: number; dy: number }>>(new Map());
+  // Expanded content that outgrows its layout slot pushes same-scope siblings
+  // aside — view-only offsets, frozen while a drag is in flight (the drag
+  // handler subtracts them so the graph keeps base positions).
+  const displacements = useMemo(() => {
+    if (dragActive) return displaceRef.current;
+    if (expanded.size === 0) {
+      displaceRef.current = new Map();
+      return displaceRef.current;
+    }
+    const scopes = new Set<string | null>();
+    for (const id of expanded.keys()) {
+      const n = viewGraph.nodes.find((x) => x.id === id);
+      if (n) scopes.add(n.parentId ?? null);
+    }
+    const out = new Map<string, { dx: number; dy: number }>();
+    for (const scope of scopes) {
+      const members = viewGraph.nodes.filter((n) => (n.parentId ?? null) === scope);
+      const rects: DisplaceRect[] = members.map((n) => {
+        // Rendered footprint: expanded content and the reserved slot cover the
+        // same box by construction, so expansion usually displaces nothing.
+        const content = expanded.has(n.id) ? codeContent.sizes.get(n.id) : undefined;
+        const slot = slotSizes.get(n.id);
+        const width =
+          Math.max(content?.width ?? 0, slot?.width ?? 0) ||
+          (isContainerKind(n.kind) ? (n.size?.width ?? 420) : 200);
+        const height =
+          Math.max(content?.height ?? 0, slot?.height ?? 0) ||
+          (isContainerKind(n.kind) ? (n.size?.height ?? 280) : 84);
+        return {
+          id: n.id,
+          x: n.position.x,
+          y: n.position.y,
+          width,
+          height,
+          fixed: expanded.has(n.id),
+        };
+      });
+      for (const [id, off] of resolveCollisions(rects)) out.set(id, off);
+    }
+    displaceRef.current = out;
+    return out;
+  }, [expanded, codeContent, viewGraph, slotSizes, dragActive]);
+
   const rfNodes = useMemo<CanvasNode[]>(() => {
-    let nodes: CanvasNode[] = toRfNodes(graph, selectedNodes);
+    let nodes: CanvasNode[] = toRfNodes(viewGraph, selectedNodes, slotSizes);
     if (overlay) {
       nodes = nodes.map((n) => {
         const code = overlay.nodeBadges.get(n.id);
@@ -492,15 +638,20 @@ function CanvasInner({
       );
     }
     if (expanded.size > 0) {
-      // Expanded nodes render as containers sized to their live code content.
+      // Expanded nodes render as containers holding their live code. The box
+      // never shrinks below the reserved slot, so expand/collapse swaps what's
+      // inside without changing the diagram's geometry.
       nodes = nodes.map((n) => {
         if (!expanded.has(n.id)) return n;
-        const size = codeContent.sizes.get(n.id);
+        const content = codeContent.sizes.get(n.id);
+        const slot = slotSizes.get(n.id);
+        const width = Math.max(content?.width ?? 0, slot?.width ?? 0);
+        const height = Math.max(content?.height ?? 0, slot?.height ?? 0);
         return {
           ...n,
           type: "container",
-          width: size?.width,
-          height: size?.height,
+          width: width || undefined,
+          height: height || undefined,
           zIndex: -1,
           className: "lod-grow",
           dragHandle: ".arch-container-header",
@@ -517,15 +668,26 @@ function CanvasInner({
       });
       nodes = [...nodes, ...kids];
     }
+    if (displacements.size > 0) {
+      nodes = nodes.map((n) => {
+        const off = displacements.get(n.id);
+        if (!off) return n;
+        return {
+          ...n,
+          position: { x: n.position.x + off.dx, y: n.position.y + off.dy },
+          className: cn(n.className, !dragActive && "arch-displaced"),
+        } as CanvasNode;
+      });
+    }
     return nodes;
-  }, [graph, selectedNodes, overlay, flow, expanded, codeContent, dragOverrides]);
+  }, [viewGraph, selectedNodes, slotSizes, overlay, flow, expanded, codeContent, dragOverrides, displacements, dragActive]);
 
   const rfEdges = useMemo(() => {
-    let edges = [...toRfEdges(graph, selectedEdges), ...(codeContent.edges as ArchRfEdge[])];
+    let edges = [...toRfEdges(viewGraph, selectedEdges), ...(codeContent.edges as ArchRfEdge[])];
     if (overlay) edges = applyOverlayToEdges(edges, overlay);
     if (flow) edges = applyFlowToEdges(edges, flow);
     return edges;
-  }, [graph, selectedEdges, overlay, flow, codeContent]);
+  }, [viewGraph, selectedEdges, overlay, flow, codeContent]);
 
   const onNodesChange = useCallback(
     (changes: NodeChange<CanvasNode>[]) => {
@@ -534,17 +696,24 @@ function CanvasInner({
       let overrides: Map<string, { x: number; y: number }> | null = null;
       for (const change of changes) {
         switch (change.type) {
-          case "position":
+          case "position": {
             if (!change.position) break;
             if (isCodeChildId(change.id)) {
               overrides ??= new Map(dragOverrides);
               overrides.set(change.id, change.position);
               break;
             }
+            // Rendered = base + ephemeral displacement; store base so the node
+            // stays under the cursor now and slides home on collapse.
+            const off = displaceRef.current.get(change.id);
             g = updateNode(g, change.id, {
-              position: { x: change.position.x, y: change.position.y },
+              position: {
+                x: change.position.x - (off?.dx ?? 0),
+                y: change.position.y - (off?.dy ?? 0),
+              },
             });
             break;
+          }
           case "dimensions": {
             const node = g.nodes.find((n) => n.id === change.id);
             if (node && isContainerKind(node.kind) && change.dimensions && change.resizing) {
@@ -600,22 +769,6 @@ function CanvasInner({
       commit(opAddEdge(graphRef.current, connection.source, connection.target, defaultEdgeKind));
     },
     [commit, defaultEdgeKind],
-  );
-
-  /** Module a node maps to: explicit link, then overlay match, then name match. */
-  const moduleForNode = useCallback(
-    (id: string): string | null => {
-      const fromExpansion = expanded.get(id);
-      if (fromExpansion) return fromExpansion;
-      const node = graphRef.current.nodes.find((n) => n.id === id);
-      if (!node || node.kind === "note") return null;
-      if (node.codeModule) return node.codeModule;
-      const badge = overlay?.nodeBadges.get(id);
-      if (badge) return badge.module;
-      if (codeSummary) return suggestModuleFor(node, codeSummary.modules)?.path ?? null;
-      return null;
-    },
-    [expanded, overlay, codeSummary],
   );
 
   /**
@@ -708,8 +861,11 @@ function CanvasInner({
 
   /* ---------------- drag / drop ---------------- */
 
+  const onNodeDragStart = useCallback(() => setDragActive(true), []);
+
   const onNodeDragStop = useCallback(
     (_evt: unknown, node: RfNode, nodes: RfNode[]) => {
+      setDragActive(false);
       if (isCodeChildId(node.id)) {
         // Live code children: a drop on another file/module records a refactor
         // intent; either way the chip snaps back to its derived home.
@@ -764,23 +920,23 @@ function CanvasInner({
         container ? rel : flowPos,
         container?.id ?? null,
       );
-      commit(next);
+      commit(adoptIntoActiveFacet(next, node.id));
       setSelectedNodes(new Set([node.id]));
       setSelectedEdges(new Set());
     },
-    [commit],
+    [commit, adoptIntoActiveFacet],
   );
 
   /** Add a node pre-linked to a code module, expanded into live code. */
   const addModuleNodeAt = useCallback(
     (modulePath: string, moduleName: string, flowPos: { x: number; y: number }) => {
       const { graph: next, node } = opAddNode(graphRef.current, "service", moduleName, flowPos, null);
-      commit(updateNode(next, node.id, { codeModule: modulePath }));
+      commit(adoptIntoActiveFacet(updateNode(next, node.id, { codeModule: modulePath }), node.id));
       setCodeExpanded((prev) => new Map(prev).set(node.id, modulePath));
       setSelectedNodes(new Set([node.id]));
       scheduleFocus(node.id);
     },
-    [commit, scheduleFocus],
+    [commit, adoptIntoActiveFacet, scheduleFocus],
   );
 
   const onDrop = useCallback(
@@ -1032,13 +1188,25 @@ function CanvasInner({
     [commit, evaluateLod],
   );
 
+  // Switching facets reframes the view around what the lens shows.
+  const lastFacetId = useRef(activeFacetId);
+  useEffect(() => {
+    if (lastFacetId.current === activeFacetId) return;
+    lastFacetId.current = activeFacetId;
+    const timer = setTimeout(() => void fitView({ padding: 0.15, duration: 300 }), 60);
+    return () => clearTimeout(timer);
+  }, [activeFacetId, fitView]);
+
   const runAutoLayout = useCallback(
     (mode: "flow" | "layers" = "flow") => {
-      commit(autoLayout(graphRef.current, { mode }));
+      // Nodes are laid out at their reserved LOD footprints (`slotSizes`) —
+      // the same boxes they render collapsed at and fill when expanded, so
+      // the layout holds unchanged at every level of detail.
+      commit(autoLayout(graphRef.current, { mode, reserve: slotSizes }));
       // Let the new positions render, then bring everything into view.
       requestAnimationFrame(() => void fitView({ padding: 0.15, duration: 300 }));
     },
-    [commit, fitView],
+    [commit, fitView, slotSizes],
   );
 
   const onNodeDoubleClick = useCallback(
@@ -1200,6 +1368,47 @@ function CanvasInner({
       const isLiveExpanded = expanded.has(node.id);
       const canExpandLive = isLiveExpanded || (!!module && !isContainerKind(node.kind) && !node.codeFile);
       const effectiveAccent = node.accent ?? KIND_META[node.kind].defaultAccent;
+
+      // Facet membership: with a lens active, nodes move in and out of it;
+      // otherwise the selection can become a new lens.
+      const targets =
+        selectedNodes.has(node.id) && selectedNodes.size > 1 ? [...selectedNodes] : [node.id];
+      const facetEntries: MenuEntry[] = [];
+      if (activeFacet) {
+        const memberSet = new Set(activeFacet.nodeIds);
+        const relatedIds = new Set([node.id, ...descendantsOf(g, node.id).map((d) => d.id)]);
+        if ([...relatedIds].some((id) => memberSet.has(id))) {
+          facetEntries.push({
+            type: "item",
+            label: `Remove from “${activeFacet.name}”`,
+            icon: Layers,
+            onSelect: () =>
+              updateFacetMembers(activeFacet.id, (ids) => ids.filter((x) => !relatedIds.has(x))),
+          });
+        } else {
+          facetEntries.push({
+            type: "item",
+            label: `Add to “${activeFacet.name}”`,
+            icon: Layers,
+            onSelect: () =>
+              updateFacetMembers(activeFacet.id, (ids) => [...new Set([...ids, ...targets])]),
+          });
+        }
+      } else {
+        facetEntries.push({
+          type: "item",
+          label: targets.length > 1 ? "New facet from selection" : "New facet from this node",
+          icon: Layers,
+          hint: targets.length > 1 ? `${targets.length} nodes` : undefined,
+          onSelect: () => {
+            const cur = graphRef.current;
+            const facet = createArchFacet(`Facet ${cur.facets.length + 1}`, targets);
+            commit({ ...cur, facets: [...cur.facets, facet] });
+            nav({ architect: { facet: facet.id } });
+          },
+        });
+      }
+
       return [
         { type: "heading", label: node.label },
         {
@@ -1209,6 +1418,7 @@ function CanvasInner({
           onSelect: () => setRenaming({ x: menu.x, y: menu.y, id: node.id }),
         },
         { type: "item", label: "Duplicate", icon: Copy, onSelect: () => duplicateNode(node.id) },
+        ...facetEntries,
         { type: "separator" },
         {
           type: "item",
@@ -1417,6 +1627,10 @@ function CanvasInner({
     duplicateNode,
     commit,
     overlay,
+    activeFacet,
+    updateFacetMembers,
+    selectedNodes,
+    nav,
   ]);
 
   const mapActions = useMemo<MapActions>(
@@ -1451,9 +1665,13 @@ function CanvasInner({
         nodes={rfNodes}
         edges={rfEdges}
         nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
+        snapToGrid
+        snapGrid={[8, 8]}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
+        onNodeDragStart={onNodeDragStart}
         onNodeDragStop={onNodeDragStop}
         onNodeDoubleClick={onNodeDoubleClick}
         onNodeContextMenu={onNodeContextMenu}
@@ -1499,6 +1717,17 @@ function CanvasInner({
         <Panel position="top-left">
           <Toolbar
             graph={graph}
+            facet={
+              activeFacet
+                ? {
+                    name: activeFacet.name,
+                    shown: viewGraph.nodes.length,
+                    total: graph.nodes.length,
+                    empty: activeFacet.nodeIds.length === 0,
+                  }
+                : null
+            }
+            onExitFacet={() => nav({ architect: { facet: null } })}
             defaultEdgeKind={defaultEdgeKind}
             onDefaultEdgeKindChange={setDefaultEdgeKind}
             onAutoLayout={runAutoLayout}

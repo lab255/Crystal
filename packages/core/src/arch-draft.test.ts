@@ -175,6 +175,16 @@ describe("mergeGraphs — environments and journeys", () => {
     expect(merged.journeys.map((j) => j.id).sort()).toEqual(["j1", "j2"]);
     expect(conflicts).toHaveLength(1);
   });
+
+  it("keeps facet additions from both sides", () => {
+    const facet = (id: string, ...nodeIds: string[]) => ({ id, name: id, description: "", nodeIds });
+    const base = graph([node("a")]);
+    const ours = { ...clone(base), facets: [facet("f1", "a")] };
+    const theirs = { ...clone(base), facets: [facet("f2", "a")] };
+    const { graph: merged, conflicts } = mergeGraphs(base, ours, theirs);
+    expect(merged.facets.map((f) => f.id).sort()).toEqual(["f1", "f2"]);
+    expect(conflicts).toEqual([]);
+  });
 });
 
 describe("rebaseDraft", () => {

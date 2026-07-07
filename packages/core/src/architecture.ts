@@ -201,6 +201,23 @@ export const JourneySchema = z.object({
 });
 export type Journey = z.infer<typeof JourneySchema>;
 
+/**
+ * A facet — a named lens over one architecture diagram ("Authentication",
+ * "Shared libraries", "Collections pipeline"…). It stores member node ids
+ * only; visibility closes over ancestors (so nesting renders) and descendants
+ * (adding a container means its contents), and edges show when both endpoints
+ * are visible. Geometry stays on the nodes themselves: every facet is the
+ * same diagram, filtered — never a divergent copy.
+ */
+export const ArchFacetSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  description: z.string().default(""),
+  /** Member node ids; an empty facet shows the whole diagram until nodes are added. */
+  nodeIds: z.array(z.string()).default([]),
+});
+export type ArchFacet = z.infer<typeof ArchFacetSchema>;
+
 export const ArchitectureGraphSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -211,6 +228,8 @@ export const ArchitectureGraphSchema = z.object({
   environments: z.array(ArchEnvironmentSchema).default([]),
   /** User journeys for the dataflow view. */
   journeys: z.array(JourneySchema).default([]),
+  /** Named lenses over this diagram (see `ArchFacetSchema`). */
+  facets: z.array(ArchFacetSchema).default([]),
   viewport: z
     .object({ x: z.number(), y: z.number(), zoom: z.number() })
     .nullish(),
@@ -226,6 +245,49 @@ export function createArchitectureGraph(name: string): ArchitectureGraph {
     edges: [],
     environments: [createLocalEnvironment()],
     journeys: [],
+    facets: [],
+  };
+}
+
+export function createArchFacet(name: string, nodeIds: readonly string[] = []): ArchFacet {
+  return { id: uid("facet"), name, description: "", nodeIds: [...nodeIds] };
+}
+
+/**
+ * Node ids a facet shows: members, their ancestors (containers must render
+ * for nesting to work) and their descendants (a member container brings its
+ * contents). Dangling member ids are ignored; a facet with no surviving
+ * members shows everything — a just-created facet stays editable on canvas.
+ */
+export function facetVisibleIds(graph: ArchitectureGraph, facet: ArchFacet): Set<string> {
+  const byId = new Map(graph.nodes.map((n) => [n.id, n]));
+  const members = facet.nodeIds.filter((id) => byId.has(id));
+  if (members.length === 0) return new Set(graph.nodes.map((n) => n.id));
+  const visible = new Set<string>();
+  for (const id of members) {
+    visible.add(id);
+    let cur = byId.get(id);
+    while (cur?.parentId) {
+      visible.add(cur.parentId);
+      cur = byId.get(cur.parentId);
+    }
+    for (const d of descendantsOf(graph, id)) visible.add(d.id);
+  }
+  return visible;
+}
+
+/**
+ * The graph a facet renders: nodes filtered to the visible set (order
+ * preserved) and edges whose endpoints both survive. Positions/sizes are the
+ * shared diagram geometry — filtering never moves anything.
+ */
+export function filterGraphToFacet(graph: ArchitectureGraph, facet: ArchFacet): ArchitectureGraph {
+  const visible = facetVisibleIds(graph, facet);
+  if (visible.size === graph.nodes.length) return graph;
+  return {
+    ...graph,
+    nodes: graph.nodes.filter((n) => visible.has(n.id)),
+    edges: graph.edges.filter((e) => visible.has(e.source) && visible.has(e.target)),
   };
 }
 

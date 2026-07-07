@@ -34,6 +34,12 @@ export interface AutoLayoutOptions {
    * orders nodes within each band.
    */
   mode?: "flow" | "layers";
+  /**
+   * Pre-allocated footprints by node id: lay these nodes out at their future
+   * expanded size (skeletal reservation), so zooming into code fills space
+   * that already exists instead of colliding with neighbors.
+   */
+  reserve?: ReadonlyMap<string, { width: number; height: number }>;
 }
 
 /**
@@ -58,9 +64,10 @@ export function autoLayout(
   for (const n of graph.nodes) {
     dims.set(
       n.id,
-      isContainerKind(n.kind)
-        ? { width: n.size?.width ?? 420, height: n.size?.height ?? 280 }
-        : { width: LEAF_W, height: LEAF_H },
+      opts.reserve?.get(n.id) ??
+        (isContainerKind(n.kind)
+          ? { width: n.size?.width ?? 420, height: n.size?.height ?? 280 }
+          : { width: LEAF_W, height: LEAF_H }),
     );
   }
 
@@ -112,11 +119,13 @@ export function layoutChildrenOf(graph: ArchitectureGraph, parentId: string): Ar
 
 /**
  * Fit containers to their (parent-relative) children extents. Pass `onlyId`
- * to resize a single container.
+ * to resize a single container, and `reserve` to measure children at their
+ * pre-allocated LOD footprints instead of the plain leaf size.
  */
 export function fitContainersToChildren(
   graph: ArchitectureGraph,
   onlyId?: string,
+  reserve?: ReadonlyMap<string, { width: number; height: number }>,
 ): ArchitectureGraph {
   const childrenOf = new Map<string, ArchNode[]>();
   for (const n of graph.nodes) {
@@ -134,8 +143,9 @@ export function fitContainersToChildren(
       let maxX = 0;
       let maxY = 0;
       for (const c of children) {
-        maxX = Math.max(maxX, c.position.x + (c.size?.width ?? LEAF_W));
-        maxY = Math.max(maxY, c.position.y + (c.size?.height ?? LEAF_H));
+        const d = reserve?.get(c.id);
+        maxX = Math.max(maxX, c.position.x + (d?.width ?? c.size?.width ?? LEAF_W));
+        maxY = Math.max(maxY, c.position.y + (d?.height ?? c.size?.height ?? LEAF_H));
       }
       return { ...n, size: { width: maxX + PADDING_X, height: maxY + PADDING_Y / 2 } };
     }),

@@ -11,6 +11,7 @@ import {
   GitMerge,
   Globe2,
   History,
+  Layers,
   MoreHorizontal,
   PencilRuler,
   Plus,
@@ -19,6 +20,7 @@ import {
 } from "lucide-react";
 import {
   createArchDraft as newArchDraft,
+  createArchFacet,
   graphsEqual,
   mergeGraphs,
   type ArchDraft,
@@ -309,6 +311,20 @@ function DiagramsView({
     },
     [activeDraft, selected, updateArchDraft, updateArchitecture],
   );
+
+  /* ---- facets: named lenses over the selected diagram ---- */
+  const activeFacetId = useNav((l) => l.architect?.facet) ?? null;
+  const setActiveFacetId = useCallback(
+    (id: string | null) => nav({ architect: { facet: id } }),
+    [nav],
+  );
+  // Clear a dangling facet only against a loaded graph — deep links arrive
+  // first, and switching diagrams invalidates the previous diagram's facets.
+  useEffect(() => {
+    if (effectiveGraph && activeFacetId && !effectiveGraph.facets.some((f) => f.id === activeFacetId)) {
+      setActiveFacetId(null);
+    }
+  }, [effectiveGraph, activeFacetId, setActiveFacetId]);
 
   /* ---- journeys / dataflow lens ---- */
   const activeJourneyId = useNav((l) => l.architect?.journey) ?? null;
@@ -689,6 +705,14 @@ function DiagramsView({
                 </div>
               ) : null}
               {effectiveGraph ? (
+                <FacetsSection
+                  graph={effectiveGraph}
+                  activeFacetId={activeFacetId}
+                  onActivate={setActiveFacetId}
+                  onGraphChange={commitGraph}
+                />
+              ) : null}
+              {effectiveGraph ? (
                 <JourneysSection
                   graph={effectiveGraph}
                   activeJourneyId={activeJourneyId}
@@ -940,6 +964,123 @@ function DiagramsView({
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+/**
+ * Sidebar list of the selected diagram's facets — named lenses ("Authentication",
+ * "Shared libraries"…) that filter the canvas to one concern. Clicking a facet
+ * activates it (click again to show everything); membership is edited on the
+ * canvas by right-clicking nodes.
+ */
+function FacetsSection({
+  graph,
+  activeFacetId,
+  onActivate,
+  onGraphChange,
+}: {
+  graph: ArchitectureGraph;
+  activeFacetId: string | null;
+  onActivate: (id: string | null) => void;
+  onGraphChange: (graph: ArchitectureGraph) => void;
+}) {
+  const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null);
+
+  const create = () => {
+    const facet = createArchFacet(`Facet ${graph.facets.length + 1}`);
+    onGraphChange({ ...graph, facets: [...graph.facets, facet] });
+    onActivate(facet.id);
+    setRenaming({ id: facet.id, value: facet.name });
+  };
+
+  const rename = (id: string, name: string) => {
+    if (name.trim()) {
+      onGraphChange({
+        ...graph,
+        facets: graph.facets.map((f) => (f.id === id ? { ...f, name: name.trim() } : f)),
+      });
+    }
+    setRenaming(null);
+  };
+
+  const remove = (id: string) => {
+    if (activeFacetId === id) onActivate(null);
+    onGraphChange({ ...graph, facets: graph.facets.filter((f) => f.id !== id) });
+  };
+
+  return (
+    <>
+      <div className="mt-3 flex items-center justify-between px-1.5 pb-1">
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-faint">
+          Facets
+        </span>
+        <Tooltip content="New facet — a named lens showing one concern of this diagram (auth, shared libraries, one endpoint…)">
+          <Button variant="ghost" size="icon-sm" onClick={create} aria-label="New facet">
+            <Plus className="h-3.5 w-3.5" />
+          </Button>
+        </Tooltip>
+      </div>
+      {graph.facets.map((f) => (
+        <div
+          key={f.id}
+          className={cn(
+            "group flex items-center gap-2 rounded-lg px-2 py-1.5 text-[13px] cursor-pointer",
+            activeFacetId === f.id
+              ? "bg-crystal-500/15 text-ink"
+              : "text-ink-muted hover:bg-surface-2 hover:text-ink",
+          )}
+          onClick={() => onActivate(activeFacetId === f.id ? null : f.id)}
+        >
+          <Layers className="h-3.5 w-3.5 shrink-0 opacity-70" />
+          {renaming?.id === f.id ? (
+            <Input
+              autoFocus
+              value={renaming.value}
+              onChange={(e) => setRenaming({ id: f.id, value: e.target.value })}
+              onBlur={() => rename(f.id, renaming.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") rename(f.id, renaming.value);
+                if (e.key === "Escape") setRenaming(null);
+              }}
+              onClick={(e) => e.stopPropagation()}
+              className="h-6 min-w-0 flex-1 px-1.5 text-[13px]"
+              aria-label="Facet name"
+            />
+          ) : (
+            <span className="min-w-0 flex-1 truncate">{f.name}</span>
+          )}
+          <span className="text-[10px] text-ink-faint">
+            {f.nodeIds.length > 0 ? f.nodeIds.length : "all"}
+          </span>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className="opacity-0 group-hover:opacity-100 data-[state=open]:opacity-100"
+                onClick={(e) => e.stopPropagation()}
+                aria-label="Facet actions"
+              >
+                <MoreHorizontal className="h-3.5 w-3.5" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start">
+              <DropdownMenuItem onSelect={() => setRenaming({ id: f.id, value: f.name })}>
+                <PencilRuler className="h-3.5 w-3.5" /> Rename
+              </DropdownMenuItem>
+              <DropdownMenuItem className="text-danger" onSelect={() => remove(f.id)}>
+                <Trash2 className="h-3.5 w-3.5" /> Delete facet
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      ))}
+      {graph.facets.length === 0 ? (
+        <div className="px-2 py-1 text-[11px] text-ink-faint">
+          Lenses on this diagram — select nodes and right-click to start one.
+        </div>
+      ) : null}
+    </>
   );
 }
 

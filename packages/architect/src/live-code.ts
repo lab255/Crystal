@@ -3,6 +3,7 @@ import type { CodeFileSummary, CodeModuleDetail, MoveFileIntent } from "@crystal
 import {
   FILE_COLLAPSED_H,
   FILE_COLLAPSED_W,
+  GAP,
   MODULE_INNER_MAX_W,
   MODULE_PAD,
   accentFor,
@@ -172,6 +173,31 @@ export function buildCodeContent(input: CodeContentInput): CodeContent {
 /** Module-relative path of a file summary (role heuristics never see the module prefix). */
 function relPathOf(f: CodeFileSummary): string {
   return f.dir ? `${f.dir}/${f.name}` : f.name;
+}
+
+/**
+ * Skeletal footprint of a node expanded to module level (capped file cards,
+ * collapsed): the space auto-layout reserves up front, so zooming in fills a
+ * slot that already exists instead of colliding with neighbors. Deliberately
+ * generous — role bands wrap independently, so two spare rows and the band
+ * gaps are budgeted; must always contain the actual collapsed-cards packing.
+ */
+export function estimateModuleFootprint(fileCount: number): { width: number; height: number } {
+  const cards = Math.min(fileCount, LIVE_FILE_CAP) + (fileCount > LIVE_FILE_CAP ? 1 : 0);
+  const perRow = Math.max(1, Math.floor((MODULE_INNER_MAX_W + GAP) / (FILE_COLLAPSED_W + GAP)));
+  // Worst case: cards spread across every role band (≤5 distinct ranks), each
+  // band wrapping separately — one extra partial row and one gap per band.
+  const bands = Math.min(cards, 5);
+  const rows = Math.ceil(cards / perRow) + (bands - 1);
+  const cols = Math.min(cards, perRow);
+  const width = cols * (FILE_COLLAPSED_W + GAP) - GAP + MODULE_PAD * 2;
+  const height =
+    ARCH_CODE_HEADER_H +
+    rows * (FILE_COLLAPSED_H + GAP) -
+    GAP +
+    (bands - 1) * BAND_GAP_Y +
+    MODULE_PAD;
+  return { width: Math.max(width, 224), height: Math.max(height, 96) };
 }
 
 /** Extra breathing room between role bands, beyond the in-band grid gap. */

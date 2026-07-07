@@ -11,6 +11,7 @@ function graph(partial: Partial<ArchitectureGraph>): ArchitectureGraph {
     edges: [],
     environments: [],
     journeys: [],
+    facets: [],
     ...partial,
   };
 }

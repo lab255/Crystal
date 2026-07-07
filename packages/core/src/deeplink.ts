@@ -29,6 +29,8 @@ export interface ArchitectLink {
   view?: ArchitectViewId;
   /** Selected architecture `.crystal` file path (diagrams + infra views). */
   diagram?: string;
+  /** Active facet id — a named lens over the selected diagram. */
+  facet?: string;
   /** Open draft plan `.crystal` file path. */
   draft?: string;
   /** Split-pane review of the open draft (diff against its base). */
@@ -102,6 +104,7 @@ export function formatDeepLink(link: DeepLink): string {
       if (a.duplicates) add("dups", "1");
     } else {
       if (a.diagram) add("diagram", a.diagram);
+      if (a.facet) add("facet", a.facet);
       if (a.draft) add("draft", a.draft);
       if (a.draft && a.review) add("review", "1");
       if (a.journey) add("journey", a.journey);
@@ -142,6 +145,8 @@ export function parseDeepLink(hash: string): DeepLink {
     if (view === "diagrams" || view === "infra" || view === "codemap") a.view = view;
     const diagram = params.get("diagram");
     if (diagram) a.diagram = diagram;
+    const facet = params.get("facet");
+    if (facet) a.facet = facet;
     const draft = params.get("draft");
     if (draft) a.draft = draft;
     if (draft && params.get("review") === "1") a.review = true;

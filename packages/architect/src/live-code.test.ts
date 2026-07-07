@@ -6,6 +6,7 @@ import {
   EDGE_FULL_LIMIT,
   LIVE_FILE_CAP,
   buildCodeContent,
+  estimateModuleFootprint,
   overflowChipId,
   unifiedDropTargetAt,
   type CodeContentInput,
@@ -186,6 +187,40 @@ describe("buildCodeContent", () => {
     );
     expect(content.edges).toHaveLength(1);
     expect(content.edges[0]!.target).toBe(fileId(paths[0]!));
+  });
+
+  it("estimateModuleFootprint always contains the actual module-level packing", () => {
+    // Mixed roles across dirs force multiple bands — the worst packing case.
+    const dirs = ["src", "src/routes", "src/services", "src/db", "src/components"];
+    for (const count of [1, 3, 7, LIVE_FILE_CAP, LIVE_FILE_CAP + 1, 30, 80]) {
+      const paths = Array.from(
+        { length: count },
+        (_, i) => `services/api/${dirs[i % dirs.length]}/f${i}.ts`,
+      );
+      const detail: CodeModuleDetail = {
+        module: { path: "services/api", name: "api", fileCount: count },
+        files: paths.map((p, i) => ({
+          path: p,
+          name: p.split("/").pop()!,
+          dir: dirs[i % dirs.length]!,
+          importCount: 0,
+          exportCount: 1,
+        })),
+        edges: [],
+        moduleDeps: [],
+        truncated: false,
+      };
+      const content = buildCodeContent(
+        input({
+          expanded: new Map([["node_1", "services/api"]]),
+          moduleDetails: new Map([["services/api", detail]]),
+        }),
+      );
+      const actual = content.sizes.get("node_1")!;
+      const estimate = estimateModuleFootprint(count);
+      expect(estimate.width, `width @ ${count} files`).toBeGreaterThanOrEqual(actual.width);
+      expect(estimate.height, `height @ ${count} files`).toBeGreaterThanOrEqual(actual.height);
+    }
   });
 
   it("renders a ghost card for a file planned to move into the module", () => {

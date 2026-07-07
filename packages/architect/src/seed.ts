@@ -9,6 +9,7 @@ import {
   uid,
 } from "@crystal/core";
 import { autoLayout, fitContainersToChildren } from "./layout.js";
+import { estimateModuleFootprint } from "./live-code.js";
 
 /**
  * Seed a starting diagram from the code map: one node per module (linked via
@@ -71,12 +72,21 @@ export function seedFromCodeMap(
     edges.push({ id: uid("edge"), source, target, kind: "dependency", label: `×${dep.weight}` });
   }
 
+  // Every module node is laid out (and its container sized) at the footprint
+  // its live-code expansion will need — zooming into a fresh seed adds detail
+  // without moving anything.
+  const reserve = new Map<string, { width: number; height: number }>();
+  for (const m of modules) {
+    const id = nodeIdByModule.get(m.path);
+    if (id && m.fileCount > 0) reserve.set(id, estimateModuleFootprint(m.fileCount));
+  }
+
   // Two layout passes: the first places children inside their containers,
   // sizing fits each container to its children, and the second re-flows the
   // root scope with the real container sizes.
   let graph: ArchitectureGraph = { ...base, nodes, edges };
-  graph = fitContainersToChildren(autoLayout(graph));
-  graph = fitContainersToChildren(autoLayout(graph));
+  graph = fitContainersToChildren(autoLayout(graph, { reserve }), undefined, reserve);
+  graph = fitContainersToChildren(autoLayout(graph, { reserve }), undefined, reserve);
   return graph;
 }
 

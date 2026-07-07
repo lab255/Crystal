@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
-import { Copy, FolderGit2, LayoutGrid, Maximize2, Radar, Rows3, ZoomIn } from "lucide-react";
+import { Copy, FolderGit2, Layers, LayoutGrid, Maximize2, Radar, Rows3, X, ZoomIn } from "lucide-react";
 import type { ArchEdgeKind, ArchitectureGraph } from "@crystal/core";
 import { Button, Tooltip, cn } from "@crystal/ui";
 import { EDGE_KIND_STYLE } from "./model.js";
 
 export function Toolbar({
   graph,
+  facet,
+  onExitFacet,
   defaultEdgeKind,
   onDefaultEdgeKindChange,
   onAutoLayout,
@@ -20,6 +22,9 @@ export function Toolbar({
   onOpenFullMap,
 }: {
   graph: ArchitectureGraph;
+  /** Active facet lens, when one filters the canvas. */
+  facet?: { name: string; shown: number; total: number; empty: boolean } | null;
+  onExitFacet?: () => void;
   defaultEdgeKind: ArchEdgeKind;
   onDefaultEdgeKindChange: (kind: ArchEdgeKind) => void;
   onAutoLayout: (mode: "flow" | "layers") => void;
@@ -47,6 +52,33 @@ export function Toolbar({
         placeholder="Untitled architecture"
         aria-label="Architecture name"
       />
+      {facet ? (
+        <Tooltip
+          content={
+            facet.empty
+              ? "This facet is empty — right-click nodes to add them; until then the whole diagram shows"
+              : `Facet lens — showing ${facet.shown} of ${facet.total} nodes`
+          }
+        >
+          <span className="flex h-6 items-center gap-1.5 rounded-md bg-crystal-500/20 pl-1.5 pr-0.5 text-[11px] text-crystal-300">
+            <Layers className="h-3.5 w-3.5 shrink-0" />
+            <span className="max-w-32 truncate font-medium">{facet.name}</span>
+            <span className="text-crystal-300/70">
+              {facet.empty ? "empty" : `${facet.shown}/${facet.total}`}
+            </span>
+            {onExitFacet ? (
+              <button
+                type="button"
+                onClick={onExitFacet}
+                className="rounded p-0.5 text-crystal-300/70 hover:bg-crystal-500/20 hover:text-crystal-200"
+                aria-label="Show the whole diagram"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            ) : null}
+          </span>
+        </Tooltip>
+      ) : null}
       <div className="h-4 w-px bg-edge" />
       <div className="flex items-center gap-0.5" role="radiogroup" aria-label="New edge kind">
         {(Object.keys(EDGE_KIND_STYLE) as ArchEdgeKind[]).map((kind) => (

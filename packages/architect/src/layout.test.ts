@@ -6,7 +6,7 @@ import {
   type ArchNodeKind,
   type ArchitectureGraph,
 } from "@crystal/core";
-import { autoLayout, scopeIsFullstack, scopeLayerOf } from "./layout.js";
+import { autoLayout, fitContainersToChildren, scopeIsFullstack, scopeLayerOf } from "./layout.js";
 
 function node(id: string, kind: ArchNodeKind, patch: Partial<ArchNode> = {}): ArchNode {
   return { ...createArchNode(kind, id, { x: 0, y: 0 }), ...patch, id };
@@ -29,6 +29,45 @@ describe("autoLayout — flow mode", () => {
       expect(Number.isFinite(n.position.x)).toBe(true);
       expect(Number.isFinite(n.position.y)).toBe(true);
     }
+  });
+});
+
+describe("autoLayout — reserved footprints", () => {
+  it("spaces ranks by the reserved (future expanded) size, not the collapsed leaf", () => {
+    const g = graph(
+      [node("a", "service"), node("b", "datastore")],
+      [{ id: "e", source: "a", target: "b", kind: "sync", label: "" }],
+    );
+    const reserve = new Map([["a", { width: 840, height: 620 }]]);
+    const laid = autoLayout(g, { reserve });
+    // b must clear a's whole reserved slot, so expanding a never covers it.
+    expect(topOf(laid, "b")).toBeGreaterThanOrEqual(topOf(laid, "a") + 620);
+  });
+
+  it("spreads siblings horizontally by reserved widths", () => {
+    const g = graph([node("a", "service"), node("b", "service")]);
+    const reserve = new Map([
+      ["a", { width: 840, height: 620 }],
+      ["b", { width: 840, height: 620 }],
+    ]);
+    const laid = autoLayout(g, { reserve });
+    const ax = laid.nodes.find((n) => n.id === "a")!.position.x;
+    const bx = laid.nodes.find((n) => n.id === "b")!.position.x;
+    expect(Math.abs(ax - bx)).toBeGreaterThanOrEqual(840);
+  });
+
+  it("fitContainersToChildren sizes containers around reserved child footprints", () => {
+    const g = graph([
+      node("sys", "system"),
+      node("a", "service", { parentId: "sys", position: { x: 24, y: 48 } }),
+    ]);
+    const reserve = new Map([["a", { width: 840, height: 620 }]]);
+    const fitted = fitContainersToChildren(g, undefined, reserve);
+    const size = fitted.nodes.find((n) => n.id === "sys")!.size!;
+    // The container must hold the child at its reserved (future expanded)
+    // size, so LOD growth stays inside the box the layout drew.
+    expect(size.width).toBeGreaterThanOrEqual(24 + 840);
+    expect(size.height).toBeGreaterThanOrEqual(48 + 620);
   });
 });
 
