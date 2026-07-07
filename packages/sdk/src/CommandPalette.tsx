@@ -1,5 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
-import { Boxes, Code2, KanbanSquare, Plus, type LucideIcon } from "lucide-react";
+import {
+  Bot,
+  Boxes,
+  Code2,
+  KanbanSquare,
+  LayoutGrid,
+  Plus,
+  TerminalSquare,
+  type LucideIcon,
+} from "lucide-react";
 import { useWorkspace } from "@crystal/client";
 import { Dialog, DialogContent, Kbd, cn } from "@crystal/ui";
 import type { CrystalMode } from "./modes.js";
@@ -36,25 +45,47 @@ export function CommandPalette({
   const commands: Command[] = useMemo(
     () => [
       {
+        id: "mode.projects",
+        title: "Go to Projects",
+        icon: LayoutGrid,
+        hint: "Ctrl+1",
+        run: () => onSwitchMode("projects"),
+      },
+      {
         id: "mode.architect",
         title: "Go to Architecture",
         icon: Boxes,
-        hint: "Ctrl+1",
+        hint: "Ctrl+2",
         run: () => onSwitchMode("architect"),
       },
       {
         id: "mode.orchestrate",
         title: "Go to Orchestrate",
         icon: KanbanSquare,
-        hint: "Ctrl+2",
+        hint: "Ctrl+3",
         run: () => onSwitchMode("orchestrate"),
       },
       {
         id: "mode.code",
         title: "Go to Code",
         icon: Code2,
-        hint: "Ctrl+3",
+        hint: "Ctrl+4",
         run: () => onSwitchMode("code"),
+      },
+      {
+        id: "terminal.new",
+        title: "New terminal (active workspace)",
+        icon: TerminalSquare,
+        run: () => window.dispatchEvent(new CustomEvent("crystal:open-terminal", { detail: {} })),
+      },
+      {
+        id: "terminal.agent",
+        title: "New agent console (active workspace)",
+        icon: Bot,
+        run: () =>
+          window.dispatchEvent(
+            new CustomEvent("crystal:open-terminal", { detail: { kind: "agent" } }),
+          ),
       },
       {
         id: "arch.new",

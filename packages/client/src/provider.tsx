@@ -15,7 +15,13 @@ import {
 } from "@crystal/core";
 import { BridgeClient, type ConnectionState } from "./bridge-client.js";
 import { createAgentStore, type AgentState, type AgentStore } from "./agent-store.js";
+import { createFleetStore, type FleetState, type FleetStore } from "./fleet-store.js";
 import { createNavStore, type NavPatch, type NavStore } from "./nav-store.js";
+import {
+  createTerminalsStore,
+  type TerminalsState,
+  type TerminalsStore,
+} from "./terminal-store.js";
 import {
   createWorkspaceStore,
   type WorkspaceState,
@@ -32,6 +38,8 @@ export interface CrystalContextValue {
   workspacesStore: WorkspacesStore;
   workspaceStore: WorkspaceStore;
   agentStore: AgentStore;
+  fleetStore: FleetStore;
+  terminalsStore: TerminalsStore;
   navStore: NavStore;
 }
 
@@ -60,28 +68,53 @@ export function CrystalProvider({
       workspacesStore: createWorkspacesStore(client),
       workspaceStore: createWorkspaceStore(client),
       agentStore: createAgentStore(client),
+      fleetStore: createFleetStore(client),
+      terminalsStore: createTerminalsStore(client),
       navStore: createNavStore(),
     };
   }, [url]);
 
   useEffect(() => {
-    const { client, workspacesStore, workspaceStore, agentStore } = value;
+    const { client, workspacesStore, workspaceStore, agentStore, fleetStore, terminalsStore } =
+      value;
 
     const refreshScoped = () => {
       void workspaceStore.getState().refresh();
       void agentStore.getState().refresh();
     };
 
+    const refreshFleet = () => {
+      const ids = workspacesStore.getState().workspaces.map((w) => w.id);
+      if (ids.length === 0) return;
+      void fleetStore.getState().refresh(ids);
+      void terminalsStore.getState().refresh(ids);
+    };
+
     // Active-workspace switches re-scope the client and reload scoped stores.
     // Debounced saves are flushed first; they carry their own `ws`, so they
     // still land in the workspace they were made in.
     let prevActive = workspacesStore.getState().activeId;
+    let prevIds = workspacesStore.getState().workspaces.map((w) => w.id).join(",");
     const unsubActive = workspacesStore.subscribe((s) => {
+      const ids = s.workspaces.map((w) => w.id).join(",");
+      if (ids !== prevIds) {
+        prevIds = ids;
+        refreshFleet();
+      }
       if (s.activeId === prevActive) return;
       prevActive = s.activeId;
       void workspaceStore.getState().flush();
       client.setScope(s.activeId);
-      if (s.activeId) refreshScoped();
+      if (s.activeId) {
+        refreshScoped();
+        // Focusing a workspace acknowledges its finished agent runs.
+        fleetStore.getState().markSeen(s.activeId);
+      }
+    });
+
+    // Run results landing in the workspace you're already looking at are seen.
+    const disposeRunChanged = client.events.on("agent.runChanged", ({ ws }) => {
+      if (ws === workspacesStore.getState().activeId) fleetStore.getState().markSeen(ws);
     });
 
     const dispose = client.events.on("connection", ({ state }) => {
@@ -90,13 +123,16 @@ export function CrystalProvider({
         // On reconnect the active id may be unchanged; refresh scoped stores
         // explicitly since the subscription above won't fire.
         if (workspacesStore.getState().activeId) refreshScoped();
+        refreshFleet();
       }
     });
     client.connect();
     return () => {
       dispose();
+      disposeRunChanged();
       unsubActive();
       void workspaceStore.getState().flush();
+      void fleetStore.getState().flush();
       client.close();
     };
   }, [value]);
@@ -141,6 +177,18 @@ export function useWorkspace<T>(selector: (s: WorkspaceState) => T): T {
 export function useAgents<T>(selector: (s: AgentState) => T): T {
   const { agentStore } = useCrystal();
   return useStore(agentStore, selector);
+}
+
+/** Cross-workspace runs, todos and traffic lights (see `FleetState`). */
+export function useFleet<T>(selector: (s: FleetState) => T): T {
+  const { fleetStore } = useCrystal();
+  return useStore(fleetStore, selector);
+}
+
+/** Terminal panel tabs and transcripts across all workspaces. */
+export function useTerminals<T>(selector: (s: TerminalsState) => T): T {
+  const { terminalsStore } = useCrystal();
+  return useStore(terminalsStore, selector);
 }
 
 /**

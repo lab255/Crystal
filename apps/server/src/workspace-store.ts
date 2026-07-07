@@ -5,10 +5,13 @@ import {
   ARCH_DRAFTS_DIR,
   CRYSTAL_DIR,
   PROJECTS_DIR,
+  TODOS_FILE,
+  TodoListSchema,
   WORKSPACE_FILE,
   createArchitectureGraph,
   createProject,
   createRepoRef,
+  createTodoList,
   createWorkspaceManifest,
   parseCrystalFile,
   serializeCrystalFile,
@@ -16,6 +19,7 @@ import {
   type ArchDraft,
   type ArchitectureGraph,
   type Project,
+  type TodoList,
   type WorkspaceInfo,
   type WorkspaceManifest,
 } from "@crystal/core";
@@ -155,6 +159,22 @@ export class WorkspaceStore {
     const rel = `${PROJECTS_DIR}/${await this.uniqueSlug(PROJECTS_DIR, name)}.json`;
     await this.saveProject(rel, project);
     return { path: rel, project };
+  }
+
+  /** Load the todo list (empty when the file doesn't exist yet). */
+  async loadTodos(): Promise<TodoList> {
+    const file = resolveInRoot(this.root, TODOS_FILE);
+    if (!(await exists(file))) return createTodoList();
+    return parseCrystalFile("todos", await fs.readFile(file, "utf8"));
+  }
+
+  async saveTodos(todos: TodoList): Promise<void> {
+    // Validate before writing — a bad payload must not corrupt the file for
+    // every later read.
+    const parsed = TodoListSchema.parse(todos);
+    const file = resolveInRoot(this.root, TODOS_FILE);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, serializeCrystalFile("todos", parsed), "utf8");
   }
 
   async saveProject(relPath: string, project: Project): Promise<void> {

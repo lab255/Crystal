@@ -14,6 +14,8 @@ import type {
 } from "./codemap.js";
 import type { Project } from "./project.js";
 import type { RefactorApplyResult, RefactorIntent, RefactorPlan } from "./refactor.js";
+import type { TerminalChunk, TerminalInfo } from "./terminal.js";
+import type { TodoList } from "./todo.js";
 import type { WorkspaceManifest } from "./workspace.js";
 
 /**
@@ -124,6 +126,9 @@ export interface BridgeMethods {
   "archdraft.delete": { params: WsScope & { path: string }; result: { ok: true } };
   "project.save": { params: WsScope & { path: string; project: Project }; result: { ok: true } };
   "project.create": { params: WsScope & { name: string }; result: { path: string; project: Project } };
+  /** The workspace's todo list (`.crystal/todos.json`; empty list if the file is absent). */
+  "todos.get": { params: WsScope; result: { todos: TodoList } };
+  "todos.save": { params: WsScope & { todos: TodoList }; result: { ok: true } };
   "fs.list": { params: WsScope & { path: string }; result: { entries: FileEntry[] } };
   "fs.read": { params: WsScope & { path: string }; result: { content: string; truncated: boolean } };
   "fs.write": { params: WsScope & { path: string; content: string }; result: { ok: true } };
@@ -158,6 +163,18 @@ export interface BridgeMethods {
     result: { diff: string; stat: string; worktreePath: string | null };
   };
   "agent.cleanupWorktree": { params: WsScope & { runId: string }; result: { ok: true } };
+  /** Spawn a line-mode shell terminal in the workspace (cwd relative to the root). */
+  "terminal.create": { params: WsScope & { cwd?: string }; result: { terminal: TerminalInfo } };
+  "terminal.list": { params: WsScope; result: { terminals: TerminalInfo[] } };
+  /** Write to the terminal's stdin (include the trailing newline to run a command). */
+  "terminal.input": { params: WsScope & { terminalId: string; data: string }; result: { ok: true } };
+  /** Kill the terminal's process (if running) and drop it from the list. */
+  "terminal.kill": { params: WsScope & { terminalId: string }; result: { ok: true } };
+  /** Replay buffer of a terminal (capped) — catch up before listening to `terminal.data`. */
+  "terminal.buffer": {
+    params: WsScope & { terminalId: string };
+    result: { chunks: TerminalChunk[] };
+  };
   "codemap.get": { params: WsScope; result: CodeMapSummary };
   "codemap.module": { params: WsScope & { path: string }; result: CodeModuleDetail };
   "codemap.file": { params: WsScope & { path: string }; result: CodeFileDetail };
@@ -227,6 +244,12 @@ export interface BridgeEvents {
   "agent.runChanged": { ws: string; run: AgentRun };
   "fs.changed": { ws: string; paths: string[] };
   "workspace.changed": { ws: string };
+  /** A workspace's todo list was saved (payload carries the new list). */
+  "todos.changed": { ws: string; todos: TodoList };
+  /** Terminal output/echo chunk (sequenced per terminal). */
+  "terminal.data": { ws: string; chunk: TerminalChunk };
+  /** A terminal was created, exited or killed. */
+  "terminal.changed": { ws: string; terminal: TerminalInfo };
   /** The derived code map was re-analyzed after source changes. */
   "codemap.changed": { ws: string };
   /** The set of open workspaces changed (opened/closed/renamed). */

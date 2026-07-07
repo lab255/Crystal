@@ -146,6 +146,12 @@ describe("round trips", () => {
     expect(roundTrip(runs)).toEqual(runs);
   });
 
+  it("projects overview", () => {
+    const link: DeepLink = { ws: "abc", mode: "projects" };
+    expect(formatDeepLink(link)).toBe("#/projects?ws=abc");
+    expect(roundTrip(link)).toEqual(link);
+  });
+
   it("editor file with special characters", () => {
     const link: DeepLink = {
       ws: "abc",

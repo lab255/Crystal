@@ -1,18 +1,33 @@
 import { Suspense, lazy, useEffect, useState } from "react";
-import { Boxes, Check, Code2, Gem, KanbanSquare, Link2, type LucideIcon } from "lucide-react";
-import { parseDeepLink } from "@crystal/core";
 import {
+  Boxes,
+  Check,
+  Code2,
+  Gem,
+  KanbanSquare,
+  LayoutGrid,
+  Link2,
+  TerminalSquare,
+  type LucideIcon,
+} from "lucide-react";
+import { parseDeepLink, workspaceLight, worstLight, type TrafficLight } from "@crystal/core";
+import {
+  EMPTY_RUNS,
+  EMPTY_TODOS,
   useAgents,
   useConnectionState,
+  useCrystal,
+  useFleet,
   useNav,
   useNavUpdate,
   useWorkspace,
   useWorkspaces,
 } from "@crystal/client";
-import { Spinner, StatusDot, Tooltip, TooltipProvider, cn } from "@crystal/ui";
+import { Spinner, StatusDot, Tooltip, TooltipProvider, TrafficLightDot, cn } from "@crystal/ui";
 import { CommandPalette } from "./CommandPalette.js";
 import { useDeepLinks } from "./deeplinks.js";
 import { CRYSTAL_MODES, MODE_LABELS, type CrystalMode } from "./modes.js";
+import { TerminalPanel } from "./TerminalPanel.js";
 import { WorkspacePicker } from "./WorkspacePicker.js";
 
 // Each mode is a lazy chunk: react-flow/dagre and Monaco only download when
@@ -27,14 +42,19 @@ const OrchestratorMode = lazy(() =>
 const EditorMode = lazy(() =>
   import("@crystal/editor").then((m) => ({ default: m.EditorMode })),
 );
+const OverviewMode = lazy(() =>
+  import("./overview/OverviewMode.js").then((m) => ({ default: m.OverviewMode })),
+);
 
 const MODE_COMPONENTS: Record<CrystalMode, React.LazyExoticComponent<() => React.JSX.Element>> = {
+  projects: OverviewMode,
   architect: ArchitectMode,
   orchestrate: OrchestratorMode,
   code: EditorMode,
 };
 
 const MODE_ICONS: Record<CrystalMode, LucideIcon> = {
+  projects: LayoutGrid,
   architect: Boxes,
   orchestrate: KanbanSquare,
   code: Code2,
@@ -72,12 +92,15 @@ export function CrystalShell({
     setVisited((v) => (v.has(mode) ? v : new Set(v).add(mode)));
   }, [mode]);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [terminalOpen, setTerminalOpen] = useState(false);
 
+  const { terminalsStore, workspacesStore } = useCrystal();
   const connection = useConnectionState();
   const activeWsId = useWorkspaces((s) => s.activeId);
   const saving = useWorkspace((s) => Object.keys(s.pendingSaves).length > 0);
   const wsError = useWorkspace((s) => s.error);
   const runningRuns = useAgents((s) => s.runs.filter((r) => r.status === "running").length);
+  const attention = useFleetAttention(activeWsId);
 
   function switchMode(next: CrystalMode): void {
     updateNav({ mode: next });
@@ -92,9 +115,12 @@ export function CrystalShell({
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
         setPaletteOpen(true);
-      } else if ((e.ctrlKey || e.metaKey) && ["1", "2", "3"].includes(e.key)) {
+      } else if ((e.ctrlKey || e.metaKey) && ["1", "2", "3", "4"].includes(e.key)) {
         e.preventDefault();
         switchMode(CRYSTAL_MODES[Number(e.key) - 1]!);
+      } else if ((e.ctrlKey || e.metaKey) && e.key === "`") {
+        e.preventDefault();
+        setTerminalOpen((open) => !open);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -114,9 +140,20 @@ export function CrystalShell({
       switchMode("code");
     };
     window.addEventListener("crystal:open-file", onOpenFile);
+    // "Open a terminal in workspace X" requests (e.g. from a project card).
+    const onOpenTerminal = (e: Event) => {
+      const detail = (e as CustomEvent<{ ws?: string; kind?: "shell" | "agent" }>).detail;
+      const ws = detail?.ws ?? workspacesStore.getState().activeId;
+      if (!ws) return;
+      setTerminalOpen(true);
+      if (detail?.kind === "agent") terminalsStore.getState().openAgentConsole(ws);
+      else void terminalsStore.getState().openShell(ws);
+    };
+    window.addEventListener("crystal:open-terminal", onOpenTerminal);
     return () => {
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("crystal:open-file", onOpenFile);
+      window.removeEventListener("crystal:open-terminal", onOpenTerminal);
     };
   }, []);
 
@@ -153,6 +190,9 @@ export function CrystalShell({
                         {runningRuns}
                       </span>
                     ) : null}
+                    {m === "projects" && (attention === "red" || attention === "yellow") ? (
+                      <TrafficLightDot light={attention} className="absolute -right-0.5 -top-0.5" />
+                    ) : null}
                   </button>
                 </Tooltip>
               );
@@ -167,11 +207,13 @@ export function CrystalShell({
                 </div>
               }
             >
-              {/* Keyed by workspace: switching remounts modes with fresh, correctly-scoped state. */}
+              {/* Keyed by workspace: switching remounts modes with fresh, correctly-scoped
+                  state. The projects overview is cross-workspace, so it survives switches. */}
               {CRYSTAL_MODES.filter((m) => visited.has(m)).map((m) => {
                 const ModeComponent = MODE_COMPONENTS[m];
+                const key = m === "projects" ? m : `${m}:${activeWsId ?? ""}`;
                 return (
-                  <div key={`${m}:${activeWsId ?? ""}`} className={cn("h-full", mode !== m && "hidden")}>
+                  <div key={key} className={cn("h-full", mode !== m && "hidden")}>
                     <ModeComponent />
                   </div>
                 );
@@ -179,6 +221,8 @@ export function CrystalShell({
             </Suspense>
           </div>
         </div>
+
+        {terminalOpen ? <TerminalPanel onClose={() => setTerminalOpen(false)} /> : null}
 
         {!hideStatusBar ? (
           <footer className="flex h-6 shrink-0 items-center gap-3 border-t border-edge bg-surface-1 px-3 text-[11px] text-ink-faint">
@@ -191,6 +235,20 @@ export function CrystalShell({
               {connection === "open" ? "bridge" : connection}
             </span>
             <WorkspacePicker />
+            <Tooltip content="Toggle the terminal panel" shortcut="Ctrl+`">
+              <button
+                type="button"
+                aria-label="Toggle terminal panel"
+                aria-pressed={terminalOpen}
+                onClick={() => setTerminalOpen((open) => !open)}
+                className={cn(
+                  "flex items-center gap-1 rounded px-1 hover:bg-surface-3 hover:text-ink",
+                  terminalOpen ? "text-ink" : "text-ink-muted",
+                )}
+              >
+                <TerminalSquare className="h-3 w-3" /> terminal
+              </button>
+            </Tooltip>
             {saving ? <span className="text-info">saving…</span> : null}
             {wsError ? <span className="max-w-96 truncate text-danger">{wsError}</span> : null}
             <span className="ml-auto flex items-center gap-3">
@@ -208,6 +266,29 @@ export function CrystalShell({
         <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} onSwitchMode={switchMode} />
       </div>
     </TooltipProvider>
+  );
+}
+
+/**
+ * Worst traffic light across the *other* workspaces — the rail badge that says
+ * "something elsewhere needs you". The active workspace is excluded: its run
+ * results are auto-acknowledged while you're looking at it.
+ */
+function useFleetAttention(activeWsId: string | null): TrafficLight {
+  const workspaces = useWorkspaces((s) => s.workspaces);
+  const runsByWs = useFleet((s) => s.runsByWs);
+  const todosByWs = useFleet((s) => s.todosByWs);
+  const seenAtByWs = useFleet((s) => s.seenAtByWs);
+  return worstLight(
+    workspaces
+      .filter((w) => w.id !== activeWsId)
+      .map((w) =>
+        workspaceLight(
+          todosByWs[w.id] ?? EMPTY_TODOS,
+          runsByWs[w.id] ?? EMPTY_RUNS,
+          seenAtByWs[w.id] ?? null,
+        ),
+      ),
   );
 }
 

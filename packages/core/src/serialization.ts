@@ -3,6 +3,7 @@ import { ArchDraftSchema, type ArchDraft } from "./arch-draft.js";
 import { ArchitectureGraphSchema, type ArchitectureGraph } from "./architecture.js";
 import { ProjectSchema, type Project } from "./project.js";
 import { ArchSurveySchema, migrateSurveyData, type ArchSurvey } from "./survey.js";
+import { TodoListSchema, type TodoList } from "./todo.js";
 import {
   TraceProfileSchema,
   migrateTraceProfileData,
@@ -29,11 +30,12 @@ export type CrystalFileKind =
   | "project"
   | "workspace"
   | "survey"
-  | "trace";
+  | "trace"
+  | "todos";
 
 const EnvelopeSchema = z.object({
   crystal: z.number(),
-  kind: z.enum(["architecture", "archdraft", "project", "workspace", "survey", "trace"]),
+  kind: z.enum(["architecture", "archdraft", "project", "workspace", "survey", "trace", "todos"]),
   data: z.unknown(),
 });
 
@@ -44,6 +46,7 @@ const DATA_SCHEMAS = {
   workspace: WorkspaceManifestSchema,
   survey: ArchSurveySchema,
   trace: TraceProfileSchema,
+  todos: TodoListSchema,
 } as const;
 
 export interface KindDataMap {
@@ -53,6 +56,7 @@ export interface KindDataMap {
   workspace: WorkspaceManifest;
   survey: ArchSurvey;
   trace: TraceProfile;
+  todos: TodoList;
 }
 
 /**

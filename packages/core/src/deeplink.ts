@@ -14,7 +14,7 @@
  * sync) and anything that wants to mint a link.
  */
 
-export type CrystalModeId = "architect" | "orchestrate" | "code";
+export type CrystalModeId = "projects" | "architect" | "orchestrate" | "code";
 export type ArchitectViewId = "diagrams" | "infra" | "codemap";
 export type OrchestratorTabId = "board" | "runs";
 
@@ -114,9 +114,10 @@ export function formatDeepLink(link: DeepLink): string {
     if (o.project) add("project", o.project);
     if (tab === "board" && o.task) add("task", o.task);
     if (tab === "runs" && o.run) add("run", o.run);
-  } else {
+  } else if (mode === "code") {
     if (link.code?.file) add("file", link.code.file);
   }
+  // "projects" is the cross-workspace overview — nothing to encode beyond ws.
 
   return `#${path}${pairs.length ? `?${pairs.join("&")}` : ""}`;
 }
@@ -172,6 +173,8 @@ export function parseDeepLink(hash: string): DeepLink {
     link.mode = "code";
     const file = params.get("file");
     if (file) link.code = { file };
+  } else if (mode === "projects") {
+    link.mode = "projects";
   }
   return link;
 }

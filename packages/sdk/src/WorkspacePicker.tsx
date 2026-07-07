@@ -1,51 +1,43 @@
 import { useState } from "react";
-import { Check, ChevronsUpDown, FolderOpen, FolderPlus, X } from "lucide-react";
-import { useActiveWorkspace, useWorkspaces } from "@crystal/client";
+import { Check, ChevronsUpDown, FolderPlus, X } from "lucide-react";
+import { workspaceLight } from "@crystal/core";
 import {
-  Button,
-  Dialog,
-  DialogClose,
-  DialogContent,
+  EMPTY_RUNS,
+  EMPTY_TODOS,
+  useActiveWorkspace,
+  useFleet,
+  useWorkspaces,
+} from "@crystal/client";
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
-  Input,
   Tooltip,
+  TrafficLightDot,
   cn,
 } from "@crystal/ui";
+import { OpenWorkspaceDialog } from "./OpenWorkspaceDialog.js";
 
 /**
  * Status-bar workspace picker: switch between the workspaces open on the
- * bridge server, open new ones by path, close ones you're done with.
+ * bridge server, open new ones by path, close ones you're done with. Each row
+ * carries the workspace's traffic light so cross-project attention is visible
+ * from any mode.
  */
 export function WorkspacePicker() {
   const workspaces = useWorkspaces((s) => s.workspaces);
   const setActive = useWorkspaces((s) => s.setActive);
-  const openWorkspace = useWorkspaces((s) => s.openWorkspace);
   const closeWorkspace = useWorkspaces((s) => s.closeWorkspace);
   const active = useActiveWorkspace();
+  const runsByWs = useFleet((s) => s.runsByWs);
+  const todosByWs = useFleet((s) => s.todosByWs);
+  const seenAtByWs = useFleet((s) => s.seenAtByWs);
 
   const [openDialog, setOpenDialog] = useState(false);
-  const [root, setRoot] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
 
-  async function handleOpen() {
-    const trimmed = root.trim();
-    if (!trimmed) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await openWorkspace(trimmed);
-      setRoot("");
-      setOpenDialog(false);
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
+  const lightFor = (ws: string) =>
+    workspaceLight(todosByWs[ws] ?? EMPTY_TODOS, runsByWs[ws] ?? EMPTY_RUNS, seenAtByWs[ws] ?? null);
 
   return (
     <>
@@ -57,6 +49,7 @@ export function WorkspacePicker() {
             aria-label="Switch workspace"
             title={active?.root}
           >
+            {active ? <TrafficLightDot light={lightFor(active.id)} /> : null}
             <span className="max-w-48 truncate">{active?.name ?? "No workspace"}</span>
             {workspaces.length > 1 ? (
               <span className="rounded-full bg-surface-3 px-1 text-[9px] text-ink-faint">
@@ -76,6 +69,7 @@ export function WorkspacePicker() {
               <Check
                 className={cn("h-3.5 w-3.5 shrink-0", w.id === active?.id ? "text-crystal-300" : "opacity-0")}
               />
+              <TrafficLightDot light={lightFor(w.id)} />
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-ink">{w.name}</span>
                 <span className="block truncate text-[10px] text-ink-faint">{w.root}</span>
@@ -105,39 +99,7 @@ export function WorkspacePicker() {
         </DropdownMenuContent>
       </DropdownMenu>
 
-      <Dialog open={openDialog} onOpenChange={setOpenDialog}>
-        <DialogContent
-          title="Open workspace"
-          description="Absolute path to a directory on the machine running the bridge server."
-        >
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              void handleOpen();
-            }}
-            className="space-y-3"
-          >
-            <Input
-              autoFocus
-              value={root}
-              onChange={(e) => setRoot(e.target.value)}
-              placeholder="C:\Users\me\Workspaces\my-product"
-              spellCheck={false}
-            />
-            {error ? <div className="text-[11px] text-danger">{error}</div> : null}
-            <div className="flex justify-end gap-2">
-              <DialogClose asChild>
-                <Button variant="ghost" size="sm">
-                  Cancel
-                </Button>
-              </DialogClose>
-              <Button type="submit" variant="primary" size="sm" disabled={!root.trim() || busy}>
-                <FolderOpen className="h-3.5 w-3.5" /> Open
-              </Button>
-            </div>
-          </form>
-        </DialogContent>
-      </Dialog>
+      <OpenWorkspaceDialog open={openDialog} onOpenChange={setOpenDialog} />
     </>
   );
 }

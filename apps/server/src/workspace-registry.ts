@@ -15,6 +15,7 @@ import { AgentManager } from "./agent-manager.js";
 import { CodeMapAnalyzer, type CrossSurface } from "./code-map.js";
 import { appDataDir, isIgnoredDir, workspaceIdFor } from "./paths.js";
 import { RefactorEngine } from "./refactor.js";
+import { TerminalManager } from "./terminal-manager.js";
 import { WorkspaceStore } from "./workspace-store.js";
 
 const CODE_FILE_RE = /\.(ts|tsx|js|jsx|mjs|cjs)$/;
@@ -40,6 +41,7 @@ export class WorkspaceRuntime {
   readonly id: string;
   readonly store: WorkspaceStore;
   readonly agents: AgentManager;
+  readonly terminals: TerminalManager;
   readonly codemap: CodeMapAnalyzer;
   /** Manifest name, kept fresh by workspace.get / saveManifest handlers. */
   name: string;
@@ -55,6 +57,7 @@ export class WorkspaceRuntime {
     this.name = path.basename(root);
     this.store = new WorkspaceStore(root);
     this.agents = new AgentManager(root, appDataDir(root));
+    this.terminals = new TerminalManager(root);
     this.codemap = new CodeMapAnalyzer(root);
   }
 
@@ -72,6 +75,12 @@ export class WorkspaceRuntime {
       this.agents.events.on("event", (payload) => broadcast("agent.event", payload)),
       this.agents.events.on("runChanged", ({ run }) =>
         broadcast("agent.runChanged", { ws: this.id, run }),
+      ),
+      this.terminals.events.on("data", ({ chunk }) =>
+        broadcast("terminal.data", { ws: this.id, chunk }),
+      ),
+      this.terminals.events.on("changed", ({ terminal }) =>
+        broadcast("terminal.changed", { ws: this.id, terminal }),
       ),
     ];
     try {
@@ -101,6 +110,7 @@ export class WorkspaceRuntime {
     if (this.watchTimer) clearTimeout(this.watchTimer);
     for (const dispose of this.disposeAgentListeners) dispose();
     this.disposeAgentListeners = [];
+    this.terminals.disposeAll();
     this.refactorEngine?.dispose();
     this.refactorEngine = null;
   }

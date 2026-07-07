@@ -15,6 +15,22 @@ export {
   type AgentState,
   type AgentStore,
 } from "./agent-store.js";
+export {
+  EMPTY_RUNS,
+  EMPTY_TODOS,
+  createFleetStore,
+  type FleetState,
+  type FleetStore,
+} from "./fleet-store.js";
+export {
+  agentEventToChunk,
+  createTerminalsStore,
+  type TermChunk,
+  type TerminalTab,
+  type TerminalTabKind,
+  type TerminalsState,
+  type TerminalsStore,
+} from "./terminal-store.js";
 export { createNavStore, type NavPatch, type NavState, type NavStore } from "./nav-store.js";
 export {
   CrystalProvider,
@@ -23,8 +39,10 @@ export {
   useAgents,
   useConnectionState,
   useCrystal,
+  useFleet,
   useNav,
   useNavUpdate,
+  useTerminals,
   useWorkspace,
   useWorkspaces,
   type CrystalContextValue,

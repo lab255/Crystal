@@ -126,6 +126,13 @@ export async function startCrystalServer(opts: {
       return { ok: true };
     },
     "project.create": ({ ws, name }) => registry.get(ws).store.createProject(name),
+    "todos.get": async ({ ws }) => ({ todos: await registry.get(ws).store.loadTodos() }),
+    "todos.save": async ({ ws, todos }) => {
+      const rt = registry.get(ws);
+      await rt.store.saveTodos(todos);
+      broadcast("todos.changed", { ws: rt.id, todos });
+      return { ok: true };
+    },
     "fs.list": async ({ ws, path: p }) => ({
       entries: await listDir(registry.get(ws).root, p),
     }),
@@ -164,6 +171,21 @@ export async function startCrystalServer(opts: {
       await registry.get(ws).agents.cleanupWorktree(runId);
       return { ok: true };
     },
+    "terminal.create": async ({ ws, cwd }) => ({
+      terminal: registry.get(ws).terminals.create(cwd),
+    }),
+    "terminal.list": async ({ ws }) => ({ terminals: registry.get(ws).terminals.list() }),
+    "terminal.input": async ({ ws, terminalId, data }) => {
+      registry.get(ws).terminals.input(terminalId, data);
+      return { ok: true };
+    },
+    "terminal.kill": async ({ ws, terminalId }) => {
+      registry.get(ws).terminals.kill(terminalId);
+      return { ok: true };
+    },
+    "terminal.buffer": async ({ ws, terminalId }) => ({
+      chunks: registry.get(ws).terminals.buffer(terminalId),
+    }),
     "codemap.get": ({ ws }) => registry.get(ws).codemap.summary(),
     "codemap.module": ({ ws, path: p }) => registry.get(ws).codemap.moduleDetail(p),
     "codemap.file": ({ ws, path: p }) => registry.get(ws).codemap.fileDetail(p),
