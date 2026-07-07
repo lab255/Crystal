@@ -11,7 +11,12 @@ import {
   type BridgeRequest,
   type BridgeResponse,
 } from "@crystal/core";
-import { applyCodeSnapshotToGraph, createArchDraft, suggestFacets } from "@crystal/core";
+import {
+  applyCodeSnapshotToGraph,
+  computeReviewFindings,
+  createArchDraft,
+  suggestFacets,
+} from "@crystal/core";
 import { deleteAt, listDir, mkdirAt, readFileCapped, renameAt, writeFileAt } from "./fs-api.js";
 import { gitLog, gitStatus } from "./git.js";
 import { snapshotAtRef } from "./ref-snapshot.js";
@@ -253,6 +258,18 @@ export async function startCrystalServer(opts: {
         tags: ["purpose:index"],
       });
       return { run, files: dispatch.files };
+    },
+    "review.findings": async ({ ws }) => {
+      const rt = registry.get(ws);
+      const [files, clusters, { index }] = await Promise.all([
+        rt.codemap.reviewSourceFiles(),
+        rt.codemap.duplicates(),
+        rt.codeindex.get(),
+      ]);
+      return {
+        findings: computeReviewFindings(files, clusters, index),
+        generatedAt: new Date().toISOString(),
+      };
     },
     "arch.suggestFacets": async ({ ws, path: p }) => {
       const rt = registry.get(ws);
