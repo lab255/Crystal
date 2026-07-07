@@ -2,6 +2,7 @@ import "@xyflow/react/dist/style.css";
 import "./architect.css";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Bot,
   Boxes,
   Check,
   CloudUpload,
@@ -15,6 +16,7 @@ import {
   MoreHorizontal,
   PencilRuler,
   Plus,
+  Sparkles,
   Trash2,
   X,
 } from "lucide-react";
@@ -26,14 +28,18 @@ import {
   graphsEqual,
   matchAgent,
   mergeGraphs,
+  suggestFacets,
   type ArchDraft,
   type ArchitectureGraph,
+  type CodeIndex,
   type CodeMapSummary,
   type CodeTrace,
   type CodeTraceStep,
+  type FacetSuggestion,
   type TaskItem,
 } from "@crystal/core";
 import {
+  useAgents,
   useConnectionState,
   useCrystal,
   useNav,
@@ -78,6 +84,7 @@ const EMPTY_ARCHITECTURES: never[] = [];
 const EMPTY_DRAFTS: never[] = [];
 const EMPTY_REFACTORS: never[] = [];
 const EMPTY_PROJECTS: never[] = [];
+const EMPTY_RUNS: never[] = [];
 
 type ArchitectView = "diagrams" | "infra" | "codemap";
 
@@ -772,6 +779,7 @@ function DiagramsView({
                   activeFacetId={activeFacetId}
                   onActivate={setActiveFacetId}
                   onGraphChange={commitGraph}
+                  onNotice={setNotice}
                 />
               ) : null}
               {effectiveGraph ? (
@@ -1037,19 +1045,108 @@ function DiagramsView({
  * "Shared libraries"…) that filter the canvas to one concern. Clicking a facet
  * activates it (click again to show everything); membership is edited on the
  * canvas by right-clicking nodes.
+ *
+ * Below the saved facets it surfaces *suggested* facets derived from the code
+ * index (intent tags rolled up through node code links, plus the shared
+ * dependencies those members lean on) — click to materialize one. A footer
+ * shows index freshness and dispatches a small, cheap indexing agent over the
+ * unindexed files.
  */
 function FacetsSection({
   graph,
   activeFacetId,
   onActivate,
   onGraphChange,
+  onNotice,
 }: {
   graph: ArchitectureGraph;
   activeFacetId: string | null;
   onActivate: (id: string | null) => void;
   onGraphChange: (graph: ArchitectureGraph) => void;
+  onNotice: (message: string) => void;
 }) {
   const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null);
+
+  const { client } = useCrystal();
+  const connection = useConnectionState();
+  const activeWs = useWorkspaces((s) => s.activeId);
+  const runs = useAgents((s) => s.runs ?? EMPTY_RUNS);
+  const [index, setIndex] = useState<CodeIndex | null>(null);
+  const [staleCount, setStaleCount] = useState(0);
+  const [indexRunId, setIndexRunId] = useState<string | null>(null);
+  const [dismissed, setDismissed] = useState<string[]>([]);
+
+  const fetchIndex = useCallback(async () => {
+    try {
+      const { index, staleFiles } = await client.request("codeindex.get", {});
+      setIndex(index);
+      setStaleCount(staleFiles.length);
+    } catch {
+      setIndex(null); // No bridge / analyzer unavailable — suggestions just hide.
+    }
+  }, [client]);
+
+  useEffect(() => {
+    if (connection === "open") void fetchIndex();
+  }, [connection, fetchIndex]);
+  useEffect(
+    () =>
+      client.events.on("codeindex.changed", ({ ws }) => {
+        if (!activeWs || ws === activeWs) void fetchIndex();
+      }),
+    [client, activeWs, fetchIndex],
+  );
+
+  // Track the dispatched indexing run; the index itself refreshes via
+  // `codeindex.changed` when the enrichment file lands.
+  const indexRun = runs.find((r) => r.id === indexRunId) ?? null;
+  const indexing = indexRun ? indexRun.status === "running" || indexRun.status === "queued" : false;
+  useEffect(() => {
+    if (!indexRun) return;
+    if (indexRun.status === "failed" || indexRun.status === "cancelled") {
+      onNotice(`Indexing run ${indexRun.status}${indexRun.resultText ? `: ${indexRun.resultText}` : ""}`);
+      setIndexRunId(null);
+    } else if (indexRun.status === "completed") {
+      setIndexRunId(null);
+    }
+  }, [indexRun, onNotice]);
+
+  const suggestions = useMemo(() => {
+    if (!index) return [];
+    return suggestFacets(graph, index).filter((s) => !dismissed.includes(s.name));
+  }, [graph, index, dismissed]);
+
+  /** Materialize a suggestion — filling a same-named empty facet if one exists. */
+  const accept = (s: FacetSuggestion) => {
+    const existing = graph.facets.find(
+      (f) => f.nodeIds.length === 0 && f.name.trim().toLowerCase() === s.name.trim().toLowerCase(),
+    );
+    if (existing) {
+      onGraphChange({
+        ...graph,
+        facets: graph.facets.map((f) =>
+          f.id === existing.id
+            ? { ...f, description: f.description || s.description, nodeIds: [...s.nodeIds] }
+            : f,
+        ),
+      });
+      onActivate(existing.id);
+      return;
+    }
+    const facet = { ...createArchFacet(s.name, s.nodeIds), description: s.description };
+    onGraphChange({ ...graph, facets: [...graph.facets, facet] });
+    onActivate(facet.id);
+  };
+
+  const dispatchIndexing = async () => {
+    try {
+      const { run, files } = await client.request("codeindex.enrich", {});
+      setIndexRunId(run.id);
+      onNotice(`Indexing agent dispatched over ${files.length} file${files.length === 1 ? "" : "s"}.`);
+    } catch (err) {
+      onNotice(`Indexing agent failed to start: ${(err as Error).message}`);
+    }
+  };
 
   const create = () => {
     const facet = createArchFacet(`Facet ${graph.facets.length + 1}`);
@@ -1140,9 +1237,68 @@ function FacetsSection({
           </DropdownMenu>
         </div>
       ))}
-      {graph.facets.length === 0 ? (
+      {graph.facets.length === 0 && suggestions.length === 0 ? (
         <div className="px-2 py-1 text-[11px] text-ink-faint">
           Lenses on this diagram — select nodes and right-click to start one.
+        </div>
+      ) : null}
+
+      {suggestions.length > 0 ? (
+        <div className="px-1.5 pb-0.5 pt-1 text-[10px] font-semibold uppercase tracking-wider text-ink-faint/80">
+          Suggested
+        </div>
+      ) : null}
+      {suggestions.map((s) => (
+        <Tooltip
+          key={s.name}
+          content={`${s.description} — e.g. ${s.sampleFiles.slice(0, 3).join(", ")}`}
+        >
+          <div
+            className="group flex cursor-pointer items-center gap-2 rounded-lg border border-dashed border-edge px-2 py-1.5 text-[13px] text-ink-muted hover:border-crystal-500/60 hover:bg-surface-2 hover:text-ink"
+            onClick={() => accept(s)}
+            role="button"
+            aria-label={`Create facet ${s.name}`}
+          >
+            <Sparkles className="h-3.5 w-3.5 shrink-0 text-crystal-500 opacity-80" />
+            <span className="min-w-0 flex-1 truncate">{s.name}</span>
+            <span className="text-[10px] text-ink-faint">{s.nodeIds.length}</span>
+            <button
+              type="button"
+              className="shrink-0 text-ink-faint opacity-0 hover:text-ink group-hover:opacity-100"
+              onClick={(e) => {
+                e.stopPropagation();
+                setDismissed((d) => [...d, s.name]);
+              }}
+              aria-label={`Dismiss suggestion ${s.name}`}
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </div>
+        </Tooltip>
+      ))}
+
+      {index ? (
+        <div className="flex items-center justify-between px-2 py-1 text-[11px] text-ink-faint">
+          <span>
+            {staleCount > 0
+              ? `${staleCount} file${staleCount === 1 ? "" : "s"} without intent tags`
+              : "intent index fresh"}
+          </span>
+          {indexing ? (
+            <span className="flex items-center gap-1">
+              <Spinner className="h-3 w-3" /> indexing…
+            </span>
+          ) : staleCount > 0 ? (
+            <Tooltip content="Send a small, cheap agent to read the untagged files and record what each symbol is for — facet suggestions sharpen as tags land">
+              <button
+                type="button"
+                className="flex items-center gap-1 text-ink-faint hover:text-ink"
+                onClick={() => void dispatchIndexing()}
+              >
+                <Bot className="h-3 w-3" /> Index intents
+              </button>
+            </Tooltip>
+          ) : null}
         </div>
       ) : null}
     </>
