@@ -2,6 +2,11 @@ import { z } from "zod";
 import { AgentRosterSchema, type AgentRoster } from "./agent-profile.js";
 import { ArchDraftSchema, type ArchDraft } from "./arch-draft.js";
 import { ArchitectureGraphSchema, type ArchitectureGraph } from "./architecture.js";
+import {
+  CodeEnrichmentSchema,
+  migrateEnrichmentData,
+  type CodeEnrichment,
+} from "./code-index.js";
 import { ProjectSchema, type Project } from "./project.js";
 import { ArchSurveySchema, migrateSurveyData, type ArchSurvey } from "./survey.js";
 import { TodoListSchema, type TodoList } from "./todo.js";
@@ -33,7 +38,8 @@ export type CrystalFileKind =
   | "survey"
   | "trace"
   | "todos"
-  | "agents";
+  | "agents"
+  | "enrichment";
 
 const EnvelopeSchema = z.object({
   crystal: z.number(),
@@ -46,6 +52,7 @@ const EnvelopeSchema = z.object({
     "trace",
     "todos",
     "agents",
+    "enrichment",
   ]),
   data: z.unknown(),
 });
@@ -59,6 +66,7 @@ const DATA_SCHEMAS = {
   trace: TraceProfileSchema,
   todos: TodoListSchema,
   agents: AgentRosterSchema,
+  enrichment: CodeEnrichmentSchema,
 } as const;
 
 export interface KindDataMap {
@@ -70,6 +78,7 @@ export interface KindDataMap {
   trace: TraceProfile;
   todos: TodoList;
   agents: AgentRoster;
+  enrichment: CodeEnrichment;
 }
 
 /**
@@ -80,6 +89,7 @@ export interface KindDataMap {
 const DATA_MIGRATORS: Partial<Record<CrystalFileKind, (data: unknown) => unknown>> = {
   survey: migrateSurveyData,
   trace: migrateTraceProfileData,
+  enrichment: migrateEnrichmentData,
 };
 
 export function serializeCrystalFile<K extends CrystalFileKind>(

@@ -76,16 +76,19 @@ export interface CodeModuleDetail {
   truncated: boolean;
 }
 
-export type CodeSymbolKind =
-  | "function"
-  | "class"
-  | "interface"
-  | "enum"
-  | "type"
-  | "const"
-  | "component"
-  | "default"
-  | "reexport";
+export const CODE_SYMBOL_KINDS = [
+  "function",
+  "class",
+  "interface",
+  "enum",
+  "type",
+  "const",
+  "component",
+  "default",
+  "reexport",
+] as const;
+
+export type CodeSymbolKind = (typeof CODE_SYMBOL_KINDS)[number];
 
 export interface CodeSymbol {
   name: string;

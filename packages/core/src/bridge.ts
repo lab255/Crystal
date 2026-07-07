@@ -2,6 +2,7 @@ import type { AgentRoster } from "./agent-profile.js";
 import type { ArchDraft } from "./arch-draft.js";
 import type { ArchitectureGraph } from "./architecture.js";
 import type { AgentRun, RunEvent, RunPurpose } from "./agent.js";
+import type { CodeIndex, FacetSuggestion } from "./code-index.js";
 import type {
   CodeFileDetail,
   CodeMapSummary,
@@ -223,6 +224,29 @@ export interface BridgeMethods {
     params: WsScope & { query: string; limit?: number };
     result: { symbols: SymbolSearchHit[] };
   };
+  /**
+   * The semantic code index: deterministic heuristic tags rebuilt live from
+   * the code map, merged with agent enrichments from `.crystal/index/`.
+   * `staleFiles` lists files no fresh enrichment covers (see code-index.ts).
+   */
+  "codeindex.get": {
+    params: WsScope;
+    result: { index: CodeIndex; staleFiles: string[] };
+  };
+  /**
+   * Dispatch a small, cheap indexing agent over the stale files (or an
+   * explicit list): it reads them and writes an enrichment file under
+   * `.crystal/index/`; the index refreshes when the file lands.
+   */
+  "codeindex.enrich": {
+    params: WsScope & { files?: string[]; agentId?: string | null };
+    result: { run: AgentRun; files: string[] };
+  };
+  /** Facet suggestions for one architecture, derived from the code index. */
+  "arch.suggestFacets": {
+    params: WsScope & { path: string };
+    result: { suggestions: FacetSuggestion[] };
+  };
   /** Dry-run of refactor intents — per-intent engine + change summaries. */
   "refactor.preview": {
     params: WsScope & { intents: RefactorIntent[] };
@@ -272,6 +296,8 @@ export interface BridgeEvents {
   "terminal.changed": { ws: string; terminal: TerminalInfo };
   /** The derived code map was re-analyzed after source changes. */
   "codemap.changed": { ws: string };
+  /** The code index changed (code re-analyzed or an enrichment file landed). */
+  "codeindex.changed": { ws: string };
   /** The set of open workspaces changed (opened/closed/renamed). */
   "workspaces.changed": Record<string, never>;
 }

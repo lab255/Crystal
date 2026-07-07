@@ -50,3 +50,5 @@ export const AGENTS_FILE = `${CRYSTAL_DIR}/agents.json`;
 export const SURVEYS_DIR = `${CRYSTAL_DIR}/surveys`;
 /** Where runtime trace profiles are dropped for the flamegraph view. */
 export const TRACES_DIR = `${CRYSTAL_DIR}/traces`;
+/** Where indexing agents drop code-index enrichments (see code-index.ts). */
+export const INDEX_DIR = `${CRYSTAL_DIR}/index`;
