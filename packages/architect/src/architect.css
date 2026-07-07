@@ -84,6 +84,36 @@
   transition: transform 240ms ease;
 }
 
+/* Hover lens: nodes outside the hovered node's import/export neighborhood
+   recede so the connected ones read as a spotlight. */
+.react-flow__node.arch-hover-dim {
+  opacity: 0.25;
+  transition: opacity 150ms ease;
+}
+
+/* Edges fade rather than snap when the hover lens engages/releases. */
+.react-flow__edge-path {
+  transition:
+    opacity 150ms ease,
+    stroke 150ms ease;
+}
+
+/* Trace → canvas reveal: one pulse around the node a flamegraph frame or
+   trace step resolved to. drop-shadow follows the card's rounded shape. */
+.react-flow__node.arch-flash {
+  animation: arch-flash 1.2s ease-out;
+}
+
+@keyframes arch-flash {
+  0%,
+  60% {
+    filter: drop-shadow(0 0 14px var(--color-crystal-400));
+  }
+  100% {
+    filter: drop-shadow(0 0 0 transparent);
+  }
+}
+
 @keyframes lod-enter {
   from {
     opacity: 0;

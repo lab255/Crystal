@@ -14,6 +14,22 @@
         "kind": "local"
       }
     ],
-    "journeys": []
+    "journeys": [
+      {
+        "id": "journey_951a07fe6766",
+        "name": "createBooking",
+        "description": "",
+        "entry": {
+          "file": "packages/core/src/booking.ts",
+          "symbol": "createBooking"
+        }
+      }
+    ],
+    "facets": [],
+    "viewport": {
+      "x": 0,
+      "y": -660,
+      "zoom": 1
+    }
   }
 }

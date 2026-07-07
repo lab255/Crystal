@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ArchitectureGraph, CodeMapSummary, CodeTrace } from "@crystal/core";
 import { createArchNode, createArchitectureGraph } from "@crystal/core";
-import { projectTrace } from "./dataflow.js";
+import { projectTrace, stepKeyOf } from "./dataflow.js";
 
 function graph(): ArchitectureGraph {
   const node = (id: string, label: string, codeModule: string | null) => ({
@@ -83,5 +83,19 @@ describe("projectTrace", () => {
     expect(flow.unmappedSteps).toHaveLength(1);
     expect(flow.unmappedSteps[0]!.ref.symbol).toBe("helper");
     expect(flow.nodeOrder.map((n) => n.nodeId)).toEqual(["web"]);
+  });
+
+  it("resolves every mapped step to its node id (trace-click reveal)", () => {
+    const t = trace([
+      ["apps/web/a.ts", "submit", "apps/web", 0],
+      ["apps/web/b.ts", "post", "apps/web", 1], // same node — still resolvable
+      ["apps/server/h.ts", "handle", "apps/server", 1],
+      ["packages/other/z.ts", "helper", "packages/other", 2], // unmapped — absent
+    ]);
+    const flow = projectTrace(t, graph(), summary);
+    expect(flow.stepNodeIds.get(stepKeyOf(t.steps[0]!))).toBe("web");
+    expect(flow.stepNodeIds.get(stepKeyOf(t.steps[1]!))).toBe("web");
+    expect(flow.stepNodeIds.get(stepKeyOf(t.steps[2]!))).toBe("server");
+    expect(flow.stepNodeIds.has(stepKeyOf(t.steps[3]!))).toBe(false);
   });
 });

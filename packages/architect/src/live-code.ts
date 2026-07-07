@@ -67,6 +67,48 @@ export interface CodeContent {
   loading: Set<string>;
 }
 
+/**
+ * Importance of a file within its module: intra-module connectivity first,
+ * public surface second. Shared by the expanded view (which files survive the
+ * cap) and the collapsed block preview, so the preview shows exactly the files
+ * that expansion will.
+ */
+function fileImportanceOf(detail: CodeModuleDetail): (f: CodeFileSummary) => number {
+  const degree = new Map<string, number>();
+  for (const e of detail.edges) {
+    degree.set(e.source, (degree.get(e.source) ?? 0) + 1);
+    degree.set(e.target, (degree.get(e.target) ?? 0) + 1);
+  }
+  return (f) => (degree.get(f.path) ?? 0) * 2 + f.exportCount;
+}
+
+/**
+ * What a collapsed, code-linked block shows at medium zoom: its most important
+ * files as chips. Pure summary — the reserved slot's geometry never changes,
+ * the box just uses its area for information instead of empty space.
+ */
+export interface BlockPreview {
+  files: { name: string; dir: string; exports: number }[];
+  /** Files beyond the preview cap. */
+  more: number;
+  totalFiles: number;
+  totalExports: number;
+}
+
+export function buildBlockPreview(detail: CodeModuleDetail): BlockPreview {
+  const importance = fileImportanceOf(detail);
+  const ranked = [...detail.files].sort((a, b) => importance(b) - importance(a));
+  const files = ranked
+    .slice(0, LIVE_FILE_CAP)
+    .map((f) => ({ name: f.name, dir: f.dir, exports: f.exportCount }));
+  return {
+    files,
+    more: detail.files.length - files.length,
+    totalFiles: detail.files.length,
+    totalExports: detail.files.reduce((s, f) => s + f.exportCount, 0),
+  };
+}
+
 export function buildCodeContent(input: CodeContentInput): CodeContent {
   const nodes: MapRfNode[] = [];
   const edges: RfEdge[] = [];
@@ -87,14 +129,7 @@ export function buildCodeContent(input: CodeContentInput): CodeContent {
       input.expandedFiles.has(path) ||
       input.moves.some((m) => m.fromFile === path || (m.kind === "move" && m.toFile === path));
 
-    // Importance = intra-module connectivity first, public surface second.
-    const degree = new Map<string, number>();
-    for (const e of detail.edges) {
-      degree.set(e.source, (degree.get(e.source) ?? 0) + 1);
-      degree.set(e.target, (degree.get(e.target) ?? 0) + 1);
-    }
-    const importance = (f: CodeFileSummary): number =>
-      (degree.get(f.path) ?? 0) * 2 + f.exportCount;
+    const importance = fileImportanceOf(detail);
 
     const showAll = input.showAllFiles?.has(nodeId) ?? false;
     let summaries = detail.files;

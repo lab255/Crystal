@@ -27,6 +27,7 @@ import {
   type ArchitectureGraph,
   type CodeMapSummary,
   type CodeTrace,
+  type CodeTraceStep,
 } from "@crystal/core";
 import {
   useConnectionState,
@@ -57,7 +58,7 @@ import { ArchitectCanvas } from "./ArchitectCanvas.js";
 import { CodeMapView } from "./codemap/CodeMapView.js";
 import { DuplicatesPanel } from "./codemap/DuplicatesPanel.js";
 import type { MoveLikeIntent } from "./codemap/map-model.js";
-import { projectTrace } from "./dataflow.js";
+import { projectTrace, stepKeyOf } from "./dataflow.js";
 import { InfraView } from "./InfraView.js";
 import { FlowStepsPanel, JourneysSection, type JourneySeed } from "./JourneyPanel.js";
 import { JourneyProfilePanel } from "./ProfilePanel.js";
@@ -173,6 +174,7 @@ export function ArchitectMode() {
           <CodeMapView
             origin={{ label: "Architecture", onExit: () => setView("diagrams") }}
             onStartJourney={startJourneyFromCode}
+            onRevealInDiagram={expandCode}
             activeDraftPath={draftPath}
             onOpenDraft={setDraftPath}
           />
@@ -381,6 +383,21 @@ function DiagramsView({
         ? projectTrace(journeyTrace, effectiveGraph, codeSummary)
         : null,
     [activeJourney, journeyTrace, codeSummary, effectiveGraph],
+  );
+
+  // Clicking a flamegraph frame / trace step points at the component it
+  // belongs to on the canvas (selects it, pans to it, pulses it).
+  const highlightNonce = useRef(0);
+  const [highlightRequest, setHighlightRequest] = useState<{
+    nodeId: string;
+    nonce: number;
+  } | null>(null);
+  const highlightStep = useCallback(
+    (step: CodeTraceStep) => {
+      const nodeId = flow?.stepNodeIds.get(stepKeyOf(step));
+      if (nodeId) setHighlightRequest({ nodeId, nonce: ++highlightNonce.current });
+    },
+    [flow],
   );
 
   const draftRefactors = activeDraft?.draft.refactors ?? EMPTY_REFACTORS;
@@ -766,6 +783,7 @@ function DiagramsView({
                   onRecordFileMove={(fromFile, toModule) => void recordFileMove(fromFile, toModule)}
                   onOpenFullMap={onOpenFullMap}
                   expandRequest={expandRequest}
+                  highlightRequest={highlightRequest}
                   onUnresolvedExpand={(module, file) => onOpenFullMap({ module, file })}
                   showDuplicates={showDuplicates}
                   onToggleDuplicates={setShowDuplicates}
@@ -867,6 +885,7 @@ function DiagramsView({
                   graph={effectiveGraph}
                   summary={codeSummary}
                   onOpenStep={(step) => onExpandCode(step.module, step.ref.file)}
+                  onSelectStep={highlightStep}
                 />
               </Pane>
             ) : null}
@@ -882,6 +901,7 @@ function DiagramsView({
               error={journeyError}
               onClose={() => setActiveJourneyId(null)}
               onOpenStep={(step) => onExpandCode(step.module, step.ref.file)}
+              onSelectStep={highlightStep}
             />
           </Pane>
         ) : null}

@@ -32,6 +32,7 @@ import {
   Route,
   Rows3,
   Shrink,
+  TerminalSquare,
   Trash2,
 } from "lucide-react";
 import {
@@ -78,8 +79,14 @@ import {
 import { ContainerNode } from "./nodes/ContainerNode.js";
 import { LeafNode } from "./nodes/LeafNode.js";
 import { NoteNode } from "./nodes/NoteNode.js";
-import { Inspector } from "./Inspector.js";
-import { adoptAutoLinks, computeOverlay, suggestModuleFor, type OverlayResult } from "./overlay.js";
+import { Inspector, type NodeInsight } from "./Inspector.js";
+import {
+  adoptAutoLinks,
+  computeOverlay,
+  linkNodesToModules,
+  suggestModuleFor,
+  type OverlayResult,
+} from "./overlay.js";
 import type { FlowProjection } from "./dataflow.js";
 import { requestOpenFile } from "./codemap/CodeMapView.js";
 import type { SymbolDragPayload } from "./codemap/CodeNode.js";
@@ -96,9 +103,11 @@ import {
 } from "./codemap/map-model.js";
 import { MapActionsContext, mapNodeTypes, type MapActions } from "./codemap/map-nodes.js";
 import {
+  buildBlockPreview,
   buildCodeContent,
   estimateModuleFootprint,
   unifiedDropTargetAt,
+  type BlockPreview,
   type HitTestNode,
 } from "./live-code.js";
 import { resolveCollisions, type DisplaceRect } from "./displace.js";
@@ -154,6 +163,8 @@ export interface ArchitectCanvasProps {
   onOpenFullMap?: (at?: { module: string; file?: string }) => void;
   /** External "zoom into this module (and file)" request — expands in place. */
   expandRequest?: { module: string; file?: string; nonce: number } | null;
+  /** External "point at this node" request (trace/flamegraph clicks) — selects, pans, pulses. */
+  highlightRequest?: { nodeId: string; nonce: number } | null;
   /** Module/file couldn't be matched to a diagram node — caller may fall back. */
   onUnresolvedExpand?: (module: string, file?: string) => void;
   showDuplicates?: boolean;
@@ -162,6 +173,9 @@ export interface ArchitectCanvasProps {
 
 const GHOST_STROKE = "var(--color-crystal-400)";
 const FLOW_STROKE = "var(--color-crystal-400)";
+/** Hover lens: what the hovered node uses (imports) vs what uses it (exports). */
+const HOVER_OUT_STROKE = "var(--color-accent-cyan)";
+const HOVER_IN_STROKE = "var(--color-accent-emerald)";
 
 /**
  * Dynamic level-of-detail. Detail grows continuously with zoom rather than at
@@ -305,12 +319,17 @@ function CanvasInner({
   onRecordFileMove,
   onOpenFullMap,
   expandRequest,
+  highlightRequest,
   onUnresolvedExpand,
   showDuplicates,
   onToggleDuplicates,
 }: ArchitectCanvasProps) {
   const [selectedNodes, setSelectedNodes] = useState<ReadonlySet<string>>(new Set());
   const [selectedEdges, setSelectedEdges] = useState<ReadonlySet<string>>(new Set());
+  /** Node under the cursor — its imports/exports light up, the rest recedes. */
+  const [hovered, setHovered] = useState<string | null>(null);
+  /** Node pulsing after an external reveal (trace/flamegraph click). */
+  const [flashId, setFlashId] = useState<string | null>(null);
   const [defaultEdgeKind, setDefaultEdgeKind] = useState<ArchEdgeKind>("sync");
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [renaming, setRenaming] = useState<{ x: number; y: number; id: string } | null>(null);
@@ -434,20 +453,6 @@ function CanvasInner({
   expandedRef.current = expanded;
 
   useEffect(() => {
-    for (const module of new Set(expanded.values())) {
-      if (moduleDetails.get(module)?.gen === generation) continue;
-      const key = `m|${module}|${generation}`;
-      if (inflight.current.has(key)) continue;
-      inflight.current.add(key);
-      client
-        .request("codemap.module", { path: module })
-        .then((detail) => setModuleDetails((m) => new Map(m).set(module, { gen: generation, detail })))
-        .catch(() => {})
-        .finally(() => inflight.current.delete(key));
-    }
-  }, [client, expanded, generation, moduleDetails]);
-
-  useEffect(() => {
     for (const path of expandedFiles) {
       if (fileDetails.get(path)?.gen === generation) continue;
       const key = `f|${path}|${generation}`;
@@ -528,6 +533,16 @@ function CanvasInner({
     [fitView],
   );
 
+  /** Jump the canvas (and the side pane) to another node. */
+  const focusNode = useCallback(
+    (id: string) => {
+      setSelectedNodes(new Set([id]));
+      setSelectedEdges(new Set());
+      void fitView({ nodes: [{ id }], padding: 0.35, duration: 300, maxZoom: 1 });
+    },
+    [fitView],
+  );
+
   /* ---------------- overlay + scene ---------------- */
 
   const overlay = useMemo(
@@ -557,9 +572,10 @@ function CanvasInner({
    * contains the real packing). Level of detail then swaps content inside a
    * fixed box — nothing moves, nothing reflows, no empty reserved gaps.
    */
-  const slotSizes = useMemo(() => {
-    const m = new Map<string, { width: number; height: number }>();
-    if (!codeSummary) return m;
+  const slots = useMemo(() => {
+    const sizes = new Map<string, { width: number; height: number }>();
+    const modules = new Map<string, string>();
+    if (!codeSummary) return { sizes, modules };
     const fileCounts = new Map(codeSummary.modules.map((mod) => [mod.path, mod.fileCount]));
     // The full graph, not the facet's slice — auto-layout must reserve for
     // hidden nodes too, or leaving a facet would land on overlaps.
@@ -567,14 +583,105 @@ function CanvasInner({
       if (isContainerKind(n.kind) || n.kind === "note" || n.codeFile) continue;
       const module = moduleForNode(n.id);
       const count = module ? fileCounts.get(module) : undefined;
-      if (count) m.set(n.id, estimateModuleFootprint(count));
+      if (module && count) {
+        sizes.set(n.id, estimateModuleFootprint(count));
+        modules.set(n.id, module);
+      }
+    }
+    return { sizes, modules };
+  }, [graph, codeSummary, moduleForNode]);
+  const slotSizes = slots.sizes;
+
+  /**
+   * Every slotted block previews its module's files at medium zoom, so module
+   * details are fetched for all of them, not only the expanded ones. This also
+   * pre-warms the cache LOD expansion reads from — zooming in swaps content
+   * that is usually already there.
+   */
+  const neededModules = useMemo(
+    () => new Set([...expanded.values(), ...slots.modules.values()]),
+    [expanded, slots],
+  );
+
+  useEffect(() => {
+    for (const module of neededModules) {
+      if (moduleDetails.get(module)?.gen === generation) continue;
+      const key = `m|${module}|${generation}`;
+      if (inflight.current.has(key)) continue;
+      inflight.current.add(key);
+      client
+        .request("codemap.module", { path: module })
+        .then((detail) => setModuleDetails((m) => new Map(m).set(module, { gen: generation, detail })))
+        .catch(() => {})
+        .finally(() => inflight.current.delete(key));
+    }
+  }, [client, neededModules, generation, moduleDetails]);
+
+  const blockPreviews = useMemo(() => {
+    const byModule = new Map<string, BlockPreview>();
+    const m = new Map<string, BlockPreview>();
+    for (const [nodeId, module] of slots.modules) {
+      if (expanded.has(nodeId)) continue; // showing the real content instead
+      let preview = byModule.get(module);
+      if (!preview) {
+        const detail = moduleDetailMap.get(module);
+        if (!detail) continue;
+        preview = buildBlockPreview(detail);
+        byModule.set(module, preview);
+      }
+      m.set(nodeId, preview);
     }
     return m;
-  }, [graph, codeSummary, moduleForNode]);
+  }, [slots, moduleDetailMap, expanded]);
+
+  /* ---------------- hover lens: imports and exports of one node ---------------- */
+
+  const [dragActive, setDragActive] = useState(false);
+
+  /**
+   * Ids to keep lit while `hovered` is set: the node itself plus everything it
+   * connects to — drawn edges, code-only ghost edges, and live-code import
+   * edges all count. Edge direction is reported separately (outgoing = what it
+   * uses, incoming = what uses it) by the edge decoration.
+   */
+  const hoverNeighborhood = useMemo(() => {
+    if (!hovered) return null;
+    const nodes = new Set<string>([hovered]);
+    const consider = (src: string, tgt: string) => {
+      if (src === hovered) nodes.add(tgt);
+      else if (tgt === hovered) nodes.add(src);
+    };
+    for (const e of viewGraph.edges) consider(e.source, e.target);
+    if (overlay) for (const g of overlay.ghostEdges) consider(g.source, g.target);
+    for (const e of codeContent.edges) consider(e.source, e.target);
+    return nodes;
+  }, [hovered, viewGraph, overlay, codeContent]);
+
+  // A short dwell before the spotlight engages — sweeping the cursor across
+  // the canvas shouldn't strobe the whole diagram.
+  const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const onNodeMouseEnter = useCallback(
+    (_evt: unknown, node: RfNode) => {
+      if (hoverTimer.current) clearTimeout(hoverTimer.current);
+      if (dragActive) return;
+      hoverTimer.current = setTimeout(() => setHovered(node.id), 180);
+    },
+    [dragActive],
+  );
+  const onNodeMouseLeave = useCallback(() => {
+    if (hoverTimer.current) clearTimeout(hoverTimer.current);
+    hoverTimer.current = null;
+    setHovered(null);
+  }, []);
+  useEffect(
+    () => () => {
+      if (hoverTimer.current) clearTimeout(hoverTimer.current);
+    },
+    [],
+  );
 
   /* --------------- ephemeral push-aside for expanded containers --------------- */
 
-  const [dragActive, setDragActive] = useState(false);
   const displaceRef = useRef<ReadonlyMap<string, { dx: number; dy: number }>>(new Map());
   // Expanded content that outgrows its layout slot pushes same-scope siblings
   // aside — view-only offsets, frozen while a drag is in flight (the drag
@@ -625,6 +732,12 @@ function CanvasInner({
       nodes = nodes.map((n) => {
         const code = overlay.nodeBadges.get(n.id);
         return code ? ({ ...n, data: { ...n.data, code } } as ArchRfNode) : n;
+      });
+    }
+    if (blockPreviews.size > 0) {
+      nodes = nodes.map((n) => {
+        const preview = blockPreviews.get(n.id);
+        return preview ? ({ ...n, data: { ...n.data, preview } } as ArchRfNode) : n;
       });
     }
     if (flow) {
@@ -679,15 +792,53 @@ function CanvasInner({
         } as CanvasNode;
       });
     }
+    if (flashId) {
+      nodes = nodes.map((n) =>
+        n.id === flashId ? ({ ...n, className: cn(n.className, "arch-flash") } as CanvasNode) : n,
+      );
+    }
+    if (hoverNeighborhood) {
+      // Spotlight the hovered node's import/export neighborhood: anything
+      // outside it (and not an ancestor/descendant of it) recedes.
+      const parentOf = new Map(nodes.map((n) => [n.id, n.parentId]));
+      const lit = (id: string): boolean => {
+        let cur: string | undefined = id;
+        while (cur) {
+          if (hoverNeighborhood.has(cur)) return true;
+          cur = parentOf.get(cur) ?? undefined;
+        }
+        return false;
+      };
+      nodes = nodes.map((n) =>
+        lit(n.id) ? n : ({ ...n, className: cn(n.className, "arch-hover-dim") } as CanvasNode),
+      );
+    }
     return nodes;
-  }, [viewGraph, selectedNodes, slotSizes, overlay, flow, expanded, codeContent, dragOverrides, displacements, dragActive]);
+  }, [viewGraph, selectedNodes, slotSizes, overlay, blockPreviews, flow, expanded, codeContent, dragOverrides, displacements, dragActive, hoverNeighborhood, flashId]);
 
   const rfEdges = useMemo(() => {
     let edges = [...toRfEdges(viewGraph, selectedEdges), ...(codeContent.edges as ArchRfEdge[])];
     if (overlay) edges = applyOverlayToEdges(edges, overlay);
     if (flow) edges = applyFlowToEdges(edges, flow);
+    if (hovered) {
+      // Direction is the information: cyan = the hovered node imports/uses
+      // this, emerald = this imports/uses the hovered node.
+      edges = edges.map((e) => {
+        if (e.source !== hovered && e.target !== hovered) {
+          return { ...e, style: { ...e.style, opacity: 0.08 }, label: undefined };
+        }
+        const color = e.source === hovered ? HOVER_OUT_STROKE : HOVER_IN_STROKE;
+        return {
+          ...e,
+          style: { ...e.style, stroke: color, strokeDasharray: undefined, strokeWidth: 2.2, opacity: 1 },
+          labelStyle: { fill: color, fontSize: 10, fontWeight: 600 },
+          markerEnd: { type: MarkerType.ArrowClosed, color, width: 16, height: 16 },
+          zIndex: 5,
+        };
+      });
+    }
     return edges;
-  }, [viewGraph, selectedEdges, overlay, flow, codeContent]);
+  }, [viewGraph, selectedEdges, overlay, flow, codeContent, hovered]);
 
   const onNodesChange = useCallback(
     (changes: NodeChange<CanvasNode>[]) => {
@@ -802,6 +953,24 @@ function CanvasInner({
     [moduleForNode, codeSummary],
   );
 
+  /**
+   * Best file to open in the editor for a node: its own file link, else the
+   * linked module's entry point (index.*), else its most exported file.
+   */
+  const editorFileForNode = useCallback(
+    (id: string): string | null => {
+      const ref = codeRefForNode(id);
+      if (!ref) return null;
+      if (ref.file) return ref.file;
+      const detail = moduleDetailMap.get(ref.module);
+      if (!detail || detail.files.length === 0) return null;
+      const entry = detail.files.find((f) => !f.dir && /^index\.[cm]?[jt]sx?$/.test(f.name));
+      const top = [...detail.files].sort((a, b) => b.exportCount - a.exportCount)[0]!;
+      return (entry ?? top).path;
+    },
+    [codeRefForNode, moduleDetailMap],
+  );
+
   /** Expand/collapse a diagram node into its module's live code. */
   const toggleNodeCode = useCallback(
     (id: string) => {
@@ -861,7 +1030,10 @@ function CanvasInner({
 
   /* ---------------- drag / drop ---------------- */
 
-  const onNodeDragStart = useCallback(() => setDragActive(true), []);
+  const onNodeDragStart = useCallback(() => {
+    setDragActive(true);
+    setHovered(null);
+  }, []);
 
   const onNodeDragStop = useCallback(
     (_evt: unknown, node: RfNode, nodes: RfNode[]) => {
@@ -1363,6 +1535,7 @@ function CanvasInner({
       const node = g.nodes.find((n) => n.id === menu.id);
       if (!node) return [];
       const ref = codeRefForNode(node.id);
+      const editorFile = editorFileForNode(node.id);
       const module = moduleForNode(node.id);
       const hint = ref ? (ref.file ? ref.file.split("/").pop() : ref.module) : undefined;
       const isLiveExpanded = expanded.has(node.id);
@@ -1443,6 +1616,21 @@ function CanvasInner({
           disabled: !ref || !onOpenFullMap,
           onSelect: () => ref && onOpenFullMap?.({ module: ref.module, file: ref.file }),
         },
+        {
+          type: "item",
+          label: "Open in editor",
+          icon: ExternalLink,
+          disabled: !editorFile,
+          hint: editorFile ? editorFile.split("/").pop() : undefined,
+          onSelect: () => editorFile && requestOpenFile(editorFile),
+        },
+        {
+          type: "item",
+          label: "Open terminal",
+          icon: TerminalSquare,
+          onSelect: () =>
+            window.dispatchEvent(new CustomEvent("crystal:open-terminal", { detail: {} })),
+        },
         ...(hasGeneratedChildren(g, node.id)
           ? [
               {
@@ -1513,6 +1701,20 @@ function CanvasInner({
           icon: ExternalLink,
           onSelect: () => requestOpenFile(d.path),
         },
+        {
+          type: "item",
+          label: "Open in code map",
+          icon: FolderGit2,
+          disabled: !onOpenFullMap,
+          onSelect: () => onOpenFullMap?.({ module: d.module, file: d.path }),
+        },
+        {
+          type: "item",
+          label: "Copy path",
+          icon: Copy,
+          hint: d.path.split("/").pop(),
+          onSelect: () => void navigator.clipboard?.writeText(d.path),
+        },
         { type: "separator" },
         {
           type: "submenu",
@@ -1549,6 +1751,20 @@ function CanvasInner({
           icon: ExternalLink,
           onSelect: () => requestOpenFile(d.file),
         },
+        {
+          type: "item",
+          label: "Open in code map",
+          icon: FolderGit2,
+          disabled: !onOpenFullMap,
+          onSelect: () => onOpenFullMap?.({ module: d.module, file: d.file }),
+        },
+        {
+          type: "item",
+          label: "Copy reference",
+          icon: Copy,
+          hint: `${d.file.split("/").pop()}#${d.name}`,
+          onSelect: () => void navigator.clipboard?.writeText(`${d.file}#${d.name}`),
+        },
         { type: "separator" },
         {
           type: "submenu",
@@ -1581,8 +1797,24 @@ function CanvasInner({
     }
     const edge = g.edges.find((e) => e.id === menu.id);
     if (!edge) return [];
+    const endpointName = (id: string) => g.nodes.find((n) => n.id === id)?.label ?? "?";
     return [
       { type: "heading", label: edge.label || "Connection" },
+      {
+        type: "item",
+        label: `Go to “${endpointName(edge.source)}”`,
+        icon: MoveUpRight,
+        hint: "source",
+        onSelect: () => focusNode(edge.source),
+      },
+      {
+        type: "item",
+        label: `Go to “${endpointName(edge.target)}”`,
+        icon: MoveUpRight,
+        hint: "target",
+        onSelect: () => focusNode(edge.target),
+      },
+      { type: "separator" },
       {
         type: "submenu",
         label: "Connection kind",
@@ -1609,6 +1841,8 @@ function CanvasInner({
   }, [
     menu,
     codeRefForNode,
+    editorFileForNode,
+    focusNode,
     moduleForNode,
     expanded,
     toggleNodeCode,
@@ -1652,6 +1886,68 @@ function CanvasInner({
       ? graph.edges.find((e) => selectedEdges.has(e.id))
       : undefined;
 
+  /** First diagram node linked to each module — targets for insight-row jumps. */
+  const moduleNodeIds = useMemo(() => {
+    const m = new Map<string, string>();
+    if (!codeSummary) return m;
+    for (const [nodeId, badge] of linkNodesToModules(graph, codeSummary)) {
+      if (!m.has(badge.module)) m.set(badge.module, nodeId);
+    }
+    return m;
+  }, [graph, codeSummary]);
+
+  // What the side pane explains about the selected node: its drawn
+  // connections plus the linked module's real import/export relationships.
+  const selectedInsight = useMemo<NodeInsight | null>(() => {
+    if (!selectedNode || selectedNode.kind === "note") return null;
+    const nameOf = (id: string) => graph.nodes.find((n) => n.id === id)?.label ?? "?";
+    const uses: NodeInsight["uses"] = [];
+    const usedBy: NodeInsight["usedBy"] = [];
+    for (const e of graph.edges) {
+      if (e.source === selectedNode.id) {
+        uses.push({ nodeId: e.target, label: nameOf(e.target), kind: e.kind });
+      } else if (e.target === selectedNode.id) {
+        usedBy.push({ nodeId: e.source, label: nameOf(e.source), kind: e.kind });
+      }
+    }
+    const module = moduleForNode(selectedNode.id);
+    const imports: NodeInsight["imports"] = [];
+    const importedBy: NodeInsight["importedBy"] = [];
+    if (module && codeSummary) {
+      for (const d of codeSummary.deps) {
+        if (d.source === module) {
+          imports.push({ module: d.target, weight: d.weight, nodeId: moduleNodeIds.get(d.target) ?? null });
+        } else if (d.target === module) {
+          importedBy.push({ module: d.source, weight: d.weight, nodeId: moduleNodeIds.get(d.source) ?? null });
+        }
+      }
+      imports.sort((a, b) => b.weight - a.weight);
+      importedBy.sort((a, b) => b.weight - a.weight);
+    }
+    return {
+      module,
+      detail: module ? (moduleDetailMap.get(module) ?? null) : null,
+      uses,
+      usedBy,
+      imports,
+      importedBy,
+    };
+  }, [selectedNode, graph, moduleForNode, moduleDetailMap, codeSummary, moduleNodeIds]);
+
+  // External reveals (flamegraph frames, trace steps): select + pan + pulse.
+  const highlightNonce = useRef(0);
+  useEffect(() => {
+    if (!highlightRequest || highlightRequest.nonce === highlightNonce.current) return;
+    highlightNonce.current = highlightRequest.nonce;
+    const { nodeId } = highlightRequest;
+    // Hidden by the active facet (or deleted since the trace ran) — nothing to point at.
+    if (!viewGraph.nodes.some((n) => n.id === nodeId)) return;
+    focusNode(nodeId);
+    setFlashId(nodeId);
+    const timer = setTimeout(() => setFlashId(null), 1300);
+    return () => clearTimeout(timer);
+  }, [highlightRequest, viewGraph, focusNode]);
+
   return (
     <MapActionsContext.Provider value={mapActions}>
     <div
@@ -1674,6 +1970,8 @@ function CanvasInner({
         onNodeDragStart={onNodeDragStart}
         onNodeDragStop={onNodeDragStop}
         onNodeDoubleClick={onNodeDoubleClick}
+        onNodeMouseEnter={onNodeMouseEnter}
+        onNodeMouseLeave={onNodeMouseLeave}
         onNodeContextMenu={onNodeContextMenu}
         onEdgeContextMenu={onEdgeContextMenu}
         onPaneContextMenu={onPaneContextMenu}
@@ -1745,12 +2043,17 @@ function CanvasInner({
         <Panel position="center-left">
           <Palette onAdd={addAtViewportCenter} />
         </Panel>
-        {overlay ? (
+        {overlay || hoverNeighborhood ? (
           <Panel position="bottom-center">
-            <OverlayLegend
-              overlay={overlay}
-              onAdoptAutoLinks={() => commit(adoptAutoLinks(graphRef.current, overlay))}
-            />
+            <div className="flex flex-col items-center gap-1.5">
+              {hoverNeighborhood ? <HoverLegend /> : null}
+              {overlay ? (
+                <OverlayLegend
+                  overlay={overlay}
+                  onAdoptAutoLinks={() => commit(adoptAutoLinks(graphRef.current, overlay))}
+                />
+              ) : null}
+            </div>
           </Panel>
         ) : null}
       </ReactFlow>
@@ -1786,6 +2089,8 @@ function CanvasInner({
           node={selectedNode}
           edge={selectedEdge}
           codeModules={codeSummary?.modules}
+          insight={selectedInsight}
+          onFocusNode={focusNode}
           onGraphChange={commit}
           onClearSelection={() => {
             setSelectedNodes(new Set());
@@ -1795,6 +2100,19 @@ function CanvasInner({
       ) : null}
     </div>
     </MapActionsContext.Provider>
+  );
+}
+
+/** What the hover colors mean while a node's neighborhood is spotlit. */
+function HoverLegend() {
+  const swatch = (color: string) => (
+    <span className="inline-block w-4 shrink-0" style={{ borderTop: `2px solid ${color}` }} />
+  );
+  return (
+    <div className="flex items-center gap-3 rounded-xl border border-edge bg-surface-2/95 px-3 py-1.5 text-[10px] text-ink-muted shadow-xl shadow-black/30 backdrop-blur">
+      <span className="flex items-center gap-1.5">{swatch(HOVER_OUT_STROKE)} uses / imports</span>
+      <span className="flex items-center gap-1.5">{swatch(HOVER_IN_STROKE)} used by / exports to</span>
+    </div>
   );
 }
 

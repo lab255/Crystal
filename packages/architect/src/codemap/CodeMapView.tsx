@@ -40,7 +40,18 @@ import {
   type RefactorIntent,
 } from "@crystal/core";
 import { useCrystal, useNav, useNavUpdate, useWorkspaces } from "@crystal/client";
-import { Badge, Button, EmptyState, Pane, Split, Spinner, Tooltip, cn } from "@crystal/ui";
+import {
+  Badge,
+  Button,
+  ContextMenu,
+  EmptyState,
+  Pane,
+  Split,
+  Spinner,
+  Tooltip,
+  cn,
+  type MenuEntry,
+} from "@crystal/ui";
 import { useRefactorIntents } from "../refactor-intents.js";
 import { SymbolSnippet } from "../snippets.js";
 import { CodeNode, SYMBOL_DRAG_MIME, type CodeRfNode, type SymbolDragPayload } from "./CodeNode.js";
@@ -98,6 +109,8 @@ export interface CodeMapViewProps {
   origin?: { label: string; onExit: () => void };
   /** "Start journey here…" on a symbol — opens the journey dialog in Diagrams. */
   onStartJourney?: (seed: { file: string; symbol: string }) => void;
+  /** "Show on the architecture diagram" — expands the node linked to the module. */
+  onRevealInDiagram?: (module: string, file?: string) => void;
   /**
    * Path of the draft plan open in Diagrams, if any. Dropping a symbol on a
    * module/file records a move intent on it; without one, the first drop
@@ -128,6 +141,7 @@ function CodeMapInner({
   initialFile,
   origin,
   onStartJourney,
+  onRevealInDiagram,
   activeDraftPath,
   onOpenDraft,
 }: CodeMapViewProps) {
@@ -454,6 +468,121 @@ function CodeMapInner({
     [wsKey, toggleModule, toggleFile, toggleCode, onStartJourney, recordMove],
   );
 
+  /** Right-click menu of a map node — navigation to the other views. */
+  const menuFor = useCallback(
+    (data: MapRfNode["data"]): MenuEntry[] => {
+      if (data.nodeKind === "module") {
+        const d = data as ModuleNodeData;
+        return [
+          { type: "heading", label: d.name },
+          {
+            type: "item",
+            label: "Drill into module",
+            icon: Package,
+            onSelect: () => wsKey && setLevel({ kind: "module", ws: wsKey, path: d.path }),
+          },
+          {
+            type: "item",
+            label: d.expanded ? "Collapse in place" : "Expand in place",
+            icon: d.expanded ? Shrink : LayoutGrid,
+            onSelect: () => toggleModule(d.path),
+          },
+          { type: "separator" },
+          {
+            type: "item",
+            label: "Show on architecture diagram",
+            icon: Boxes,
+            disabled: !onRevealInDiagram,
+            onSelect: () => onRevealInDiagram?.(d.path),
+          },
+          {
+            type: "item",
+            label: "Copy path",
+            icon: CopyIcon,
+            hint: d.path,
+            onSelect: () => void navigator.clipboard?.writeText(d.path),
+          },
+        ];
+      }
+      if (data.nodeKind === "file") {
+        const d = data as FileNodeData;
+        if (d.planned) return [];
+        return [
+          { type: "heading", label: d.name },
+          {
+            type: "item",
+            label: "Open in editor",
+            icon: ExternalLink,
+            onSelect: () => openInEditor(d.path),
+          },
+          {
+            type: "item",
+            label: "Drill into file",
+            icon: FolderGit2,
+            onSelect: () => wsKey && setLevel({ kind: "file", ws: wsKey, path: d.path }),
+          },
+          { type: "separator" },
+          {
+            type: "item",
+            label: "Show on architecture diagram",
+            icon: Boxes,
+            disabled: !onRevealInDiagram,
+            onSelect: () => onRevealInDiagram?.(d.module, d.path),
+          },
+          {
+            type: "item",
+            label: "Copy path",
+            icon: CopyIcon,
+            onSelect: () => void navigator.clipboard?.writeText(d.path),
+          },
+        ];
+      }
+      if (data.nodeKind === "symbol") {
+        const d = data as SymbolNodeData;
+        if (d.planned) return [];
+        return [
+          { type: "heading", label: d.name },
+          {
+            type: "item",
+            label: d.codeOpen ? "Hide source" : "Show source",
+            icon: FolderGit2,
+            onSelect: () => toggleCode(d.file, d.name),
+          },
+          {
+            type: "item",
+            label: "Start journey here",
+            icon: Route,
+            disabled: !onStartJourney || d.kind === "reexport" || d.kind === "default",
+            onSelect: () => onStartJourney?.({ file: d.file, symbol: d.name }),
+          },
+          {
+            type: "item",
+            label: "Open file in editor",
+            icon: ExternalLink,
+            onSelect: () => openInEditor(d.file),
+          },
+          { type: "separator" },
+          {
+            type: "item",
+            label: "Show on architecture diagram",
+            icon: Boxes,
+            disabled: !onRevealInDiagram,
+            onSelect: () => onRevealInDiagram?.(d.module, d.file),
+          },
+          {
+            type: "item",
+            label: "Copy reference",
+            icon: CopyIcon,
+            hint: d.name,
+            onSelect: () => void navigator.clipboard?.writeText(`${d.file}#${d.name}`),
+          },
+        ];
+      }
+      return [];
+    },
+    [wsKey, setLevel, toggleModule, toggleCode, openInEditor, onStartJourney, onRevealInDiagram],
+  );
+
   const onCrossNodeClick = useCallback(
     (_evt: unknown, node: CodeRfNode) => setLevel({ kind: "workspace", ws: node.id }),
     [setLevel],
@@ -623,6 +752,7 @@ function CodeMapInner({
             key={wsKey ?? "map"}
             scene={scene}
             focus={focus}
+            menuFor={menuFor}
             onModuleMoved={(path, pos) =>
               setModulePositions((prev) => new Map(prev).set(path, pos))
             }
@@ -698,6 +828,7 @@ function WorkspaceMapCanvas({
   onDrillFile,
   onRelayout,
   onCollapseAll,
+  menuFor,
 }: {
   scene: MapScene;
   focus: { id: string; nonce: number } | null;
@@ -709,6 +840,8 @@ function WorkspaceMapCanvas({
   onDrillFile: (path: string) => void;
   onRelayout: () => void;
   onCollapseAll: () => void;
+  /** Entries for a node's right-click menu (empty array = no menu). */
+  menuFor?: (data: MapRfNode["data"]) => MenuEntry[];
 }) {
   const [nodes, setNodes, onNodesChange] = useNodesState<MapRfNode>(scene.nodes);
   const [snap, setSnap] = useState(() => {
@@ -792,7 +925,20 @@ function WorkspaceMapCanvas({
     [onDrillModule, onDrillFile],
   );
 
+  const [menu, setMenu] = useState<{ x: number; y: number; entries: MenuEntry[] } | null>(null);
+  const onNodeContextMenu = useCallback(
+    (evt: React.MouseEvent, node: RfNode) => {
+      if (!menuFor) return;
+      const entries = menuFor(node.data as MapRfNode["data"]);
+      if (entries.length === 0) return;
+      evt.preventDefault();
+      setMenu({ x: evt.clientX, y: evt.clientY, entries });
+    },
+    [menuFor],
+  );
+
   return (
+    <>
     <ReactFlow
       nodes={nodes}
       edges={scene.edges}
@@ -801,6 +947,7 @@ function WorkspaceMapCanvas({
       onNodeDragStop={onNodeDragStop}
       onNodeClick={onNodeClick}
       onNodeDoubleClick={onNodeDoubleClick}
+      onNodeContextMenu={onNodeContextMenu}
       onPaneClick={() => onSelectFile(null)}
       fitView
       fitViewOptions={{ padding: 0.15, maxZoom: 1 }}
@@ -864,6 +1011,10 @@ function WorkspaceMapCanvas({
         </Tooltip>
       </Panel>
     </ReactFlow>
+    {menu ? (
+      <ContextMenu x={menu.x} y={menu.y} entries={menu.entries} onClose={() => setMenu(null)} />
+    ) : null}
+    </>
   );
 }
 

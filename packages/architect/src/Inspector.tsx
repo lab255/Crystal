@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Trash2, X } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, FileCode2, Trash2, X } from "lucide-react";
 import {
   ARCH_EDGE_KINDS,
   ARCH_LAYERS,
@@ -13,11 +13,35 @@ import {
   type ArchNodeKind,
   type ArchitectureGraph,
   type CodeModule,
+  type CodeModuleDetail,
 } from "@crystal/core";
 import { useWorkspace } from "@crystal/client";
 import { Button, Input, Textarea, cn } from "@crystal/ui";
 import { deleteEdges, deleteNodes, updateEdge, updateNode } from "./graph-ops.js";
-import { ACCENT_CSS, KIND_META, type AccentName } from "./model.js";
+import { ACCENT_CSS, EDGE_KIND_STYLE, KIND_META, type AccentName } from "./model.js";
+
+/**
+ * What the side pane explains about the selected node beyond its own fields:
+ * drawn diagram connections plus the linked module's code-level import and
+ * export relationships (computed by the canvas, which owns the code map data).
+ */
+export interface NodeInsight {
+  /** Linked code module path, when the node resolves to one. */
+  module: string | null;
+  /** Module detail when already fetched — file list, export counts. */
+  detail: CodeModuleDetail | null;
+  /** Outgoing drawn edges — what this component uses. */
+  uses: { nodeId: string; label: string; kind: ArchEdgeKind }[];
+  /** Incoming drawn edges — what uses this component. */
+  usedBy: { nodeId: string; label: string; kind: ArchEdgeKind }[];
+  /** Code-level: modules this one imports (weight = file-level imports). */
+  imports: { module: string; weight: number; nodeId: string | null }[];
+  /** Code-level: modules importing this one. */
+  importedBy: { module: string; weight: number; nodeId: string | null }[];
+}
+
+const HOVER_OUT = "var(--color-accent-cyan)";
+const HOVER_IN = "var(--color-accent-emerald)";
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -39,6 +63,8 @@ export function Inspector({
   node,
   edge,
   codeModules,
+  insight,
+  onFocusNode,
   onGraphChange,
   onClearSelection,
 }: {
@@ -47,33 +73,206 @@ export function Inspector({
   edge?: ArchEdge;
   /** Code-map modules of the active workspace, for linking nodes to code. */
   codeModules?: CodeModule[];
+  /** Connections + code imports/exports of the selected node. */
+  insight?: NodeInsight | null;
+  /** Jump the canvas to a related node. */
+  onFocusNode?: (id: string) => void;
   onGraphChange: (graph: ArchitectureGraph) => void;
   onClearSelection: () => void;
 }) {
   return (
-    <div className="absolute right-3 top-3 z-10 w-64 rounded-xl border border-edge bg-surface-2/95 shadow-2xl shadow-black/40 backdrop-blur">
+    <div className="absolute bottom-3 right-3 top-3 z-10 flex w-72 flex-col rounded-xl border border-edge bg-surface-2/95 shadow-2xl shadow-black/40 backdrop-blur">
       <div className="flex items-center justify-between border-b border-edge px-3 py-2">
-        <span className="text-xs font-semibold text-ink">
-          {node ? KIND_META[node.kind].label : "Connection"}
+        <span className="min-w-0 truncate text-xs font-semibold text-ink">
+          {node ? `${node.label} — ${KIND_META[node.kind].label}` : "Connection"}
         </span>
         <Button variant="ghost" size="icon-sm" onClick={onClearSelection} aria-label="Close inspector">
           <X className="h-3.5 w-3.5" />
         </Button>
       </div>
-      <div className="max-h-[60vh] space-y-3 overflow-y-auto p-3">
+      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
         {node ? (
-          <NodeEditor
-            node={node}
-            graph={graph}
-            codeModules={codeModules}
-            onGraphChange={onGraphChange}
-            onDeleted={onClearSelection}
-          />
+          <>
+            <NodeEditor
+              node={node}
+              graph={graph}
+              codeModules={codeModules}
+              onGraphChange={onGraphChange}
+              onDeleted={onClearSelection}
+            />
+            {insight ? <NodeInsightSections insight={insight} onFocusNode={onFocusNode} /> : null}
+          </>
         ) : edge ? (
           <EdgeEditor edge={edge} graph={graph} onGraphChange={onGraphChange} onDeleted={onClearSelection} />
         ) : null}
       </div>
     </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Connections + code imports/exports of the selected node             */
+/* ------------------------------------------------------------------ */
+
+function SectionHeading({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-ink-faint">
+      {children}
+    </div>
+  );
+}
+
+function RelationRow({
+  direction,
+  label,
+  hint,
+  nodeId,
+  onFocusNode,
+}: {
+  direction: "out" | "in";
+  label: string;
+  hint?: string;
+  nodeId: string | null;
+  onFocusNode?: (id: string) => void;
+}) {
+  const color = direction === "out" ? HOVER_OUT : HOVER_IN;
+  const Arrow = direction === "out" ? ArrowUpRight : ArrowDownLeft;
+  const clickable = nodeId != null && onFocusNode != null;
+  return (
+    <button
+      type="button"
+      disabled={!clickable}
+      onClick={() => clickable && onFocusNode(nodeId)}
+      title={clickable ? "Show on canvas" : "Not on this diagram"}
+      className={cn(
+        "flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-[11px]",
+        clickable ? "text-ink-muted hover:bg-surface-active hover:text-ink" : "cursor-default text-ink-muted",
+      )}
+    >
+      <Arrow className="h-3 w-3 shrink-0" style={{ color }} />
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+      {hint ? <span className="shrink-0 font-mono text-[9.5px] text-ink-faint">{hint}</span> : null}
+    </button>
+  );
+}
+
+function NodeInsightSections({
+  insight,
+  onFocusNode,
+}: {
+  insight: NodeInsight;
+  onFocusNode?: (id: string) => void;
+}) {
+  const { module, detail, uses, usedBy, imports, importedBy } = insight;
+  const totalExports = detail ? detail.files.reduce((s, f) => s + f.exportCount, 0) : null;
+  const topExports = detail
+    ? [...detail.files].sort((a, b) => b.exportCount - a.exportCount).filter((f) => f.exportCount > 0).slice(0, 3)
+    : [];
+
+  return (
+    <>
+      {uses.length > 0 || usedBy.length > 0 ? (
+        <div>
+          <SectionHeading>Connections</SectionHeading>
+          {uses.map((u, i) => (
+            <RelationRow
+              key={`u${i}`}
+              direction="out"
+              label={u.label}
+              hint={EDGE_KIND_STYLE[u.kind].label.toLowerCase()}
+              nodeId={u.nodeId}
+              onFocusNode={onFocusNode}
+            />
+          ))}
+          {usedBy.map((u, i) => (
+            <RelationRow
+              key={`b${i}`}
+              direction="in"
+              label={u.label}
+              hint={EDGE_KIND_STYLE[u.kind].label.toLowerCase()}
+              nodeId={u.nodeId}
+              onFocusNode={onFocusNode}
+            />
+          ))}
+        </div>
+      ) : null}
+
+      {module ? (
+        <div>
+          <SectionHeading>Code — imports &amp; exports</SectionHeading>
+          <div className="mb-1.5 rounded-lg border border-edge bg-surface-1 px-2 py-1.5 text-[10.5px] leading-snug text-ink-muted">
+            <span className="font-mono text-ink">{module}</span>
+            {detail ? (
+              <>
+                {" "}
+                exports <span className="text-ink">{totalExports}</span> symbol
+                {totalExports === 1 ? "" : "s"} from{" "}
+                <span className="text-ink">{detail.files.length}</span> file
+                {detail.files.length === 1 ? "" : "s"}.
+              </>
+            ) : null}{" "}
+            {imports.length > 0 ? (
+              <>
+                Imports <span className="text-ink">{imports.length}</span> module
+                {imports.length === 1 ? "" : "s"}
+              </>
+            ) : (
+              "Imports nothing internal"
+            )}
+            {importedBy.length > 0 ? (
+              <>
+                {" "}
+                · imported by <span className="text-ink">{importedBy.length}</span>.
+              </>
+            ) : (
+              " · nothing imports it."
+            )}
+          </div>
+          {imports.map((d) => (
+            <RelationRow
+              key={`i${d.module}`}
+              direction="out"
+              label={d.module}
+              hint={`×${d.weight}`}
+              nodeId={d.nodeId}
+              onFocusNode={onFocusNode}
+            />
+          ))}
+          {importedBy.map((d) => (
+            <RelationRow
+              key={`e${d.module}`}
+              direction="in"
+              label={d.module}
+              hint={`×${d.weight}`}
+              nodeId={d.nodeId}
+              onFocusNode={onFocusNode}
+            />
+          ))}
+          {topExports.length > 0 ? (
+            <>
+              <div className="mt-1.5 px-1.5 text-[9.5px] uppercase tracking-wider text-ink-faint">
+                Main exports
+              </div>
+              {topExports.map((f) => (
+                <div key={f.path} className="flex items-center gap-1.5 px-1.5 py-0.5 text-[11px] text-ink-muted">
+                  <FileCode2 className="h-3 w-3 shrink-0 text-ink-faint" />
+                  <span className="min-w-0 flex-1 truncate font-mono">{f.name}</span>
+                  <span className="shrink-0 text-[9.5px] text-ink-faint">
+                    {f.exportCount} export{f.exportCount === 1 ? "" : "s"}
+                  </span>
+                </div>
+              ))}
+            </>
+          ) : null}
+          <div className="mt-1 px-1.5 text-[9.5px] leading-snug text-ink-faint">
+            <span style={{ color: HOVER_OUT }}>↗ uses / imports</span>
+            {" · "}
+            <span style={{ color: HOVER_IN }}>↙ used by / exports to</span>
+            {" — hover the node to see these on the canvas."}
+          </div>
+        </div>
+      ) : null}
+    </>
   );
 }
 

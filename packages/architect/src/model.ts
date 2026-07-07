@@ -25,6 +25,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import type { OverlayBadge } from "./overlay.js";
+import type { BlockPreview } from "./live-code.js";
 import { assignLanes, isBusbarScale } from "./edge-routing.js";
 
 /* ------------------------------------------------------------------ */
@@ -87,6 +88,11 @@ export type ArchRfNode = RfNode<{
    * zoom fills a box that never moves or grows.
    */
   slot?: { width: number; height: number };
+  /**
+   * Collapsed-block content preview (top files of the linked module) — shown
+   * inside the slot at medium zoom, where a bare title wastes the reserved area.
+   */
+  preview?: BlockPreview;
   /** Node is expanded into live code (unified view) — renders as a container. */
   codeExpanded?: boolean;
   /** Expanded, but the module detail is still loading. */

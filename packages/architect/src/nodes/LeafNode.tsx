@@ -1,8 +1,15 @@
-import { Handle, Position, type NodeProps } from "@xyflow/react";
+import { Handle, Position, useStore, type NodeProps } from "@xyflow/react";
 import { memo } from "react";
-import { FolderGit2 } from "lucide-react";
+import { FileCode2, FolderGit2 } from "lucide-react";
 import { Badge, cn } from "@crystal/ui";
 import { KIND_META, accentOf, type ArchRfNode } from "../model.js";
+
+/**
+ * Below this zoom a slotted block reads as a tile — only the big label
+ * carries; from here up the reserved area shows the module's files instead
+ * of empty space. Purely presentational: the box never changes size.
+ */
+const PREVIEW_ZOOM = 0.3;
 
 export const LeafNode = memo(function LeafNode({ data, selected }: NodeProps<ArchRfNode>) {
   const arch = data.arch;
@@ -10,6 +17,8 @@ export const LeafNode = memo(function LeafNode({ data, selected }: NodeProps<Arc
   const accent = accentOf(arch);
   const Icon = meta.icon;
   const slot = data.slot;
+  const preview = data.preview;
+  const showPreview = useStore((s) => s.transform[2] >= PREVIEW_ZOOM) && slot != null && preview != null;
 
   const flowBadge =
     data.flow != null && data.flow.step !== null ? (
@@ -28,6 +37,7 @@ export const LeafNode = memo(function LeafNode({ data, selected }: NodeProps<Arc
   if (slot) {
     const labelPx = Math.round(Math.min(44, Math.max(18, slot.width / 14)));
     const subPx = Math.round(Math.max(11, labelPx * 0.42));
+    const headerPx = Math.round(Math.min(26, Math.max(16, slot.width / 24)));
     return (
       <div
         className={cn(
@@ -39,42 +49,101 @@ export const LeafNode = memo(function LeafNode({ data, selected }: NodeProps<Arc
       >
         {flowBadge}
         <Handle type="target" position={Position.Top} className="!h-2 !w-2 !border-none !bg-edge-strong" />
-        <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-1 px-4 text-center">
-          <div className="flex min-w-0 items-center gap-2">
-            <Icon style={{ color: accent, width: labelPx * 0.8, height: labelPx * 0.8 }} className="shrink-0" />
-            <span
-              className="truncate font-semibold leading-tight text-ink"
-              style={{ fontSize: labelPx }}
-            >
-              {arch.label}
-            </span>
+        {showPreview && preview ? (
+          <div className="flex min-h-0 flex-1 flex-col gap-1.5 px-3 pt-2.5">
+            <div className="flex min-w-0 items-center gap-2">
+              <Icon
+                style={{ color: accent, width: headerPx * 0.9, height: headerPx * 0.9 }}
+                className="shrink-0"
+              />
+              <span
+                className="min-w-0 flex-1 truncate font-semibold leading-tight text-ink"
+                style={{ fontSize: headerPx }}
+              >
+                {arch.label}
+              </span>
+              <span className="shrink-0 text-[10px] uppercase tracking-wider text-ink-faint">
+                {meta.label}
+              </span>
+            </div>
+            <div className="text-[10.5px] text-ink-faint">
+              {preview.totalFiles} file{preview.totalFiles === 1 ? "" : "s"} ·{" "}
+              {preview.totalExports} export{preview.totalExports === 1 ? "" : "s"}
+              {arch.description ? (
+                <span className="text-ink-muted"> — {arch.description}</span>
+              ) : null}
+            </div>
+            <div className="flex min-h-0 flex-1 flex-wrap content-start gap-1.5 overflow-hidden">
+              {preview.files.map((f) => (
+                <span
+                  key={`${f.dir}/${f.name}`}
+                  title={f.dir ? `${f.dir}/${f.name}` : f.name}
+                  className="flex h-7 items-center gap-1.5 rounded-md border border-edge bg-surface-1/80 px-2 font-mono text-[10.5px] text-ink-muted"
+                >
+                  <FileCode2 className="h-3 w-3 shrink-0" style={{ color: accent }} />
+                  <span className="max-w-40 truncate">{f.name}</span>
+                  {f.exports > 0 ? (
+                    <span className="text-[9px] text-ink-faint" title={`${f.exports} exports`}>
+                      {f.exports}
+                    </span>
+                  ) : null}
+                </span>
+              ))}
+              {preview.more > 0 ? (
+                <span className="flex h-7 items-center rounded-md border border-dashed border-edge px-2 font-mono text-[10.5px] text-ink-faint">
+                  +{preview.more} more
+                </span>
+              ) : null}
+            </div>
+            {arch.tech.length > 0 ? (
+              <div className="flex flex-wrap gap-1">
+                {arch.tech.slice(0, 4).map((t) => (
+                  <Badge key={t} tone="neutral">
+                    {t}
+                  </Badge>
+                ))}
+                {arch.tech.length > 4 ? <Badge tone="neutral">+{arch.tech.length - 4}</Badge> : null}
+              </div>
+            ) : null}
           </div>
-          <div
-            className="uppercase tracking-wider text-ink-faint"
-            style={{ fontSize: subPx }}
-          >
-            {meta.label}
-            {data.code ? ` · ${data.code.fileCount} files` : null}
-          </div>
-          {arch.description ? (
+        ) : (
+          <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-1 px-4 text-center">
+            <div className="flex min-w-0 items-center gap-2">
+              <Icon style={{ color: accent, width: labelPx * 0.8, height: labelPx * 0.8 }} className="shrink-0" />
+              <span
+                className="truncate font-semibold leading-tight text-ink"
+                style={{ fontSize: labelPx }}
+              >
+                {arch.label}
+              </span>
+            </div>
             <div
-              className="line-clamp-2 max-w-full leading-snug text-ink-muted"
+              className="uppercase tracking-wider text-ink-faint"
               style={{ fontSize: subPx }}
             >
-              {arch.description}
+              {meta.label}
+              {data.code ? ` · ${data.code.fileCount} files` : null}
             </div>
-          ) : null}
-          {arch.tech.length > 0 ? (
-            <div className="mt-0.5 flex flex-wrap justify-center gap-1">
-              {arch.tech.slice(0, 4).map((t) => (
-                <Badge key={t} tone="neutral">
-                  {t}
-                </Badge>
-              ))}
-              {arch.tech.length > 4 ? <Badge tone="neutral">+{arch.tech.length - 4}</Badge> : null}
-            </div>
-          ) : null}
-        </div>
+            {arch.description ? (
+              <div
+                className="line-clamp-2 max-w-full leading-snug text-ink-muted"
+                style={{ fontSize: subPx }}
+              >
+                {arch.description}
+              </div>
+            ) : null}
+            {arch.tech.length > 0 ? (
+              <div className="mt-0.5 flex flex-wrap justify-center gap-1">
+                {arch.tech.slice(0, 4).map((t) => (
+                  <Badge key={t} tone="neutral">
+                    {t}
+                  </Badge>
+                ))}
+                {arch.tech.length > 4 ? <Badge tone="neutral">+{arch.tech.length - 4}</Badge> : null}
+              </div>
+            ) : null}
+          </div>
+        )}
         {data.code ? (
           <div
             className={cn(

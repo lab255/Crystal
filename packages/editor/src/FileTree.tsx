@@ -1,8 +1,18 @@
 import { useCallback, useEffect, useState } from "react";
-import { ChevronDown, ChevronRight, FileText, Folder, FolderOpen, RefreshCw } from "lucide-react";
+import {
+  Boxes,
+  ChevronDown,
+  ChevronRight,
+  Copy,
+  FileText,
+  Folder,
+  FolderGit2,
+  FolderOpen,
+  RefreshCw,
+} from "lucide-react";
 import type { FileEntry } from "@crystal/core";
-import { useCrystal, useWorkspace } from "@crystal/client";
-import { Button, Tooltip, cn } from "@crystal/ui";
+import { useCrystal, useNavUpdate, useWorkspace, useWorkspaces } from "@crystal/client";
+import { Button, ContextMenu, Tooltip, cn, type MenuEntry } from "@crystal/ui";
 
 interface DirState {
   entries: FileEntry[];
@@ -35,6 +45,55 @@ export function FileTree({
   const [dirs, setDirs] = useState<Record<string, DirState>>({});
   const [expanded, setExpanded] = useState<Set<string>>(new Set([""]));
   const [gitStatus, setGitStatus] = useState<Map<string, GitDecoration>>(new Map());
+  const [menu, setMenu] = useState<{ x: number; y: number; entries: MenuEntry[] } | null>(null);
+
+  // Cross-view jumps: files are addressable in the architect mode's code map.
+  const nav = useNavUpdate();
+  const activeWs = useWorkspaces((s) => s.activeId);
+  const onFileContextMenu = useCallback(
+    (evt: React.MouseEvent, path: string) => {
+      evt.preventDefault();
+      setMenu({
+        x: evt.clientX,
+        y: evt.clientY,
+        entries: [
+          { type: "heading", label: path.split("/").pop() ?? path },
+          {
+            type: "item",
+            label: "Open",
+            icon: FileText,
+            onSelect: () => onOpenFile(path),
+          },
+          {
+            type: "item",
+            label: "Show in code map",
+            icon: FolderGit2,
+            disabled: !activeWs,
+            onSelect: () =>
+              activeWs &&
+              nav({
+                mode: "architect",
+                architect: { view: "codemap", codemap: { kind: "file", ws: activeWs, path } },
+              }),
+          },
+          {
+            type: "item",
+            label: "Show architecture diagrams",
+            icon: Boxes,
+            onSelect: () => nav({ mode: "architect", architect: { view: "diagrams" } }),
+          },
+          { type: "separator" },
+          {
+            type: "item",
+            label: "Copy path",
+            icon: Copy,
+            onSelect: () => void navigator.clipboard?.writeText(path),
+          },
+        ],
+      });
+    },
+    [nav, activeWs, onOpenFile],
+  );
 
   const loadGitStatus = useCallback(async () => {
     const map = new Map<string, GitDecoration>();
@@ -134,8 +193,12 @@ export function FileTree({
           gitStatus={gitStatus}
           onToggle={toggle}
           onOpenFile={onOpenFile}
+          onFileContextMenu={onFileContextMenu}
         />
       </div>
+      {menu ? (
+        <ContextMenu x={menu.x} y={menu.y} entries={menu.entries} onClose={() => setMenu(null)} />
+      ) : null}
     </div>
   );
 }
@@ -149,6 +212,7 @@ function TreeLevel({
   gitStatus,
   onToggle,
   onOpenFile,
+  onFileContextMenu,
 }: {
   path: string;
   depth: number;
@@ -158,6 +222,7 @@ function TreeLevel({
   gitStatus: Map<string, GitDecoration>;
   onToggle: (path: string) => void;
   onOpenFile: (path: string) => void;
+  onFileContextMenu: (evt: React.MouseEvent, path: string) => void;
 }) {
   const state = dirs[path];
   if (!state) return null;
@@ -204,6 +269,7 @@ function TreeLevel({
                   gitStatus={gitStatus}
                   onToggle={onToggle}
                   onOpenFile={onOpenFile}
+                  onFileContextMenu={onFileContextMenu}
                 />
               ) : null}
             </div>
@@ -215,6 +281,7 @@ function TreeLevel({
             type="button"
             style={{ paddingLeft: `${10 + depth * 12 + 14}px` }}
             onClick={() => onOpenFile(entry.path)}
+            onContextMenu={(e) => onFileContextMenu(e, entry.path)}
             className={cn(
               "flex w-full items-center gap-1.5 py-[3px] pr-2 text-left text-[12.5px] transition-colors",
               activePath === entry.path

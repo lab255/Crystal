@@ -62,12 +62,15 @@ export function JourneyProfilePanel({
   graph,
   summary,
   onOpenStep,
+  onSelectStep,
 }: {
   trace: CodeTrace;
   graph: ArchitectureGraph;
   summary: CodeMapSummary | null;
   /** "Open in code map" for one step/frame. */
   onOpenStep?: (step: CodeTraceStep) => void;
+  /** Single click on a frame/row — point at the component on the canvas. */
+  onSelectStep?: (step: CodeTraceStep) => void;
 }) {
   const { client } = useCrystal();
   const [view, setView] = useState<"flame" | "calls">("flame");
@@ -184,12 +187,24 @@ export function JourneyProfilePanel({
       <div className="min-h-0 flex-1 overflow-auto">
         {view === "flame" ? (
           root ? (
-            <FlameGraph root={root} unit={unit} onOpenFrame={onOpenStep} trace={trace} />
+            <FlameGraph
+              root={root}
+              unit={unit}
+              onOpenFrame={onOpenStep}
+              onSelectFrame={onSelectStep}
+              trace={trace}
+            />
           ) : (
             <div className="p-3 text-[11px] text-ink-faint">Nothing to graph yet.</div>
           )
         ) : (
-          <CallProfile trace={trace} graph={graph} summary={summary} onOpenStep={onOpenStep} />
+          <CallProfile
+            trace={trace}
+            graph={graph}
+            summary={summary}
+            onOpenStep={onOpenStep}
+            onSelectStep={onSelectStep}
+          />
         )}
       </div>
     </div>
@@ -237,11 +252,14 @@ function FlameGraph({
   unit,
   trace,
   onOpenFrame,
+  onSelectFrame,
 }: {
   root: FlameNode;
   unit: string;
   trace: CodeTrace;
   onOpenFrame?: (step: CodeTraceStep) => void;
+  /** Single click — zooms the flamegraph AND points at the component. */
+  onSelectFrame?: (step: CodeTraceStep) => void;
 }) {
   const [focus, setFocus] = useState<FlameNode>(root);
   useEffect(() => setFocus(root), [root]);
@@ -296,9 +314,12 @@ function FlameGraph({
             <button
               key={`${key}:${r.row}:${r.left.toFixed(6)}`}
               type="button"
-              onClick={() => setFocus(r.node)}
+              onClick={() => {
+                setFocus(r.node);
+                if (step) onSelectFrame?.(step);
+              }}
               onDoubleClick={() => step && onOpenFrame?.(step)}
-              title={`${r.node.name} — ${fmt(r.node.total)} total (${pct}%), ${fmt(r.node.self)} self${r.node.calls != null ? `, ×${r.node.calls} calls` : ""}${r.node.file ? `\n${r.node.file}` : ""}${step && onOpenFrame ? "\nDouble-click: open in code map" : ""}`}
+              title={`${r.node.name} — ${fmt(r.node.total)} total (${pct}%), ${fmt(r.node.self)} self${r.node.calls != null ? `, ×${r.node.calls} calls` : ""}${r.node.file ? `\n${r.node.file}` : ""}${step && onSelectFrame ? "\nClick: show on the diagram" : ""}${step && onOpenFrame ? "\nDouble-click: open in code map" : ""}`}
               className="absolute overflow-hidden whitespace-nowrap rounded-[3px] border border-black/20 px-1 text-left font-mono text-[10px] leading-[18px] text-black/75 transition-[filter] hover:brightness-110"
               style={{
                 left: `${r.left * 100}%`,
@@ -333,11 +354,14 @@ function CallProfile({
   graph,
   summary,
   onOpenStep,
+  onSelectStep,
 }: {
   trace: CodeTrace;
   graph: ArchitectureGraph;
   summary: CodeMapSummary | null;
   onOpenStep?: (step: CodeTraceStep) => void;
+  /** Row click — point at the component on the canvas. */
+  onSelectStep?: (step: CodeTraceStep) => void;
 }) {
   const key = (ref: { file: string; symbol: string }) => `${ref.file}#${ref.symbol}`;
 
@@ -425,7 +449,12 @@ function CallProfile({
             const k = key(step.ref);
             const layer = layerOfStep(step);
             return (
-              <tr key={k} className="group hover:bg-surface-2">
+              <tr
+                key={k}
+                className={cn("group hover:bg-surface-2", onSelectStep && "cursor-pointer")}
+                onClick={() => onSelectStep?.(step)}
+                title={onSelectStep ? "Show on the diagram" : undefined}
+              >
                 <td className="max-w-64 truncate px-1.5 py-0.5 font-mono text-ink" title={step.ref.file}>
                   <span style={{ paddingLeft: Math.min(step.depth, 6) * 8 }}>{step.ref.symbol}</span>
                 </td>
@@ -445,7 +474,10 @@ function CallProfile({
                     <Tooltip content="Open in code map">
                       <button
                         type="button"
-                        onClick={() => onOpenStep(step)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onOpenStep(step);
+                        }}
                         className="text-ink-faint opacity-0 hover:text-ink group-hover:opacity-100"
                         aria-label={`Open ${step.ref.symbol} in code map`}
                       >

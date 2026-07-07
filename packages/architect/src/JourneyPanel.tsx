@@ -360,6 +360,7 @@ export function FlowStepsPanel({
   error,
   onClose,
   onOpenStep,
+  onSelectStep,
 }: {
   journey: Journey;
   trace: CodeTrace | null;
@@ -368,6 +369,8 @@ export function FlowStepsPanel({
   onClose: () => void;
   /** "Open in code map" on one trace step. */
   onOpenStep?: (step: CodeTrace["steps"][number]) => void;
+  /** Row click — point at the step's component on the canvas. */
+  onSelectStep?: (step: CodeTrace["steps"][number]) => void;
 }) {
   const [expanded, setExpanded] = useState<string | null>(null);
   const partial = trace ? trace.truncated || trace.unresolvedCalls.length > 0 : false;
@@ -410,7 +413,11 @@ export function FlowStepsPanel({
               <div className="group flex w-full items-center gap-1.5 rounded-md px-1 py-0.5 hover:bg-surface-2">
                 <button
                   type="button"
-                  onClick={() => setExpanded(expanded === key ? null : key)}
+                  onClick={() => {
+                    setExpanded(expanded === key ? null : key);
+                    onSelectStep?.(step);
+                  }}
+                  title={onSelectStep ? "Show on the diagram" : undefined}
                   className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-[11.5px]"
                 >
                   <ChevronRight

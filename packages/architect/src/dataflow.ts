@@ -23,6 +23,16 @@ export interface FlowProjection {
   ghostHops: { source: string; target: string; step: number }[];
   /** Trace steps whose module no diagram node is linked to. */
   unmappedSteps: CodeTraceStep[];
+  /**
+   * `file#symbol` step key → diagram node id — lets trace UIs (flamegraph,
+   * step list) point back at the component a frame belongs to.
+   */
+  stepNodeIds: Map<string, string>;
+}
+
+/** Key a trace step the way `stepNodeIds` is indexed. */
+export function stepKeyOf(step: Pick<CodeTraceStep, "ref">): string {
+  return `${step.ref.file}#${step.ref.symbol}`;
 }
 
 export function projectTrace(
@@ -47,6 +57,7 @@ export function projectTrace(
   const nodeOrder: FlowProjection["nodeOrder"] = [];
   const seenNodes = new Set<string>();
   const unmappedSteps: CodeTraceStep[] = [];
+  const stepNodeIds = new Map<string, string>();
   const path: string[] = []; // node ids in visit order, deduped consecutively
 
   for (const step of trace.steps) {
@@ -55,6 +66,7 @@ export function projectTrace(
       unmappedSteps.push(step);
       continue;
     }
+    stepNodeIds.set(stepKeyOf(step), nodeId);
     if (path[path.length - 1] !== nodeId) path.push(nodeId);
   }
 
@@ -84,5 +96,5 @@ export function projectTrace(
     }
   });
 
-  return { nodeOrder, edgeSteps, ghostHops, unmappedSteps };
+  return { nodeOrder, edgeSteps, ghostHops, unmappedSteps, stepNodeIds };
 }
