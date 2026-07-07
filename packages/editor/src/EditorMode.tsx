@@ -49,11 +49,30 @@ export function EditorMode() {
 
   const active = files.find((f) => f.path === activePath) ?? null;
 
+  // A requested target line survives the async open + Monaco model swap; the
+  // reveal effect below fires once the right file is active.
+  const pendingRevealRef = useRef<{ path: string; line: number } | null>(null);
+  const tryReveal = useCallback(() => {
+    const pending = pendingRevealRef.current;
+    const editor = editorRef.current;
+    if (!pending || !editor || activeRef.current !== pending.path) return;
+    pendingRevealRef.current = null;
+    // After the model swap settles — revealing the old model scrolls nothing.
+    requestAnimationFrame(() => {
+      editor.revealLineInCenter(pending.line);
+      editor.setPosition({ lineNumber: pending.line, column: 1 });
+      editor.focus();
+    });
+  }, []);
+
   const openFile = useCallback(
-    async (path: string) => {
+    async (path: string, line?: number | null) => {
+      if (typeof line === "number" && line > 0) pendingRevealRef.current = { path, line };
       const existing = filesRef.current.find((f) => f.path === path);
       if (existing) {
         setActivePath(path);
+        activeRef.current = path;
+        tryReveal();
         return;
       }
       setLoadingFile(true);
@@ -75,8 +94,12 @@ export function EditorMode() {
         setLoadingFile(false);
       }
     },
-    [client],
+    [client, tryReveal],
   );
+
+  useEffect(() => {
+    tryReveal();
+  }, [activePath, files, tryReveal]);
 
   const saveActive = useCallback(async () => {
     const path = activeRef.current;
@@ -137,7 +160,14 @@ export function EditorMode() {
         const pending = sessionStorage.getItem("crystal.pendingOpenFile");
         if (pending) {
           sessionStorage.removeItem("crystal.pendingOpenFile");
-          void openFile(pending);
+          // JSON `{path, line}` today; bare paths from older sessions still open.
+          try {
+            const parsed = JSON.parse(pending) as { path?: string; line?: number | null };
+            if (typeof parsed?.path === "string") void openFile(parsed.path, parsed.line);
+            else void openFile(pending);
+          } catch {
+            void openFile(pending);
+          }
           return true;
         }
       } catch {
@@ -146,9 +176,9 @@ export function EditorMode() {
       return false;
     };
     const onOpenRequest = (e: Event) => {
-      const path = (e as CustomEvent<{ path?: string }>).detail?.path;
+      const detail = (e as CustomEvent<{ path?: string; line?: number }>).detail;
       consumePending();
-      if (typeof path === "string") void openFile(path);
+      if (typeof detail?.path === "string") void openFile(detail.path, detail.line);
     };
     consumePending(); // opened lazily after a request fired
     window.addEventListener("keydown", onKey);
@@ -178,8 +208,9 @@ export function EditorMode() {
     (editor) => {
       editorRef.current = editor;
       applyProfile(keymap);
+      tryReveal();
     },
-    [applyProfile, keymap],
+    [applyProfile, keymap, tryReveal],
   );
 
   function switchKeymap(profile: KeymapProfile): void {

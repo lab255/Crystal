@@ -129,10 +129,14 @@ export function CrystalShell({
     // parked in sessionStorage for the case where the editor mounts lazily
     // after this event has already fired.
     const onOpenFile = (e: Event) => {
-      const path = (e as CustomEvent<{ path?: string }>).detail?.path;
-      if (typeof path === "string") {
+      const detail = (e as CustomEvent<{ path?: string; line?: number }>).detail;
+      if (typeof detail?.path === "string") {
         try {
-          sessionStorage.setItem("crystal.pendingOpenFile", path);
+          // JSON so an optional target line travels with the path.
+          sessionStorage.setItem(
+            "crystal.pendingOpenFile",
+            JSON.stringify({ path: detail.path, line: detail.line ?? null }),
+          );
         } catch {
           /* storage unavailable — the live listener still works */
         }
