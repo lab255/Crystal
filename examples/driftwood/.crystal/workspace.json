@@ -1,0 +1,10 @@
+{
+  "crystal": 1,
+  "kind": "workspace",
+  "data": {
+    "id": "ws_driftwood00001",
+    "name": "driftwood",
+    "description": "Log-analysis CLI (Crystal fixture, single module)",
+    "repos": []
+  }
+}

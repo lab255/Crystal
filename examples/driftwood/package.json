@@ -1,0 +1,12 @@
+{
+  "name": "driftwood",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Driftwood — log-file analysis CLI (Crystal fixture, single module)",
+  "type": "module",
+  "main": "./src/index.ts",
+  "bin": { "driftwood": "./src/index.ts" },
+  "scripts": {
+    "dev": "echo \"fixture — not meant to run\""
+  }
+}

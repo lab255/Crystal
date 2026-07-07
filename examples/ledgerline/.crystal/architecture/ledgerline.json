@@ -1,0 +1,103 @@
+{
+  "crystal": 1,
+  "kind": "architecture",
+  "data": {
+    "id": "arch_ledgerline0001",
+    "name": "Ledgerline",
+    "description": "Invoicing & ledger SaaS: admin SPA → API server → double-entry ledger, with a dunning/statements worker.",
+    "nodes": [
+      {
+        "id": "node_ll_admin",
+        "kind": "frontend",
+        "label": "@ledgerline/admin",
+        "description": "React admin SPA",
+        "parentId": null,
+        "position": { "x": 0, "y": 0 },
+        "size": null,
+        "tech": ["react"],
+        "repoId": null,
+        "codeModule": "admin",
+        "codeFile": null,
+        "href": null,
+        "placements": {},
+        "layer": "entry",
+        "accent": null
+      },
+      {
+        "id": "node_ll_server",
+        "kind": "service",
+        "label": "@ledgerline/server",
+        "description": "HTTP API: auth, invoices, ledger",
+        "parentId": null,
+        "position": { "x": 380, "y": 0 },
+        "size": null,
+        "tech": ["express", "zod"],
+        "repoId": null,
+        "codeModule": "server",
+        "codeFile": null,
+        "href": null,
+        "placements": {},
+        "layer": "service",
+        "accent": null
+      },
+      {
+        "id": "node_ll_worker",
+        "kind": "service",
+        "label": "@ledgerline/worker",
+        "description": "Dunning + monthly statements",
+        "parentId": null,
+        "position": { "x": 760, "y": 0 },
+        "size": null,
+        "tech": ["nodemailer"],
+        "repoId": null,
+        "codeModule": "worker",
+        "codeFile": null,
+        "href": null,
+        "placements": {},
+        "layer": "service",
+        "accent": null
+      },
+      {
+        "id": "node_ll_shared",
+        "kind": "package",
+        "label": "@ledgerline/shared",
+        "description": "Money, time, ids, Result",
+        "parentId": null,
+        "position": { "x": 380, "y": 260 },
+        "size": null,
+        "tech": [],
+        "repoId": null,
+        "codeModule": "shared",
+        "codeFile": null,
+        "href": null,
+        "placements": {},
+        "layer": "service",
+        "accent": null
+      }
+    ],
+    "edges": [
+      { "id": "edge_ll_1", "source": "node_ll_admin", "target": "node_ll_server", "kind": "sync", "label": "HTTP" },
+      { "id": "edge_ll_2", "source": "node_ll_admin", "target": "node_ll_shared", "kind": "dependency", "label": "" },
+      { "id": "edge_ll_3", "source": "node_ll_server", "target": "node_ll_shared", "kind": "dependency", "label": "" },
+      { "id": "edge_ll_4", "source": "node_ll_worker", "target": "node_ll_shared", "kind": "dependency", "label": "" },
+      { "id": "edge_ll_5", "source": "node_ll_server", "target": "node_ll_worker", "kind": "dependency", "label": "chunk() reach" }
+    ],
+    "environments": [{ "id": "env_ll_local", "name": "Local", "kind": "local" }],
+    "journeys": [
+      {
+        "id": "journey_ll_send",
+        "name": "Send invoice",
+        "description": "Draft invoice goes out and posts revenue to the ledger",
+        "entry": { "file": "server/src/handlers.ts", "symbol": "sendInvoice" }
+      },
+      {
+        "id": "journey_ll_dunning",
+        "name": "Dunning run",
+        "description": "Worker chases overdue invoices by email",
+        "entry": { "file": "worker/src/dunning.ts", "symbol": "runDunning" }
+      }
+    ],
+    "facets": [],
+    "viewport": null
+  }
+}

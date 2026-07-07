@@ -1,0 +1,10 @@
+{
+  "crystal": 1,
+  "kind": "workspace",
+  "data": {
+    "id": "ws_ledgerline0001",
+    "name": "ledgerline",
+    "description": "Invoicing & ledger SaaS (Crystal fixture workspace)",
+    "repos": []
+  }
+}

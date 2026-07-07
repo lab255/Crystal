@@ -1,0 +1,40 @@
+{
+  "crystal": 1,
+  "kind": "architecture",
+  "data": {
+    "id": "arch_driftwood0001",
+    "name": "Driftwood",
+    "description": "Single-module log-analysis CLI: parse → filter → aggregate → report.",
+    "nodes": [
+      {
+        "id": "node_dw_cli",
+        "kind": "service",
+        "label": "driftwood",
+        "description": "CLI entry + pipeline",
+        "parentId": null,
+        "position": { "x": 0, "y": 0 },
+        "size": null,
+        "tech": ["node"],
+        "repoId": null,
+        "codeModule": ".",
+        "codeFile": null,
+        "href": null,
+        "placements": {},
+        "layer": "service",
+        "accent": null
+      }
+    ],
+    "edges": [],
+    "environments": [{ "id": "env_dw_local", "name": "Local", "kind": "local" }],
+    "journeys": [
+      {
+        "id": "journey_dw_run",
+        "name": "Analyze a log file",
+        "description": "CLI run from argv to rendered report",
+        "entry": { "file": "src/index.ts", "symbol": "run" }
+      }
+    ],
+    "facets": [],
+    "viewport": null
+  }
+}

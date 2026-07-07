@@ -1,0 +1,19 @@
+{
+  "name": "ledgerline",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Ledgerline — invoicing & ledger SaaS (Crystal fixture workspace)",
+  "workspaces": [
+    "shared",
+    "server",
+    "worker",
+    "admin"
+  ],
+  "scripts": {
+    "dev": "echo \"fixture workspace — not meant to run\"",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
