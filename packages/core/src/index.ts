@@ -18,6 +18,7 @@ export * from "./survey.js";
 export * from "./trace-profile.js";
 export * from "./codemap.js";
 export * from "./code-index.js";
+export * from "./code-review.js";
 export * from "./bridge.js";
 export * from "./deeplink.js";
 export * from "./highlight.js";

@@ -43,6 +43,8 @@ export interface ArchitectLink {
   codemap?: CodeMapLevelLink;
   /** Duplicates panel open. */
   duplicates?: boolean;
+  /** Review-findings panel open (code map). */
+  findings?: boolean;
   /**
    * Pinned cross-view highlight — a clicked component, encoded via
    * `formatHighlightSel` (highlight.ts) so the selection survives reloads
@@ -112,6 +114,7 @@ export function formatDeepLink(link: DeepLink): string {
         }
       }
       if (a.duplicates) add("dups", "1");
+      if (a.findings) add("findings", "1");
     } else {
       if (a.diagram) add("diagram", a.diagram);
       if (a.facet) add("facet", a.facet);
@@ -167,6 +170,7 @@ export function parseDeepLink(hash: string): DeepLink {
     if (journey) a.journey = journey;
     if (params.get("overlay") === "1") a.overlay = true;
     if (params.get("dups") === "1") a.duplicates = true;
+    if (params.get("findings") === "1") a.findings = true;
     const sel = params.get("sel");
     if (sel) a.sel = sel;
     const at = params.get("at");

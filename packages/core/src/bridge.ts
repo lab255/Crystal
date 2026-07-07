@@ -3,6 +3,7 @@ import type { ArchDraft } from "./arch-draft.js";
 import type { ArchitectureGraph } from "./architecture.js";
 import type { AgentRun, RunEvent, RunPurpose } from "./agent.js";
 import type { CodeIndex, FacetSuggestion } from "./code-index.js";
+import type { ReviewFinding } from "./code-review.js";
 import type {
   CodeFileDetail,
   CodeMapSummary,
@@ -246,6 +247,14 @@ export interface BridgeMethods {
   "arch.suggestFacets": {
     params: WsScope & { path: string };
     result: { suggestions: FacetSuggestion[] };
+  };
+  /**
+   * The deterministic review sweep: unused exports (barrel-aware), dead
+   * files, duplicate implementations, boundary leaks, misplaced utilities.
+   */
+  "review.findings": {
+    params: WsScope;
+    result: { findings: ReviewFinding[]; generatedAt: string };
   };
   /** Dry-run of refactor intents — per-intent engine + change summaries. */
   "refactor.preview": {
