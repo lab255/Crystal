@@ -1,0 +1,720 @@
+{
+  "crystal": 1,
+  "kind": "enrichment",
+  "data": {
+    "schemaVersion": 1,
+    "generator": {
+      "name": "crystal-index-agent",
+      "version": "1"
+    },
+    "generatedAt": "2026-07-07T00:00:00.000Z",
+    "entries": [
+      {
+        "file": "packages/core/src/types.ts",
+        "hash": "0122877582b050d5",
+        "symbol": "Booking",
+        "tags": [
+          {
+            "tag": "intent:booking",
+            "source": "agent",
+            "confidence": 0.95,
+            "evidence": [
+              "central booking entity with status, passengers, quote, and contact info"
+            ]
+          }
+        ]
+      },
+      {
+        "file": "packages/core/src/rules.ts",
+        "hash": "519019b6dc2dbe10",
+        "symbol": null,
+        "tags": [
+          {
+            "tag": "intent:pricing",
+            "source": "agent",
+            "confidence": 0.95,
+            "evidence": [
+              "fare multipliers, peak/weekend surcharges, and pricing rule calculations"
+            ]
+          }
+        ]
+      },
+      {
+        "file": "packages/queue/src/jobs.ts",
+        "hash": "2306b7e0d6c2cc26",
+        "symbol": null,
+        "tags": [
+          {
+            "tag": "intent:jobs",
+            "source": "agent",
+            "confidence": 0.95,
+            "evidence": [
+              "defines job types (email, payment, manifest sync) and the JOB_STREAM constant"
+            ]
+          }
+        ]
+      },
+      {
+        "file": "apps/web/src/api/client.ts",
+        "hash": "4b91f33756a6b835",
+        "symbol": "ApiClient",
+        "tags": [
+          {
+            "tag": "intent:api",
+            "source": "agent",
+            "confidence": 0.95,
+            "evidence": [
+              "HTTP client for booking and availability endpoints"
+            ]
+          }
+        ]
+      },
+      {
+        "file": "apps/web/src/api/client.ts",
+        "hash": "4b91f33756a6b835",
+        "symbol": "apiClient",
+        "tags": [
+          {
+            "tag": "intent:api",
+            "source": "agent",
+            "confidence": 0.95,
+            "evidence": [
+              "singleton API client instance used across the web app"
+            ]
+          }
+        ]
+      },
+      {
+        "file": "packages/core/src/availability.ts",
+        "hash": "c5b26138ce90ce68",
+        "symbol": "searchAvailability",
+        "tags": [
+          {
+            "tag": "intent:booking",
+            "source": "agent",
+            "confidence": 0.95,
+            "evidence": [
+              "filters and formats sailings into availability options by date and capacity"
+            ]
+          }
+        ]
+      },
+      {
+        "file": "packages/core/src/booking.ts",
+        "hash": "d2551fa7e67dc0c2",
+        "symbol": null,
+        "tags": [
+          {
+            "tag": "intent:booking",
+            "source": "agent",
+            "confidence": 0.95,
+            "evidence": [
+              "booking lifecycle: create, confirm, and cancel with quote and penalty computation"
+            ]
+          }
+        ]
+      },
+      {
+        "file": "packages/core/src/cancellation.ts",
+        "hash": "a96f78951ab28bd0",
+        "symbol": null,
+        "tags": [
+          {
+            "tag": "intent:booking",
+            "source": "agent",
+            "confidence": 0.9,
+            "evidence": [
+              "cancellation penalty tiers and computation based on hours before departure"
+            ]
+          }
+        ]
+      },
+      {
+        "file": "packages/core/src/discounts.ts",
+        "hash": "083e7549ee5c28cf",
+        "symbol": null,
+        "tags": [
+          {
+            "tag": "intent:pricing",
+            "source": "agent",
+            "confidence": 0.95,
+            "evidence": [
+              "promo code rules and discount application logic"
+            ]
+          }
+        ]
+      },
+      {
+        "file": "packages/db/src/client.ts",
+        "hash": "755fb6dfb2906924",
+        "symbol": "Database",
+        "tags": [
+          {
+            "tag": "intent:persistence",
+            "source": "agent",
+            "confidence": 0.95,
+            "evidence": [
+              "PostgreSQL connection pool with query and transaction support"
+            ]
+          }
+        ]
+      },
+      {
+        "file": "packages/core/src/util.ts",
+        "hash": "1117c56d73660dd5",
+        "symbol": "uid",
+        "tags": [
+          {
+            "tag": "intent:persistence",
+            "source": "agent",
+            "confidence": 0.85,
+            "evidence": [
+              "generates prefixed unique identifiers using timestamp and random suffix"
+            ]
+          }
+        ]
+      },
+      {
+        "file": "services/api/src/config.ts",
+        "hash": "2cde3a1b35b296fa",
+        "symbol": null,
+        "tags": [
+          {
+            "tag": "intent:config",
+            "source": "agent",
+            "confidence": 0.95,
+            "evidence": [
+              "loads and parses API server configuration from environment variables"
+            ]
+          }
+        ]
+      },
+      {
+        "file": "services/api/src/handlers/webhooks.ts",
+        "hash": "354963f6ee7c4f67",
+        "symbol": "verifySignature",
+        "tags": [
+          {
+            "tag": "intent:auth",
+            "source": "agent",
+            "confidence": 0.95,
+            "evidence": [
+              "HMAC-SHA256 signature verification with constant-time comparison"
+            ]
+          }
+        ]
+      },
+      {
+        "file": "services/api/src/handlers/webhooks.ts",
+        "hash": "354963f6ee7c4f67",
+        "symbol": null,
+        "tags": [
+          {
+            "tag": "intent:payments",
+            "source": "agent",
+            "confidence": 0.95,
+            "evidence": [
+              "payment provider webhook handler that updates booking status on payment events"
+            ]
+          }
+        ]
+      },
+      {
+        "file": "services/worker/src/config.ts",
+        "hash": "c5e232806769fd02",
+        "symbol": null,
+        "tags": [
+          {
+            "tag": "intent:config",
+            "source": "agent",
+            "confidence": 0.95,
+            "evidence": [
+              "loads worker configuration for queue, database, concurrency, and SMTP"
+            ]
+          }
+        ]
+      },
+      {
+        "file": "services/worker/src/index.ts",
+        "hash": "e3e9143bd96e2439",
+        "symbol": "start",
+        "tags": [
+          {
+            "tag": "intent:jobs",
+            "source": "agent",
+            "confidence": 0.9,
+            "evidence": [
+              "initializes the job consumer with mailer and payment gateway dependencies"
+            ]
+          }
+        ]
+      },
+      {
+        "file": "services/worker/src/processors/email.ts",
+        "hash": "cf81785840439f8d",
+        "symbol": null,
+        "tags": [
+          {
+            "tag": "intent:notifications",
+            "source": "agent",
+            "confidence": 0.95,
+            "evidence": [
+              "sends templated emails for booking confirmations and payment failures"
+            ]
+          }
+        ]
+      },
+      {
+        "file": "services/worker/src/templates.ts",
+        "hash": "643933d4c023779b",
+        "symbol": null,
+        "tags": [
+          {
+            "tag": "intent:notifications",
+            "source": "agent",
+            "confidence": 0.95,
+            "evidence": [
+              "renders booking and payment notification email templates"
+            ]
+          }
+        ]
+      },
+      {
+        "file": "apps/web/src/components/BookingForm.tsx",
+        "hash": "f7228b04643f5ea1",
+        "symbol": "BookingForm",
+        "tags": [
+          {
+            "tag": "intent:booking",
+            "source": "agent",
+            "confidence": 0.95,
+            "evidence": [
+              "form component for collecting passenger name, email, and submitting bookings"
+            ]
+          }
+        ]
+      },
+      {
+        "file": "apps/web/src/components/FareSummary.tsx",
+        "hash": "1d1e1e011160f2ed",
+        "symbol": "FareSummary",
+        "tags": [
+          {
+            "tag": "intent:pricing",
+            "source": "agent",
+            "confidence": 0.95,
+            "evidence": [
+              "displays fare quote breakdown with per-passenger and total costs"
+            ]
+          }
+        ]
+      },
+      {
+        "file": "apps/web/src/components/VesselCard.tsx",
+        "hash": "b7eff45a2b78bbfe",
+        "symbol": "VesselCard",
+        "tags": [
+          {
+            "tag": "intent:booking",
+            "source": "agent",
+            "confidence": 0.95,
+            "evidence": [
+              "displays sailing availability with seat count, fare, and select button"
+            ]
+          }
+        ]
+      },
+      {
+        "file": "apps/web/src/hooks/useAvailability.ts",
+        "hash": "2e6c44848543f3a2",
+        "symbol": "useAvailability",
+        "tags": [
+          {
+            "tag": "intent:booking",
+            "source": "agent",
+            "confidence": 0.95,
+            "evidence": [
+              "fetches and caches availability options with debounced date parameter"
+            ]
+          }
+        ]
+      },
+      {
+        "file": "apps/web/src/pages/BookingPage.tsx",
+        "hash": "552cdd7b44821f36",
+        "symbol": "BookingPage",
+        "tags": [
+          {
+            "tag": "intent:booking",
+            "source": "agent",
+            "confidence": 0.95,
+            "evidence": [
+              "page for completing a booking with form and fare summary"
+            ]
+          }
+        ]
+      },
+      {
+        "file": "packages/db/src/bookings.repo.ts",
+        "hash": "731e5c0d460c7c55",
+        "symbol": "BookingsRepository",
+        "tags": [
+          {
+            "tag": "intent:persistence",
+            "source": "agent",
+            "confidence": 0.95,
+            "evidence": [
+              "data access for booking inserts, lookups, and status updates"
+            ]
+          }
+        ]
+      },
+      {
+        "file": "packages/db/src/migrations.ts",
+        "hash": "26ce484b5faddbca",
+        "symbol": null,
+        "tags": [
+          {
+            "tag": "intent:persistence",
+            "source": "agent",
+            "confidence": 0.95,
+            "evidence": [
+              "database schema for vessels, sailings, and bookings tables"
+            ]
+          }
+        ]
+      },
+      {
+        "file": "packages/queue/src/client.ts",
+        "hash": "ea018b894357890a",
+        "symbol": "QueueClient",
+        "tags": [
+          {
+            "tag": "intent:jobs",
+            "source": "agent",
+            "confidence": 0.95,
+            "evidence": [
+              "Redis-backed queue for push, pop, and depth operations on job streams"
+            ]
+          }
+        ]
+      },
+      {
+        "file": "packages/queue/src/consumer.ts",
+        "hash": "1cfd205982d2ba73",
+        "symbol": "JobConsumer",
+        "tags": [
+          {
+            "tag": "intent:jobs",
+            "source": "agent",
+            "confidence": 0.95,
+            "evidence": [
+              "continuously polls queue and dispatches jobs to a handler"
+            ]
+          }
+        ]
+      },
+      {
+        "file": "packages/queue/src/util.ts",
+        "hash": "b9b1e87ad9ea9a07",
+        "symbol": "retryWithBackoff",
+        "tags": [
+          {
+            "tag": "intent:observability",
+            "source": "agent",
+            "confidence": 0.9,
+            "evidence": [
+              "exponential backoff retry mechanism for resilient operation execution"
+            ]
+          }
+        ]
+      },
+      {
+        "file": "services/api/src/context.ts",
+        "hash": "9646cb330465ad84",
+        "symbol": "createContext",
+        "tags": [
+          {
+            "tag": "intent:api",
+            "source": "agent",
+            "confidence": 0.95,
+            "evidence": [
+              "assembles database and queue dependencies into AppContext"
+            ]
+          }
+        ]
+      },
+      {
+        "file": "services/api/src/handlers/bookings.ts",
+        "hash": "4644c2b632fd1b7a",
+        "symbol": "makeCreateBookingHandler",
+        "tags": [
+          {
+            "tag": "intent:booking",
+            "source": "agent",
+            "confidence": 0.95,
+            "evidence": [
+              "POST endpoint that validates, creates bookings, publishes payment and email jobs"
+            ]
+          }
+        ]
+      },
+      {
+        "file": "services/api/src/index.ts",
+        "hash": "9248344362ac643a",
+        "symbol": null,
+        "tags": [
+          {
+            "tag": "intent:api",
+            "source": "agent",
+            "confidence": 0.95,
+            "evidence": [
+              "server bootstrap and startup"
+            ]
+          }
+        ]
+      },
+      {
+        "file": "services/api/src/util.ts",
+        "hash": "720d8d7be84bdf95",
+        "symbol": "retryWithBackoff",
+        "tags": [
+          {
+            "tag": "intent:observability",
+            "source": "agent",
+            "confidence": 0.9,
+            "evidence": [
+              "exponential backoff retry mechanism"
+            ]
+          }
+        ]
+      },
+      {
+        "file": "services/worker/src/dispatcher.ts",
+        "hash": "0e62e9fc8c217080",
+        "symbol": "processJob",
+        "tags": [
+          {
+            "tag": "intent:jobs",
+            "source": "agent",
+            "confidence": 0.95,
+            "evidence": [
+              "dispatches job types to appropriate processors (email, payment, manifest)"
+            ]
+          }
+        ]
+      },
+      {
+        "file": "services/worker/src/processors/payment.ts",
+        "hash": "4d7654af3ba44b01",
+        "symbol": "capturePayment",
+        "tags": [
+          {
+            "tag": "intent:payments",
+            "source": "agent",
+            "confidence": 0.95,
+            "evidence": [
+              "processes payment capture jobs via payment gateway"
+            ]
+          }
+        ]
+      },
+      {
+        "file": "apps/web/src/format.ts",
+        "hash": "29731ba8147b6515",
+        "symbol": "formatCurrency",
+        "tags": [
+          {
+            "tag": "intent:pricing",
+            "source": "agent",
+            "confidence": 0.95,
+            "evidence": [
+              "formats currency amounts in cents with proper symbol and decimal places"
+            ]
+          }
+        ]
+      },
+      {
+        "file": "apps/web/src/hooks/useBooking.ts",
+        "hash": "d598abe980460d27",
+        "symbol": "useBooking",
+        "tags": [
+          {
+            "tag": "intent:booking",
+            "source": "agent",
+            "confidence": 0.95,
+            "evidence": [
+              "manages booking form state including submission, loading, and error handling"
+            ]
+          }
+        ]
+      },
+      {
+        "file": "apps/web/src/pages/AvailabilityPage.tsx",
+        "hash": "545f01d40cbe060b",
+        "symbol": "AvailabilityPage",
+        "tags": [
+          {
+            "tag": "intent:booking",
+            "source": "agent",
+            "confidence": 0.95,
+            "evidence": [
+              "page for searching and selecting sailings by date"
+            ]
+          }
+        ]
+      },
+      {
+        "file": "packages/core/src/pricing.ts",
+        "hash": "138c115ab7079235",
+        "symbol": "quoteFare",
+        "tags": [
+          {
+            "tag": "intent:pricing",
+            "source": "agent",
+            "confidence": 0.95,
+            "evidence": [
+              "computes fare quote with per-passenger costs, surcharges, and discount application"
+            ]
+          }
+        ]
+      },
+      {
+        "file": "packages/db/src/sailings.repo.ts",
+        "hash": "5fcbce44b6106078",
+        "symbol": "SailingsRepository",
+        "tags": [
+          {
+            "tag": "intent:persistence",
+            "source": "agent",
+            "confidence": 0.95,
+            "evidence": [
+              "data access for sailings queries and seat inventory management"
+            ]
+          }
+        ]
+      },
+      {
+        "file": "packages/db/src/vessels.repo.ts",
+        "hash": "402ef39cbd3c72c0",
+        "symbol": "VesselsRepository",
+        "tags": [
+          {
+            "tag": "intent:persistence",
+            "source": "agent",
+            "confidence": 0.95,
+            "evidence": [
+              "data access for vessel queries"
+            ]
+          }
+        ]
+      },
+      {
+        "file": "packages/queue/src/publisher.ts",
+        "hash": "79ec830303d23342",
+        "symbol": "JobPublisher",
+        "tags": [
+          {
+            "tag": "intent:jobs",
+            "source": "agent",
+            "confidence": 0.95,
+            "evidence": [
+              "publishes jobs to queue with retry logic"
+            ]
+          }
+        ]
+      },
+      {
+        "file": "services/api/src/handlers/availability.ts",
+        "hash": "53076e493ac68ed6",
+        "symbol": "makeAvailabilityHandler",
+        "tags": [
+          {
+            "tag": "intent:booking",
+            "source": "agent",
+            "confidence": 0.95,
+            "evidence": [
+              "GET endpoint that searches sailings and returns availability options"
+            ]
+          }
+        ]
+      },
+      {
+        "file": "services/api/src/handlers/health.ts",
+        "hash": "4a0481a1e73fdbc9",
+        "symbol": "handleHealth",
+        "tags": [
+          {
+            "tag": "intent:observability",
+            "source": "agent",
+            "confidence": 0.95,
+            "evidence": [
+              "health check endpoint returning status and process uptime"
+            ]
+          }
+        ]
+      },
+      {
+        "file": "services/api/src/middleware/auth.ts",
+        "hash": "e125a3ac4df87043",
+        "symbol": "requireApiKey",
+        "tags": [
+          {
+            "tag": "intent:auth",
+            "source": "agent",
+            "confidence": 0.95,
+            "evidence": [
+              "middleware that validates API key from request headers"
+            ]
+          }
+        ]
+      },
+      {
+        "file": "services/api/src/middleware/error.ts",
+        "hash": "ea03d1f6f1399362",
+        "symbol": "makeErrorHandler",
+        "tags": [
+          {
+            "tag": "intent:observability",
+            "source": "agent",
+            "confidence": 0.95,
+            "evidence": [
+              "error handler middleware that formats validation and runtime errors"
+            ]
+          }
+        ]
+      },
+      {
+        "file": "services/api/src/routes.ts",
+        "hash": "4ffcdddc09e2945b",
+        "symbol": "registerRoutes",
+        "tags": [
+          {
+            "tag": "intent:api",
+            "source": "agent",
+            "confidence": 0.95,
+            "evidence": [
+              "registers API routes for health, availability, bookings, and webhooks"
+            ]
+          }
+        ]
+      },
+      {
+        "file": "services/api/src/server.ts",
+        "hash": "dd6819be62f56145",
+        "symbol": "createServer",
+        "tags": [
+          {
+            "tag": "intent:api",
+            "source": "agent",
+            "confidence": 0.95,
+            "evidence": [
+              "creates Express server with JSON parsing, routing, and error handling"
+            ]
+          }
+        ]
+      }
+    ],
+    "notes": []
+  }
+}
