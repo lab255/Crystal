@@ -18,6 +18,7 @@ import {
   ArrowRightLeft,
   Boxes,
   ChevronRight,
+  ClipboardCheck,
   Copy as CopyIcon,
   ExternalLink,
   FolderGit2,
@@ -60,6 +61,7 @@ import { SymbolSnippet } from "../snippets.js";
 import { hlClass, useViewHighlight } from "../use-highlight.js";
 import { CodeNode, SYMBOL_DRAG_MIME, type CodeRfNode, type SymbolDragPayload } from "./CodeNode.js";
 import { DuplicatesPanel } from "./DuplicatesPanel.js";
+import { ReviewPanel } from "./ReviewPanel.js";
 import {
   absolutePositionOf,
   accentFor,
@@ -109,8 +111,8 @@ function mapHlRef(data: MapRfNode["data"]): HighlightRef | null {
 }
 
 /** Fires a cross-mode "open this file in the editor" request handled by the shell. */
-export function requestOpenFile(path: string): void {
-  window.dispatchEvent(new CustomEvent("crystal:open-file", { detail: { path } }));
+export function requestOpenFile(path: string, line?: number): void {
+  window.dispatchEvent(new CustomEvent("crystal:open-file", { detail: { path, line } }));
 }
 
 export interface CodeMapViewProps {
@@ -344,6 +346,11 @@ function CodeMapInner({
     (on: boolean) => nav({ architect: { duplicates: on } }),
     [nav],
   );
+  const showFindings = useNav((l) => l.architect?.findings) ?? false;
+  const setShowFindings = useCallback(
+    (on: boolean) => nav({ architect: { findings: on } }),
+    [nav],
+  );
 
   /* ---- cross-view highlight ---- */
 
@@ -442,9 +449,9 @@ function CodeMapInner({
   // Opening a file in the editor targets the active workspace — switch first
   // when the map is browsing a different one.
   const openInEditor = useCallback(
-    (path: string) => {
+    (path: string, line?: number) => {
       if (wsKey && wsKey !== activeWs) setActive(wsKey);
-      requestOpenFile(path);
+      requestOpenFile(path, line);
     },
     [wsKey, activeWs, setActive],
   );
@@ -731,6 +738,22 @@ function CodeMapInner({
               </button>
             </Tooltip>
           ) : null}
+          {level && level.kind !== "all" ? (
+            <Tooltip content="Review sweep — dead files, unused exports, duplicates, boundary leaks">
+              <button
+                type="button"
+                aria-pressed={showFindings}
+                onClick={() => setShowFindings(!showFindings)}
+                className={cn(
+                  "flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] transition-colors",
+                  showFindings ? "bg-crystal-500/15 text-crystal-300" : "text-ink-faint hover:text-ink-muted",
+                )}
+              >
+                <ClipboardCheck className="h-3 w-3" />
+                review
+              </button>
+            </Tooltip>
+          ) : null}
           {loading ? <Spinner className="ml-1 h-3 w-3" /> : null}
         </div>
 
@@ -845,6 +868,17 @@ function CodeMapInner({
               hasActiveDraft={activeDraft != null}
               onHoist={(intent) => void recordHoist(intent)}
               onClose={() => setShowDuplicates(false)}
+            />
+          </Pane>
+        ) : null}
+        {showFindings && level && level.kind !== "all" ? (
+          <Pane defaultSize={384} minSize={260} maxSize={640}>
+            <ReviewPanel
+              ws={level.ws}
+              moduleFilter={level.kind === "module" ? level.path : undefined}
+              onHoist={(intent) => void recordHoist(intent)}
+              onOpenFile={openInEditor}
+              onClose={() => setShowFindings(false)}
             />
           </Pane>
         ) : null}
