@@ -47,7 +47,7 @@
         "description": "14 files",
         "parentId": "node_c687f5e095fb",
         "position": {
-          "x": 296,
+          "x": 528,
           "y": 48
         },
         "size": null,
@@ -68,7 +68,7 @@
         "parentId": "node_c687f5e095fb",
         "position": {
           "x": 24,
-          "y": 48
+          "y": 267
         },
         "size": null,
         "tech": [],
@@ -107,8 +107,8 @@
         "description": "9 files",
         "parentId": "node_ee44861d5f2a",
         "position": {
-          "x": 968,
-          "y": 48
+          "x": 24,
+          "y": 2540
         },
         "size": null,
         "tech": [],
@@ -127,8 +127,8 @@
         "description": "24 files",
         "parentId": "node_ee44861d5f2a",
         "position": {
-          "x": 260,
-          "y": 168
+          "x": 24,
+          "y": 3678
         },
         "size": null,
         "tech": [],
@@ -147,8 +147,8 @@
         "description": "7 files",
         "parentId": "node_ee44861d5f2a",
         "position": {
-          "x": 496,
-          "y": 48
+          "x": 24,
+          "y": 1348
         },
         "size": null,
         "tech": [],
@@ -168,7 +168,7 @@
         "parentId": "node_ee44861d5f2a",
         "position": {
           "x": 24,
-          "y": 168
+          "y": 3136
         },
         "size": null,
         "tech": [],
@@ -187,8 +187,8 @@
         "description": "9 files",
         "parentId": "node_ee44861d5f2a",
         "position": {
-          "x": 732,
-          "y": 48
+          "x": 24,
+          "y": 1890
         },
         "size": null,
         "tech": [],
@@ -207,8 +207,8 @@
         "description": "18 files",
         "parentId": "node_ee44861d5f2a",
         "position": {
-          "x": 260,
-          "y": 48
+          "x": 24,
+          "y": 698
         },
         "size": null,
         "tech": [],
@@ -356,11 +356,66 @@
         "kind": "local"
       }
     ],
-    "journeys": [],
+    "journeys": [
+      {
+        "id": "journey_d839c3b58ed4",
+        "name": "SurveySection",
+        "description": "",
+        "entry": {
+          "file": "packages/architect/src/SurveyPanel.tsx",
+          "symbol": "SurveySection"
+        }
+      }
+    ],
+    "facets": [
+      {
+        "id": "facet_3489e73776d4",
+        "name": "API surface",
+        "description": "41 tagged symbols across 5 components + 1 shared",
+        "nodeIds": [
+          "node_0ca44ca43426",
+          "node_4806fb807167",
+          "node_b5bdcf4990e2",
+          "node_b4e60cab8fff",
+          "node_9abce7327c17",
+          "node_be33858f6b30"
+        ]
+      },
+      {
+        "id": "facet_10f88677df8a",
+        "name": "Background jobs",
+        "description": "26 tagged symbols across 1 component",
+        "nodeIds": [
+          "node_4806fb807167"
+        ]
+      },
+      {
+        "id": "facet_5d22f8bbd441",
+        "name": "Authentication",
+        "description": "12 tagged symbols across 5 components + 1 shared",
+        "nodeIds": [
+          "node_0ca44ca43426",
+          "node_4806fb807167",
+          "node_b4e60cab8fff",
+          "node_6a2ad29ddede",
+          "node_be33858f6b30",
+          "node_b5bdcf4990e2"
+        ]
+      },
+      {
+        "id": "facet_5e931beb56ae",
+        "name": "Validation",
+        "description": "8 tagged symbols across 2 components",
+        "nodeIds": [
+          "node_0ca44ca43426",
+          "node_b4e60cab8fff"
+        ]
+      }
+    ],
     "viewport": {
-      "x": 460.1680344915617,
-      "y": 360.2719987704535,
-      "zoom": 0.8238125950157733
+      "x": 872.2025312831591,
+      "y": -4.791057277927507,
+      "zoom": 0.2081874851432277
     }
   }
 }
