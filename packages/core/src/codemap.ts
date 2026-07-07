@@ -13,6 +13,19 @@
 
 import type { CodeExternalDep } from "./external-services.js";
 
+/**
+ * The global level-of-detail ladder for the code map: how much of the
+ * repositories → packages → modules (files) → members (symbols) hierarchy is
+ * exposed at once. Deep-linkable (see deeplink.ts); ordered coarse → fine.
+ */
+export const CODE_LOD_LEVELS = ["repos", "packages", "modules", "members"] as const;
+export type CodeLodLevel = (typeof CODE_LOD_LEVELS)[number];
+
+/** Positions in the ladder, for slider math and comparisons. */
+export function lodIndex(level: CodeLodLevel): number {
+  return CODE_LOD_LEVELS.indexOf(level);
+}
+
 export interface CodeModule {
   /** Workspace-relative path of the module root ("." for the workspace root). */
   path: string;

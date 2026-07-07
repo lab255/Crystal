@@ -427,4 +427,17 @@ function dupB(input: string) ${DUP_BODY}
     expect(hits.map((h) => h.name)).toEqual(["dupA", "dupB"]);
     expect(hits[0]).toMatchObject({ file: "entry.ts", exported: true });
   });
+
+  it("bulkDetails serves every module and file in one pass", async () => {
+    const { modules, files } = await analyzer.bulkDetails();
+    expect(modules.map((m) => m.module.path)).toEqual(["."]);
+    expect(files.map((f) => f.path).sort()).toEqual(["entry.ts", "lib.ts"]);
+    // matches the single-call results exactly
+    expect(files.find((f) => f.path === "lib.ts")).toEqual(await analyzer.fileDetail("lib.ts"));
+    expect(modules[0]).toEqual(await analyzer.moduleDetail("."));
+    // an explicit module list narrows the pass
+    const scoped = await analyzer.bulkDetails(["."]);
+    expect(scoped.modules).toHaveLength(1);
+    await expect(analyzer.bulkDetails(["nope"])).rejects.toThrow(/Unknown module/);
+  });
 });

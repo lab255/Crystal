@@ -30,11 +30,19 @@ import {
   Route,
   Rows3,
   Shrink,
+  Sparkles,
   X,
 } from "lucide-react";
 import {
+  CODE_LOD_LEVELS,
+  conceptDisplayName,
+  indexFacetVisibility,
   matchHighlight,
+  parseLensTags,
+  tagValue,
   type CodeFileDetail,
+  type CodeIndex,
+  type CodeLodLevel,
   type CodeMapLevelLink,
   type CodeMapSummary,
   type CodeModuleDetail,
@@ -70,16 +78,21 @@ import {
   dropTargetAt,
   fileDropTargetAt,
   fileId,
+  groupModulesByRepo,
+  memberFootprint,
   moduleId,
   moduleOfPath,
   type DropTarget,
   type FileNodeData,
+  type MapLens,
   type MapRfNode,
   type MapScene,
   type ModuleNodeData,
   type MoveLikeIntent,
   type SymbolNodeData,
 } from "./map-model.js";
+import { FacetsPanel } from "./FacetsPanel.js";
+import { LodSlider } from "./LodSlider.js";
 import { MapActionsContext, SYMBOL_TONES, mapNodeTypes, type MapActions } from "./map-nodes.js";
 
 const crossNodeTypes = { code: CodeNode };
@@ -198,6 +211,30 @@ function CodeMapInner({
   const focusNonce = useRef(0);
   const inflight = useRef(new Set<string>());
 
+  /* ---- level of detail + facet lens state ---- */
+
+  const lodParam = useNav((l) => l.architect?.lod ?? null);
+  const lod: CodeLodLevel = lodParam ?? "packages";
+  const lensParam = useNav((l) => l.architect?.lens ?? null);
+  const [codeIndex, setCodeIndex] = useState<{ index: CodeIndex; staleFiles: string[] } | null>(
+    null,
+  );
+  const [showFacets, setShowFacets] = useState(false);
+  // Generation for which the bulk (all modules + files) details are cached.
+  const [bulkLoadedGen, setBulkLoadedGen] = useState(-1);
+  const bulkData = useRef<{
+    gen: number;
+    modules: CodeModuleDetail[];
+    files: CodeFileDetail[];
+  } | null>(null);
+  const bulkInflight = useRef<Promise<{
+    modules: CodeModuleDetail[];
+    files: CodeFileDetail[];
+  } | null> | null>(null);
+  const [refitNonce, setRefitNonce] = useState(0);
+  const lodInit = useRef(false);
+  const appliedLens = useRef<string | null>(null);
+
   useEffect(() => {
     if (!level && activeWs) {
       setLevelRaw(
@@ -236,6 +273,11 @@ function CodeMapInner({
     setModulePositions(new Map());
     setSelectedFile(null);
     setFocus(null);
+    setCodeIndex(null);
+    setBulkLoadedGen(-1);
+    bulkData.current = null;
+    lodInit.current = false;
+    appliedLens.current = null;
   }, [wsKey]);
 
   /* ---- fetching ---- */
@@ -336,6 +378,156 @@ function CodeMapInner({
     // levelKey captures kind+ws+path; re-run once the summary is in.
   }, [levelKey, summary != null]);
 
+  /* ---- bulk detail (LoD slider + lens member focus) ---- */
+
+  const ensureBulk = useCallback(async () => {
+    if (!wsKey) return null;
+    if (bulkData.current?.gen === generation) return bulkData.current;
+    bulkInflight.current ??= client
+      .request("codemap.details", { ws: wsKey })
+      .then((res) => {
+        bulkData.current = { gen: generation, ...res };
+        setModuleDetails((m) => {
+          const next = new Map(m);
+          for (const d of res.modules) next.set(d.module.path, { gen: generation, detail: d });
+          return next;
+        });
+        setFileDetails((m) => {
+          const next = new Map(m);
+          for (const f of res.files) next.set(f.path, { gen: generation, detail: f });
+          return next;
+        });
+        setBulkLoadedGen(generation);
+        return bulkData.current;
+      })
+      .catch(() => null)
+      .finally(() => {
+        bulkInflight.current = null;
+      });
+    return bulkInflight.current;
+  }, [client, wsKey, generation]);
+
+  const applyLodExpansion = useCallback(
+    async (next: CodeLodLevel) => {
+      if (next === "repos" || next === "packages") {
+        setExpandedModules(new Set());
+        setExpandedFiles(new Set());
+        setOpenCode(new Set());
+        setSelectedFile(null);
+      } else {
+        const data = await ensureBulk();
+        if (!data) return;
+        setExpandedModules(new Set(data.modules.map((d) => d.module.path)));
+        setExpandedFiles(next === "members" ? new Set(data.files.map((f) => f.path)) : new Set());
+        if (next === "modules") setOpenCode(new Set());
+      }
+      setModulePositions(new Map());
+      setRefitNonce((n) => n + 1);
+    },
+    [ensureBulk],
+  );
+
+  const setLod = useCallback(
+    (next: CodeLodLevel) => {
+      nav({ architect: { lod: next } });
+      void applyLodExpansion(next);
+    },
+    [nav, applyLodExpansion],
+  );
+
+  // On reasonably sized workspaces the bulk details load eagerly, so member
+  // badges and the members-level layout are ready before the slider moves.
+  useEffect(() => {
+    if (!summary || !wsKey || levelKind === "all") return;
+    if (summary.fileTotal > 2000) return; // huge tree — fetch on demand only
+    void ensureBulk();
+  }, [summary, wsKey, levelKind, ensureBulk]);
+
+  // A deep-linked level applies once the summary is in (unless a lens owns
+  // the expansion — it focuses its own members).
+  useEffect(() => {
+    if (lodInit.current || !summary || !lodParam) return;
+    lodInit.current = true;
+    if (!lensParam) void applyLodExpansion(lodParam);
+  }, [summary != null, lodParam, lensParam, applyLodExpansion]);
+
+  // Keys 1–4 jump the LoD ladder (ignored while typing).
+  useEffect(() => {
+    if (!levelKind || levelKind === "all") return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      const i = ["1", "2", "3", "4"].indexOf(e.key);
+      if (i !== -1) setLod(CODE_LOD_LEVELS[i]!);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [levelKind, setLod]);
+
+  /* ---- code index + facet lens ---- */
+
+  const wantIndex = showFacets || (lensParam != null && lensParam.length > 0);
+  useEffect(() => {
+    if (!wsKey || !wantIndex) return;
+    let cancelled = false;
+    const fetchIndex = () => {
+      client
+        .request("codeindex.get", { ws: wsKey })
+        .then((res) => {
+          if (!cancelled) setCodeIndex(res);
+        })
+        .catch(() => {});
+    };
+    fetchIndex();
+    const dispose = client.events.on("codeindex.changed", ({ ws }) => {
+      if (ws === wsKey) fetchIndex();
+    });
+    return () => {
+      cancelled = true;
+      dispose();
+    };
+  }, [client, wsKey, wantIndex]);
+
+  const lensTags = useMemo(() => (lensParam ? parseLensTags(lensParam) : []), [lensParam]);
+  const lensKey = lensTags.join(",");
+  const lensVis = useMemo(
+    () =>
+      codeIndex && lensTags.length > 0 ? indexFacetVisibility(codeIndex.index, lensTags) : null,
+    [codeIndex, lensTags],
+  );
+  const mapLens = useMemo<MapLens | null>(
+    () =>
+      lensVis && lensVis.files.size > 0
+        ? { files: lensVis.files, modules: lensVis.modules }
+        : null,
+    [lensVis],
+  );
+  const lensName = useMemo(
+    () =>
+      lensTags
+        .map((t) => (t.startsWith("intent:") ? conceptDisplayName(tagValue(t)) : t))
+        .join(" + "),
+    [lensTags],
+  );
+
+  // Entering a lens focuses the members that carry it; leaving restores the level.
+  useEffect(() => {
+    if (mapLens) {
+      if (appliedLens.current === lensKey) return;
+      appliedLens.current = lensKey;
+      void ensureBulk();
+      setExpandedModules(new Set(mapLens.modules));
+      setExpandedFiles(new Set(mapLens.files.keys()));
+      setSelectedFile(null);
+      setModulePositions(new Map());
+      setRefitNonce((n) => n + 1);
+    } else if (appliedLens.current != null && lensTags.length === 0) {
+      appliedLens.current = null;
+      void applyLodExpansion(lod);
+    }
+  }, [mapLens, lensKey, lensTags.length, lod, ensureBulk, applyLodExpansion]);
+
   /* ---- drag-a-symbol refactor intents (plan mode) ---- */
 
   const { activeDraft, dropNotice, setDropNotice, recordMove, recordFileMove, recordHoist } =
@@ -377,6 +569,42 @@ function CodeMapInner({
     [refactors],
   );
 
+  // Members-level footprints: once the bulk details are in, dagre lays every
+  // module out at the size its fully exposed form needs, so the LoD slider
+  // swaps detail without re-arranging the map. A lens compacts instead — it
+  // exists to trim the canvas to one concern.
+  const layoutSizes = useMemo(() => {
+    if (bulkLoadedGen !== generation) return undefined;
+    const sizes = new Map<string, { w: number; h: number }>();
+    for (const [path, entry] of moduleDetails) {
+      if (entry.gen !== generation) continue;
+      sizes.set(
+        path,
+        memberFootprint(entry.detail, (p) => {
+          const fd = fileDetails.get(p);
+          return fd ? (fd.detail.symbols ?? fd.detail.exports).length : 0;
+        }),
+      );
+    }
+    return sizes;
+  }, [bulkLoadedGen, generation, moduleDetails, fileDetails]);
+
+  // Header badges: members per module (available once the bulk details are in).
+  const memberCounts = useMemo(() => {
+    if (bulkLoadedGen !== generation) return undefined;
+    const counts = new Map<string, number>();
+    for (const [path, entry] of moduleDetails) {
+      if (entry.gen !== generation) continue;
+      let n = 0;
+      for (const f of entry.detail.files) {
+        const fd = fileDetails.get(f.path);
+        if (fd) n += (fd.detail.symbols ?? fd.detail.exports).length;
+      }
+      counts.set(path, n);
+    }
+    return counts;
+  }, [bulkLoadedGen, generation, moduleDetails, fileDetails]);
+
   const scene = useMemo<MapScene | null>(() => {
     if (!summary || !level || level.kind === "all") return null;
     return buildMapScene({
@@ -390,6 +618,9 @@ function CodeMapInner({
       selectedFile,
       focusId: focus?.id ?? null,
       positions: modulePositions,
+      lens: mapLens,
+      layoutSizes: mapLens ? undefined : layoutSizes,
+      memberCounts,
     });
   }, [
     summary,
@@ -403,7 +634,69 @@ function CodeMapInner({
     selectedFile,
     focus,
     modulePositions,
+    mapLens,
+    layoutSizes,
+    memberCounts,
   ]);
+
+  // The coarsest LoD stop: modules grouped by the repository versioning them.
+  const repoScene = useMemo(() => {
+    if (lod !== "repos" || !summary || !level || level.kind === "all") return null;
+    const { repos, deps, repoOf } = groupModulesByRepo(summary);
+    const visible = mapLens
+      ? repos.filter((r) => [...mapLens.modules].some((m) => repoOf.get(m) === r.path))
+      : repos;
+    const visibleSet = new Set(visible.map((r) => r.path));
+    const nodes: CodeRfNode[] = visible.map((r) => ({
+      id: r.path,
+      type: "code",
+      position: { x: 0, y: 0 },
+      data: {
+        title: r.name,
+        subtitle: r.path === "." ? "workspace repository" : r.path,
+        accent: accentFor(r.path),
+        icon: FolderGit2,
+        badge: `${r.modules.length} pkg · ${r.fileCount} files`,
+      },
+    }));
+    const edges: RfEdge[] = deps
+      .filter((d) => visibleSet.has(d.source) && visibleSet.has(d.target))
+      .map((d) => ({
+        id: `r:${d.source}->${d.target}`,
+        source: d.source,
+        target: d.target,
+        label: `${d.weight} imports`,
+        style: {
+          stroke: "var(--color-crystal-400)",
+          strokeWidth: Math.min(1.2 + Math.log2(d.weight + 1), 4),
+          opacity: 0.9,
+        },
+        markerEnd: {
+          type: MarkerType.ArrowClosed,
+          color: "var(--color-crystal-400)",
+          width: 14,
+          height: 14,
+        },
+        labelStyle: { fill: "var(--color-crystal-400)", fontSize: 9 },
+        labelBgStyle: { fill: "var(--color-surface-1)", fillOpacity: 0.9 },
+      }));
+    return { nodes: layoutCross(nodes, edges), edges };
+  }, [lod, summary, level, mapLens]);
+
+  // Entity counts per LoD stop, for the slider readout.
+  const lodCounts = useMemo(() => {
+    if (!summary) return undefined;
+    const counts: Partial<Record<CodeLodLevel, number>> = {
+      repos: groupModulesByRepo(summary).repos.length,
+      packages: summary.modules.filter((m) => m.fileCount > 0).length,
+      modules: summary.fileTotal,
+    };
+    const bd = bulkData.current;
+    if (bulkLoadedGen === generation && bd) {
+      counts.members = bd.files.reduce((n, f) => n + (f.symbols ?? f.exports).length, 0);
+    }
+    return counts;
+  }, [summary, bulkLoadedGen, generation]);
 
   const crossScene = useMemo(() => {
     if (level?.kind !== "all" || !cross) return { nodes: [] as CodeRfNode[], edges: [] as RfEdge[] };
@@ -757,6 +1050,49 @@ function CodeMapInner({
           {loading ? <Spinner className="ml-1 h-3 w-3" /> : null}
         </div>
 
+        {level && level.kind !== "all" ? (
+          <div className="absolute left-3 top-13 z-10 flex items-center gap-2 rounded-xl border border-edge bg-surface-2/95 px-2.5 py-1.5 text-xs shadow-xl shadow-black/30 backdrop-blur">
+            <LodSlider level={lod} onChange={setLod} counts={lodCounts} />
+            <span className="h-4 w-px bg-edge" />
+            <Tooltip content="Facet lenses — focus the map on the members of one concern (authentication, payments, …)">
+              <button
+                type="button"
+                aria-pressed={showFacets}
+                onClick={() => setShowFacets((v) => !v)}
+                className={cn(
+                  "flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] transition-colors",
+                  showFacets ? "bg-crystal-500/15 text-crystal-300" : "text-ink-faint hover:text-ink-muted",
+                )}
+              >
+                <Sparkles className="h-3 w-3" />
+                facets
+              </button>
+            </Tooltip>
+            {lensParam ? (
+              <span className="flex items-center gap-1.5 rounded-md bg-crystal-500/15 px-1.5 py-0.5 text-[10px] text-crystal-300">
+                <span className="max-w-40 truncate font-medium">{lensName}</span>
+                {lensVis ? (
+                  <span className="text-crystal-400/80">
+                    {lensVis.memberCount} members · {lensVis.fileCount} files
+                  </span>
+                ) : codeIndex ? (
+                  <span className="text-warn">no matches</span>
+                ) : (
+                  <Spinner className="h-3 w-3" />
+                )}
+                <button
+                  type="button"
+                  onClick={() => nav({ architect: { lens: null } })}
+                  className="text-crystal-400 hover:text-crystal-200"
+                  aria-label="Exit facet lens"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </span>
+            ) : null}
+          </div>
+        ) : null}
+
         {level?.kind === "all" && cross && cross.workspaces.length < 2 && !loading ? (
           <div className="absolute left-3 top-12 z-10 rounded-lg border border-edge bg-surface-2/95 px-2 py-1 text-[10px] text-ink-faint">
             Open another workspace (status bar picker) to see cross-workspace imports
@@ -803,14 +1139,43 @@ function CodeMapInner({
               <Controls position="bottom-left" showInteractive={false} className="!rounded-lg !border !border-edge !bg-surface-2 !shadow-lg overflow-hidden" />
             </ReactFlow>
           )
+        ) : repoScene ? (
+          <ReactFlow
+            key="repos"
+            nodes={repoScene.nodes}
+            edges={repoScene.edges}
+            nodeTypes={crossNodeTypes}
+            onNodeDoubleClick={() => setLod("packages")}
+            fitView
+            fitViewOptions={{ padding: 0.25, maxZoom: 1.15 }}
+            minZoom={0.08}
+            maxZoom={2}
+            nodesConnectable={false}
+            panOnScroll
+            proOptions={{ hideAttribution: true }}
+            className="bg-surface-0"
+          >
+            <Background variant={BackgroundVariant.Dots} gap={22} size={1.25} color="var(--color-edge-strong)" />
+            <Controls position="bottom-left" showInteractive={false} className="!rounded-lg !border !border-edge !bg-surface-2 !shadow-lg overflow-hidden" />
+            <Panel position="bottom-center" className="rounded-lg border border-edge bg-surface-2/95 px-2 py-1 text-[10px] text-ink-faint shadow-lg">
+              Double-click a repository (or slide the detail knob) to open its packages
+            </Panel>
+          </ReactFlow>
         ) : scene && scene.nodes.length === 0 && !loading ? (
-          <EmptyState icon={FolderGit2} title="Nothing to map yet">
-            No analyzable TypeScript/JavaScript found in this workspace.
-          </EmptyState>
+          mapLens ? (
+            <EmptyState icon={Sparkles} title="Nothing matches this facet">
+              No modules carry {lensName || "this facet"} — exit the lens or index more files.
+            </EmptyState>
+          ) : (
+            <EmptyState icon={FolderGit2} title="Nothing to map yet">
+              No analyzable TypeScript/JavaScript found in this workspace.
+            </EmptyState>
+          )
         ) : scene ? (
           <WorkspaceMapCanvas
             key={wsKey ?? "map"}
             scene={scene}
+            refitNonce={refitNonce}
             focus={focus}
             menuFor={menuFor}
             externalHover={externalHover}
@@ -831,6 +1196,9 @@ function CodeMapInner({
               setExpandedFiles(new Set());
               setOpenCode(new Set());
               setSelectedFile(null);
+              if (lodParam === "modules" || lodParam === "members") {
+                nav({ architect: { lod: "packages" } });
+              }
             }}
           />
         ) : null}
@@ -871,6 +1239,19 @@ function CodeMapInner({
             />
           </Pane>
         ) : null}
+        {showFacets && level && level.kind !== "all" ? (
+          <Pane defaultSize={320} minSize={240} maxSize={560}>
+            <FacetsPanel
+              ws={level.ws}
+              index={codeIndex?.index ?? null}
+              staleFiles={codeIndex?.staleFiles ?? []}
+              activeTags={lensTags}
+              onSelect={(s) => nav({ architect: { lens: s.tags.join(",") } })}
+              onClear={() => nav({ architect: { lens: null } })}
+              onClose={() => setShowFacets(false)}
+            />
+          </Pane>
+        ) : null}
         {showFindings && level && level.kind !== "all" ? (
           <Pane defaultSize={384} minSize={260} maxSize={640}>
             <ReviewPanel
@@ -894,6 +1275,7 @@ const SNAP_STORAGE_KEY = "crystal:codemap:snap";
 
 function WorkspaceMapCanvas({
   scene,
+  refitNonce,
   focus,
   onModuleMoved,
   onSymbolMoved,
@@ -910,6 +1292,8 @@ function WorkspaceMapCanvas({
   onPinNode,
 }: {
   scene: MapScene;
+  /** Bumped when the LoD level or facet lens re-poses the map — refit the viewport. */
+  refitNonce?: number;
   focus: { id: string; nonce: number } | null;
   onModuleMoved: (path: string, pos: { x: number; y: number }) => void;
   onSymbolMoved: (payload: SymbolDragPayload, target: DropTarget) => void;
@@ -955,6 +1339,18 @@ function WorkspaceMapCanvas({
 
   // Drill targets zoom into view once their node exists (details may lag).
   const { fitView } = useReactFlow();
+
+  // LoD/lens re-poses land as a whole-scene refit (skipped on first render —
+  // the initial fitView prop already frames the map).
+  const lastRefit = useRef(refitNonce ?? 0);
+  useEffect(() => {
+    if (refitNonce == null || refitNonce === lastRefit.current) return;
+    lastRefit.current = refitNonce;
+    const t = setTimeout(() => {
+      void fitView({ padding: 0.15, duration: 450 });
+    }, 80);
+    return () => clearTimeout(t);
+  }, [refitNonce, fitView]);
   const focusReady = focus != null && scene.nodes.some((n) => n.id === focus.id);
   useEffect(() => {
     if (!focus || !focusReady) return;

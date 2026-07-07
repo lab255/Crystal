@@ -14,8 +14,11 @@ import {
   heuristicFileTags,
   heuristicSymbolTags,
   identifierWords,
+  indexFacetVisibility,
+  parseLensTags,
   staleIndexFiles,
   suggestFacets,
+  suggestIndexFacets,
   type CodeEnrichment,
   type IndexSourceFile,
 } from "./code-index.js";
@@ -235,6 +238,77 @@ describe("suggestFacets", () => {
   it("titles unknown intent values from the tag value", () => {
     expect(conceptDisplayName("auth")).toBe("Authentication");
     expect(conceptDisplayName("rate-limiting")).toBe("Rate limiting");
+  });
+});
+
+/* ---------------- facet lenses over the code map ---------------- */
+
+describe("parseLensTags", () => {
+  it("splits, trims and drops empties", () => {
+    expect(parseLensTags("intent:auth, intent:payments ,")).toEqual([
+      "intent:auth",
+      "intent:payments",
+    ]);
+  });
+});
+
+describe("indexFacetVisibility", () => {
+  /** auth.ts matches at file level (path), http.ts only via one symbol name. */
+  const index = () =>
+    buildCodeIndex([
+      src("services/api/src/middleware/auth.ts", "services/api", [
+        sym("requireApiKey"),
+        sym("readSession", "function", 9),
+      ]),
+      src("services/api/src/http.ts", "services/api", [
+        sym("verifyToken"),
+        sym("plainHelper", "function", 30),
+      ]),
+      src("services/api/src/auth.test.ts", "services/api", [sym("testLogin")]),
+      src("packages/core/src/math.ts", "packages/core", [sym("clamp")]),
+    ]);
+
+  it("exposes whole tagged files, tagged members, and their modules", () => {
+    const vis = indexFacetVisibility(index(), ["intent:auth"]);
+    expect(vis.files.get("services/api/src/middleware/auth.ts")).toBe("all");
+    expect(vis.files.get("services/api/src/http.ts")).toEqual(new Set(["verifyToken"]));
+    expect(vis.files.has("packages/core/src/math.ts")).toBe(false);
+    expect([...vis.modules]).toEqual(["services/api"]);
+    // 2 from the whole file + verifyToken
+    expect(vis.memberCount).toBe(3);
+    expect(vis.fileCount).toBe(2);
+  });
+
+  it("excludes test files unless the lens asks for them", () => {
+    expect(indexFacetVisibility(index(), ["intent:auth"]).files.has("services/api/src/auth.test.ts")).toBe(false);
+    expect(indexFacetVisibility(index(), ["role:test"]).files.has("services/api/src/auth.test.ts")).toBe(true);
+  });
+
+  it("an empty tag list exposes nothing", () => {
+    const vis = indexFacetVisibility(index(), []);
+    expect(vis.files.size).toBe(0);
+    expect(vis.memberCount).toBe(0);
+  });
+});
+
+describe("suggestIndexFacets", () => {
+  it("suggests intents with enough tagged members, weightiest first", () => {
+    const { index } = fixture();
+    const suggestions = suggestIndexFacets(index);
+    const auth = suggestions.find((s) => s.tags.includes("intent:auth"));
+    expect(auth).toBeDefined();
+    expect(auth!.name).toBe("Authentication");
+    expect(auth!.members).toBeGreaterThanOrEqual(3);
+    expect(auth!.modules).toBeGreaterThanOrEqual(2);
+    expect(auth!.sampleFiles.length).toBeGreaterThan(0);
+    // sorted by member weight, then name
+    const weights = suggestions.map((s) => s.members);
+    expect(weights).toEqual([...weights].sort((a, b) => b - a));
+  });
+
+  it("is deterministic and graph-free", () => {
+    const { index } = fixture();
+    expect(suggestIndexFacets(index)).toEqual(suggestIndexFacets(index));
   });
 });
 

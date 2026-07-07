@@ -410,12 +410,22 @@
           "node_0ca44ca43426",
           "node_b4e60cab8fff"
         ]
+      },
+      {
+        "id": "facet_a6615ef6608e",
+        "name": "Observability",
+        "description": "6 tagged symbols across 2 components + 1 shared",
+        "nodeIds": [
+          "node_0ca44ca43426",
+          "node_4806fb807167",
+          "node_b4e60cab8fff"
+        ]
       }
     ],
     "viewport": {
-      "x": 872.2025312831591,
-      "y": -4.791057277927507,
-      "zoom": 0.2081874851432277
+      "x": 822.1559101641745,
+      "y": -127.32896547999474,
+      "zoom": 0.5072791509188352
     }
   }
 }

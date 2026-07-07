@@ -198,6 +198,15 @@ export interface BridgeMethods {
   "codemap.get": { params: WsScope; result: CodeMapSummary };
   "codemap.module": { params: WsScope & { path: string }; result: CodeModuleDetail };
   "codemap.file": { params: WsScope & { path: string }; result: CodeFileDetail };
+  /**
+   * Bulk expansion for the LoD slider: details of every listed module (all
+   * modules when omitted) plus every file inside them, in one round-trip —
+   * the member level would otherwise be hundreds of requests.
+   */
+  "codemap.details": {
+    params: WsScope & { modules?: string[] };
+    result: { modules: CodeModuleDetail[]; files: CodeFileDetail[] };
+  };
   /** Import/export graph across every open workspace. */
   "codemap.cross": { params: Record<string, never>; result: CrossWorkspaceMap };
   /** Source text of one top-level symbol (capped). */

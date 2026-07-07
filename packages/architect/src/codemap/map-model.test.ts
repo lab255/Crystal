@@ -24,12 +24,19 @@ import {
   absolutePositionOf,
   buildMapScene,
   dropTargetAt,
+  expandedFileFootprint,
   fileDropTargetAt,
   fileId,
+  groupModulesByRepo,
+  memberFootprint,
   moduleId,
   moduleOfPath,
   packGrid,
   symbolId,
+  FILE_PAD,
+  GAP,
+  MODULE_INNER_MAX_W,
+  type MapLens,
   type MapSceneInput,
   type FileNodeData,
   type ModuleNodeData,
@@ -389,6 +396,134 @@ describe("buildMapScene — selection edges", () => {
       }),
     );
     expect(scene.edges.some((e) => e.id.startsWith("sel:"))).toBe(false);
+  });
+});
+
+describe("buildMapScene — facet lens", () => {
+  const lens: MapLens = {
+    files: new Map([[A, new Set(["foo"])]]),
+    modules: new Set(["packages/core"]),
+  };
+
+  it("hides modules, files and members outside the lens", () => {
+    const scene = buildMapScene(
+      input({
+        moduleDetails: new Map([
+          ["packages/core", coreDetail()],
+          ["packages/ui", uiDetail()],
+        ]),
+        fileDetails: new Map([[A, fileDetailA()]]),
+        expandedModules: new Set(["packages/core", "packages/ui"]),
+        expandedFiles: new Set([A]),
+        lens,
+      }),
+    );
+    expect(scene.nodes.some((n) => n.id === moduleId("packages/ui"))).toBe(false);
+    const files = scene.nodes.filter((n) => n.data.nodeKind === "file");
+    expect(files.map((f) => f.id)).toEqual([fileId(A)]);
+    const chips = scene.nodes.filter((n) => n.data.nodeKind === "symbol");
+    expect(chips.map((c) => (c.data as SymbolNodeData).name)).toEqual(["foo"]);
+    // the ui→core dep edge lost an endpoint — dropped
+    expect(scene.edges).toHaveLength(0);
+  });
+
+  it('renders every member of an "all" file', () => {
+    const scene = buildMapScene(
+      input({
+        moduleDetails: new Map([["packages/core", coreDetail()]]),
+        fileDetails: new Map([[A, fileDetailA()]]),
+        expandedModules: new Set(["packages/core"]),
+        expandedFiles: new Set([A]),
+        lens: { files: new Map([[A, "all"]]), modules: new Set(["packages/core"]) },
+      }),
+    );
+    const chips = scene.nodes.filter((n) => n.data.nodeKind === "symbol");
+    expect(chips.map((c) => (c.data as SymbolNodeData).name)).toEqual(["foo", "Bar", "hidden"]);
+  });
+});
+
+describe("buildMapScene — reserved layout", () => {
+  it("spaces modules by their member footprint while rendering collapsed cards", () => {
+    const plain = buildMapScene(input());
+    const reserved = buildMapScene(
+      input({
+        layoutSizes: new Map([
+          ["packages/core", { w: 900, h: 700 }],
+          ["packages/ui", { w: 900, h: 700 }],
+        ]),
+      }),
+    );
+    const gapOf = (scene: ReturnType<typeof buildMapScene>) => {
+      const core = scene.nodes.find((n) => n.id === moduleId("packages/core"))!;
+      const ui = scene.nodes.find((n) => n.id === moduleId("packages/ui"))!;
+      return Math.abs(
+        core.position.y + core.height! / 2 - (ui.position.y + ui.height! / 2),
+      );
+    };
+    expect(gapOf(reserved)).toBeGreaterThan(gapOf(plain));
+    // cards themselves stay collapsed-size, centered in the reserved slot
+    const core = reserved.nodes.find((n) => n.id === moduleId("packages/core"))!;
+    expect(core.width).toBe(MODULE_COLLAPSED_W);
+    expect(core.height).toBe(MODULE_COLLAPSED_H);
+  });
+});
+
+describe("LoD footprints", () => {
+  it("expandedFileFootprint mirrors the two-column chip grid", () => {
+    expect(expandedFileFootprint(0)).toEqual({
+      w: FILE_EXPANDED_W,
+      h: FILE_HEADER_H + FILE_PAD,
+    });
+    // 3 symbols → 2 rows of chips
+    expect(expandedFileFootprint(3).h).toBe(FILE_HEADER_H + SYM_H * 2 + GAP + FILE_PAD);
+    // over the display cap → the "+N more" strip is included
+    expect(expandedFileFootprint(MAX_SYMBOLS_SHOWN + 1).h).toBe(
+      expandedFileFootprint(MAX_SYMBOLS_SHOWN).h + 18,
+    );
+  });
+
+  it("memberFootprint matches the fully expanded module geometry", () => {
+    const detail = coreDetail();
+    const fp = memberFootprint(detail, () => 3);
+    const fileH = expandedFileFootprint(3).h;
+    // two expanded files fit one row inside MODULE_INNER_MAX_W
+    expect(FILE_EXPANDED_W * 2 + GAP).toBeLessThanOrEqual(MODULE_INNER_MAX_W);
+    expect(fp).toEqual({
+      w: FILE_EXPANDED_W * 2 + GAP + MODULE_PAD * 2,
+      h: MODULE_HEADER_H + fileH + MODULE_PAD,
+    });
+  });
+});
+
+describe("groupModulesByRepo", () => {
+  const repoSummary = (): CodeMapSummary => ({
+    modules: [
+      { path: ".", name: "host", fileCount: 3 },
+      { path: "packages/core", name: "core", fileCount: 2 },
+      { path: "vendor/lib", name: "lib", fileCount: 2, versioned: true },
+      { path: "vendor/lib/sub", name: "sub", fileCount: 1 },
+    ],
+    deps: [
+      { source: "packages/core", target: "vendor/lib", weight: 2 },
+      { source: ".", target: "packages/core", weight: 1 },
+      { source: "packages/core", target: "vendor/lib/sub", weight: 4 },
+    ],
+    fileTotal: 8,
+    generatedAt: "2026-07-06T00:00:00Z",
+  });
+
+  it("groups by nearest versioned root and aggregates deps", () => {
+    const { repos, repoOf, deps } = groupModulesByRepo(repoSummary());
+    expect(repoOf.get("packages/core")).toBe(".");
+    expect(repoOf.get("vendor/lib")).toBe("vendor/lib");
+    expect(repoOf.get("vendor/lib/sub")).toBe("vendor/lib");
+    expect(repos.map((r) => r.path).sort()).toEqual([".", "vendor/lib"]);
+    const host = repos.find((r) => r.path === ".")!;
+    expect(host.name).toBe("host");
+    expect(host.fileCount).toBe(5);
+    expect(host.modules.map((m) => m.path).sort()).toEqual([".", "packages/core"]);
+    // core→lib (2) + core→lib/sub (4) fold into one repo edge; intra-repo dropped
+    expect(deps).toEqual([{ source: ".", target: "vendor/lib", weight: 6 }]);
   });
 });
 

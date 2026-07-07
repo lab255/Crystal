@@ -5,6 +5,7 @@
     "id": "proj_crystal_general",
     "name": "Crystal",
     "description": "Building Crystal, in Crystal.",
+    "epics": [],
     "tasks": [
       {
         "id": "task_workspace_picker",
@@ -15,6 +16,10 @@
         "labels": [
           "desktop"
         ],
+        "owners": {
+          "agentId": null,
+          "human": null
+        },
         "links": {
           "nodeIds": [
             "node_desktop"
@@ -22,6 +27,7 @@
           "repoIds": [],
           "files": []
         },
+        "questions": [],
         "runIds": [],
         "order": 4,
         "createdAt": "2026-07-06T00:00:00.000Z",
@@ -36,6 +42,10 @@
         "labels": [
           "agents"
         ],
+        "owners": {
+          "agentId": null,
+          "human": null
+        },
         "links": {
           "nodeIds": [
             "node_server"
@@ -43,6 +53,7 @@
           "repoIds": [],
           "files": []
         },
+        "questions": [],
         "runIds": [],
         "order": 5,
         "createdAt": "2026-07-06T00:00:00.000Z",
@@ -57,15 +68,20 @@
         "labels": [
           "architecture"
         ],
+        "owners": {
+          "agentId": null,
+          "human": null
+        },
         "links": {
           "nodeIds": [],
           "repoIds": [],
           "files": []
         },
+        "questions": [],
         "runIds": [],
-        "order": 3,
+        "order": 8,
         "createdAt": "2026-07-06T00:00:00.000Z",
-        "updatedAt": "2026-07-06T00:31:00.104Z"
+        "updatedAt": "2026-07-07T15:05:15.937Z"
       },
       {
         "id": "task_sdk_npm",
@@ -76,6 +92,10 @@
         "labels": [
           "sdk"
         ],
+        "owners": {
+          "agentId": null,
+          "human": null
+        },
         "links": {
           "nodeIds": [
             "node_sdk"
@@ -83,6 +103,7 @@
           "repoIds": [],
           "files": []
         },
+        "questions": [],
         "runIds": [],
         "order": 2,
         "createdAt": "2026-07-06T00:00:00.000Z",
@@ -97,6 +118,10 @@
         "labels": [
           "milestone"
         ],
+        "owners": {
+          "agentId": null,
+          "human": null
+        },
         "links": {
           "nodeIds": [
             "node_workspace"
@@ -104,6 +129,7 @@
           "repoIds": [],
           "files": []
         },
+        "questions": [],
         "runIds": [],
         "order": 1,
         "createdAt": "2026-07-06T00:00:00.000Z",
@@ -119,6 +145,10 @@
           "architecture",
           "milestone"
         ],
+        "owners": {
+          "agentId": null,
+          "human": null
+        },
         "links": {
           "nodeIds": [
             "node_server",
@@ -127,6 +157,7 @@
           "repoIds": [],
           "files": []
         },
+        "questions": [],
         "runIds": [],
         "order": 2,
         "createdAt": "2026-07-06T00:00:00.000Z",
@@ -141,6 +172,10 @@
         "labels": [
           "agents"
         ],
+        "owners": {
+          "agentId": null,
+          "human": null
+        },
         "links": {
           "nodeIds": [
             "node_server",
@@ -149,6 +184,7 @@
           "repoIds": [],
           "files": []
         },
+        "questions": [],
         "runIds": [],
         "order": 3,
         "createdAt": "2026-07-06T00:00:00.000Z",
@@ -163,11 +199,16 @@
         "labels": [
           "editor"
         ],
+        "owners": {
+          "agentId": null,
+          "human": null
+        },
         "links": {
           "nodeIds": [],
           "repoIds": [],
           "files": []
         },
+        "questions": [],
         "runIds": [],
         "order": 4,
         "createdAt": "2026-07-06T00:00:00.000Z",
@@ -182,6 +223,10 @@
         "labels": [
           "desktop"
         ],
+        "owners": {
+          "agentId": null,
+          "human": null
+        },
         "links": {
           "nodeIds": [
             "node_desktop",
@@ -190,6 +235,7 @@
           "repoIds": [],
           "files": []
         },
+        "questions": [],
         "runIds": [],
         "order": 5,
         "createdAt": "2026-07-06T00:00:00.000Z",
@@ -204,6 +250,10 @@
         "labels": [
           "performance"
         ],
+        "owners": {
+          "agentId": null,
+          "human": null
+        },
         "links": {
           "nodeIds": [
             "node_web",
@@ -212,6 +262,7 @@
           "repoIds": [],
           "files": []
         },
+        "questions": [],
         "runIds": [],
         "order": 6,
         "createdAt": "2026-07-06T00:00:00.000Z",
@@ -224,11 +275,16 @@
         "status": "backlog",
         "priority": "medium",
         "labels": [],
+        "owners": {
+          "agentId": null,
+          "human": null
+        },
         "links": {
           "nodeIds": [],
           "repoIds": [],
           "files": []
         },
+        "questions": [],
         "runIds": [],
         "order": 6,
         "createdAt": "2026-07-06T06:46:58.020Z",

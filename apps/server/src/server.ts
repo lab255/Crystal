@@ -218,6 +218,7 @@ export async function startCrystalServer(opts: {
     "codemap.get": ({ ws }) => registry.get(ws).codemap.summary(),
     "codemap.module": ({ ws, path: p }) => registry.get(ws).codemap.moduleDetail(p),
     "codemap.file": ({ ws, path: p }) => registry.get(ws).codemap.fileDetail(p),
+    "codemap.details": ({ ws, modules }) => registry.get(ws).codemap.bulkDetails(modules),
     "codemap.cross": () => registry.crossMap(),
     "codemap.symbolSource": ({ ws, file, symbol }) =>
       registry.get(ws).codemap.symbolSource(file, symbol),

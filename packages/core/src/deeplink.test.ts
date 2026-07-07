@@ -132,6 +132,27 @@ describe("round trips", () => {
     }
   });
 
+  it("code map level of detail and facet lens", () => {
+    const link: DeepLink = {
+      ws: "abc",
+      mode: "architect",
+      architect: {
+        view: "codemap",
+        codemap: { kind: "workspace", ws: "abc" },
+        lod: "members",
+        lens: "intent:auth,intent:payments",
+      },
+    };
+    expect(roundTrip(link)).toEqual(link);
+    expect(formatDeepLink(link)).toBe(
+      "#/architect/codemap?ws=abc&at=workspace&lod=members&lens=intent%3Aauth%2Cintent%3Apayments",
+    );
+  });
+
+  it("drops an unknown lod value instead of propagating it", () => {
+    expect(parseDeepLink("#/architect/codemap?ws=a&at=workspace&lod=galaxy").architect?.lod).toBeUndefined();
+  });
+
   it("pinned highlight travels on every architect subview", () => {
     const diagrams: DeepLink = {
       ws: "abc",

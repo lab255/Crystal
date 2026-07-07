@@ -673,6 +673,119 @@ export function suggestFacets(
 }
 
 /* ------------------------------------------------------------------ */
+/* Facet lenses over the code map                                      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * What a facet lens exposes of the code map: per file, either every member
+ * ("all", the file itself carries the tag) or the matching member names; plus
+ * the modules owning at least one visible file. Files tagged `role:test` are
+ * excluded unless the lens asks for them explicitly.
+ */
+export interface IndexFacetVisibility {
+  files: Map<string, "all" | Set<string>>;
+  modules: Set<string>;
+  /** Members the lens exposes (file-level matches count all their symbols). */
+  memberCount: number;
+  fileCount: number;
+}
+
+/** Parse a lens string ("intent:auth,intent:payments") into its tag list. */
+export function parseLensTags(lens: string): string[] {
+  return lens
+    .split(",")
+    .map((t) => t.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Compute what a set of dimensional tags exposes: symbols carrying any of the
+ * tags, whole files whose file-level tags match, and the modules that own
+ * them. Pure and deterministic over the index.
+ */
+export function indexFacetVisibility(
+  index: CodeIndex,
+  tags: readonly string[],
+): IndexFacetVisibility {
+  const wanted = new Set(tags);
+  const includeTests = wanted.has("role:test");
+  const files = new Map<string, "all" | Set<string>>();
+  const modules = new Set<string>();
+  let memberCount = 0;
+  if (wanted.size === 0) return { files, modules, memberCount: 0, fileCount: 0 };
+
+  for (const file of index.files) {
+    if (!includeTests && file.tags.some((t) => t.tag === "role:test")) continue;
+    const fileMatch = file.tags.some((t) => wanted.has(t.tag));
+    if (fileMatch) {
+      files.set(file.path, "all");
+      modules.add(file.module);
+      memberCount += file.symbols.length;
+      continue;
+    }
+    const members = new Set<string>();
+    for (const sym of file.symbols) {
+      if (sym.tags.some((t) => wanted.has(t.tag))) members.add(sym.name);
+    }
+    if (members.size > 0) {
+      files.set(file.path, members);
+      modules.add(file.module);
+      memberCount += members.size;
+    }
+  }
+  return { files, modules, memberCount, fileCount: files.size };
+}
+
+/** A suggested code-map lens: an intent worth focusing the map on. */
+export interface IndexFacetSuggestion {
+  /** Display name, e.g. "Authentication". */
+  name: string;
+  /** Dimensional tags the lens filters by (usually one `intent:` tag). */
+  tags: string[];
+  files: number;
+  members: number;
+  modules: number;
+  /** Evidence files (capped) for tooltips/inspection. */
+  sampleFiles: string[];
+}
+
+const LENS_SUGGEST_LIMIT = 12;
+
+/**
+ * Suggest code-map lenses straight from the index (no diagram needed): one
+ * per intent with enough tagged symbols, weightiest first. Deterministic.
+ */
+export function suggestIndexFacets(
+  index: CodeIndex,
+  lexicon: readonly ConceptDef[] = CONCEPT_LEXICON,
+): IndexFacetSuggestion[] {
+  const values = new Set<string>();
+  for (const file of index.files) {
+    for (const t of file.tags) if (t.tag.startsWith("intent:")) values.add(tagValue(t.tag));
+    for (const sym of file.symbols)
+      for (const t of sym.tags) if (t.tag.startsWith("intent:")) values.add(tagValue(t.tag));
+  }
+
+  const out: IndexFacetSuggestion[] = [];
+  for (const value of values) {
+    const tag = `intent:${value}`;
+    const vis = indexFacetVisibility(index, [tag]);
+    if (vis.memberCount < SUGGEST_MIN_SYMBOLS) continue;
+    out.push({
+      name: conceptDisplayName(value, lexicon),
+      tags: [tag],
+      files: vis.fileCount,
+      members: vis.memberCount,
+      modules: vis.modules.size,
+      sampleFiles: [...vis.files.keys()].sort().slice(0, 8),
+    });
+  }
+  return out
+    .sort((a, b) => b.members - a.members || a.name.localeCompare(b.name))
+    .slice(0, LENS_SUGGEST_LIMIT);
+}
+
+/* ------------------------------------------------------------------ */
 /* Agent dispatch                                                      */
 /* ------------------------------------------------------------------ */
 

@@ -14,6 +14,8 @@
  * sync) and anything that wants to mint a link.
  */
 
+import { CODE_LOD_LEVELS, type CodeLodLevel } from "./codemap.js";
+
 export type CrystalModeId = "projects" | "architect" | "orchestrate" | "code";
 export type ArchitectViewId = "diagrams" | "infra" | "codemap";
 export type OrchestratorTabId = "board" | "runs";
@@ -41,6 +43,16 @@ export interface ArchitectLink {
   overlay?: boolean;
   /** Code map drill level. */
   codemap?: CodeMapLevelLink;
+  /**
+   * Code map level of detail — how much of the repositories → packages →
+   * modules → members ladder is exposed globally (the LoD slider).
+   */
+  lod?: CodeLodLevel;
+  /**
+   * Active code-map facet lens: comma-separated dimensional tags (e.g.
+   * "intent:auth") filtering the map down to the members that carry them.
+   */
+  lens?: string;
   /** Duplicates panel open. */
   duplicates?: boolean;
   /** Review-findings panel open (code map). */
@@ -113,6 +125,8 @@ export function formatDeepLink(link: DeepLink): string {
           if (cm.kind === "module" || cm.kind === "file") add("path", cm.path);
         }
       }
+      if (a.lod) add("lod", a.lod);
+      if (a.lens) add("lens", a.lens);
       if (a.duplicates) add("dups", "1");
       if (a.findings) add("findings", "1");
     } else {
@@ -180,6 +194,10 @@ export function parseDeepLink(hash: string): DeepLink {
     else if (at === "workspace" && mws) a.codemap = { kind: "workspace", ws: mws };
     else if ((at === "module" || at === "file") && mws && path)
       a.codemap = { kind: at, ws: mws, path };
+    const lod = params.get("lod");
+    if (lod && (CODE_LOD_LEVELS as readonly string[]).includes(lod)) a.lod = lod as CodeLodLevel;
+    const lens = params.get("lens");
+    if (lens) a.lens = lens;
     if (Object.keys(a).length) link.architect = a;
   } else if (mode === "orchestrate") {
     link.mode = "orchestrate";

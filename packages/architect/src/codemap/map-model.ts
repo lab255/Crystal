@@ -4,6 +4,7 @@ import type {
   CodeFileDetail,
   CodeMapSummary,
   CodeModule,
+  CodeModuleDep,
   CodeModuleDetail,
   CodeSymbolKind,
   MoveFileIntent,
@@ -90,6 +91,8 @@ export interface ModuleNodeData extends Record<string, unknown> {
   name: string;
   accent: string;
   fileCount: number;
+  /** Top-level members across the module's files (known once details load). */
+  memberCount?: number;
   expanded: boolean;
   loading?: boolean;
   truncated?: boolean;
@@ -150,6 +153,19 @@ export interface OverflowNodeData extends Record<string, unknown> {
 export type MapNodeData = ModuleNodeData | FileNodeData | SymbolNodeData | OverflowNodeData;
 export type MapRfNode = RfNode<MapNodeData>;
 
+/* ---- facet lens ---- */
+
+/**
+ * A facet lens over the map: which files are visible and, per file, which
+ * members ("all" = the whole file carries the facet). Modules, files and
+ * symbol chips outside the lens are not rendered. Shape mirrors
+ * `IndexFacetVisibility` from core so the two convert trivially.
+ */
+export interface MapLens {
+  files: ReadonlyMap<string, "all" | ReadonlySet<string>>;
+  modules: ReadonlySet<string>;
+}
+
 /* ---- scene input ---- */
 
 /** The slice of scene input `buildFile` needs (also used by the unified diagram canvas). */
@@ -160,6 +176,8 @@ export interface FileBuildInput {
   openCode: ReadonlySet<string>;
   /** Node id to visually emphasize (drill target). */
   focusId?: string | null;
+  /** Active facet lens — hides files/members outside it. */
+  lens?: MapLens | null;
 }
 
 export interface MapSceneInput extends FileBuildInput {
@@ -172,6 +190,15 @@ export interface MapSceneInput extends FileBuildInput {
   selectedFile?: string | null;
   /** Manual module positions (drag overrides), by module path. */
   positions?: ReadonlyMap<string, { x: number; y: number }>;
+  /**
+   * Per-module layout footprints (the members-level estimate). When present,
+   * dagre lays modules out at these sizes regardless of what is currently
+   * expanded, so sliding the level of detail never re-arranges the map —
+   * collapsed cards sit centered in the slot their exposed form would fill.
+   */
+  layoutSizes?: ReadonlyMap<string, { w: number; h: number }>;
+  /** Per-module member totals for the header badge (module path → count). */
+  memberCounts?: ReadonlyMap<string, number>;
 }
 
 export interface MapScene {
@@ -263,11 +290,13 @@ export interface BuiltFile {
 }
 
 export function buildMapScene(input: MapSceneInput): MapScene {
-  const { summary } = input;
+  const { summary, lens } = input;
   const moves = input.moves;
 
   const visibleModules = summary.modules.filter(
-    (m) => m.fileCount > 0 || summary.deps.some((d) => d.source === m.path || d.target === m.path),
+    (m) =>
+      (m.fileCount > 0 || summary.deps.some((d) => d.source === m.path || d.target === m.path)) &&
+      (!lens || lens.modules.has(m.path)),
   );
   const modulePathSet = new Set(visibleModules.map((m) => m.path));
 
@@ -306,7 +335,8 @@ export function buildMapScene(input: MapSceneInput): MapScene {
       continue;
     }
 
-    const files: BuiltFile[] = detail.files.map((f) =>
+    const shownFiles = lens ? detail.files.filter((f) => lens.files.has(f.path)) : detail.files;
+    const files: BuiltFile[] = shownFiles.map((f) =>
       buildFile(f.path, f.name, m.path, f.exportCount, input, moves),
     );
     for (const f of files) builtFileIds.add(f.node.id);
@@ -364,7 +394,13 @@ export function buildMapScene(input: MapSceneInput): MapScene {
   const g = new dagre.graphlib.Graph();
   g.setGraph({ rankdir: "TB", nodesep: 56, ranksep: 96, marginx: 24, marginy: 24 });
   g.setDefaultEdgeLabel(() => ({}));
-  for (const b of moduleBuilds) g.setNode(b.module.path, { width: b.w, height: b.h });
+  for (const b of moduleBuilds) {
+    const reserve = input.layoutSizes?.get(b.module.path);
+    g.setNode(b.module.path, {
+      width: Math.max(b.w, reserve?.w ?? 0),
+      height: Math.max(b.h, reserve?.h ?? 0),
+    });
+  }
   for (const d of summary.deps) {
     if (d.source !== d.target && modulePathSet.has(d.source) && modulePathSet.has(d.target)) {
       g.setEdge(d.source, d.target);
@@ -393,6 +429,7 @@ export function buildMapScene(input: MapSceneInput): MapScene {
         name: b.module.name,
         accent: accentFor(b.module.path),
         fileCount: b.module.fileCount,
+        memberCount: input.memberCounts?.get(b.module.path),
         expanded: b.expanded && b.detail != null,
         loading: b.expanded && b.detail == null,
         truncated: b.detail?.truncated,
@@ -532,7 +569,11 @@ export function buildFile(
   }
 
   const symbolMoves = moves.filter((m): m is MoveIntent => m.kind === "move");
-  const all = detail.symbols ?? detail.exports;
+  const lensMembers = input.lens?.files.get(path);
+  const all =
+    lensMembers && lensMembers !== "all"
+      ? (detail.symbols ?? detail.exports).filter((s) => lensMembers.has(s.name))
+      : (detail.symbols ?? detail.exports);
   const ordered = [...all].sort((a, b) => {
     const ax = a.exported === false ? 1 : 0;
     const bx = b.exported === false ? 1 : 0;
@@ -627,6 +668,114 @@ export function buildFile(
     w,
     h,
   };
+}
+
+/* ---- LoD footprints ---- */
+
+/** Footprint of one file card expanded to its symbol chips (no open code). */
+export function expandedFileFootprint(symbolCount: number): { w: number; h: number } {
+  const shown = Math.min(symbolCount, MAX_SYMBOLS_SHOWN);
+  const packed = packGrid(
+    Array.from({ length: shown }, (_, i) => ({ id: String(i), w: SYM_W, h: SYM_H })),
+    FILE_INNER_W,
+  );
+  const overflow = symbolCount - shown;
+  return {
+    w: FILE_EXPANDED_W,
+    h: FILE_HEADER_H + packed.height + FILE_PAD + (overflow > 0 ? 18 : 0),
+  };
+}
+
+/**
+ * A module's members-level footprint — every file expanded to its symbol
+ * chips — for the LoD-stable layout (`MapSceneInput.layoutSizes`). Mirrors
+ * the geometry `buildMapScene` produces when everything is expanded, so the
+ * fully exposed view fits exactly the slots coarser levels were laid out on.
+ */
+export function memberFootprint(
+  detail: CodeModuleDetail,
+  symbolCountOf: (path: string) => number,
+): { w: number; h: number } {
+  const packed = packGrid(
+    detail.files.map((f) => {
+      const fp = expandedFileFootprint(symbolCountOf(f.path));
+      return { id: f.path, w: fp.w, h: fp.h };
+    }),
+    MODULE_INNER_MAX_W,
+  );
+  return {
+    w: Math.max(packed.width, MODULE_COLLAPSED_W - MODULE_PAD * 2) + MODULE_PAD * 2,
+    h: MODULE_HEADER_H + packed.height + MODULE_PAD,
+  };
+}
+
+/* ---- repository grouping (the "repos" LoD level) ---- */
+
+export interface RepoGroup {
+  /** Module path of the repository root ("." = the workspace's own repo). */
+  path: string;
+  name: string;
+  /** Code-bearing modules riding this repository's history. */
+  modules: CodeModule[];
+  fileCount: number;
+}
+
+/**
+ * Group modules by the repository that versions them: nested modules with
+ * their own `.git` (`versioned`) are repositories of their own; everything
+ * else rides the workspace root repo. Module deps aggregate along the same
+ * mapping (self-edges dropped, weights summed).
+ */
+export function groupModulesByRepo(summary: CodeMapSummary): {
+  repos: RepoGroup[];
+  repoOf: Map<string, string>;
+  deps: CodeModuleDep[];
+} {
+  const repoRoots = summary.modules
+    .filter((m) => m.versioned)
+    .map((m) => m.path)
+    .sort((a, b) => b.length - a.length);
+  const repoOf = new Map<string, string>();
+  for (const m of summary.modules) {
+    repoOf.set(
+      m.path,
+      m.versioned
+        ? m.path
+        : (repoRoots.find((r) => m.path === r || m.path.startsWith(r + "/")) ?? "."),
+    );
+  }
+
+  const groups = new Map<string, RepoGroup>();
+  for (const m of summary.modules) {
+    const root = repoOf.get(m.path)!;
+    let g = groups.get(root);
+    if (!g) {
+      const rootMod = summary.modules.find((x) => x.path === root);
+      groups.set(root, (g = { path: root, name: rootMod?.name ?? root, modules: [], fileCount: 0 }));
+    }
+    if (m.fileCount > 0) {
+      g.modules.push(m);
+      g.fileCount += m.fileCount;
+    }
+  }
+
+  const weights = new Map<string, number>();
+  for (const d of summary.deps) {
+    const source = repoOf.get(d.source) ?? ".";
+    const target = repoOf.get(d.target) ?? ".";
+    if (source === target) continue;
+    const key = `${source} ${target}`;
+    weights.set(key, (weights.get(key) ?? 0) + d.weight);
+  }
+  const deps: CodeModuleDep[] = [...weights.entries()].map(([key, weight]) => {
+    const [source, target] = key.split(" ") as [string, string];
+    return { source, target, weight };
+  });
+
+  const repos = [...groups.values()].filter(
+    (g) => g.fileCount > 0 || deps.some((d) => d.source === g.path || d.target === g.path),
+  );
+  return { repos, repoOf, deps };
 }
 
 function fileMarksFor(path: string, moves: readonly MoveLikeIntent[]): "source" | "target" | undefined {

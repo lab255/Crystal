@@ -156,6 +156,13 @@ export const ModuleNode = memo(function ModuleNode({ data, selected }: NodeProps
         <span className="ml-auto shrink-0 rounded-full bg-surface-3 px-1.5 text-[9px] leading-4 text-ink-faint">
           {d.fileCount}f
         </span>
+        {d.memberCount != null ? (
+          <Tooltip content="Top-level members — functions, classes, types, constants">
+            <span className="shrink-0 rounded-full bg-surface-3 px-1.5 text-[9px] leading-4 text-ink-faint">
+              {d.memberCount}m
+            </span>
+          </Tooltip>
+        ) : null}
         {d.truncated ? (
           <Tooltip content="Large module — showing the most connected files">
             <span className="shrink-0 rounded-full bg-warn/15 px-1.5 text-[9px] leading-4 text-warn">top</span>
