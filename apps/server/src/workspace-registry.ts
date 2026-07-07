@@ -12,6 +12,7 @@ import type {
   WorkspaceDescriptor,
 } from "@crystal/core";
 import { AgentManager } from "./agent-manager.js";
+import { CodeIndexService } from "./code-index.js";
 import { CodeMapAnalyzer, type CrossSurface } from "./code-map.js";
 import { appDataDir, isIgnoredDir, workspaceIdFor } from "./paths.js";
 import { RefactorEngine } from "./refactor.js";
@@ -19,6 +20,8 @@ import { TerminalManager } from "./terminal-manager.js";
 import { WorkspaceStore } from "./workspace-store.js";
 
 const CODE_FILE_RE = /\.(ts|tsx|js|jsx|mjs|cjs)$/;
+/** Enrichment files an indexing agent may drop while running. */
+const INDEX_FILE_RE = /^\.crystal\/index\//;
 
 /** Where the set of open workspace roots persists across server restarts. */
 function openWorkspacesFile(): string {
@@ -43,6 +46,7 @@ export class WorkspaceRuntime {
   readonly agents: AgentManager;
   readonly terminals: TerminalManager;
   readonly codemap: CodeMapAnalyzer;
+  readonly codeindex: CodeIndexService;
   /** Manifest name, kept fresh by workspace.get / saveManifest handlers. */
   name: string;
 
@@ -59,6 +63,7 @@ export class WorkspaceRuntime {
     this.agents = new AgentManager(root, appDataDir(root));
     this.terminals = new TerminalManager(root);
     this.codemap = new CodeMapAnalyzer(root);
+    this.codeindex = new CodeIndexService(root, this.codemap);
   }
 
   descriptor(): WorkspaceDescriptor {
@@ -94,9 +99,15 @@ export class WorkspaceRuntime {
           const paths = [...this.pendingPaths];
           this.pendingPaths.clear();
           broadcast("fs.changed", { ws: this.id, paths });
-          if (paths.some((p) => CODE_FILE_RE.test(p))) {
+          const codeChanged = paths.some((p) => CODE_FILE_RE.test(p) && !INDEX_FILE_RE.test(p));
+          if (codeChanged) {
             this.codemap.invalidate();
             broadcast("codemap.changed", { ws: this.id });
+          }
+          // The index follows both the code and agent-written enrichments.
+          if (codeChanged || paths.some((p) => INDEX_FILE_RE.test(p))) {
+            this.codeindex.invalidate();
+            broadcast("codeindex.changed", { ws: this.id });
           }
         }, 250);
       });

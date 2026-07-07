@@ -11,7 +11,7 @@ import {
   type BridgeRequest,
   type BridgeResponse,
 } from "@crystal/core";
-import { applyCodeSnapshotToGraph, createArchDraft } from "@crystal/core";
+import { applyCodeSnapshotToGraph, createArchDraft, suggestFacets } from "@crystal/core";
 import { deleteAt, listDir, mkdirAt, readFileCapped, renameAt, writeFileAt } from "./fs-api.js";
 import { gitLog, gitStatus } from "./git.js";
 import { snapshotAtRef } from "./ref-snapshot.js";
@@ -229,6 +229,39 @@ export async function startCrystalServer(opts: {
     "codemap.symbols": async ({ ws, query, limit }) => ({
       symbols: await registry.get(ws).codemap.searchSymbols(query, limit),
     }),
+    "codeindex.get": ({ ws }) => registry.get(ws).codeindex.get(),
+    "codeindex.enrich": async ({ ws, files, agentId }) => {
+      const rt = registry.get(ws);
+      const dispatch = await rt.codeindex.enrichmentDispatch(files);
+      // Indexing defaults to a small, cheap model; a profile overrides it.
+      let model = "haiku";
+      let skills: string[] = [];
+      if (agentId) {
+        const roster = await rt.store.loadAgents();
+        const profile = roster.agents.find((a) => a.id === agentId);
+        if (profile) {
+          model = profile.model;
+          skills = profile.skills;
+        }
+      }
+      const run = await rt.agents.start({
+        prompt: dispatch.prompt,
+        model,
+        skills,
+        agentId: agentId ?? null,
+        purpose: "index",
+        tags: ["purpose:index"],
+      });
+      return { run, files: dispatch.files };
+    },
+    "arch.suggestFacets": async ({ ws, path: p }) => {
+      const rt = registry.get(ws);
+      const info = await rt.store.load();
+      const arch = info.architectures.find((a) => a.path === p);
+      if (!arch) throw new Error(`Unknown architecture: ${p}`);
+      const { index } = await rt.codeindex.get();
+      return { suggestions: suggestFacets(arch.graph, index) };
+    },
     "refactor.preview": ({ ws, intents }) => registry.get(ws).refactor().preview(intents),
     "refactor.apply": async ({ ws, intents }) => {
       const rt = registry.get(ws);
