@@ -41,6 +41,7 @@ import {
 import {
   ARCH_EDGE_KINDS,
   ancestorsOf,
+  archKindForCodeModule,
   createArchFacet,
   descendantsOf,
   enrichHighlight,
@@ -53,6 +54,7 @@ import {
   type ArchNodeKind,
   type ArchitectureGraph,
   type CodeFileDetail,
+  type CodeLodLevel,
   type CodeMapSummary,
   type CodeModuleDetail,
   type HighlightRef,
@@ -102,6 +104,7 @@ import {
   absolutePositionOf,
   codeKey,
   fileId,
+  moduleOfPath,
   type DropTarget,
   type FileNodeData,
   type MapNodeData,
@@ -123,7 +126,7 @@ import { BusbarEdge } from "./BusbarEdge.js";
 import { PeekPanel } from "./snippets.js";
 import { Palette, DRAG_MIME, PALETTE_KINDS } from "./Palette.js";
 import { Toolbar } from "./Toolbar.js";
-import { fileExpandZoom, moduleExpandZoom, useLodConfig } from "./lod-config.js";
+import { CANVAS_LOD_LEVELS, fileExpandZoom, moduleExpandZoom, useLodConfig } from "./lod-config.js";
 import { hlClass, useViewHighlight } from "./use-highlight.js";
 
 const nodeTypes = {
@@ -169,16 +172,21 @@ export interface ArchitectCanvasProps {
   /** Record a symbol move intent (drag or menu) on the active/auto-created draft. */
   onRecordMove?: (payload: SymbolDragPayload, target: DropTarget) => void;
   onRecordFileMove?: (fromFile: string, toModule: string) => void;
-  /** Open the standalone code map (cross-workspace level / unmapped modules). */
-  onOpenFullMap?: (at?: { module: string; file?: string }) => void;
-  /** External "zoom into this module (and file)" request — expands in place. */
+  /** Open the cross-workspace map (all open workspaces and their imports). */
+  onOpenWorkspacesMap?: () => void;
+  /**
+   * External "zoom into this module (and file)" request — expands in place.
+   * A module without a diagram node yet is added (code-linked) and expanded,
+   * so every module the code map knows is reachable on this canvas.
+   * `module` may be empty when only a file is known — it's derived from the map.
+   */
   expandRequest?: { module: string; file?: string; nonce: number } | null;
   /** External "point at this node" request (trace/flamegraph clicks) — selects, pans, pulses. */
   highlightRequest?: { nodeId: string; nonce: number } | null;
-  /** Module/file couldn't be matched to a diagram node — caller may fall back. */
-  onUnresolvedExpand?: (module: string, file?: string) => void;
   showDuplicates?: boolean;
   onToggleDuplicates?: (on: boolean) => void;
+  showFindings?: boolean;
+  onToggleFindings?: (on: boolean) => void;
 }
 
 const GHOST_STROKE = "var(--color-crystal-400)";
@@ -329,12 +337,13 @@ function CanvasInner({
   onStartJourney,
   onRecordMove,
   onRecordFileMove,
-  onOpenFullMap,
+  onOpenWorkspacesMap,
   expandRequest,
   highlightRequest,
-  onUnresolvedExpand,
   showDuplicates,
   onToggleDuplicates,
+  showFindings,
+  onToggleFindings,
 }: ArchitectCanvasProps) {
   const [selectedNodes, setSelectedNodes] = useState<ReadonlySet<string>>(new Set());
   const [selectedEdges, setSelectedEdges] = useState<ReadonlySet<string>>(new Set());
@@ -1098,25 +1107,55 @@ function CanvasInner({
   );
 
   // External drill requests ("zoom into this module/file") expand in place.
+  // A module with no diagram node yet gets one added (code-linked) below the
+  // current content — the canvas is the map, so nothing is unreachable.
   const expandNonce = useRef(0);
   useEffect(() => {
     if (!expandRequest || expandRequest.nonce === expandNonce.current) return;
-    expandNonce.current = expandRequest.nonce;
-    const { module, file } = expandRequest;
+    const { file } = expandRequest;
+    const module =
+      expandRequest.module ||
+      (file && codeSummary ? moduleOfPath(file, codeSummary.modules) : "");
     const g = graphRef.current;
-    const target =
-      g.nodes.find((n) => n.codeModule === module && !isContainerKind(n.kind) && n.kind !== "note") ??
-      g.nodes.find(
-        (n) => !isContainerKind(n.kind) && n.kind !== "note" && !n.codeFile && moduleForNode(n.id) === module,
-      );
+    const target = module
+      ? (g.nodes.find(
+          (n) => n.codeModule === module && !isContainerKind(n.kind) && n.kind !== "note",
+        ) ??
+        g.nodes.find(
+          (n) =>
+            !isContainerKind(n.kind) && n.kind !== "note" && !n.codeFile && moduleForNode(n.id) === module,
+        ))
+      : undefined;
     if (!target) {
-      onUnresolvedExpand?.(module, file);
+      // Adding the missing module node needs the code map — a request that
+      // arrives before the summary waits (nonce unconsumed, deps re-fire).
+      if (!codeSummary) return;
+      expandNonce.current = expandRequest.nonce;
+      const info = codeSummary.modules.find((m) => m.path === module);
+      if (!info) return;
+      let bottom = 0;
+      for (const n of g.nodes) {
+        if (n.parentId) continue;
+        bottom = Math.max(bottom, n.position.y + (n.size?.height ?? 120));
+      }
+      const { graph: next, node } = opAddNode(
+        g,
+        archKindForCodeModule(info),
+        info.name,
+        { x: 0, y: bottom + 80 },
+        null,
+      );
+      commit(adoptIntoActiveFacet(updateNode(next, node.id, { codeModule: module }), node.id));
+      setCodeExpanded((prev) => new Map(prev).set(node.id, module));
+      if (file) setExpandedFiles((prev) => (prev.has(file) ? prev : new Set(prev).add(file)));
+      scheduleFocus(node.id);
       return;
     }
+    expandNonce.current = expandRequest.nonce;
     setCodeExpanded((prev) => new Map(prev).set(target.id, module));
     if (file) setExpandedFiles((prev) => (prev.has(file) ? prev : new Set(prev).add(file)));
     scheduleFocus(target.id);
-  }, [expandRequest, moduleForNode, onUnresolvedExpand, scheduleFocus]);
+  }, [expandRequest, moduleForNode, codeSummary, commit, adoptIntoActiveFacet, scheduleFocus]);
 
   /* ---------------- drag / drop ---------------- */
 
@@ -1221,6 +1260,101 @@ function CanvasInner({
     },
     [addNodeAt, screenToFlowPosition],
   );
+
+  /* ---------- explicit detail ladder (unified from the code map) ---------- */
+
+  // Deep-linkable, same `lod` param the code map used: packages → modules → members.
+  const lodLevelParam = useNav((l) => l.architect?.lod ?? null);
+  const lodLevel: CodeLodLevel =
+    lodLevelParam && CANVAS_LOD_LEVELS.includes(lodLevelParam) ? lodLevelParam : "packages";
+  const [memberCount, setMemberCount] = useState<number | null>(null);
+
+  /** One discrete stop re-poses the whole canvas; per-node expand/collapse still works on top. */
+  const applyLodLevel = useCallback(
+    async (level: CodeLodLevel) => {
+      // An explicit stop overrides the zoom-driven engine's bookkeeping.
+      autoExpandedNodes.current.clear();
+      autoExpandedFiles.current.clear();
+      lodSuppressedNodes.current.clear();
+      lodSuppressedFiles.current.clear();
+      if (level === "repos" || level === "packages") {
+        setCodeExpanded(new Map());
+        setExpandedFiles(new Set());
+        setOpenCode(new Set());
+        return;
+      }
+      const adds = new Map<string, string>();
+      for (const n of graphRef.current.nodes) {
+        if (isContainerKind(n.kind) || n.kind === "note" || n.codeFile) continue;
+        const module = moduleForNode(n.id);
+        if (module) adds.set(n.id, module);
+      }
+      setCodeExpanded(adds);
+      if (level === "members") {
+        try {
+          const res = await client.request("codemap.details", {});
+          setModuleDetails((m) => {
+            const next = new Map(m);
+            for (const d of res.modules) next.set(d.module.path, { gen: generation, detail: d });
+            return next;
+          });
+          setFileDetails((m) => {
+            const next = new Map(m);
+            for (const f of res.files) next.set(f.path, { gen: generation, detail: f });
+            return next;
+          });
+          setMemberCount(res.files.reduce((n, f) => n + (f.symbols ?? f.exports).length, 0));
+          setExpandedFiles(new Set(res.files.map((f) => f.path)));
+        } catch {
+          // Analyzer unavailable — stay at module detail.
+        }
+      } else {
+        setExpandedFiles(new Set());
+        setOpenCode(new Set());
+      }
+    },
+    [client, generation, moduleForNode],
+  );
+
+  const setLodLevel = useCallback(
+    (level: CodeLodLevel) => {
+      nav({ architect: { lod: level } });
+      void applyLodLevel(level);
+    },
+    [nav, applyLodLevel],
+  );
+
+  // A deep-linked ladder stop applies once the code map is in.
+  const lodLevelInit = useRef(false);
+  useEffect(() => {
+    if (lodLevelInit.current || !codeSummary) return;
+    lodLevelInit.current = true;
+    if (lodLevel !== "packages") void applyLodLevel(lodLevel);
+  }, [codeSummary, lodLevel, applyLodLevel]);
+
+  // Keys 1–3 jump the ladder (ignored while typing).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      const i = ["1", "2", "3"].indexOf(e.key);
+      if (i !== -1 && CANVAS_LOD_LEVELS[i]) setLodLevel(CANVAS_LOD_LEVELS[i]!);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [setLodLevel]);
+
+  // Entity counts per ladder stop, for the slider readout.
+  const lodCounts = useMemo(() => {
+    if (!codeSummary) return undefined;
+    const counts: Partial<Record<CodeLodLevel, number>> = {
+      packages: codeSummary.modules.filter((m) => m.fileCount > 0).length,
+      modules: codeSummary.fileTotal,
+    };
+    if (memberCount != null) counts.members = memberCount;
+    return counts;
+  }, [codeSummary, memberCount]);
 
   /* ------------- dynamic level of detail: zoom in expands, zoom out collapses ------------- */
 
@@ -1638,10 +1772,10 @@ function CanvasInner({
         { type: "separator" },
         {
           type: "item",
-          label: "Open full code map",
+          label: "Workspaces map",
           icon: FolderGit2,
-          disabled: !onOpenFullMap,
-          onSelect: () => onOpenFullMap?.(),
+          disabled: !onOpenWorkspacesMap,
+          onSelect: () => onOpenWorkspacesMap?.(),
         },
       ];
     }
@@ -1771,13 +1905,6 @@ function CanvasInner({
         },
         {
           type: "item",
-          label: "Open in code map",
-          icon: FolderGit2,
-          disabled: !ref || !onOpenFullMap,
-          onSelect: () => ref && onOpenFullMap?.({ module: ref.module, file: ref.file }),
-        },
-        {
-          type: "item",
           label: "Open in editor",
           icon: ExternalLink,
           disabled: !editorFile,
@@ -1870,13 +1997,6 @@ function CanvasInner({
         },
         {
           type: "item",
-          label: "Open in code map",
-          icon: FolderGit2,
-          disabled: !onOpenFullMap,
-          onSelect: () => onOpenFullMap?.({ module: d.module, file: d.path }),
-        },
-        {
-          type: "item",
           label: "Copy path",
           icon: Copy,
           hint: d.path.split("/").pop(),
@@ -1924,13 +2044,6 @@ function CanvasInner({
           label: "Open file in editor",
           icon: ExternalLink,
           onSelect: () => requestOpenFile(d.file),
-        },
-        {
-          type: "item",
-          label: "Open in code map",
-          icon: FolderGit2,
-          disabled: !onOpenFullMap,
-          onSelect: () => onOpenFullMap?.({ module: d.module, file: d.file }),
         },
         {
           type: "item",
@@ -2022,7 +2135,7 @@ function CanvasInner({
     toggleNodeCode,
     toggleFile,
     toggleCode,
-    onOpenFullMap,
+    onOpenWorkspacesMap,
     onStartJourney,
     onRecordMove,
     onRecordFileMove,
@@ -2235,11 +2348,16 @@ function CanvasInner({
             onRename={(name) => commit({ ...graphRef.current, name })}
             lodOn={lodOn}
             onToggleLod={toggleLod}
+            lodLevel={lodLevel}
+            onLodLevelChange={setLodLevel}
+            lodCounts={lodCounts}
             overlayOn={overlayOn}
             onToggleOverlay={onToggleOverlay}
             showDuplicates={showDuplicates}
             onToggleDuplicates={onToggleDuplicates}
-            onOpenFullMap={onOpenFullMap ? () => onOpenFullMap() : undefined}
+            showFindings={showFindings}
+            onToggleFindings={onToggleFindings}
+            onOpenWorkspacesMap={onOpenWorkspacesMap}
           />
         </Panel>
         <Panel position="center-left">

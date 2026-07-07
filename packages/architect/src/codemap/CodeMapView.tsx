@@ -135,6 +135,11 @@ export interface CodeMapViewProps {
   initialFile?: string;
   /** Where the user came from (e.g. an architecture diagram) — rendered as a leading breadcrumb. */
   origin?: { label: string; onExit: () => void };
+  /**
+   * Clicking a workspace on the cross-workspace level hands off to the caller
+   * (the unified canvas) instead of drilling into the standalone workspace map.
+   */
+  onEnterWorkspace?: (ws: string) => void;
   /** "Start journey here…" on a symbol — opens the journey dialog in Diagrams. */
   onStartJourney?: (seed: { file: string; symbol: string }) => void;
   /** "Show on the architecture diagram" — expands the node linked to the module. */
@@ -168,6 +173,7 @@ function CodeMapInner({
   initialModule,
   initialFile,
   origin,
+  onEnterWorkspace,
   onStartJourney,
   onRevealInDiagram,
   activeDraftPath,
@@ -921,8 +927,11 @@ function CodeMapInner({
   );
 
   const onCrossNodeClick = useCallback(
-    (_evt: unknown, node: CodeRfNode) => setLevel({ kind: "workspace", ws: node.id }),
-    [setLevel],
+    (_evt: unknown, node: CodeRfNode) => {
+      if (onEnterWorkspace) onEnterWorkspace(node.id);
+      else setLevel({ kind: "workspace", ws: node.id });
+    },
+    [setLevel, onEnterWorkspace],
   );
   const onCrossEdgeClick = useCallback(
     (_evt: unknown, edge: RfEdge) => {

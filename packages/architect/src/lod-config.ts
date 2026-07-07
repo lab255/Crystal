@@ -1,5 +1,6 @@
 import { createStore } from "zustand/vanilla";
 import { useStore } from "zustand";
+import type { CodeLodLevel } from "@crystal/core";
 
 /**
  * Level-of-detail is governed by one legibility knob: the minimum on-screen
@@ -19,6 +20,12 @@ import { useStore } from "zustand";
 
 export const LOD_MIN_TEXT_DEFAULT = 6.5;
 export const LOD_MIN_TEXT_RANGE = { min: 4, max: 12 } as const;
+
+/**
+ * The explicit detail-ladder stops offered on the unified canvas. "repos"
+ * doesn't apply — an architecture diagram is already scoped to one workspace.
+ */
+export const CANVAS_LOD_LEVELS: readonly CodeLodLevel[] = ["packages", "modules", "members"];
 
 /** Detail expands once its words would render this far above the threshold. */
 const COMFORT = 1.6;

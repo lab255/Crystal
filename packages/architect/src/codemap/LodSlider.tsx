@@ -1,4 +1,4 @@
-import { CODE_LOD_LEVELS, lodIndex, type CodeLodLevel } from "@crystal/core";
+import { CODE_LOD_LEVELS, type CodeLodLevel } from "@crystal/core";
 import { Tooltip, cn } from "@crystal/ui";
 
 /**
@@ -18,16 +18,19 @@ export function LodSlider({
   level,
   onChange,
   counts,
+  levels = CODE_LOD_LEVELS,
 }: {
   level: CodeLodLevel;
   onChange: (level: CodeLodLevel) => void;
   /** Optional per-level entity counts, shown next to the stop labels. */
   counts?: Partial<Record<CodeLodLevel, number>>;
+  /** Which ladder stops to expose (the unified canvas skips "repos"). */
+  levels?: readonly CodeLodLevel[];
 }) {
-  const idx = lodIndex(level);
+  const idx = Math.max(0, levels.indexOf(level));
   return (
     <div className="flex items-center gap-2" data-testid="lod-slider">
-      <Tooltip content="Level of detail — how much of the repos → packages → modules → members ladder is exposed (keys 1–4)">
+      <Tooltip content={`Level of detail — how much of the ${levels.map((l) => LEVEL_META[l].label.toLowerCase()).join(" → ")} ladder is exposed (keys 1–${levels.length})`}>
         <span className="text-[10px] font-semibold uppercase tracking-wider text-ink-faint">
           detail
         </span>
@@ -35,10 +38,10 @@ export function LodSlider({
       <input
         type="range"
         min={0}
-        max={CODE_LOD_LEVELS.length - 1}
+        max={levels.length - 1}
         step={1}
         value={idx}
-        onChange={(e) => onChange(CODE_LOD_LEVELS[Number(e.target.value)] ?? "packages")}
+        onChange={(e) => onChange(levels[Number(e.target.value)] ?? levels[0]!)}
         aria-label="Level of detail"
         aria-valuetext={LEVEL_META[level].label}
         className="h-1 w-24 cursor-pointer appearance-none rounded-full bg-surface-3 accent-crystal-400"
@@ -54,7 +57,7 @@ export function LodSlider({
         ) : null}
       </div>
       <div className="flex items-center gap-0.5">
-        {CODE_LOD_LEVELS.map((l, i) => (
+        {levels.map((l, i) => (
           <button
             key={l}
             type="button"

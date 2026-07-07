@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Flame, FolderGit2, RotateCcw, TableProperties } from "lucide-react";
+import { Flame, FolderGit2, RotateCcw, TableProperties, ZoomIn } from "lucide-react";
 import {
   TRACES_DIR,
   buildFlameTree,
@@ -252,11 +252,20 @@ interface FrameRect {
   row: number;
 }
 
-/** Right-click state shared by the flamegraph and the call-profile table. */
+/** Right-click state of the call-profile table. */
 interface HlMenuState {
   x: number;
   y: number;
   ref: HighlightRef;
+  step?: CodeTraceStep;
+}
+
+/** Right-click state of a flamegraph frame — zoom works even on ref-less frames. */
+interface FrameMenuState {
+  x: number;
+  y: number;
+  node: FlameNode;
+  ref: HighlightRef | null;
   step?: CodeTraceStep;
 }
 
@@ -271,7 +280,7 @@ function FlameGraph({
   unit: string;
   trace: CodeTrace;
   onOpenFrame?: (step: CodeTraceStep) => void;
-  /** Single click — zooms the flamegraph AND points at the component. */
+  /** Single click — highlights the member and points at its component (no zoom). */
   onSelectFrame?: (step: CodeTraceStep) => void;
 }) {
   const [focus, setFocus] = useState<FlameNode>(root);
@@ -280,7 +289,7 @@ function FlameGraph({
   const { hover, hoverSource, pinned, setHover, pin } = useViewHighlight("profile");
   // Don't ring our own frames from our own hover — other views handle that.
   const crossHover = hoverSource === "profile" ? null : hover;
-  const [menu, setMenu] = useState<HlMenuState | null>(null);
+  const [menu, setMenu] = useState<FrameMenuState | null>(null);
 
   const stepByKey = useMemo(
     () => new Map(trace.steps.map((s) => [`${s.ref.file}#${s.ref.symbol}`, s])),
@@ -341,23 +350,19 @@ function FlameGraph({
               key={`${key}:${r.row}:${r.left.toFixed(6)}`}
               type="button"
               onClick={() => {
-                setFocus(r.node);
+                // Click highlights the member — zoom lives in the context menu.
                 if (el) pin(el);
                 if (step) onSelectFrame?.(step);
               }}
               onDoubleClick={() => step && onOpenFrame?.(step)}
               onMouseEnter={el ? () => setHover(el) : undefined}
               onMouseLeave={el ? () => setHover(null) : undefined}
-              onContextMenu={
-                el
-                  ? (e) => {
-                      e.preventDefault();
-                      setMenu({ x: e.clientX, y: e.clientY, ref: el, step });
-                    }
-                  : undefined
-              }
+              onContextMenu={(e) => {
+                e.preventDefault();
+                setMenu({ x: e.clientX, y: e.clientY, node: r.node, ref: el, step });
+              }}
               {...(el ? highlightAttrs(el) : undefined)}
-              title={`${r.node.name} — ${fmt(r.node.total)} total (${pct}%), ${fmt(r.node.self)} self${r.node.calls != null ? `, ×${r.node.calls} calls` : ""}${r.node.file ? `\n${r.node.file}` : ""}${step && onSelectFrame ? "\nClick: show on the diagram" : ""}${step && onOpenFrame ? "\nDouble-click: open in code map" : ""}`}
+              title={`${r.node.name} — ${fmt(r.node.total)} total (${pct}%), ${fmt(r.node.self)} self${r.node.calls != null ? `, ×${r.node.calls} calls` : ""}${r.node.file ? `\n${r.node.file}` : ""}${step && onSelectFrame ? "\nClick: highlight on the diagram" : ""}${step && onOpenFrame ? "\nDouble-click: zoom into the code" : ""}\nRight-click: zoom & more`}
               className={cn(
                 "absolute overflow-hidden whitespace-nowrap rounded-[3px] border border-black/20 px-1 text-left font-mono text-[10px] leading-[18px] text-black/75 transition-[filter] hover:brightness-110",
                 el && hlClass(matchHighlight(crossHover, el), matchHighlight(pinned, el)),
@@ -379,14 +384,38 @@ function FlameGraph({
         <ContextMenu
           x={menu.x}
           y={menu.y}
-          entries={crossViewEntries(menu.ref, {
-            pin,
-            pinned,
-            revealOnDiagram:
-              menu.step && onSelectFrame ? () => onSelectFrame(menu.step!) : undefined,
-            openInCodeMap: menu.step && onOpenFrame ? () => onOpenFrame(menu.step!) : undefined,
-            openFile: (f) => requestOpenFile(f),
-          })}
+          entries={[
+            {
+              type: "item",
+              label: "Zoom into frame",
+              icon: ZoomIn,
+              disabled: menu.node === focus,
+              onSelect: () => setFocus(menu.node),
+            },
+            ...(focus !== root
+              ? [
+                  {
+                    type: "item" as const,
+                    label: "Reset zoom",
+                    icon: RotateCcw,
+                    onSelect: () => setFocus(root),
+                  },
+                ]
+              : []),
+            ...(menu.ref
+              ? [
+                  { type: "separator" as const },
+                  ...crossViewEntries(menu.ref, {
+                    pin,
+                    pinned,
+                    revealOnDiagram:
+                      menu.step && onSelectFrame ? () => onSelectFrame(menu.step!) : undefined,
+                    zoomIntoCode: menu.step && onOpenFrame ? () => onOpenFrame(menu.step!) : undefined,
+                    openFile: (f) => requestOpenFile(f),
+                  }),
+                ]
+              : []),
+          ]}
           onClose={() => setMenu(null)}
         />
       ) : null}
@@ -552,7 +581,7 @@ function CallProfile({
                 </td>
                 <td className="w-6 py-0.5">
                   {onOpenStep ? (
-                    <Tooltip content="Open in code map">
+                    <Tooltip content="Zoom into the code">
                       <button
                         type="button"
                         onClick={(e) => {
@@ -560,7 +589,7 @@ function CallProfile({
                           onOpenStep(step);
                         }}
                         className="text-ink-faint opacity-0 hover:text-ink group-hover:opacity-100"
-                        aria-label={`Open ${step.ref.symbol} in code map`}
+                        aria-label={`Zoom into ${step.ref.symbol}`}
                       >
                         <FolderGit2 className="h-3 w-3" />
                       </button>
@@ -587,7 +616,7 @@ function CallProfile({
             pinned,
             revealOnDiagram:
               menu.step && onSelectStep ? () => onSelectStep(menu.step!) : undefined,
-            openInCodeMap: menu.step && onOpenStep ? () => onOpenStep(menu.step!) : undefined,
+            zoomIntoCode: menu.step && onOpenStep ? () => onOpenStep(menu.step!) : undefined,
             openFile: (f) => requestOpenFile(f),
           })}
           onClose={() => setMenu(null)}

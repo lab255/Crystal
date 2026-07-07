@@ -371,7 +371,7 @@ export function FlowStepsPanel({
   flow: FlowProjection | null;
   error: string | null;
   onClose: () => void;
-  /** "Open in code map" on one trace step. */
+  /** "Zoom into code" on one trace step — expands it on the unified canvas. */
   onOpenStep?: (step: CodeTrace["steps"][number]) => void;
   /** Row click — point at the step's component on the canvas. */
   onSelectStep?: (step: CodeTrace["steps"][number]) => void;
@@ -469,12 +469,12 @@ export function FlowStepsPanel({
                   </span>
                 </button>
                 {onOpenStep ? (
-                  <Tooltip content="Open in code map">
+                  <Tooltip content="Zoom into the code">
                     <button
                       type="button"
                       onClick={() => onOpenStep(step)}
                       className="shrink-0 text-ink-faint opacity-0 hover:text-ink group-hover:opacity-100"
-                      aria-label={`Open ${step.ref.symbol} in code map`}
+                      aria-label={`Zoom into ${step.ref.symbol}`}
                     >
                       <FolderGit2 className="h-3 w-3" />
                     </button>
@@ -501,7 +501,7 @@ export function FlowStepsPanel({
             pin,
             pinned,
             revealOnDiagram: onSelectStep ? () => onSelectStep(menu.step) : undefined,
-            openInCodeMap: onOpenStep ? () => onOpenStep(menu.step) : undefined,
+            zoomIntoCode: onOpenStep ? () => onOpenStep(menu.step) : undefined,
             openFile: requestOpenFile,
           })}
           onClose={() => setMenu(null)}

@@ -65,8 +65,9 @@ import {
   cn,
 } from "@crystal/ui";
 import { ArchitectCanvas } from "./ArchitectCanvas.js";
-import { CodeMapView } from "./codemap/CodeMapView.js";
+import { CodeMapView, requestOpenFile } from "./codemap/CodeMapView.js";
 import { DuplicatesPanel } from "./codemap/DuplicatesPanel.js";
+import { ReviewPanel } from "./codemap/ReviewPanel.js";
 import type { MoveLikeIntent } from "./codemap/map-model.js";
 import { projectTrace, stepKeyOf } from "./dataflow.js";
 import { InfraView } from "./InfraView.js";
@@ -114,6 +115,7 @@ export function ArchitectMode() {
   );
 
   const activeWs = useWorkspaces((s) => s.activeId);
+  const setActiveWs = useWorkspaces((s) => s.setActive);
 
   /** Drilling stays in the unified canvas: expand the node linked to the module. */
   const expandCode = useCallback((module: string, file?: string) => {
@@ -121,24 +123,21 @@ export function ArchitectMode() {
     setExpandRequest({ module, file, nonce: ++expandNonce.current });
   }, [setView]);
 
-  /** The standalone map remains for cross-workspace browsing and unmapped modules. */
-  const openFullMap = useCallback(
-    (at?: { module: string; file?: string }) => {
-      nav({
-        architect: {
-          view: "codemap",
-          codemap: activeWs
-            ? at?.file
-              ? { kind: "file", ws: activeWs, path: at.file }
-              : at
-                ? { kind: "module", ws: activeWs, path: at.module }
-                : { kind: "workspace", ws: activeWs }
-            : { kind: "all" },
-        },
-      });
-    },
-    [nav, activeWs],
+  /** The standalone map remains only for the cross-workspace level. */
+  const openWorkspacesMap = useCallback(
+    () => nav({ architect: { view: "codemap", codemap: { kind: "all" } } }),
+    [nav],
   );
+
+  // The workspace-level map is unified into the canvas — old code-map links
+  // (workspace/module/file levels) land on the diagram instead.
+  const codemapLevel = useNav((l) => l.architect?.codemap ?? null);
+  useEffect(() => {
+    if (view !== "codemap" || !codemapLevel || codemapLevel.kind === "all") return;
+    if (codemapLevel.kind === "module") expandCode(codemapLevel.path);
+    else if (codemapLevel.kind === "file") expandCode("", codemapLevel.path);
+    else setView("diagrams");
+  }, [view, codemapLevel, expandCode, setView]);
 
   const startJourneyFromCode = useCallback(
     (seed: JourneySeed) => {
@@ -175,9 +174,9 @@ export function ArchitectMode() {
             </>,
           )}
           {tab("infra", <Globe2 className="h-3.5 w-3.5" />, "Infrastructure")}
-          {/* Reached from the canvas (full map / cross-workspace) — shown only while open. */}
+          {/* Cross-workspace map, reached from the canvas — shown only while open. */}
           {view === "codemap"
-            ? tab("codemap", <FolderGit2 className="h-3.5 w-3.5" />, "Code map")
+            ? tab("codemap", <Layers className="h-3.5 w-3.5" />, "Workspaces")
             : null}
         </div>
       </header>
@@ -185,6 +184,10 @@ export function ArchitectMode() {
         {view === "codemap" ? (
           <CodeMapView
             origin={{ label: "Architecture", onExit: () => setView("diagrams") }}
+            onEnterWorkspace={(ws) => {
+              if (ws !== activeWs) setActiveWs(ws);
+              setView("diagrams");
+            }}
             onStartJourney={startJourneyFromCode}
             onRevealInDiagram={expandCode}
             activeDraftPath={draftPath}
@@ -195,7 +198,7 @@ export function ArchitectMode() {
             variant={view}
             expandRequest={expandRequest}
             onExpandCode={expandCode}
-            onOpenFullMap={openFullMap}
+            onOpenWorkspacesMap={openWorkspacesMap}
             journeySeed={journeySeed}
             onStartJourney={startJourneyFromCode}
             onJourneySeedConsumed={() => setJourneySeed(null)}
@@ -212,7 +215,7 @@ function DiagramsView({
   variant,
   expandRequest,
   onExpandCode,
-  onOpenFullMap,
+  onOpenWorkspacesMap,
   journeySeed,
   onStartJourney,
   onJourneySeedConsumed,
@@ -222,7 +225,7 @@ function DiagramsView({
   variant: "diagrams" | "infra";
   expandRequest: { module: string; file?: string; nonce: number } | null;
   onExpandCode: (module: string, file?: string) => void;
-  onOpenFullMap: (at?: { module: string; file?: string }) => void;
+  onOpenWorkspacesMap: () => void;
   journeySeed: JourneySeed | null;
   onStartJourney: (seed: JourneySeed) => void;
   onJourneySeedConsumed: () => void;
@@ -437,6 +440,11 @@ function DiagramsView({
   const showDuplicates = useNav((l) => l.architect?.duplicates) ?? false;
   const setShowDuplicates = useCallback(
     (on: boolean) => nav({ architect: { duplicates: on } }),
+    [nav],
+  );
+  const showFindings = useNav((l) => l.architect?.findings) ?? false;
+  const setShowFindings = useCallback(
+    (on: boolean) => nav({ architect: { findings: on } }),
     [nav],
   );
 
@@ -834,12 +842,13 @@ function DiagramsView({
                   onStartJourney={onStartJourney}
                   onRecordMove={(payload, target) => void recordMove(payload, target)}
                   onRecordFileMove={(fromFile, toModule) => void recordFileMove(fromFile, toModule)}
-                  onOpenFullMap={onOpenFullMap}
+                  onOpenWorkspacesMap={onOpenWorkspacesMap}
                   expandRequest={expandRequest}
                   highlightRequest={highlightRequest}
-                  onUnresolvedExpand={(module, file) => onOpenFullMap({ module, file })}
                   showDuplicates={showDuplicates}
                   onToggleDuplicates={setShowDuplicates}
+                  showFindings={showFindings}
+                  onToggleFindings={setShowFindings}
                 />
               )}
               {activeDraft ? (
@@ -967,6 +976,17 @@ function DiagramsView({
               hasActiveDraft={activeDraft != null}
               onHoist={(intent) => void recordHoist(intent)}
               onClose={() => setShowDuplicates(false)}
+            />
+          </Pane>
+        ) : null}
+
+        {variant === "diagrams" && showFindings ? (
+          <Pane defaultSize={384} minSize={260} maxSize={640}>
+            <ReviewPanel
+              ws={activeWs ?? undefined}
+              onHoist={(intent) => void recordHoist(intent)}
+              onOpenFile={(file, line) => requestOpenFile(file, line)}
+              onClose={() => setShowFindings(false)}
             />
           </Pane>
         ) : null}

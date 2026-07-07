@@ -100,8 +100,8 @@ export interface CrossViewActions {
   graph?: ArchitectureGraph | null;
   /** Pan/flash the diagram to a node (canvas) or request it (panels). */
   revealOnDiagram?: (ref: HighlightRef) => void;
-  /** Drill the code map to the ref's module/file. */
-  openInCodeMap?: (ref: HighlightRef) => void;
+  /** Expand the ref's module/file into live code on the unified canvas. */
+  zoomIntoCode?: (ref: HighlightRef) => void;
   /** Open the file in the editor mode. */
   openFile?: (file: string) => void;
   /** Seed a journey at this symbol. */
@@ -147,11 +147,11 @@ export function crossViewEntries(ref: HighlightRef, actions: CrossViewActions): 
       onSelect: () => reveal(ref),
     });
   }
-  if (actions.openInCodeMap && (ref.module || ref.file)) {
-    const open = actions.openInCodeMap;
+  if (actions.zoomIntoCode && (ref.module || ref.file)) {
+    const open = actions.zoomIntoCode;
     entries.push({
       type: "item",
-      label: "Open in code map",
+      label: "Zoom into code",
       icon: MapIcon,
       hint: ref.file ?? ref.module,
       onSelect: () => open(ref),

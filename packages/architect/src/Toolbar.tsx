@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
-import { Copy, FolderGit2, Layers, LayoutGrid, Maximize2, Radar, Rows3, X, ZoomIn } from "lucide-react";
-import type { ArchEdgeKind, ArchitectureGraph } from "@crystal/core";
+import { ClipboardCheck, Copy, Layers, LayoutGrid, Maximize2, Network, Radar, Rows3, X, ZoomIn } from "lucide-react";
+import type { ArchEdgeKind, ArchitectureGraph, CodeLodLevel } from "@crystal/core";
 import { Button, Tooltip, cn } from "@crystal/ui";
 import { EDGE_KIND_STYLE } from "./model.js";
-import { LOD_MIN_TEXT_RANGE, lodConfigStore, useLodConfig } from "./lod-config.js";
+import { LodSlider } from "./codemap/LodSlider.js";
+import { CANVAS_LOD_LEVELS, LOD_MIN_TEXT_RANGE, lodConfigStore, useLodConfig } from "./lod-config.js";
 
 export function Toolbar({
   graph,
@@ -16,11 +17,16 @@ export function Toolbar({
   onRename,
   lodOn,
   onToggleLod,
+  lodLevel,
+  onLodLevelChange,
+  lodCounts,
   overlayOn,
   onToggleOverlay,
   showDuplicates,
   onToggleDuplicates,
-  onOpenFullMap,
+  showFindings,
+  onToggleFindings,
+  onOpenWorkspacesMap,
 }: {
   graph: ArchitectureGraph;
   /** Active facet lens, when one filters the canvas. */
@@ -33,11 +39,18 @@ export function Toolbar({
   onRename: (name: string) => void;
   lodOn?: boolean;
   onToggleLod?: (on: boolean) => void;
+  /** Explicit detail ladder (packages → modules → members) over the whole canvas. */
+  lodLevel?: CodeLodLevel;
+  onLodLevelChange?: (level: CodeLodLevel) => void;
+  lodCounts?: Partial<Record<CodeLodLevel, number>>;
   overlayOn?: boolean;
   onToggleOverlay?: (on: boolean) => void;
   showDuplicates?: boolean;
   onToggleDuplicates?: (on: boolean) => void;
-  onOpenFullMap?: () => void;
+  showFindings?: boolean;
+  onToggleFindings?: (on: boolean) => void;
+  /** Open the cross-workspace map (all open workspaces and their imports). */
+  onOpenWorkspacesMap?: () => void;
 }) {
   const [name, setName] = useState(graph.name);
   useEffect(() => setName(graph.name), [graph.id, graph.name]);
@@ -133,6 +146,17 @@ export function Toolbar({
           <Maximize2 className="h-3.5 w-3.5" />
         </Button>
       </Tooltip>
+      {lodLevel && onLodLevelChange ? (
+        <>
+          <div className="h-4 w-px bg-edge" />
+          <LodSlider
+            level={lodLevel}
+            onChange={onLodLevelChange}
+            counts={lodCounts}
+            levels={CANVAS_LOD_LEVELS}
+          />
+        </>
+      ) : null}
       {onToggleLod ? (
         <>
           <Tooltip content="Dynamic detail — nodes expand into their code as you zoom in, and fold up as you zoom out">
@@ -146,7 +170,7 @@ export function Toolbar({
               )}
             >
               <ZoomIn className="h-3.5 w-3.5" />
-              detail
+              auto
             </button>
           </Tooltip>
           {lodOn ? <LegibilitySlider /> : null}
@@ -191,10 +215,28 @@ export function Toolbar({
           </button>
         </Tooltip>
       ) : null}
-      {onOpenFullMap ? (
-        <Tooltip content="Full code map — every module and workspace, beyond this diagram">
-          <Button variant="ghost" size="icon-sm" onClick={onOpenFullMap} aria-label="Open full code map">
-            <FolderGit2 className="h-3.5 w-3.5" />
+      {onToggleFindings ? (
+        <Tooltip content="Review sweep — dead files, unused exports, duplicates, boundary leaks">
+          <button
+            type="button"
+            aria-pressed={showFindings}
+            onClick={() => onToggleFindings(!showFindings)}
+            className={cn(
+              "flex h-6 items-center gap-1.5 rounded-md px-1.5 text-[11px] transition-colors",
+              showFindings
+                ? "bg-crystal-500/15 text-crystal-300"
+                : "text-ink-faint hover:text-ink-muted",
+            )}
+          >
+            <ClipboardCheck className="h-3.5 w-3.5" />
+            review
+          </button>
+        </Tooltip>
+      ) : null}
+      {onOpenWorkspacesMap ? (
+        <Tooltip content="Workspaces map — all open workspaces and their cross-imports">
+          <Button variant="ghost" size="icon-sm" onClick={onOpenWorkspacesMap} aria-label="Open workspaces map">
+            <Network className="h-3.5 w-3.5" />
           </Button>
         </Tooltip>
       ) : null}
