@@ -18,7 +18,7 @@ import { CODE_LOD_LEVELS, type CodeLodLevel } from "./codemap.js";
 
 export type CrystalModeId = "projects" | "architect" | "orchestrate" | "code";
 export type ArchitectViewId = "diagrams" | "infra" | "codemap";
-export type OrchestratorTabId = "board" | "runs";
+export type OrchestratorTabId = "board" | "runs" | "agents";
 
 /** Mirrors the code map's drill levels (all workspaces → workspace → module → file). */
 export type CodeMapLevelLink =
@@ -146,7 +146,7 @@ export function formatDeepLink(link: DeepLink): string {
     if (tab === "board" && o.task) add("task", o.task);
     if (tab === "board" && o.group) add("group", o.group);
     if (tab === "board" && o.sort) add("sort", o.sort);
-    if (tab === "runs" && o.run) add("run", o.run);
+    if ((tab === "runs" || tab === "agents") && o.run) add("run", o.run);
   } else if (mode === "code") {
     if (link.code?.file) add("file", link.code.file);
   }
@@ -203,7 +203,7 @@ export function parseDeepLink(hash: string): DeepLink {
     link.mode = "orchestrate";
     const o: OrchestrateLink = {};
     const tab = segments[1];
-    if (tab === "board" || tab === "runs") o.tab = tab;
+    if (tab === "board" || tab === "runs" || tab === "agents") o.tab = tab;
     const project = params.get("project");
     if (project) o.project = project;
     const task = params.get("task");

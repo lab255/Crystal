@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Bot, ChevronDown, KanbanSquare, ListTodo, Plus } from "lucide-react";
+import { Bot, ChevronDown, KanbanSquare, ListTodo, Plus, Sparkles } from "lucide-react";
 import type { OrchestratorTabId, Project } from "@crystal/core";
 import { useAgents, useNav, useNavUpdate, useWorkspace } from "@crystal/client";
 import {
@@ -15,13 +15,13 @@ import {
   DropdownMenuTrigger,
   EmptyState,
   Input,
-  StatusDot,
   cn,
 } from "@crystal/ui";
+import { AgentsTab } from "./AgentsTab.js";
 import { Board } from "./Board.js";
+import { RunList } from "./RunList.js";
 import { RunView } from "./RunView.js";
 import { TaskDetail } from "./TaskDetail.js";
-import { formatCost } from "./prompt.js";
 
 type OrchestratorTab = OrchestratorTabId;
 
@@ -117,6 +117,9 @@ export function OrchestratorMode() {
               </span>
             ) : null}
           </TabButton>
+          <TabButton active={tab === "agents"} onClick={() => setTab("agents")}>
+            <Sparkles className="h-3.5 w-3.5" /> Agents
+          </TabButton>
         </div>
       </header>
 
@@ -160,44 +163,16 @@ export function OrchestratorMode() {
               with your code.
             </EmptyState>
           )
+        ) : tab === "agents" ? (
+          <AgentsTab selectedRunId={runId} onSelectRun={setRunId} />
         ) : (
           <div className="flex h-full min-h-0">
-            <aside className="flex w-72 shrink-0 flex-col border-r border-edge bg-surface-1">
-              <div className="px-3 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-ink-faint">
-                Agent runs
-              </div>
-              <div className="min-h-0 flex-1 space-y-1 overflow-y-auto px-1.5 pb-2">
-                {runs.length === 0 ? (
-                  <div className="px-2 py-6 text-center text-xs text-ink-faint">
-                    No runs yet. Start one from a task on the board.
-                  </div>
-                ) : (
-                  runs.map((run) => (
-                    <button
-                      key={run.id}
-                      type="button"
-                      onClick={() => setRunId(run.id)}
-                      className={cn(
-                        "flex w-full items-start gap-2 rounded-lg px-2 py-2 text-left transition-colors",
-                        selectedRun?.id === run.id
-                          ? "bg-crystal-500/15"
-                          : "hover:bg-surface-2",
-                      )}
-                    >
-                      <StatusDot status={run.status} className="mt-1" />
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-xs text-ink">
-                          {run.prompt.split("\n")[0]}
-                        </span>
-                        <span className="mt-0.5 block text-[10px] text-ink-faint">
-                          {new Date(run.createdAt).toLocaleString()} · {formatCost(run.costUsd)}
-                        </span>
-                      </span>
-                    </button>
-                  ))
-                )}
-              </div>
-            </aside>
+            <RunList
+              runs={runs}
+              selectedRunId={runId}
+              onSelect={setRunId}
+              emptyHint="No runs yet. Start one from a task on the board."
+            />
             <main className="min-w-0 flex-1">
               {selectedRun ? (
                 <RunView run={selectedRun} />
