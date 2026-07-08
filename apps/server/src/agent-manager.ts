@@ -10,6 +10,7 @@ import {
   parseClaudeStreamLine,
   type AgentEvent,
   type AgentIsolation,
+  type AgentRole,
   type AgentRun,
   type RunEvent,
   type RunPurpose,
@@ -27,6 +28,10 @@ export interface AgentStartParams {
   isolation?: AgentIsolation;
   /** Agent profile attribution (model/skills are resolved by the caller). */
   agentId?: string | null;
+  /** Manager run that dispatched this worker (sets role to "worker"). */
+  parentRunId?: string | null;
+  /** Place in the manager/worker hierarchy (unset = standalone run). */
+  role?: AgentRole | null;
   purpose?: RunPurpose | null;
   tags?: string[];
   /** Claude model alias/id for `--model` (from the dispatched agent profile). */

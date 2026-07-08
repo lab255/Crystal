@@ -5,6 +5,7 @@ import {
   apiRatePerMin,
   createAgentRun,
   extractQuestions,
+  groupRunsByManager,
   parseClaudeStreamLine,
   rollupRunsUsage,
   usageTotalTokens,
@@ -226,5 +227,45 @@ describe("LineBuffer", () => {
     expect(buf.push(":3}")).toEqual([]);
     expect(buf.flush()).toEqual(['{"c":3}']);
     expect(buf.flush()).toEqual([]);
+  });
+});
+
+describe("createAgentRun roles", () => {
+  it("infers worker role from a parent run", () => {
+    const run = createAgentRun({ prompt: "do a slice", parentRunId: "run-manager" });
+    expect(run.parentRunId).toBe("run-manager");
+    expect(run.role).toBe("worker");
+  });
+
+  it("leaves standalone runs role-less and honors an explicit manager", () => {
+    expect(createAgentRun({ prompt: "solo" }).role).toBeNull();
+    expect(createAgentRun({ prompt: "coordinate", role: "manager" }).role).toBe("manager");
+  });
+});
+
+describe("groupRunsByManager", () => {
+  const run = (id: string, over: Partial<AgentRun> = {}): AgentRun =>
+    ({ ...createAgentRun({ prompt: id }), id, createdAt: `2026-01-01T00:00:0${id.at(-1)}Z`, ...over });
+
+  it("nests workers under their manager and keeps standalone runs flat", () => {
+    const manager = run("m1", { role: "manager" });
+    const w1 = run("w1", { parentRunId: "m1", role: "worker" });
+    const w2 = run("w2", { parentRunId: "m1", role: "worker" });
+    const solo = run("s3");
+    // Store hands runs back newest-first; workers arrive before their manager.
+    const nodes = groupRunsByManager([w2, w1, solo, manager]);
+
+    // Roots keep input order; workers are pulled out from the top level.
+    expect(nodes.map((n) => n.run.id)).toEqual(["s3", "m1"]);
+    const managerNode = nodes.find((n) => n.run.id === "m1")!;
+    expect(managerNode.workers.map((w) => w.id)).toEqual(["w1", "w2"]); // oldest-first
+  });
+
+  it("promotes orphaned workers to roots so nothing is hidden", () => {
+    const orphan = run("w9", { parentRunId: "gone", role: "worker" });
+    const nodes = groupRunsByManager([orphan]);
+    expect(nodes).toHaveLength(1);
+    expect(nodes[0]!.run.id).toBe("w9");
+    expect(nodes[0]!.workers).toEqual([]);
   });
 });

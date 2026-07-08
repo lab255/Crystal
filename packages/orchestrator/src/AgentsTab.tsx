@@ -123,6 +123,7 @@ function DispatchPanel({ onDispatched }: { onDispatched: (id: string) => void })
         cwd,
         repoId,
         isolation: isolate ? "worktree" : "none",
+        role: manager ? "manager" : null,
         purpose,
         tags: manager ? ["role:manager", `purpose:${purpose}`] : [`purpose:${purpose}`],
       });

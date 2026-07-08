@@ -1,5 +1,5 @@
 import { createStore, type StoreApi } from "zustand/vanilla";
-import type { AgentRun, RunEvent, RunPurpose } from "@crystal/core";
+import type { AgentRole, AgentRun, RunEvent, RunPurpose } from "@crystal/core";
 import type { BridgeClient } from "./bridge-client.js";
 
 export interface AgentStartInput {
@@ -12,6 +12,10 @@ export interface AgentStartInput {
   isolation?: "none" | "worktree";
   /** Agent profile to dispatch to (model + skills resolve server-side). */
   agentId?: string | null;
+  /** Manager run that dispatched this worker (sets role to "worker"). */
+  parentRunId?: string | null;
+  /** Place in the manager/worker hierarchy (unset = standalone run). */
+  role?: AgentRole | null;
   /** Attribution: why this run touches its task. */
   purpose?: RunPurpose | null;
   /** Dimensional tags stamped onto the run. */

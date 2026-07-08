@@ -25,6 +25,15 @@ export const AgentIsolationSchema = z.enum(["none", "worktree"]);
 export type AgentIsolation = z.infer<typeof AgentIsolationSchema>;
 
 /**
+ * A run's place in a manager/worker hierarchy. A "manager" run delegates by
+ * dispatching "worker" runs (each pointing back via `parentRunId`); unset means
+ * a standalone run that neither delegates nor was delegated.
+ */
+export const AGENT_ROLES = ["manager", "worker"] as const;
+export const AgentRoleSchema = z.enum(AGENT_ROLES);
+export type AgentRole = z.infer<typeof AgentRoleSchema>;
+
+/**
  * Why a run touched its task. Every kind of turn — implementation, code
  * review, security review, merging, CI gates, fixes, release — is attributed
  * to the owning task so cost rolls up across the task's whole lifecycle.
@@ -81,6 +90,10 @@ export const AgentRunSchema = z.object({
   prompt: z.string(),
   /** Agent profile that executed this run (see agent-profile.ts). */
   agentId: z.string().nullish(),
+  /** Manager run that dispatched this worker, if any (see AgentRole). */
+  parentRunId: z.string().nullish(),
+  /** Place in the manager/worker hierarchy (unset = standalone run). */
+  role: AgentRoleSchema.nullish(),
   /** Why this run touched the task (see RUN_PURPOSES). */
   purpose: RunPurposeSchema.nullish(),
   /** Dimensional tags for attribution (see tags.ts). */
@@ -110,6 +123,8 @@ export function createAgentRun(init: {
   repoId?: string | null;
   isolation?: AgentIsolation;
   agentId?: string | null;
+  parentRunId?: string | null;
+  role?: AgentRole | null;
   purpose?: RunPurpose | null;
   tags?: string[];
 }): AgentRun {
@@ -122,6 +137,10 @@ export function createAgentRun(init: {
     repoId: init.repoId ?? null,
     isolation: init.isolation ?? "none",
     agentId: init.agentId ?? null,
+    parentRunId: init.parentRunId ?? null,
+    // A run with a parent is a worker by default; otherwise leave it unset
+    // unless the caller declares it a manager.
+    role: init.role ?? (init.parentRunId ? "worker" : null),
     purpose: init.purpose ?? null,
     tags: init.tags ?? [],
     createdAt: nowIso(),
@@ -131,6 +150,42 @@ export function createAgentRun(init: {
 /** Every run attributed to a task, whatever its purpose (implement, review, merge, CI, …). */
 export function runsForTask(taskId: string, runs: AgentRun[]): AgentRun[] {
   return runs.filter((r) => r.taskId === taskId);
+}
+
+/** A manager (or standalone) run with the worker runs it dispatched beneath it. */
+export interface RunNode {
+  run: AgentRun;
+  /** Worker runs pointing at `run.id`, oldest first for stable reading. */
+  workers: AgentRun[];
+}
+
+/**
+ * Fold a flat run list into a manager→worker forest for display. A run is a
+ * root unless its `parentRunId` names another run *present in the list*; each
+ * root carries its workers (sorted by creation). Root order follows the input
+ * (the store hands runs back newest-first), so a manager keeps its slot while
+ * its workers nest under it. Orphaned workers (parent absent) fall back to
+ * roots so nothing is ever hidden.
+ */
+export function groupRunsByManager(runs: AgentRun[]): RunNode[] {
+  const ids = new Set(runs.map((r) => r.id));
+  const workersByParent = new Map<string, AgentRun[]>();
+  for (const r of runs) {
+    const parent = r.parentRunId;
+    if (!parent || !ids.has(parent)) continue;
+    const list = workersByParent.get(parent);
+    if (list) list.push(r);
+    else workersByParent.set(parent, [r]);
+  }
+  const nodes: RunNode[] = [];
+  for (const r of runs) {
+    if (r.parentRunId && ids.has(r.parentRunId)) continue; // rendered under its manager
+    const workers = (workersByParent.get(r.id) ?? []).sort((a, b) =>
+      a.createdAt.localeCompare(b.createdAt),
+    );
+    nodes.push({ run: r, workers });
+  }
+  return nodes;
 }
 
 /**

@@ -1,14 +1,19 @@
-import type { AgentRun } from "@crystal/core";
+import { useMemo } from "react";
+import { GitBranch } from "lucide-react";
+import { groupRunsByManager, type AgentRun } from "@crystal/core";
 import { StatusDot, cn } from "@crystal/ui";
 import { formatCost } from "./prompt.js";
 
 /**
  * Reusable agent-run sidepane. Renders a scrollable, selectable list of runs —
  * the same surface the Orchestrate "Runs" tab shows, but decoupled so it can
- * also dock beside the board (per-task agent progress), the Jobs hub, or any
- * future manager/worker dispatch view. Callers filter `runs` to whatever scope
- * they care about (all runs, one task's runs, one purpose) and own the
- * selection via `selectedRunId` / `onSelect`.
+ * also dock beside the board (per-task agent progress), the Jobs hub, or the
+ * Agents dispatch view. Callers filter `runs` to whatever scope they care about
+ * (all runs, one task's runs, one purpose) and own selection via
+ * `selectedRunId` / `onSelect`.
+ *
+ * Runs are grouped into a manager→worker forest ({@link groupRunsByManager}):
+ * a manager's dispatched workers nest beneath it; standalone runs render flat.
  */
 export function RunList({
   runs,
@@ -28,6 +33,8 @@ export function RunList({
   /** Extra classes on the `<aside>` (e.g. width or border overrides). */
   className?: string;
 }) {
+  const nodes = useMemo(() => groupRunsByManager(runs), [runs]);
+
   return (
     <aside
       className={cn(
@@ -41,16 +48,31 @@ export function RunList({
         </div>
       ) : null}
       <div className="min-h-0 flex-1 space-y-1 overflow-y-auto px-1.5 pb-2">
-        {runs.length === 0 ? (
+        {nodes.length === 0 ? (
           <div className="px-2 py-6 text-center text-xs text-ink-faint">{emptyHint}</div>
         ) : (
-          runs.map((run) => (
-            <RunListItem
-              key={run.id}
-              run={run}
-              selected={selectedRunId === run.id}
-              onSelect={onSelect}
-            />
+          nodes.map((node) => (
+            <div key={node.run.id}>
+              <RunListItem
+                run={node.run}
+                selected={selectedRunId === node.run.id}
+                onSelect={onSelect}
+                workerCount={node.workers.length}
+              />
+              {node.workers.length > 0 ? (
+                <div className="ml-3.5 mt-1 space-y-1 border-l border-edge/70 pl-1.5">
+                  {node.workers.map((w) => (
+                    <RunListItem
+                      key={w.id}
+                      run={w}
+                      selected={selectedRunId === w.id}
+                      onSelect={onSelect}
+                      worker
+                    />
+                  ))}
+                </div>
+              ) : null}
+            </div>
           ))
         )}
       </div>
@@ -63,23 +85,44 @@ function RunListItem({
   run,
   selected,
   onSelect,
+  workerCount = 0,
+  worker = false,
 }: {
   run: AgentRun;
   selected: boolean;
   onSelect: (id: string) => void;
+  /** Number of workers dispatched by this run (shown as a manager badge). */
+  workerCount?: number;
+  /** Render as a nested worker row (denser). */
+  worker?: boolean;
 }) {
+  const isManager = run.role === "manager" || workerCount > 0;
   return (
     <button
       type="button"
       onClick={() => onSelect(run.id)}
       className={cn(
-        "flex w-full items-start gap-2 rounded-lg px-2 py-2 text-left transition-colors",
+        "flex w-full items-start gap-2 rounded-lg px-2 text-left transition-colors",
+        worker ? "py-1.5" : "py-2",
         selected ? "bg-crystal-500/15" : "hover:bg-surface-2",
       )}
     >
       <StatusDot status={run.status} className="mt-1" />
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-xs text-ink">{run.prompt.split("\n")[0]}</span>
+        <span
+          className={cn(
+            "flex items-center gap-1.5",
+            worker ? "text-[11px] text-ink-muted" : "text-xs text-ink",
+          )}
+        >
+          <span className="truncate">{run.prompt.split("\n")[0]}</span>
+          {isManager ? (
+            <span className="ml-auto flex shrink-0 items-center gap-0.5 rounded-full bg-crystal-500/15 px-1.5 text-[9px] font-medium text-crystal-300">
+              <GitBranch className="h-2.5 w-2.5" />
+              {workerCount || ""}
+            </span>
+          ) : null}
+        </span>
         <span className="mt-0.5 block text-[10px] text-ink-faint">
           {new Date(run.createdAt).toLocaleString()} · {formatCost(run.costUsd)}
         </span>

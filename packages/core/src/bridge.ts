@@ -1,7 +1,7 @@
 import type { AgentRoster } from "./agent-profile.js";
 import type { ArchDraft } from "./arch-draft.js";
 import type { ArchitectureGraph } from "./architecture.js";
-import type { AgentRun, RunEvent, RunPurpose } from "./agent.js";
+import type { AgentRole, AgentRun, RunEvent, RunPurpose } from "./agent.js";
 import type { CodeIndex, FacetSuggestion } from "./code-index.js";
 import type { ReviewFinding } from "./code-review.js";
 import type {
@@ -160,6 +160,10 @@ export interface BridgeMethods {
       isolation?: "none" | "worktree";
       /** Agent profile to dispatch to — the server resolves model + skills from the roster. */
       agentId?: string | null;
+      /** Manager run that dispatched this worker (sets role to "worker"). */
+      parentRunId?: string | null;
+      /** Place in the manager/worker hierarchy (unset = standalone run). */
+      role?: AgentRole | null;
       /** Attribution: why this run touches its task (implement, code-review, merge, …). */
       purpose?: RunPurpose | null;
       /** Dimensional tags stamped onto the run for attribution (see tags.ts). */
