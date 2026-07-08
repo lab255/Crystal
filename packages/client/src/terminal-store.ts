@@ -97,6 +97,8 @@ export function agentEventToChunk(event: AgentEvent): { stream: TerminalStream; 
       return event.message ? { stream: "system", text: `${event.message}\n` } : null;
     case "question":
       return { stream: "system", text: `? ${event.text} (answer from the task on the board)\n` };
+    case "dispatch":
+      return { stream: "system", text: `⑂ dispatch worker: ${event.spec.prompt.split("\n")[0]}\n` };
     case "init":
     case "thinking":
     case "usage":

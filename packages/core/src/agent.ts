@@ -251,6 +251,7 @@ export type AgentEvent =
       cacheCreationTokens: number;
     }
   | { type: "question"; text: string }
+  | { type: "dispatch"; spec: WorkerSpec }
   | { type: "stderr"; text: string }
   | { type: "status"; status: AgentRunStatus; message?: string }
   | { type: "unknown"; raw: unknown };
@@ -270,6 +271,52 @@ export function extractQuestions(text: string): string[] {
     .filter((line) => line.startsWith(QUESTION_MARKER))
     .map((line) => line.slice(QUESTION_MARKER.length).trim())
     .filter(Boolean);
+}
+
+/** What a manager run asks for when it delegates a unit of work to a worker. */
+export const WorkerSpecSchema = z.object({
+  /** The worker's task prompt (its first line doubles as the run headline). */
+  prompt: z.string().min(1),
+  /** Working directory relative to the workspace root (defaults to the manager's). */
+  cwd: z.string().nullish(),
+  /** Run the worker in a disposable git worktree (defaults to "none"). */
+  isolation: AgentIsolationSchema.nullish(),
+  /** Why this worker touches the task (defaults to the manager's purpose). */
+  purpose: RunPurposeSchema.nullish(),
+  /** Dimensional tags stamped onto the worker run. */
+  tags: z.array(z.string()).nullish(),
+});
+export type WorkerSpec = z.infer<typeof WorkerSpecSchema>;
+
+/**
+ * Line prefix a *manager* run prints to dispatch a worker: `CRYSTAL_DISPATCH:`
+ * followed by a JSON {@link WorkerSpec}. The parser turns each marked line into
+ * a `dispatch` event; the server spawns a worker run parented to the manager.
+ * This is the CLI-native path — a manager without the MCP `dispatch_worker`
+ * tool can still fan out into tracked worker runs.
+ */
+export const DISPATCH_MARKER = "CRYSTAL_DISPATCH:";
+
+/**
+ * Worker specs marked with DISPATCH_MARKER in a block of agent output.
+ * Malformed JSON or promptless specs are dropped so stray output can never
+ * spawn a junk run or crash the manager.
+ */
+export function extractDispatches(text: string): WorkerSpec[] {
+  const specs: WorkerSpec[] = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trimStart();
+    if (!line.startsWith(DISPATCH_MARKER)) continue;
+    const json = line.slice(DISPATCH_MARKER.length).trim();
+    if (!json) continue;
+    try {
+      const parsed = WorkerSpecSchema.safeParse(JSON.parse(json));
+      if (parsed.success) specs.push(parsed.data);
+    } catch {
+      // Ignore malformed dispatch lines — a manager can't break its run.
+    }
+  }
+  return specs;
 }
 
 /** An event as broadcast by the server: sequenced within a run. */
@@ -368,6 +415,9 @@ export function parseClaudeStreamLine(line: string): AgentEvent[] {
         if (!isAssistant) return;
         for (const question of extractQuestions(text)) {
           events.push({ type: "question", text: question });
+        }
+        for (const spec of extractDispatches(text)) {
+          events.push({ type: "dispatch", spec });
         }
       };
       const content = message?.content;

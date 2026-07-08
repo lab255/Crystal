@@ -14,6 +14,7 @@ import {
   type AgentRun,
   type RunEvent,
   type RunPurpose,
+  type WorkerSpec,
 } from "@crystal/core";
 import { runGit } from "./git.js";
 import { resolveInRoot } from "./paths.js";
@@ -41,6 +42,9 @@ export interface AgentStartParams {
 }
 
 const MAX_DIFF_BYTES = 1024 * 1024;
+
+/** Fan-out cap: how many workers a single manager run may dispatch. */
+const MAX_WORKERS_PER_MANAGER = 12;
 
 interface ActiveProcess {
   child: ChildProcessWithoutNullStreams;
@@ -222,6 +226,36 @@ export class AgentManager {
     return run;
   }
 
+  /**
+   * Spawn a worker run on behalf of a manager. The worker is parented to the
+   * manager (`parentRunId` + role "worker") and inherits its cwd/repo/task when
+   * the spec omits them. Two guards keep a runaway manager from fork-bombing:
+   * only manager/standalone runs may dispatch (workers can't, so the tree stays
+   * one level deep), and each manager is capped at {@link MAX_WORKERS_PER_MANAGER}.
+   * Returns null when a guard rejects the dispatch.
+   */
+  async dispatchWorker(managerRunId: string, spec: WorkerSpec): Promise<AgentRun | null> {
+    await this.ensureLoaded();
+    const manager = this.runs.get(managerRunId);
+    if (!manager || manager.role === "worker") return null;
+    const dispatched = [...this.runs.values()].filter(
+      (r) => r.parentRunId === managerRunId,
+    ).length;
+    if (dispatched >= MAX_WORKERS_PER_MANAGER) return null;
+    return this.start({
+      prompt: spec.prompt,
+      cwd: spec.cwd ?? manager.cwd,
+      repoId: manager.repoId,
+      taskId: manager.taskId,
+      projectId: manager.projectId,
+      isolation: spec.isolation ?? "none",
+      parentRunId: managerRunId,
+      role: "worker",
+      purpose: spec.purpose ?? manager.purpose,
+      tags: spec.tags ?? [],
+    });
+  }
+
   /** Diff of the run's worktree vs its base commit (includes untracked files). */
   async diff(runId: string): Promise<{ diff: string; stat: string; worktreePath: string | null }> {
     await this.ensureLoaded();
@@ -295,6 +329,10 @@ export class AgentManager {
       run.sessionId = event.sessionId ?? run.sessionId;
       run.status = event.ok ? "completed" : "failed";
       this.emitRunChanged(run);
+    } else if (event.type === "dispatch") {
+      // A manager delegated a unit of work — spawn it as a tracked worker run
+      // parented to this run. Fire-and-forget: the worker streams on its own.
+      void this.dispatchWorker(run.id, event.spec);
     }
 
     const buffer = this.runEvents.get(run.id);

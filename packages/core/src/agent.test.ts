@@ -4,6 +4,7 @@ import {
   QUESTION_MARKER,
   apiRatePerMin,
   createAgentRun,
+  extractDispatches,
   extractQuestions,
   groupRunsByManager,
   parseClaudeStreamLine,
@@ -227,6 +228,37 @@ describe("LineBuffer", () => {
     expect(buf.push(":3}")).toEqual([]);
     expect(buf.flush()).toEqual(['{"c":3}']);
     expect(buf.flush()).toEqual([]);
+  });
+});
+
+describe("extractDispatches", () => {
+  it("parses valid dispatch markers and drops malformed / promptless ones", () => {
+    const text = [
+      "Delegating the pieces now.",
+      'CRYSTAL_DISPATCH: {"prompt": "write the parser", "isolation": "worktree"}',
+      "  CRYSTAL_DISPATCH: {\"prompt\": \"write the tests\"}",
+      "CRYSTAL_DISPATCH: {not json}",
+      'CRYSTAL_DISPATCH: {"cwd": "packages/core"}',
+      "CRYSTAL_DISPATCH:",
+    ].join("\n");
+    const specs = extractDispatches(text);
+    expect(specs).toEqual([
+      { prompt: "write the parser", isolation: "worktree" },
+      { prompt: "write the tests" },
+    ]);
+  });
+
+  it("surfaces dispatch events from an assistant message", () => {
+    const line = JSON.stringify({
+      type: "assistant",
+      message: {
+        content: [
+          { type: "text", text: 'plan:\nCRYSTAL_DISPATCH: {"prompt": "do the slice"}' },
+        ],
+      },
+    });
+    const events = parseClaudeStreamLine(line);
+    expect(events).toContainEqual({ type: "dispatch", spec: { prompt: "do the slice" } });
   });
 });
 

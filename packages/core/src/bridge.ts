@@ -1,7 +1,7 @@
 import type { AgentRoster } from "./agent-profile.js";
 import type { ArchDraft } from "./arch-draft.js";
 import type { ArchitectureGraph } from "./architecture.js";
-import type { AgentRole, AgentRun, RunEvent, RunPurpose } from "./agent.js";
+import type { AgentRole, AgentRun, RunEvent, RunPurpose, WorkerSpec } from "./agent.js";
 import type { CodeIndex, FacetSuggestion } from "./code-index.js";
 import type { ReviewFinding } from "./code-review.js";
 import type {
@@ -170,6 +170,18 @@ export interface BridgeMethods {
       tags?: string[];
     };
     result: { run: AgentRun };
+  };
+  /**
+   * Spawn a worker run on behalf of a manager run, parented to it. The manager
+   * itself calls this (via the MCP `dispatch_worker` tool, or the server acts
+   * on a CRYSTAL_DISPATCH marker); a UI can also fan out under a manager. The
+   * worker inherits the manager's cwd/repo/task unless the spec overrides them.
+   * `run` is null when a guard rejects the dispatch (unknown/worker manager or
+   * fan-out cap reached).
+   */
+  "agent.dispatchWorker": {
+    params: WsScope & { managerRunId: string; spec: WorkerSpec };
+    result: { run: AgentRun | null };
   };
   "agent.cancel": { params: WsScope & { runId: string }; result: { ok: true } };
   "agent.list": { params: WsScope; result: { runs: AgentRun[] } };

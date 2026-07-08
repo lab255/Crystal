@@ -18,10 +18,13 @@ const selectClasses =
  */
 const MANAGER_PREAMBLE =
   "You are a manager agent coordinating a larger task. Break the work into " +
-  "concrete subtasks and dispatch worker agents to execute them — prefer the " +
-  "`dispatch_worker` tool if it is available, otherwise use your Task tool. " +
-  "Delegate; do not do all the work in this session. Track each worker and " +
-  "summarize their results as they land.\n\nTask:\n";
+  "concrete subtasks and delegate each to a worker agent instead of doing it " +
+  "all yourself. Dispatch a worker by printing a single line:\n" +
+  'CRYSTAL_DISPATCH: {"prompt": "<the worker\'s full task>"}\n' +
+  '(optional fields: "cwd", "isolation" ("none"|"worktree"), "purpose", ' +
+  '"tags"). If a `dispatch_worker` tool is available, prefer it. Each dispatch ' +
+  "becomes a tracked worker run parented to you. Dispatch the independent " +
+  "pieces, then summarize their results as they land.\n\nTask:\n";
 
 /**
  * The unified agent dispatch surface: a manager/worker composer plus one-click

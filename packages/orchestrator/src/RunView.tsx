@@ -252,6 +252,20 @@ function EventRow({ runEvent }: { runEvent: RunEvent }) {
           </div>
         </div>
       );
+    case "dispatch":
+      return (
+        <div className="flex items-start gap-2 rounded-lg border border-crystal-500/30 bg-crystal-500/10 px-3 py-2 text-xs leading-relaxed text-ink">
+          <GitBranch className="mt-0.5 h-3.5 w-3.5 shrink-0 text-crystal-300" />
+          <div className="min-w-0">
+            <span className="whitespace-pre-wrap">
+              Dispatched worker: {event.spec.prompt.split("\n")[0]}
+            </span>
+            <div className="mt-1 text-[10px] text-ink-faint">
+              Runs as a tracked worker beneath this manager.
+            </div>
+          </div>
+        </div>
+      );
     // Per-turn token bookkeeping; the header shows the accumulated total.
     case "usage":
       return null;

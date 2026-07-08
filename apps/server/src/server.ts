@@ -183,6 +183,10 @@ export async function startCrystalServer(opts: {
       }
       return { run: await rt.agents.start({ ...params, model, skills }) };
     },
+    "agent.dispatchWorker": async ({ ws, managerRunId, spec }) => {
+      const run = await registry.get(ws).agents.dispatchWorker(managerRunId, spec);
+      return { run };
+    },
     "agent.cancel": async ({ ws, runId }) => {
       await registry.get(ws).agents.cancel(runId);
       return { ok: true };
