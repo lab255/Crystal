@@ -71,10 +71,37 @@ export class AgentManager {
     private readonly root: string,
     private readonly dataDir: string,
     private readonly claudeBin = process.env.CRYSTAL_CLAUDE_BIN ?? "claude",
+    /**
+     * In-process MCP endpoint for manager runs. When set, a manager-role run is
+     * launched with an mcp-config pointing at `<baseUrl>/mcp/<wsId>/<runId>`, so
+     * its `dispatch_worker` tool spawns tracked workers. Absent → managers fall
+     * back to the CRYSTAL_DISPATCH marker.
+     */
+    private readonly mcp: { baseUrl: string; wsId: string } | null = null,
   ) {}
 
   private runsDir(): string {
     return path.join(this.dataDir, "runs");
+  }
+
+  /**
+   * Write a per-run mcp-config pointing the manager's Claude CLI at this
+   * server's in-process MCP endpoint, and return its path (null when no MCP
+   * endpoint is configured). The URL carries the workspace and manager run id
+   * so tool calls land parented to this run.
+   */
+  private async writeMcpConfig(runId: string): Promise<string | null> {
+    if (!this.mcp) return null;
+    const dir = path.join(this.dataDir, "mcp");
+    await fs.mkdir(dir, { recursive: true });
+    const file = path.join(dir, `${runId}.json`);
+    const config = {
+      mcpServers: {
+        crystal: { type: "http", url: `${this.mcp.baseUrl}/mcp/${this.mcp.wsId}/${runId}` },
+      },
+    };
+    await fs.writeFile(file, JSON.stringify(config), "utf8");
+    return file;
   }
 
   /** Load persisted run history (metadata + events) once. */
@@ -158,6 +185,9 @@ export class AgentManager {
     ];
     if (params.model) args.push("--model", params.model);
     if (params.resumeSessionId) args.push("--resume", params.resumeSessionId);
+    // Managers get the dispatch_worker MCP tool; workers never do.
+    const mcpConfig = run.role === "manager" ? await this.writeMcpConfig(run.id) : null;
+    if (mcpConfig) args.push("--mcp-config", mcpConfig);
 
     let child: ChildProcessWithoutNullStreams;
     try {

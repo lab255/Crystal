@@ -22,9 +22,10 @@ const MANAGER_PREAMBLE =
   "all yourself. Dispatch a worker by printing a single line:\n" +
   'CRYSTAL_DISPATCH: {"prompt": "<the worker\'s full task>"}\n' +
   '(optional fields: "cwd", "isolation" ("none"|"worktree"), "purpose", ' +
-  '"tags"). If a `dispatch_worker` tool is available, prefer it. Each dispatch ' +
-  "becomes a tracked worker run parented to you. Dispatch the independent " +
-  "pieces, then summarize their results as they land.\n\nTask:\n";
+  '"tags"). If the `mcp__crystal__dispatch_worker` tool is available, prefer it ' +
+  "over the marker. Each dispatch becomes a tracked worker run parented to you. " +
+  "Dispatch the independent pieces, then summarize their results as they land." +
+  "\n\nTask:\n";
 
 /**
  * The unified agent dispatch surface: a manager/worker composer plus one-click

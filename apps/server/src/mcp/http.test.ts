@@ -1,0 +1,106 @@
+import { Readable } from "node:stream";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import { describe, expect, it, vi } from "vitest";
+import { createAgentRun, type WorkerSpec } from "@crystal/core";
+import type { WorkspaceRegistry } from "../workspace-registry.js";
+import { handleMcpRequest, isMcpRequest } from "./http.js";
+
+/** A mock request: a Readable carrying `body` plus url/method. */
+function mockReq(url: string, method: string, body: string): IncomingMessage {
+  return Object.assign(Readable.from([body]), { url, method }) as unknown as IncomingMessage;
+}
+
+/** A mock response that records the status and body. */
+function mockRes() {
+  const rec = { status: 0, body: "" };
+  const res = {
+    headersSent: false,
+    writeHead(status: number) {
+      rec.status = status;
+      res.headersSent = true;
+      return res;
+    },
+    end(data?: string) {
+      if (data) rec.body += data;
+      return res;
+    },
+  };
+  return { res: res as unknown as ServerResponse, rec };
+}
+
+/** A registry whose one workspace exposes stubbed dispatch tools. */
+function fakeRegistry(over: { dispatchWorker?: (runId: string, spec: WorkerSpec) => unknown } = {}) {
+  const dispatchWorker = vi.fn(
+    over.dispatchWorker ??
+      (async (_runId: string, spec: WorkerSpec) => createAgentRun({ prompt: spec.prompt, parentRunId: "m1" })),
+  );
+  const runtime = {
+    agents: {
+      dispatchWorker,
+      list: async () => [{ ...createAgentRun({ prompt: "child" }), id: "w1", parentRunId: "m1" }],
+    },
+  };
+  const registry = {
+    get: (ws?: string) => {
+      if (ws === "ws1") return runtime;
+      throw new Error(`Unknown workspace: ${ws}`);
+    },
+  } as unknown as WorkspaceRegistry;
+  return { registry, dispatchWorker };
+}
+
+async function post(url: string, message: unknown, reg: WorkspaceRegistry) {
+  const { res, rec } = mockRes();
+  await handleMcpRequest(mockReq(url, "POST", JSON.stringify(message)), res, reg);
+  return rec;
+}
+
+describe("isMcpRequest", () => {
+  it("matches only the /mcp/ prefix", () => {
+    expect(isMcpRequest("/mcp/ws1/run1")).toBe(true);
+    expect(isMcpRequest("/health")).toBe(false);
+    expect(isMcpRequest(undefined)).toBe(false);
+  });
+});
+
+describe("handleMcpRequest", () => {
+  it("routes a tools/call to the run's dispatchWorker and returns the JSON-RPC result", async () => {
+    const { registry, dispatchWorker } = fakeRegistry();
+    const rec = await post(
+      "/mcp/ws1/m1",
+      { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "dispatch_worker", arguments: { prompt: "go" } } },
+      registry,
+    );
+    expect(dispatchWorker).toHaveBeenCalledWith("m1", { prompt: "go" });
+    expect(rec.status).toBe(200);
+    const reply = JSON.parse(rec.body);
+    expect(reply.id).toBe(1);
+    expect(reply.result.content[0].text).toMatch(/Dispatched worker/);
+  });
+
+  it("answers initialize", async () => {
+    const { registry } = fakeRegistry();
+    const rec = await post("/mcp/ws1/m1", { jsonrpc: "2.0", id: 0, method: "initialize", params: {} }, registry);
+    expect(JSON.parse(rec.body).result.protocolVersion).toBe("2024-11-05");
+  });
+
+  it("returns 202 with no body for a notification", async () => {
+    const { registry } = fakeRegistry();
+    const rec = await post("/mcp/ws1/m1", { jsonrpc: "2.0", method: "notifications/initialized" }, registry);
+    expect(rec.status).toBe(202);
+    expect(rec.body).toBe("");
+  });
+
+  it("404s an unknown workspace", async () => {
+    const { registry } = fakeRegistry();
+    const rec = await post("/mcp/nope/m1", { jsonrpc: "2.0", id: 1, method: "ping" }, registry);
+    expect(rec.status).toBe(404);
+  });
+
+  it("405s a non-POST method", async () => {
+    const { registry } = fakeRegistry();
+    const { res, rec } = mockRes();
+    await handleMcpRequest(mockReq("/mcp/ws1/m1", "GET", ""), res, registry);
+    expect(rec.status).toBe(405);
+  });
+});

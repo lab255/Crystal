@@ -19,6 +19,7 @@ import {
 } from "@crystal/core";
 import { deleteAt, listDir, mkdirAt, readFileCapped, renameAt, writeFileAt } from "./fs-api.js";
 import { gitLog, gitStatus } from "./git.js";
+import { handleMcpRequest, isMcpRequest } from "./mcp/http.js";
 import { snapshotAtRef } from "./ref-snapshot.js";
 import { WorkspaceRegistry } from "./workspace-registry.js";
 
@@ -49,6 +50,8 @@ export async function startCrystalServer(opts: {
   const registry = new WorkspaceRegistry(
     (event, payload) => broadcast(event, payload),
     opts.persistFile,
+    // Manager runs reach the in-process MCP endpoint on this same server.
+    `http://127.0.0.1:${opts.port}`,
   );
 
   // Open CLI roots first (first one is the default), then persisted ones.
@@ -302,6 +305,19 @@ export async function startCrystalServer(opts: {
     if (req.url === "/health") {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ ok: true, roots: registry.list().map((w) => w.root) }));
+      return;
+    }
+    if (isMcpRequest(req.url)) {
+      void handleMcpRequest(req, res, registry).catch((err) => {
+        if (!res.headersSent) res.writeHead(500, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: null,
+            error: { code: -32603, message: (err as Error).message },
+          }),
+        );
+      });
       return;
     }
     res.writeHead(404);

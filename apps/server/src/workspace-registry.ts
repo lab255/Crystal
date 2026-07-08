@@ -56,11 +56,20 @@ export class WorkspaceRuntime {
   private disposeAgentListeners: (() => void)[] = [];
   private refactorEngine: RefactorEngine | null = null;
 
-  constructor(readonly root: string) {
+  constructor(
+    readonly root: string,
+    /** Base URL of the server's in-process MCP endpoint (enables manager tools). */
+    mcpBaseUrl: string | null = null,
+  ) {
     this.id = workspaceIdFor(root);
     this.name = path.basename(root);
     this.store = new WorkspaceStore(root);
-    this.agents = new AgentManager(root, appDataDir(root));
+    this.agents = new AgentManager(
+      root,
+      appDataDir(root),
+      undefined,
+      mcpBaseUrl ? { baseUrl: mcpBaseUrl, wsId: this.id } : null,
+    );
     this.terminals = new TerminalManager(root);
     this.codemap = new CodeMapAnalyzer(root);
     this.codeindex = new CodeIndexService(root, this.codemap);
@@ -140,6 +149,8 @@ export class WorkspaceRegistry {
     private readonly broadcast: Broadcast,
     /** Where to persist the open set; null disables persistence entirely. */
     private readonly persistFile: string | null = openWorkspacesFile(),
+    /** Base URL of the in-process MCP endpoint, forwarded to each runtime. */
+    private readonly mcpBaseUrl: string | null = null,
   ) {}
 
   /** Open (or return the already-open) workspace at `root`. */
@@ -151,7 +162,7 @@ export class WorkspaceRegistry {
     const existing = this.runtimes.get(id);
     if (existing) return existing;
 
-    const runtime = new WorkspaceRuntime(canonical);
+    const runtime = new WorkspaceRuntime(canonical, this.mcpBaseUrl);
     // Warm the workspace (creates .crystal/ on first run) and pick up its name.
     const info = await runtime.store.load();
     runtime.name = info.manifest.name;
