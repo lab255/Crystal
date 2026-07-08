@@ -84,11 +84,28 @@
   transition: transform 240ms ease;
 }
 
-/* Hover lens: nodes outside the hovered node's import/export neighborhood
-   recede so the connected ones read as a spotlight. */
-.react-flow__node.arch-hover-dim {
-  opacity: 0.25;
-  transition: opacity 150ms ease;
+/* Hover lens: rather than dimming the rest of the diagram, the hovered node
+   and its import/export neighborhood lift toward the viewer. Everything else
+   keeps its normal appearance. The class rides the react-flow wrapper but the
+   visual card is the first child, so the ring projects onto `> *`. */
+.react-flow__node.arch-hover-focus,
+.react-flow__node.arch-hover-near {
+  z-index: 6;
+}
+
+.react-flow__node.arch-hover-focus > * {
+  box-shadow:
+    0 0 0 2px var(--color-crystal-400),
+    0 0 22px color-mix(in srgb, var(--color-crystal-400) 60%, transparent);
+  filter: brightness(1.08);
+  transition:
+    box-shadow 150ms ease,
+    filter 150ms ease;
+}
+
+.react-flow__node.arch-hover-near > * {
+  box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--color-crystal-400) 50%, transparent);
+  transition: box-shadow 150ms ease;
 }
 
 /* Edges fade rather than snap when the hover lens engages/releases. */

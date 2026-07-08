@@ -915,8 +915,10 @@ function CanvasInner({
       );
     }
     if (hoverNeighborhood) {
-      // Spotlight the hovered node's import/export neighborhood: anything
-      // outside it (and not an ancestor/descendant of it) recedes.
+      // Spotlight the hovered node's import/export neighborhood by lifting it,
+      // not by receding everything else: the node under the cursor gets the
+      // strongest emphasis, its connected kin a softer one, and the rest of
+      // the diagram stays exactly as it was.
       const parentOf = new Map(nodes.map((n) => [n.id, n.parentId]));
       const lit = (id: string): boolean => {
         let cur: string | undefined = id;
@@ -926,9 +928,11 @@ function CanvasInner({
         }
         return false;
       };
-      nodes = nodes.map((n) =>
-        lit(n.id) ? n : ({ ...n, className: cn(n.className, "arch-hover-dim") } as CanvasNode),
-      );
+      nodes = nodes.map((n) => {
+        if (!lit(n.id)) return n;
+        const cls = n.id === hovered ? "arch-hover-focus" : "arch-hover-near";
+        return { ...n, className: cn(n.className, cls) } as CanvasNode;
+      });
     }
     if (externalHover || pinned) {
       // Cross-view highlight: ring whatever matches the hover published by
@@ -944,7 +948,7 @@ function CanvasInner({
       });
     }
     return nodes;
-  }, [viewGraph, selectedNodes, slotSizes, overlay, blockPreviews, flow, expanded, codeContent, dragOverrides, displacements, dragActive, hoverNeighborhood, flashId, nodeHlRefs, externalHover, pinned, hlRefForChild]);
+  }, [viewGraph, selectedNodes, slotSizes, overlay, blockPreviews, flow, expanded, codeContent, dragOverrides, displacements, dragActive, hoverNeighborhood, hovered, flashId, nodeHlRefs, externalHover, pinned, hlRefForChild]);
 
   const rfEdges = useMemo(() => {
     let edges = [...toRfEdges(viewGraph, selectedEdges), ...(codeContent.edges as ArchRfEdge[])];
@@ -955,7 +959,7 @@ function CanvasInner({
       // this, emerald = this imports/uses the hovered node.
       edges = edges.map((e) => {
         if (e.source !== hovered && e.target !== hovered) {
-          return { ...e, style: { ...e.style, opacity: 0.08 }, label: undefined };
+          return e;
         }
         const color = e.source === hovered ? HOVER_OUT_STROKE : HOVER_IN_STROKE;
         return {
