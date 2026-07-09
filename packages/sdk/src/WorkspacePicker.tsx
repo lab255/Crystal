@@ -20,7 +20,7 @@ import {
 import { OpenWorkspaceDialog } from "./OpenWorkspaceDialog.js";
 
 /**
- * Status-bar workspace picker: switch between the workspaces open on the
+ * Top-bar workspace picker: switch between the workspaces open on the
  * bridge server, open new ones by path, close ones you're done with. Each row
  * carries the workspace's traffic light so cross-project attention is visible
  * from any mode.
@@ -59,7 +59,7 @@ export function WorkspacePicker() {
             <ChevronsUpDown className="h-3 w-3 text-ink-faint" />
           </button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" side="top" className="min-w-64">
+        <DropdownMenuContent align="start" side="bottom" className="min-w-64">
           {workspaces.map((w) => (
             <DropdownMenuItem
               key={w.id}

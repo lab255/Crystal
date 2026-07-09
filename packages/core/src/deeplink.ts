@@ -16,7 +16,7 @@
 
 import { CODE_LOD_LEVELS, type CodeLodLevel } from "./codemap.js";
 
-export type CrystalModeId = "projects" | "architect" | "orchestrate" | "code";
+export type CrystalModeId = "projects" | "architect" | "orchestrate" | "code" | "jobs";
 export type ArchitectViewId = "diagrams" | "infra" | "codemap";
 export type OrchestratorTabId = "board" | "runs" | "agents";
 
@@ -150,7 +150,8 @@ export function formatDeepLink(link: DeepLink): string {
   } else if (mode === "code") {
     if (link.code?.file) add("file", link.code.file);
   }
-  // "projects" is the cross-workspace overview — nothing to encode beyond ws.
+  // "projects" (cross-workspace overview) and "jobs" (agent job hub) are
+  // stateless — nothing to encode beyond ws.
 
   return `#${path}${pairs.length ? `?${pairs.join("&")}` : ""}`;
 }
@@ -221,6 +222,8 @@ export function parseDeepLink(hash: string): DeepLink {
     if (file) link.code = { file };
   } else if (mode === "projects") {
     link.mode = "projects";
+  } else if (mode === "jobs") {
+    link.mode = "jobs";
   }
   return link;
 }

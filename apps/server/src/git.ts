@@ -1,6 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
-import type { GitCommit, GitStatusResult } from "@crystal/core";
+import type { ChangeScope, GitCommit, GitStatusResult } from "@crystal/core";
 import { resolveInRoot } from "./paths.js";
 
 const exec = promisify(execFile);
@@ -28,6 +28,51 @@ export async function gitStatus(root: string, repoRel: string): Promise<GitStatu
     }
   }
   return { repoPath: repoRel, branch, files };
+}
+
+/** Candidate main-branch names, tried in order, for the "base" diff scope. */
+const MAIN_REFS = ["main", "master"] as const;
+
+/**
+ * The changed files a diff-scoped agent job should read, forward-slash and
+ * repo-relative (matching the code index's paths).
+ *
+ * - "worktree" — uncommitted changes from `git status` (deletions dropped:
+ *   there is nothing to read; renames resolve to the new path).
+ * - "base" — this branch's committed diff against the main branch, via the
+ *   merge-base (`git diff --name-only main...HEAD`). `base` echoes the ref that
+ *   resolved, or null if neither `main` nor `master` exists.
+ */
+export async function changedFiles(
+  root: string,
+  repoRel: string,
+  scope: ChangeScope,
+): Promise<{ files: string[]; base: string | null }> {
+  if (scope === "worktree") {
+    const { files } = await gitStatus(root, repoRel);
+    const out = new Set<string>();
+    for (const f of files) {
+      if (f.code.includes("D")) continue; // deleted — nothing to read
+      const arrow = f.path.indexOf(" -> "); // rename: "old -> new"
+      out.add(arrow === -1 ? f.path : f.path.slice(arrow + 4));
+    }
+    return { files: [...out], base: null };
+  }
+  // "base": diff this branch against the main branch's merge-base.
+  const cwd = resolveInRoot(root, repoRel || ".");
+  let base: string | null = null;
+  for (const ref of MAIN_REFS) {
+    try {
+      await gitResolveRef(cwd, ref);
+      base = ref;
+      break;
+    } catch {
+      /* try the next candidate */
+    }
+  }
+  if (!base) return { files: [], base: null };
+  const out = await runGit(cwd, ["diff", "--name-only", `${base}...HEAD`]).catch(() => "");
+  return { files: out.split("\n").filter(Boolean), base };
 }
 
 /** Field / record separators for machine-readable `git log` output. */

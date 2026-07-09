@@ -1090,10 +1090,9 @@ function FacetsSection({
   const { client } = useCrystal();
   const connection = useConnectionState();
   const activeWs = useWorkspaces((s) => s.activeId);
-  const runs = useAgents((s) => s.runs ?? EMPTY_RUNS);
+  const updateNav = useNavUpdate();
   const [index, setIndex] = useState<CodeIndex | null>(null);
   const [staleCount, setStaleCount] = useState(0);
-  const [indexRunId, setIndexRunId] = useState<string | null>(null);
   const [dismissed, setDismissed] = useState<string[]>([]);
 
   const fetchIndex = useCallback(async () => {
@@ -1116,20 +1115,6 @@ function FacetsSection({
       }),
     [client, activeWs, fetchIndex],
   );
-
-  // Track the dispatched indexing run; the index itself refreshes via
-  // `codeindex.changed` when the enrichment file lands.
-  const indexRun = runs.find((r) => r.id === indexRunId) ?? null;
-  const indexing = indexRun ? indexRun.status === "running" || indexRun.status === "queued" : false;
-  useEffect(() => {
-    if (!indexRun) return;
-    if (indexRun.status === "failed" || indexRun.status === "cancelled") {
-      onNotice(`Indexing run ${indexRun.status}${indexRun.resultText ? `: ${indexRun.resultText}` : ""}`);
-      setIndexRunId(null);
-    } else if (indexRun.status === "completed") {
-      setIndexRunId(null);
-    }
-  }, [indexRun, onNotice]);
 
   const suggestions = useMemo(() => {
     if (!index) return [];
@@ -1156,16 +1141,6 @@ function FacetsSection({
     const facet = { ...createArchFacet(s.name, s.nodeIds), description: s.description };
     onGraphChange({ ...graph, facets: [...graph.facets, facet] });
     onActivate(facet.id);
-  };
-
-  const dispatchIndexing = async () => {
-    try {
-      const { run, files } = await client.request("codeindex.enrich", {});
-      setIndexRunId(run.id);
-      onNotice(`Indexing agent dispatched over ${files.length} file${files.length === 1 ? "" : "s"}.`);
-    } catch (err) {
-      onNotice(`Indexing agent failed to start: ${(err as Error).message}`);
-    }
   };
 
   const create = () => {
@@ -1304,16 +1279,12 @@ function FacetsSection({
               ? `${staleCount} file${staleCount === 1 ? "" : "s"} without intent tags`
               : "intent index fresh"}
           </span>
-          {indexing ? (
-            <span className="flex items-center gap-1">
-              <Spinner className="h-3 w-3" /> indexing…
-            </span>
-          ) : staleCount > 0 ? (
-            <Tooltip content="Send a small, cheap agent to read the untagged files and record what each symbol is for — facet suggestions sharpen as tags land">
+          {staleCount > 0 ? (
+            <Tooltip content="Run intent indexing in the Jobs view — a small agent tags what each symbol is for, scoped to your diff by default">
               <button
                 type="button"
                 className="flex items-center gap-1 text-ink-faint hover:text-ink"
-                onClick={() => void dispatchIndexing()}
+                onClick={() => updateNav({ mode: "jobs" })}
               >
                 <Bot className="h-3 w-3" /> Index intents
               </button>

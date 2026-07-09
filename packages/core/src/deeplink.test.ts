@@ -189,6 +189,12 @@ describe("round trips", () => {
     expect(roundTrip(link)).toEqual(link);
   });
 
+  it("jobs hub", () => {
+    const link: DeepLink = { ws: "abc", mode: "jobs" };
+    expect(formatDeepLink(link)).toBe("#/jobs?ws=abc");
+    expect(roundTrip(link)).toEqual(link);
+  });
+
   it("editor file with special characters", () => {
     const link: DeepLink = {
       ws: "abc",

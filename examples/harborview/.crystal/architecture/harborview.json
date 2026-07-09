@@ -208,12 +208,23 @@
         "name": "Authentication",
         "description": "",
         "nodeIds": []
+      },
+      {
+        "id": "facet_8774add829a1",
+        "name": "Booking",
+        "description": "30 tagged symbols across 4 components",
+        "nodeIds": [
+          "node_ddaf9de6d242",
+          "node_b41c451870a4",
+          "node_c8fbe9584a63",
+          "node_438a656173a9"
+        ]
       }
     ],
     "viewport": {
-      "x": 218.45238095238085,
-      "y": 64,
-      "zoom": 0.5238095238095238
+      "x": 174.13701848818766,
+      "y": -195.451115991983,
+      "zoom": 1.1230671626774054
     }
   }
 }

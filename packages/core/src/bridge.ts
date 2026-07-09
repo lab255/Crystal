@@ -72,6 +72,14 @@ export interface GitStatusResult {
   files: GitFileStatus[];
 }
 
+/**
+ * Which changed-file set a diff-scoped agent job runs on: "worktree" =
+ * uncommitted changes (from `git status`); "base" = this branch's diff against
+ * the main branch (merge-base). "full" (no diff) is expressed by not calling
+ * `git.changedFiles` at all.
+ */
+export type ChangeScope = "worktree" | "base";
+
 /** One commit from `git.log` — enough to pick a review point. */
 export interface GitCommit {
   hash: string;
@@ -146,6 +154,15 @@ export interface BridgeMethods {
   "git.log": {
     params: WsScope & { repoPath?: string; limit?: number };
     result: { commits: GitCommit[]; branch: string | null };
+  };
+  /**
+   * Changed files for a scope — feeds diff-scoped agent jobs (indexing,
+   * survey) so they read only what changed. `base` is the resolved main ref
+   * for the "base" scope (null when it couldn't be resolved).
+   */
+  "git.changedFiles": {
+    params: WsScope & { repoPath?: string; scope: ChangeScope };
+    result: { files: string[]; base: string | null };
   };
   "agent.start": {
     params: WsScope & {

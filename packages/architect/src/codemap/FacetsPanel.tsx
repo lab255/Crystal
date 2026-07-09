@@ -1,22 +1,21 @@
-import { useMemo, useState } from "react";
-import { Bot, Sparkles, X } from "lucide-react";
+import { useMemo } from "react";
+import { Sparkles, X } from "lucide-react";
 import {
   suggestIndexFacets,
   type CodeIndex,
   type IndexFacetSuggestion,
 } from "@crystal/core";
-import { useCrystal } from "@crystal/client";
+import { useNavUpdate } from "@crystal/client";
 import { Badge, Button, Spinner, Tooltip, cn } from "@crystal/ui";
 
 /**
  * Facet lenses over the code map. Suggestions come straight from the code
  * index (heuristic name/path tags merged with agent enrichments); picking one
  * filters the map down to the members that carry the facet's intent. The
- * "index with an agent" action dispatches a cheap enrichment run whose tags
- * fold in live — suggestions sharpen as the agent traverses the codebase.
+ * "index with an agent" action lives in the Jobs mode now — this footer links
+ * there, where indexing runs scoped to your diff by default.
  */
 export function FacetsPanel({
-  ws,
   index,
   staleFiles,
   activeTags,
@@ -24,7 +23,6 @@ export function FacetsPanel({
   onClear,
   onClose,
 }: {
-  ws?: string;
   /** Loaded code index (null while fetching). */
   index: CodeIndex | null;
   /** Files without fresh agent enrichment — the next indexing batch. */
@@ -36,26 +34,10 @@ export function FacetsPanel({
   onClear: () => void;
   onClose: () => void;
 }) {
-  const { client } = useCrystal();
-  const [dispatching, setDispatching] = useState(false);
-  const [dispatched, setDispatched] = useState<number | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const updateNav = useNavUpdate();
 
   const suggestions = useMemo(() => (index ? suggestIndexFacets(index) : []), [index]);
   const activeKey = activeTags.join(",");
-
-  const enrich = async () => {
-    setDispatching(true);
-    setError(null);
-    try {
-      const res = await client.request("codeindex.enrich", { ws });
-      setDispatched(res.files.length);
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setDispatching(false);
-    }
-  };
 
   return (
     <aside className="flex h-full w-full flex-col bg-surface-1">
@@ -132,21 +114,9 @@ export function FacetsPanel({
             ? `${staleFiles.length} file${staleFiles.length !== 1 ? "s" : ""} not yet agent-indexed — name/path heuristics only.`
             : "Every file carries a fresh agent enrichment."}
         </div>
-        {error ? <div className="mb-1.5 text-[10px] text-warn">{error}</div> : null}
-        {dispatched != null ? (
-          <div className="mb-1.5 text-[10px] text-ok">
-            Indexing agent dispatched over {dispatched} file{dispatched !== 1 ? "s" : ""} — facets
-            refresh when its tags land.
-          </div>
-        ) : null}
-        <Button
-          variant="secondary"
-          size="xs"
-          disabled={dispatching || staleFiles.length === 0}
-          onClick={() => void enrich()}
-        >
-          {dispatching ? <Spinner className="h-3 w-3" /> : <Bot className="h-3 w-3" />}
-          Index intents with an agent
+        <Button variant="secondary" size="xs" onClick={() => updateNav({ mode: "jobs" })}>
+          <Sparkles className="h-3 w-3" />
+          Index intents in Jobs
         </Button>
       </div>
     </aside>

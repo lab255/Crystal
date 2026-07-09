@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  Activity,
   Bot,
   Boxes,
   Code2,
@@ -71,6 +72,13 @@ export function CommandPalette({
         icon: Code2,
         hint: "Ctrl+4",
         run: () => onSwitchMode("code"),
+      },
+      {
+        id: "mode.jobs",
+        title: "Go to Jobs",
+        icon: Activity,
+        hint: "Ctrl+5",
+        run: () => onSwitchMode("jobs"),
       },
       {
         id: "terminal.new",

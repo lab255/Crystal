@@ -48,6 +48,7 @@ export const RUN_PURPOSES = [
   "release",
   "question",
   "index",
+  "survey",
 ] as const;
 export const RunPurposeSchema = z.enum(RUN_PURPOSES);
 export type RunPurpose = z.infer<typeof RunPurposeSchema>;

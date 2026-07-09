@@ -20,7 +20,13 @@ export function buildSurveyPrompt(opts: {
   root: string;
   /** Workspace-relative path the survey JSON must be written to. */
   outFile: string;
+  /**
+   * Diff scope: when set, restrict the survey to these changed files rather
+   * than crawling the whole root. Empty/omitted = full crawl.
+   */
+  files?: string[];
 }): string {
+  const scoped = opts.files && opts.files.length > 0;
   const mission =
     opts.kind === "iac"
       ? [
@@ -31,6 +37,13 @@ export function buildSurveyPrompt(opts: {
           `Crawl the codebase in this repository (scope: \`${opts.root}\`) and map its architecture: the runtime components (services, frontends, gateways, datastores, queues, externals), how they talk to each other, and the main user journeys through the code.`,
           "Then suggest a deployment pattern that fits what you found (one `deployments` entry describing a sensible production topology, with per-component placements).",
         ];
+  if (scoped) {
+    mission.push(
+      "",
+      "**Focus on these changed files** — read them first and center the survey on the components they touch (read their immediate neighbours only as needed for context):",
+      ...opts.files!.map((f) => `- \`${f}\``),
+    );
+  }
 
   return [
     "# Architecture survey",

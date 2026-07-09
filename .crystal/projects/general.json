@@ -5,7 +5,13 @@
     "id": "proj_crystal_general",
     "name": "Crystal",
     "description": "Building Crystal, in Crystal.",
-    "epics": [],
+    "epics": [
+      {
+        "id": "epic_699c8ac1ff6b",
+        "name": "Big Refactor",
+        "description": ""
+      }
+    ],
     "tasks": [
       {
         "id": "task_workspace_picker",
@@ -288,7 +294,8 @@
         "runIds": [],
         "order": 6,
         "createdAt": "2026-07-06T06:46:58.020Z",
-        "updatedAt": "2026-07-06T06:47:06.635Z"
+        "updatedAt": "2026-07-08T14:37:34.076Z",
+        "epicId": "epic_699c8ac1ff6b"
       }
     ]
   }

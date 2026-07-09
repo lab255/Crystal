@@ -1,5 +1,6 @@
 import { Suspense, lazy, useEffect, useState } from "react";
 import {
+  Activity,
   Boxes,
   Check,
   Code2,
@@ -45,12 +46,16 @@ const EditorMode = lazy(() =>
 const OverviewMode = lazy(() =>
   import("./overview/OverviewMode.js").then((m) => ({ default: m.OverviewMode })),
 );
+const JobsMode = lazy(() =>
+  import("./jobs/JobsMode.js").then((m) => ({ default: m.JobsMode })),
+);
 
 const MODE_COMPONENTS: Record<CrystalMode, React.LazyExoticComponent<() => React.JSX.Element>> = {
   projects: OverviewMode,
   architect: ArchitectMode,
   orchestrate: OrchestratorMode,
   code: EditorMode,
+  jobs: JobsMode,
 };
 
 const MODE_ICONS: Record<CrystalMode, LucideIcon> = {
@@ -58,6 +63,7 @@ const MODE_ICONS: Record<CrystalMode, LucideIcon> = {
   architect: Boxes,
   orchestrate: KanbanSquare,
   code: Code2,
+  jobs: Activity,
 };
 
 export interface CrystalShellProps {
@@ -100,6 +106,12 @@ export function CrystalShell({
   const saving = useWorkspace((s) => Object.keys(s.pendingSaves).length > 0);
   const wsError = useWorkspace((s) => s.error);
   const runningRuns = useAgents((s) => s.runs.filter((r) => r.status === "running").length);
+  const runningJobs = useAgents(
+    (s) =>
+      s.runs.filter(
+        (r) => r.status === "running" && (r.purpose === "index" || r.purpose === "survey"),
+      ).length,
+  );
   const attention = useFleetAttention(activeWsId);
 
   function switchMode(next: CrystalMode): void {
@@ -115,7 +127,7 @@ export function CrystalShell({
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
         setPaletteOpen(true);
-      } else if ((e.ctrlKey || e.metaKey) && ["1", "2", "3", "4"].includes(e.key)) {
+      } else if ((e.ctrlKey || e.metaKey) && ["1", "2", "3", "4", "5"].includes(e.key)) {
         e.preventDefault();
         switchMode(CRYSTAL_MODES[Number(e.key) - 1]!);
       } else if ((e.ctrlKey || e.metaKey) && e.key === "`") {
@@ -164,11 +176,14 @@ export function CrystalShell({
   return (
     <TooltipProvider>
       <div className="flex h-full min-h-0 flex-col bg-surface-0 text-ink">
+        <header className="flex h-9 shrink-0 items-center gap-2 border-b border-edge bg-surface-1 px-2.5">
+          <div className="flex h-6 w-6 items-center justify-center rounded-lg bg-gradient-to-br from-crystal-500 to-prism-500 shadow-lg shadow-crystal-500/30">
+            <Gem className="h-4 w-4 text-white" />
+          </div>
+          <WorkspacePicker />
+        </header>
         <div className="flex min-h-0 flex-1">
           <nav className="flex w-12 shrink-0 flex-col items-center gap-1 border-r border-edge bg-surface-1 py-2.5">
-            <div className="mb-2 flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-crystal-500 to-prism-500 shadow-lg shadow-crystal-500/30">
-              <Gem className="h-4.5 w-4.5 text-white" />
-            </div>
             {CRYSTAL_MODES.map((m, i) => {
               const Icon = MODE_ICONS[m];
               return (
@@ -196,6 +211,11 @@ export function CrystalShell({
                     ) : null}
                     {m === "projects" && (attention === "red" || attention === "yellow") ? (
                       <TrafficLightDot light={attention} className="absolute -right-0.5 -top-0.5" />
+                    ) : null}
+                    {m === "jobs" && runningJobs > 0 ? (
+                      <span className="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-info px-0.5 text-[9px] font-bold text-surface-0">
+                        {runningJobs}
+                      </span>
                     ) : null}
                   </button>
                 </Tooltip>
@@ -238,7 +258,6 @@ export function CrystalShell({
               />
               {connection === "open" ? "bridge" : connection}
             </span>
-            <WorkspacePicker />
             <Tooltip content="Toggle the terminal panel" shortcut="Ctrl+`">
               <button
                 type="button"

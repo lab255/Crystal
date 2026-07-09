@@ -13,8 +13,8 @@
         "description": "",
         "parentId": null,
         "position": {
-          "x": 0,
-          "y": 0
+          "x": 16,
+          "y": 177
         },
         "size": {
           "width": 264,
@@ -30,8 +30,8 @@
         "description": "",
         "parentId": null,
         "position": {
-          "x": 0,
-          "y": 328
+          "x": 328,
+          "y": 49.5
         },
         "size": {
           "width": 1134,
@@ -45,10 +45,10 @@
         "kind": "service",
         "label": "@crystal/server",
         "description": "14 files",
-        "parentId": "node_c687f5e095fb",
+        "parentId": null,
         "position": {
-          "x": 528,
-          "y": 48
+          "x": 1510,
+          "y": 16
         },
         "size": null,
         "tech": [],
@@ -67,8 +67,8 @@
         "description": "2 files",
         "parentId": "node_c687f5e095fb",
         "position": {
-          "x": 24,
-          "y": 267
+          "x": 40,
+          "y": 64
         },
         "size": null,
         "tech": [],
@@ -87,8 +87,8 @@
         "description": "41 files",
         "parentId": "node_ee44861d5f2a",
         "position": {
-          "x": 24,
-          "y": 48
+          "x": 40,
+          "y": 750
         },
         "size": null,
         "tech": [],
@@ -107,8 +107,8 @@
         "description": "9 files",
         "parentId": "node_ee44861d5f2a",
         "position": {
-          "x": 24,
-          "y": 2540
+          "x": 1259,
+          "y": 1463
         },
         "size": null,
         "tech": [],
@@ -127,8 +127,8 @@
         "description": "24 files",
         "parentId": "node_ee44861d5f2a",
         "position": {
-          "x": 24,
-          "y": 3678
+          "x": 1840,
+          "y": 2122
         },
         "size": null,
         "tech": [],
@@ -147,8 +147,8 @@
         "description": "7 files",
         "parentId": "node_ee44861d5f2a",
         "position": {
-          "x": 24,
-          "y": 1348
+          "x": 915,
+          "y": 804
         },
         "size": null,
         "tech": [],
@@ -167,8 +167,8 @@
         "description": "7 files",
         "parentId": "node_ee44861d5f2a",
         "position": {
-          "x": 24,
-          "y": 3136
+          "x": 1603,
+          "y": 804
         },
         "size": null,
         "tech": [],
@@ -187,8 +187,8 @@
         "description": "9 files",
         "parentId": "node_ee44861d5f2a",
         "position": {
-          "x": 24,
-          "y": 1890
+          "x": 1102,
+          "y": 64
         },
         "size": null,
         "tech": [],
@@ -207,8 +207,8 @@
         "description": "18 files",
         "parentId": "node_ee44861d5f2a",
         "position": {
-          "x": 24,
-          "y": 698
+          "x": 384,
+          "y": 1436
         },
         "size": null,
         "tech": [],
@@ -365,6 +365,15 @@
           "file": "packages/architect/src/SurveyPanel.tsx",
           "symbol": "SurveySection"
         }
+      },
+      {
+        "id": "journey_b90a03940601",
+        "name": "Board",
+        "description": "",
+        "entry": {
+          "file": "packages/orchestrator/src/Board.tsx",
+          "symbol": "Board"
+        }
       }
     ],
     "facets": [
@@ -423,9 +432,9 @@
       }
     ],
     "viewport": {
-      "x": 1006.9805194805194,
-      "y": 21,
-      "zoom": 0.23376623376623376
+      "x": -99.40574546556508,
+      "y": -415.95017418623,
+      "zoom": 0.527750554639863
     }
   }
 }
