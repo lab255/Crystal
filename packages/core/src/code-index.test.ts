@@ -80,11 +80,15 @@ describe("heuristic tagging", () => {
   });
 });
 
-const enrichment = (entries: CodeEnrichment["entries"]): CodeEnrichment => ({
+const enrichment = (
+  entries: CodeEnrichment["entries"],
+  covered: CodeEnrichment["covered"] = [],
+): CodeEnrichment => ({
   schemaVersion: 1,
   generator: { name: "test", version: "" },
   generatedAt: "",
   entries,
+  covered,
   notes: [],
 });
 
@@ -116,6 +120,23 @@ describe("buildCodeIndex", () => {
     const login = auth.symbols.find((s) => s.name === "login")!;
     expect(login.tags.map((t) => t.tag)).toContain("intent:users");
     expect(staleIndexFiles(index)).toEqual(["a/pricing.ts"]);
+  });
+
+  it("marks a covered file enriched even when it produced no entries", () => {
+    const index = buildCodeIndex(sources, [
+      enrichment([], [{ file: "a/pricing.ts", hash: "h-a/pricing.ts" }]),
+    ]);
+    const pricing = index.files.find((f) => f.path === "a/pricing.ts")!;
+    expect(pricing.enriched).toBe(true);
+    expect(staleIndexFiles(index)).toEqual(["b/auth.ts"]);
+  });
+
+  it("ignores coverage whose hash drifted", () => {
+    const index = buildCodeIndex(sources, [
+      enrichment([], [{ file: "a/pricing.ts", hash: "old-hash" }]),
+    ]);
+    expect(index.files.find((f) => f.path === "a/pricing.ts")!.enriched).toBe(false);
+    expect(staleIndexFiles(index)).toContain("a/pricing.ts");
   });
 
   it("drops enrichment entries whose hash drifted", () => {
@@ -351,5 +372,6 @@ describe("enrichment format", () => {
     expect(prompt).toContain('.crystal/index/enrichment-1.json');
     expect(prompt).toContain('"kind": "enrichment"');
     expect(prompt).toContain("intent:auth");
+    expect(prompt).toContain('"covered"');
   });
 });

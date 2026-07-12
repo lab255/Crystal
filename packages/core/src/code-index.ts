@@ -101,6 +101,12 @@ export const CodeEnrichmentSchema = z.object({
   /** ISO timestamp; informational only. */
   generatedAt: z.string().default(""),
   entries: z.array(EnrichmentEntrySchema).default([]),
+  /**
+   * Every (file, hash) the agent actually read — coverage proof. A covered
+   * file counts as enriched even with zero entries, so "nothing worth
+   * tagging" doesn't leave it permanently stale and re-dispatched forever.
+   */
+  covered: z.array(z.object({ file: z.string(), hash: z.string() })).default([]),
   /** Anything the indexer wants a human to read (caveats, unknowns). */
   notes: z.array(z.string()).default([]),
 });
@@ -396,10 +402,15 @@ export function buildCodeIndex(
   enrichments: readonly CodeEnrichment[] = [],
   lexicon: readonly ConceptDef[] = CONCEPT_LEXICON,
 ): CodeIndex {
-  // Fresh enrichment entries per file (hash must match the current source).
+  // Fresh enrichment entries and coverage per file (hash must match the
+  // current source). Coverage marks a file enriched even with zero entries.
   const byPath = new Map(sources.map((s) => [s.path, s]));
   const fresh = new Map<string, EnrichmentEntry[]>();
+  const covered = new Set<string>();
   for (const enrichment of enrichments) {
+    for (const c of enrichment.covered) {
+      if (byPath.get(c.file)?.hash === c.hash) covered.add(c.file);
+    }
     for (const entry of enrichment.entries) {
       if (byPath.get(entry.file)?.hash !== entry.hash) continue;
       const list = fresh.get(entry.file) ?? [];
@@ -430,7 +441,7 @@ export function buildCodeIndex(
             exported: sym.exported,
             tags: mergeTags(heuristicSymbolTags(sym, lexicon), agentTagsFor(sym.name)),
           })),
-        enriched: entries.length > 0,
+        enriched: entries.length > 0 || covered.has(source.path),
       };
     });
 
@@ -826,14 +837,19 @@ export const EXAMPLE_ENRICHMENT: CodeEnrichment = {
       ],
     },
   ],
-  notes: ["Skipped generated fixtures under test/__snapshots__."],
+  covered: [
+    { file: "services/api/src/handlers/webhooks.ts", hash: "9f2ab310c44d1e07" },
+    { file: "services/api/src/handlers/health.ts", hash: "51c09ae82b7d3f16" },
+  ],
+  notes: ["health.ts is a bare liveness endpoint — read, nothing worth tagging."],
 };
 
 /**
  * The prompt a small, cheap indexing agent runs with: read the listed files,
- * assert `intent:` tags per top-level symbol, and write one enrichment file.
- * Hashes are echoed verbatim so merges stay deterministic; the file list is
- * the *whole* task — the agent never scans the tree itself.
+ * assert `intent:` tags per top-level symbol, list every file it read under
+ * `covered`, and write one enrichment file. Hashes are echoed verbatim so
+ * merges stay deterministic; the file list is the *whole* task — the agent
+ * never scans the tree itself.
  */
 export function buildEnrichmentPrompt(opts: {
   /** Files to read, with the content hash the server indexed. */
@@ -861,6 +877,7 @@ For each file, decide which top-level symbols have a clear purpose worth tagging
 - Echo each file's "hash" EXACTLY as listed above — entries with a wrong hash are discarded.
 - Set "confidence" (0-1) honestly and put a short reason in "evidence" (what the code does, not what it is named).
 - Skip symbols with no clear intent; sparse and right beats dense and noisy. Do not re-state the obvious mechanical role (type/constant/component) — intent only.
+- List EVERY file above in "covered" (hash echoed EXACTLY) once you have read it — including files where nothing was worth tagging. A file missing from "covered" counts as unread and will be dispatched again.
 
 Write the result to "${opts.outFile}" (create parent directories if needed) with exactly this envelope shape:
 

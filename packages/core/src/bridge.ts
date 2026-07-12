@@ -314,11 +314,14 @@ export interface BridgeMethods {
   /**
    * Dispatch a small, cheap indexing agent over the stale files (or an
    * explicit list): it reads them and writes an enrichment file under
-   * `.crystal/index/`; the index refreshes when the file lands.
+   * `.crystal/index/`; the index refreshes when the file lands. One call
+   * dispatches one capped batch; `full` keeps dispatching follow-up batches
+   * server-side until nothing dispatchable is stale. The result carries the
+   * first run and `remaining`, the dispatchable stale files beyond its batch.
    */
   "codeindex.enrich": {
-    params: WsScope & { files?: string[]; agentId?: string | null };
-    result: { run: AgentRun; files: string[] };
+    params: WsScope & { files?: string[]; full?: boolean; agentId?: string | null };
+    result: { run: AgentRun; files: string[]; remaining: number };
   };
   /** Facet suggestions for one architecture, derived from the code index. */
   "arch.suggestFacets": {

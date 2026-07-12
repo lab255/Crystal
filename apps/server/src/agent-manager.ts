@@ -335,6 +335,25 @@ export class AgentManager {
     }
   }
 
+  /**
+   * Resolve once the run leaves the live states (an already-settled run
+   * resolves immediately). Settles on the first terminal status — a `result`
+   * event may land before the process closes; `finish()` still runs after.
+   */
+  waitForSettled(runId: string): Promise<AgentRun> {
+    const current = this.runs.get(runId);
+    if (current && current.status !== "running" && current.status !== "queued") {
+      return Promise.resolve({ ...current });
+    }
+    return new Promise((resolve) => {
+      const dispose = this.events.on("runChanged", ({ run }) => {
+        if (run.id !== runId || run.status === "running" || run.status === "queued") return;
+        dispose();
+        resolve(run);
+      });
+    });
+  }
+
   private record(run: AgentRun, event: AgentEvent): void {
     if (event.type === "init") {
       run.sessionId = event.sessionId;

@@ -135,7 +135,17 @@ function IndexSection({
     }
     setNotice(null);
     try {
-      await client.request("codeindex.enrich", files ? { files } : {});
+      const { files: batch, remaining } = await client.request(
+        "codeindex.enrich",
+        files ? { files } : { full: true },
+      );
+      if (remaining > 0) {
+        setNotice(
+          files
+            ? `Indexing ${batch.length} files now — ${remaining} more still stale after this run.`
+            : `Indexing ${batch.length} files now — ${remaining} more will follow in chained runs.`,
+        );
+      }
       await refresh();
     } catch (err) {
       setNotice((err as Error).message);

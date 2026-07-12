@@ -248,9 +248,8 @@ export async function startCrystalServer(opts: {
       symbols: await registry.get(ws).codemap.searchSymbols(query, limit),
     }),
     "codeindex.get": ({ ws }) => registry.get(ws).codeindex.get(),
-    "codeindex.enrich": async ({ ws, files, agentId }) => {
+    "codeindex.enrich": async ({ ws, files, full, agentId }) => {
       const rt = registry.get(ws);
-      const dispatch = await rt.codeindex.enrichmentDispatch(files);
       // Indexing defaults to a small, cheap model; a profile overrides it.
       let model = "haiku";
       let skills: string[] = [];
@@ -262,15 +261,21 @@ export async function startCrystalServer(opts: {
           skills = profile.skills;
         }
       }
-      const run = await rt.agents.start({
-        prompt: dispatch.prompt,
-        model,
-        skills,
-        agentId: agentId ?? null,
-        purpose: "index",
-        tags: ["purpose:index"],
-      });
-      return { run, files: dispatch.files };
+      const startBatch = async () => {
+        const dispatch = await rt.codeindex.enrichmentDispatch(full ? undefined : files);
+        const run = await rt.agents.start({
+          prompt: dispatch.prompt,
+          model,
+          skills,
+          agentId: agentId ?? null,
+          purpose: "index",
+          tags: ["purpose:index"],
+        });
+        return { run, files: dispatch.files, remaining: dispatch.remaining };
+      };
+      // A full index chains batches server-side until the backlog is drained.
+      if (full) return rt.codeindex.drainBacklog(startBatch, (id) => rt.agents.waitForSettled(id));
+      return startBatch();
     },
     "review.findings": async ({ ws }) => {
       const rt = registry.get(ws);
