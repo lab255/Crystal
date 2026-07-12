@@ -4,13 +4,16 @@ import {
   Bot,
   Boxes,
   Code2,
+  Folder,
+  FolderPlus,
+  History,
   KanbanSquare,
   LayoutGrid,
   Plus,
   TerminalSquare,
   type LucideIcon,
 } from "lucide-react";
-import { useWorkspace } from "@crystal/client";
+import { useWorkspace, useWorkspaces } from "@crystal/client";
 import { Dialog, DialogContent, Kbd, cn } from "@crystal/ui";
 import type { CrystalMode } from "./modes.js";
 
@@ -26,13 +29,19 @@ export function CommandPalette({
   open,
   onOpenChange,
   onSwitchMode,
+  onSelectWorkspace,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSwitchMode: (mode: CrystalMode) => void;
+  onSelectWorkspace: (id: string) => void;
 }) {
   const createArchitecture = useWorkspace((s) => s.createArchitecture);
   const createProject = useWorkspace((s) => s.createProject);
+  const workspaces = useWorkspaces((s) => s.workspaces);
+  const recents = useWorkspaces((s) => s.recents);
+  const activeWsId = useWorkspaces((s) => s.activeId);
+  const openWorkspace = useWorkspaces((s) => s.openWorkspace);
   const [query, setQuery] = useState("");
   const [highlight, setHighlight] = useState(0);
 
@@ -43,11 +52,37 @@ export function CommandPalette({
     }
   }, [open]);
 
-  const commands: Command[] = useMemo(
-    () => [
+  const commands: Command[] = useMemo(() => {
+    const openRoots = new Set(workspaces.map((w) => w.root));
+    return [
+      // Workspaces are the top level: switching and reopening come first.
+      ...workspaces
+        .map((w, i) => ({ w, i }))
+        .filter(({ w }) => w.id !== activeWsId)
+        .map(({ w, i }) => ({
+          id: `ws.switch.${w.id}`,
+          title: `Switch to workspace: ${w.name}`,
+          icon: Folder,
+          hint: i < 9 ? `Ctrl+Alt+${i + 1}` : undefined,
+          run: () => onSelectWorkspace(w.id),
+        })),
+      ...recents
+        .filter((r) => !openRoots.has(r.root) && !r.missing)
+        .map((r) => ({
+          id: `ws.reopen.${r.root}`,
+          title: `Reopen workspace: ${r.name}`,
+          icon: History,
+          run: () => void openWorkspace(r.root),
+        })),
+      {
+        id: "ws.open",
+        title: "Open workspace…",
+        icon: FolderPlus,
+        run: () => window.dispatchEvent(new CustomEvent("crystal:open-workspace")),
+      },
       {
         id: "mode.projects",
-        title: "Go to Projects",
+        title: "Go to Overview",
         icon: LayoutGrid,
         hint: "Ctrl+1",
         run: () => onSwitchMode("projects"),
@@ -113,9 +148,17 @@ export function CommandPalette({
           void createProject("Untitled project");
         },
       },
-    ],
-    [onSwitchMode, createArchitecture, createProject],
-  );
+    ];
+  }, [
+    onSwitchMode,
+    onSelectWorkspace,
+    createArchitecture,
+    createProject,
+    workspaces,
+    recents,
+    activeWsId,
+    openWorkspace,
+  ]);
 
   const results = useMemo(() => {
     const q = query.trim().toLowerCase();

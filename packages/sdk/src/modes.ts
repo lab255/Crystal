@@ -12,9 +12,17 @@ export const CRYSTAL_MODES: CrystalMode[] = [
 ];
 
 export const MODE_LABELS: Record<CrystalMode, string> = {
-  projects: "Projects",
+  projects: "Overview",
   architect: "Architecture",
   orchestrate: "Orchestrate",
   code: "Code",
   jobs: "Jobs",
 };
+
+/**
+ * Navigation is two-level: workspaces are the top level, and these facets are
+ * the second — views *into* the active workspace. `projects` sits above the
+ * hierarchy as the cross-workspace overview (the "home" tab), so it is not a
+ * facet.
+ */
+export const WORKSPACE_FACETS: CrystalMode[] = ["architect", "orchestrate", "code", "jobs"];

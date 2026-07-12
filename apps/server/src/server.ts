@@ -17,6 +17,7 @@ import {
   createArchDraft,
   suggestFacets,
 } from "@crystal/core";
+import { browseDirs } from "./browse.js";
 import { deleteAt, listDir, mkdirAt, readFileCapped, renameAt, writeFileAt } from "./fs-api.js";
 import { changedFiles, gitLog, gitStatus } from "./git.js";
 import { handleMcpRequest, isMcpRequest } from "./mcp/http.js";
@@ -64,6 +65,7 @@ export async function startCrystalServer(opts: {
     "workspaces.list": async () => ({
       workspaces: registry.list(),
       defaultWs: registry.defaultWs,
+      recents: await registry.recents(),
     }),
     "workspaces.open": async ({ root }) => ({
       workspace: (await registry.open(root)).descriptor(),
@@ -72,6 +74,7 @@ export async function startCrystalServer(opts: {
       await registry.close(ws);
       return { ok: true };
     },
+    "workspaces.browse": ({ path: p }) => browseDirs(p),
     "workspace.get": async ({ ws }) => {
       const rt = registry.get(ws);
       const info = await rt.store.load();

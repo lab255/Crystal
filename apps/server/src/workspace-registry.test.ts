@@ -1,6 +1,10 @@
-import { describe, expect, it } from "vitest";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { browseDirs } from "./browse.js";
 import { packageNameOf, type CrossSurface } from "./code-map.js";
-import { computeCrossEdges } from "./workspace-registry.js";
+import { WorkspaceRegistry, computeCrossEdges } from "./workspace-registry.js";
 
 function surface(partial: Partial<CrossSurface>): CrossSurface {
   return { packages: new Map(), externalImports: [], fileTotal: 0, ...partial };
@@ -86,5 +90,95 @@ describe("computeCrossEdges", () => {
       ["wsB", surface({ packages: new Map([["@b/sdk", "."]]) })],
     ]);
     expect(computeCrossEdges(surfaces)).toEqual([]);
+  });
+});
+
+describe("WorkspaceRegistry recents", () => {
+  const cleanups: (() => Promise<void> | void)[] = [];
+  afterEach(async () => {
+    for (const cleanup of cleanups.splice(0)) await cleanup();
+  });
+
+  async function tmpDir(): Promise<string> {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "crystal-registry-"));
+    cleanups.push(() => fs.rm(dir, { recursive: true, force: true }));
+    return dir;
+  }
+
+  it("tracks opened workspaces most-recent-first, persists them, and flags gone dirs", async () => {
+    const tmp = await tmpDir();
+    const wsA = path.join(tmp, "alpha");
+    const wsB = path.join(tmp, "beta");
+    await fs.mkdir(wsA);
+    await fs.mkdir(wsB);
+    const persistFile = path.join(tmp, "open-workspaces.json");
+
+    const registry = new WorkspaceRegistry(() => {}, persistFile);
+    cleanups.push(() => registry.closeAll());
+    await registry.open(wsA);
+    await registry.open(wsB);
+
+    const recents = await registry.recents();
+    expect(recents.map((r) => r.name)).toEqual(["beta", "alpha"]);
+    expect(recents.every((r) => !r.missing)).toBe(true);
+
+    const persisted = JSON.parse(await fs.readFile(persistFile, "utf8"));
+    expect(persisted.roots).toHaveLength(2);
+    // Stored oldest-first (map insertion order); served newest-first.
+    expect(persisted.recents.map((r: { name: string }) => r.name)).toEqual(["alpha", "beta"]);
+    registry.closeAll();
+
+    // A fresh registry serves the reopen list without opening anything; a gone
+    // directory is flagged missing rather than dropped.
+    await fs.rm(wsB, { recursive: true });
+    const registry2 = new WorkspaceRegistry(() => {}, persistFile);
+    const recents2 = await registry2.recents();
+    expect(recents2.map((r) => [r.name, r.missing ?? false])).toEqual([
+      ["beta", true],
+      ["alpha", false],
+    ]);
+  });
+
+  it("reads legacy persist files that predate recents", async () => {
+    const tmp = await tmpDir();
+    const wsA = path.join(tmp, "alpha");
+    await fs.mkdir(wsA);
+    const persistFile = path.join(tmp, "open-workspaces.json");
+    await fs.writeFile(persistFile, JSON.stringify({ roots: [wsA] }), "utf8");
+
+    const registry = new WorkspaceRegistry(() => {}, persistFile);
+    cleanups.push(() => registry.closeAll());
+    await registry.restorePersisted();
+    expect(registry.list().map((w) => w.name)).toEqual(["alpha"]);
+    // Restoring counts as opening — the reopen list picks it up.
+    expect((await registry.recents()).map((r) => r.name)).toEqual(["alpha"]);
+  });
+});
+
+describe("browseDirs", () => {
+  it("lists sub-directories with workspace markers, skipping noise", async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "crystal-browse-"));
+    try {
+      await fs.mkdir(path.join(tmp, "repo", ".git"), { recursive: true });
+      await fs.mkdir(path.join(tmp, "crystal-ws", ".crystal"), { recursive: true });
+      await fs.mkdir(path.join(tmp, "pkg"));
+      await fs.writeFile(path.join(tmp, "pkg", "package.json"), "{}");
+      await fs.mkdir(path.join(tmp, "plain"));
+      await fs.mkdir(path.join(tmp, "node_modules"));
+      await fs.mkdir(path.join(tmp, ".hidden"));
+      await fs.writeFile(path.join(tmp, "file.txt"), "");
+
+      const { path: listed, parent, entries } = await browseDirs(tmp);
+      expect(listed).toBe(path.resolve(tmp));
+      expect(parent).toBe(path.dirname(path.resolve(tmp)));
+      expect(entries.map((e) => [e.name, e.marker ?? null])).toEqual([
+        ["crystal-ws", "crystal"],
+        ["pkg", "package"],
+        ["plain", null],
+        ["repo", "repo"],
+      ]);
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
   });
 });

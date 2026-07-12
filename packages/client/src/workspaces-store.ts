@@ -1,5 +1,5 @@
 import { createStore, type StoreApi } from "zustand/vanilla";
-import type { WorkspaceDescriptor } from "@crystal/core";
+import type { RecentWorkspace, WorkspaceDescriptor } from "@crystal/core";
 import type { BridgeClient } from "./bridge-client.js";
 
 /**
@@ -9,6 +9,8 @@ import type { BridgeClient } from "./bridge-client.js";
  */
 export interface WorkspacesState {
   workspaces: WorkspaceDescriptor[];
+  /** Server-side reopen list, most recent first (includes open workspaces). */
+  recents: RecentWorkspace[];
   activeId: string | null;
   error: string | null;
 
@@ -24,16 +26,18 @@ export type WorkspacesStore = StoreApi<WorkspacesState>;
 export function createWorkspacesStore(client: BridgeClient): WorkspacesStore {
   const store = createStore<WorkspacesState>((set, get) => ({
     workspaces: [],
+    recents: [],
     activeId: null,
     error: null,
 
     async refresh() {
       try {
-        const { workspaces, defaultWs } = await client.request("workspaces.list", {});
+        const { workspaces, defaultWs, recents } = await client.request("workspaces.list", {});
         const activeId = get().activeId;
         const stillOpen = activeId != null && workspaces.some((w) => w.id === activeId);
         set({
           workspaces,
+          recents: recents ?? [],
           activeId: stillOpen ? activeId : defaultWs,
           error: null,
         });

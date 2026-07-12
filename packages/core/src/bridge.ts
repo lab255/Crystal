@@ -52,6 +52,27 @@ export interface WorkspaceDescriptor {
   name: string;
 }
 
+/** A workspace that was open at some point — the reopen list. */
+export interface RecentWorkspace {
+  /** Canonical absolute root path on the host. */
+  root: string;
+  /** Name at the time it was last open. */
+  name: string;
+  /** ISO-8601 timestamp of the last open. */
+  lastOpenedAt: string;
+  /** The directory no longer exists on the host (cannot be reopened). */
+  missing?: boolean;
+}
+
+/** One directory in a `workspaces.browse` listing. */
+export interface BrowseEntry {
+  name: string;
+  /** Absolute host path. */
+  path: string;
+  /** What makes this directory workspace-shaped, if anything. */
+  marker?: "crystal" | "repo" | "package";
+}
+
 export interface FileEntry {
   name: string;
   /** Workspace-relative path, always forward-slash separated. */
@@ -108,10 +129,24 @@ export interface WorkspaceInfo {
 export interface BridgeMethods {
   "workspaces.list": {
     params: Record<string, never>;
-    result: { workspaces: WorkspaceDescriptor[]; defaultWs: string };
+    result: {
+      workspaces: WorkspaceDescriptor[];
+      defaultWs: string;
+      /** Most-recently-opened first; includes currently-open workspaces. */
+      recents: RecentWorkspace[];
+    };
   };
   "workspaces.open": { params: { root: string }; result: { workspace: WorkspaceDescriptor } };
   "workspaces.close": { params: { ws: string }; result: { ok: true } };
+  /**
+   * List the sub-directories of an absolute host path (home dir when omitted) —
+   * powers the open-workspace folder browser. Never fails on permission errors;
+   * unreadable entries are simply absent.
+   */
+  "workspaces.browse": {
+    params: { path?: string };
+    result: { path: string; parent: string | null; entries: BrowseEntry[] };
+  };
   "workspace.get": { params: WsScope; result: WorkspaceInfo };
   "workspace.saveManifest": {
     params: WsScope & { manifest: WorkspaceManifest };
@@ -317,6 +352,7 @@ export const UNSCOPED_METHODS: readonly BridgeMethodName[] = [
   "workspaces.list",
   "workspaces.open",
   "workspaces.close",
+  "workspaces.browse",
   "codemap.cross",
 ];
 

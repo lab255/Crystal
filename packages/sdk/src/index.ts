@@ -15,7 +15,7 @@
 export { Crystal, type CrystalProps } from "./Crystal.js";
 export { CrystalShell, type CrystalShellProps } from "./CrystalShell.js";
 export { mountCrystal, type CrystalInstance } from "./mount.js";
-export { CRYSTAL_MODES, MODE_LABELS, type CrystalMode } from "./modes.js";
+export { CRYSTAL_MODES, MODE_LABELS, WORKSPACE_FACETS, type CrystalMode } from "./modes.js";
 
 // Data layer
 export {

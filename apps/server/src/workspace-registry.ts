@@ -9,6 +9,7 @@ import type {
   CrossPackageUse,
   CrossWorkspaceEdge,
   CrossWorkspaceMap,
+  RecentWorkspace,
   WorkspaceDescriptor,
 } from "@crystal/core";
 import { AgentManager } from "./agent-manager.js";
@@ -27,6 +28,9 @@ const INDEX_FILE_RE = /^\.crystal\/index\//;
 function openWorkspacesFile(): string {
   return path.join(os.homedir(), ".crystal", "open-workspaces.json");
 }
+
+/** How many recently-opened workspaces the reopen list keeps. */
+const MAX_RECENTS = 12;
 
 /** realpath expands Windows 8.3 short paths, which crash libuv's recursive fs watcher. */
 export function canonicalRoot(p: string): string {
@@ -144,6 +148,9 @@ export class WorkspaceRuntime {
 export class WorkspaceRegistry {
   private runtimes = new Map<string, WorkspaceRuntime>();
   private defaultId: string | null = null;
+  /** Reopen list, most recent last (map insertion order); loaded lazily from the persist file. */
+  private recentsByRoot = new Map<string, RecentWorkspace>();
+  private recentsLoad: Promise<void> | null = null;
 
   constructor(
     private readonly broadcast: Broadcast,
@@ -169,9 +176,47 @@ export class WorkspaceRegistry {
     this.runtimes.set(id, runtime);
     this.defaultId ??= id;
     runtime.start(this.broadcast);
+    await this.noteRecent(runtime);
     await this.persist();
     this.broadcast("workspaces.changed", {});
     return runtime;
+  }
+
+  /** Move `runtime` to the top of the reopen list (most recent last in the map). */
+  private async noteRecent(runtime: WorkspaceRuntime): Promise<void> {
+    await this.ensureRecentsLoaded();
+    this.recentsByRoot.delete(runtime.root);
+    this.recentsByRoot.set(runtime.root, {
+      root: runtime.root,
+      name: runtime.name,
+      lastOpenedAt: new Date().toISOString(),
+    });
+    while (this.recentsByRoot.size > MAX_RECENTS) {
+      const oldest = this.recentsByRoot.keys().next().value;
+      if (oldest === undefined) break;
+      this.recentsByRoot.delete(oldest);
+    }
+  }
+
+  /**
+   * The reopen list, most recent first. Open workspaces carry their live name
+   * (a rename mid-session beats the name captured at open time); gone
+   * directories are flagged `missing` rather than dropped, so a temporarily
+   * unmounted drive doesn't erase history.
+   */
+  async recents(): Promise<RecentWorkspace[]> {
+    await this.ensureRecentsLoaded();
+    const liveNames = new Map([...this.runtimes.values()].map((r) => [r.root, r.name]));
+    return Promise.all(
+      [...this.recentsByRoot.values()].reverse().map(async (r) => {
+        const stat = await fs.stat(r.root).catch(() => null);
+        return {
+          ...r,
+          name: liveNames.get(r.root) ?? r.name,
+          ...(stat?.isDirectory() ? {} : { missing: true }),
+        };
+      }),
+    );
   }
 
   /** Close a workspace (the last one cannot be closed). */
@@ -227,14 +272,41 @@ export class WorkspaceRegistry {
     }
   }
 
+  /** One-shot read of the persisted reopen list (pre-recents files just yield an empty list). */
+  private ensureRecentsLoaded(): Promise<void> {
+    return (this.recentsLoad ??= (async () => {
+      if (!this.persistFile) return;
+      try {
+        const parsed = JSON.parse(await fs.readFile(this.persistFile, "utf8"));
+        if (!Array.isArray(parsed?.recents)) return;
+        for (const r of parsed.recents) {
+          if (typeof r?.root === "string" && typeof r?.name === "string" && typeof r?.lastOpenedAt === "string") {
+            this.recentsByRoot.set(r.root, { root: r.root, name: r.name, lastOpenedAt: r.lastOpenedAt });
+          }
+        }
+      } catch {
+        /* first run or unreadable — start with an empty reopen list */
+      }
+    })());
+  }
+
   private async persist(): Promise<void> {
     const file = this.persistFile;
     if (!file) return;
+    // Loading first means a close() before any open() can't clobber stored recents.
+    await this.ensureRecentsLoaded();
     try {
       await fs.mkdir(path.dirname(file), { recursive: true });
       await fs.writeFile(
         file,
-        JSON.stringify({ roots: [...this.runtimes.values()].map((r) => r.root) }, null, 2),
+        JSON.stringify(
+          {
+            roots: [...this.runtimes.values()].map((r) => r.root),
+            recents: [...this.recentsByRoot.values()],
+          },
+          null,
+          2,
+        ),
         "utf8",
       );
     } catch (err) {

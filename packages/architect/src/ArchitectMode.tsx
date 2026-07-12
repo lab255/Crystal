@@ -147,10 +147,15 @@ export function ArchitectMode() {
     [setView],
   );
 
-  const tab = (v: ArchitectView, icon: React.ReactNode, label: React.ReactNode) => (
+  const tab = (
+    v: ArchitectView,
+    icon: React.ReactNode,
+    label: React.ReactNode,
+    onClick: () => void = () => setView(v),
+  ) => (
     <button
       type="button"
-      onClick={() => setView(v)}
+      onClick={onClick}
       className={cn(
         "flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
         view === v ? "bg-surface-3 text-ink" : "text-ink-muted hover:text-ink",
@@ -174,10 +179,8 @@ export function ArchitectMode() {
             </>,
           )}
           {tab("infra", <Globe2 className="h-3.5 w-3.5" />, "Infrastructure")}
-          {/* Cross-workspace map, reached from the canvas — shown only while open. */}
-          {view === "codemap"
-            ? tab("codemap", <Layers className="h-3.5 w-3.5" />, "Workspaces")
-            : null}
+          {/* Cross-workspace map — always one click away when reviewing how the systems relate. */}
+          {tab("codemap", <Layers className="h-3.5 w-3.5" />, "Workspaces", openWorkspacesMap)}
         </div>
       </header>
       <div className="min-h-0 flex-1">

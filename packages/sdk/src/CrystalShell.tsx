@@ -1,4 +1,4 @@
-import { Suspense, lazy, useEffect, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
 import {
   Activity,
   Boxes,
@@ -12,6 +12,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { parseDeepLink, workspaceLight, worstLight, type TrafficLight } from "@crystal/core";
+
 import {
   EMPTY_RUNS,
   EMPTY_TODOS,
@@ -24,12 +25,12 @@ import {
   useWorkspace,
   useWorkspaces,
 } from "@crystal/client";
-import { Spinner, StatusDot, Tooltip, TooltipProvider, TrafficLightDot, cn } from "@crystal/ui";
+import { Spinner, StatusDot, Tooltip, TooltipProvider, cn } from "@crystal/ui";
 import { CommandPalette } from "./CommandPalette.js";
 import { useDeepLinks } from "./deeplinks.js";
-import { CRYSTAL_MODES, MODE_LABELS, type CrystalMode } from "./modes.js";
+import { CRYSTAL_MODES, MODE_LABELS, WORKSPACE_FACETS, type CrystalMode } from "./modes.js";
 import { TerminalPanel } from "./TerminalPanel.js";
-import { WorkspacePicker } from "./WorkspacePicker.js";
+import { WorkspaceTabs } from "./WorkspaceTabs.js";
 
 // Each mode is a lazy chunk: react-flow/dagre and Monaco only download when
 // their mode is first opened. Once visited, a mode stays mounted so canvas and
@@ -100,9 +101,12 @@ export function CrystalShell({
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [terminalOpen, setTerminalOpen] = useState(false);
 
-  const { terminalsStore, workspacesStore } = useCrystal();
+  const { terminalsStore, workspacesStore, navStore } = useCrystal();
   const connection = useConnectionState();
   const activeWsId = useWorkspaces((s) => s.activeId);
+  const activeWsRoot = useWorkspaces(
+    (s) => s.workspaces.find((w) => w.id === s.activeId)?.root ?? null,
+  );
   const saving = useWorkspace((s) => Object.keys(s.pendingSaves).length > 0);
   const wsError = useWorkspace((s) => s.error);
   const runningRuns = useAgents((s) => s.runs.filter((r) => r.status === "running").length);
@@ -114,10 +118,35 @@ export function CrystalShell({
   );
   const attention = useFleetAttention(activeWsId);
 
-  function switchMode(next: CrystalMode): void {
-    updateNav({ mode: next });
-    onModeChange?.(next);
-  }
+  const switchMode = useCallback(
+    (next: CrystalMode): void => {
+      updateNav({ mode: next });
+      onModeChange?.(next);
+    },
+    [updateNav, onModeChange],
+  );
+
+  // Last facet visited per workspace: re-entering a workspace from the
+  // Overview restores where you were in it.
+  const lastFacet = useRef(new Map<string, CrystalMode>());
+  useEffect(() => {
+    if (mode !== "projects" && activeWsId) lastFacet.current.set(activeWsId, mode);
+  }, [mode, activeWsId]);
+
+  const selectWorkspace = useCallback(
+    (id: string): void => {
+      const ws = workspacesStore.getState();
+      if (ws.activeId !== id) ws.setActive(id);
+      // From the Overview, entering a workspace restores its last facet; from a
+      // facet, the facet is preserved — flipping between two workspaces'
+      // architectures is a single click per flip.
+      const current = navStore.getState().link.mode;
+      if (!current || current === "projects") {
+        switchMode(lastFacet.current.get(id) ?? "architect");
+      }
+    },
+    [workspacesStore, navStore, switchMode],
+  );
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -127,7 +156,14 @@ export function CrystalShell({
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
         setPaletteOpen(true);
-      } else if ((e.ctrlKey || e.metaKey) && ["1", "2", "3", "4", "5"].includes(e.key)) {
+      } else if ((e.ctrlKey || e.metaKey) && e.altKey && /^[1-9]$/.test(e.key)) {
+        // Workspace tabs are the top level: Ctrl+Alt+n jumps to the nth workspace.
+        const ws = workspacesStore.getState().workspaces[Number(e.key) - 1];
+        if (ws) {
+          e.preventDefault();
+          selectWorkspace(ws.id);
+        }
+      } else if ((e.ctrlKey || e.metaKey) && !e.altKey && ["1", "2", "3", "4", "5"].includes(e.key)) {
         e.preventDefault();
         switchMode(CRYSTAL_MODES[Number(e.key) - 1]!);
       } else if ((e.ctrlKey || e.metaKey) && e.key === "`") {
@@ -171,79 +207,85 @@ export function CrystalShell({
       window.removeEventListener("crystal:open-file", onOpenFile);
       window.removeEventListener("crystal:open-terminal", onOpenTerminal);
     };
-  }, []);
+  }, [switchMode, selectWorkspace, workspacesStore, terminalsStore]);
 
   return (
     <TooltipProvider>
       <div className="flex h-full min-h-0 flex-col bg-surface-0 text-ink">
+        {/* Top level: workspaces (plus the cross-workspace Overview and the opener). */}
         <header className="flex h-9 shrink-0 items-center gap-2 border-b border-edge bg-surface-1 px-2.5">
-          <div className="flex h-6 w-6 items-center justify-center rounded-lg bg-gradient-to-br from-crystal-500 to-prism-500 shadow-lg shadow-crystal-500/30">
+          <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-crystal-500 to-prism-500 shadow-lg shadow-crystal-500/30">
             <Gem className="h-4 w-4 text-white" />
           </div>
-          <WorkspacePicker />
+          <WorkspaceTabs
+            mode={mode}
+            attention={attention}
+            onHome={() => switchMode("projects")}
+            onSelectWorkspace={selectWorkspace}
+          />
         </header>
-        <div className="flex min-h-0 flex-1">
-          <nav className="flex w-12 shrink-0 flex-col items-center gap-1 border-r border-edge bg-surface-1 py-2.5">
-            {CRYSTAL_MODES.map((m, i) => {
-              const Icon = MODE_ICONS[m];
+
+        {/* Second level: facets of the active workspace. Nothing is highlighted
+            on the Overview — clicking a facet enters the active workspace. */}
+        <nav className="flex h-8 shrink-0 items-center gap-1 border-b border-edge bg-surface-1 px-2.5">
+          {WORKSPACE_FACETS.map((m) => {
+            const Icon = MODE_ICONS[m];
+            const badge = m === "orchestrate" ? runningRuns : m === "jobs" ? runningJobs : 0;
+            return (
+              <Tooltip
+                key={m}
+                content={MODE_LABELS[m]}
+                shortcut={`Ctrl+${CRYSTAL_MODES.indexOf(m) + 1}`}
+              >
+                <button
+                  type="button"
+                  onClick={() => switchMode(m)}
+                  aria-pressed={mode === m}
+                  className={cn(
+                    "flex h-6 items-center gap-1.5 rounded-md px-2 text-xs font-medium transition-colors",
+                    mode === m
+                      ? "bg-surface-3 text-ink"
+                      : "text-ink-muted hover:bg-surface-3/60 hover:text-ink",
+                  )}
+                >
+                  <Icon className="h-3.5 w-3.5" />
+                  {MODE_LABELS[m]}
+                  {badge > 0 ? (
+                    <span className="flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-info px-0.5 text-[9px] font-bold text-surface-0">
+                      {badge}
+                    </span>
+                  ) : null}
+                </button>
+              </Tooltip>
+            );
+          })}
+          {activeWsRoot ? (
+            <span className="ml-auto min-w-0 truncate text-[11px] text-ink-faint" title={activeWsRoot}>
+              {activeWsRoot}
+            </span>
+          ) : null}
+        </nav>
+
+        <div className="min-h-0 min-w-0 flex-1">
+          <Suspense
+            fallback={
+              <div className="flex h-full items-center justify-center">
+                <Spinner />
+              </div>
+            }
+          >
+            {/* Keyed by workspace: switching remounts modes with fresh, correctly-scoped
+                state. The projects overview is cross-workspace, so it survives switches. */}
+            {CRYSTAL_MODES.filter((m) => visited.has(m)).map((m) => {
+              const ModeComponent = MODE_COMPONENTS[m];
+              const key = m === "projects" ? m : `${m}:${activeWsId ?? ""}`;
               return (
-                <Tooltip key={m} content={MODE_LABELS[m]} shortcut={`Ctrl+${i + 1}`} side="right">
-                  <button
-                    type="button"
-                    onClick={() => switchMode(m)}
-                    aria-label={MODE_LABELS[m]}
-                    aria-pressed={mode === m}
-                    className={cn(
-                      "relative flex h-9 w-9 items-center justify-center rounded-lg transition-colors",
-                      mode === m
-                        ? "bg-crystal-500/20 text-crystal-300"
-                        : "text-ink-faint hover:bg-surface-3 hover:text-ink-muted",
-                    )}
-                  >
-                    {mode === m ? (
-                      <span className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-full bg-crystal-400" />
-                    ) : null}
-                    <Icon className="h-4.5 w-4.5" />
-                    {m === "orchestrate" && runningRuns > 0 ? (
-                      <span className="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-info px-0.5 text-[9px] font-bold text-surface-0">
-                        {runningRuns}
-                      </span>
-                    ) : null}
-                    {m === "projects" && (attention === "red" || attention === "yellow") ? (
-                      <TrafficLightDot light={attention} className="absolute -right-0.5 -top-0.5" />
-                    ) : null}
-                    {m === "jobs" && runningJobs > 0 ? (
-                      <span className="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-info px-0.5 text-[9px] font-bold text-surface-0">
-                        {runningJobs}
-                      </span>
-                    ) : null}
-                  </button>
-                </Tooltip>
+                <div key={key} className={cn("h-full", mode !== m && "hidden")}>
+                  <ModeComponent />
+                </div>
               );
             })}
-          </nav>
-
-          <div className="min-w-0 flex-1">
-            <Suspense
-              fallback={
-                <div className="flex h-full items-center justify-center">
-                  <Spinner />
-                </div>
-              }
-            >
-              {/* Keyed by workspace: switching remounts modes with fresh, correctly-scoped
-                  state. The projects overview is cross-workspace, so it survives switches. */}
-              {CRYSTAL_MODES.filter((m) => visited.has(m)).map((m) => {
-                const ModeComponent = MODE_COMPONENTS[m];
-                const key = m === "projects" ? m : `${m}:${activeWsId ?? ""}`;
-                return (
-                  <div key={key} className={cn("h-full", mode !== m && "hidden")}>
-                    <ModeComponent />
-                  </div>
-                );
-              })}
-            </Suspense>
-          </div>
+          </Suspense>
         </div>
 
         {terminalOpen ? <TerminalPanel onClose={() => setTerminalOpen(false)} /> : null}
@@ -286,7 +328,12 @@ export function CrystalShell({
           </footer>
         ) : null}
 
-        <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} onSwitchMode={switchMode} />
+        <CommandPalette
+          open={paletteOpen}
+          onOpenChange={setPaletteOpen}
+          onSwitchMode={switchMode}
+          onSelectWorkspace={selectWorkspace}
+        />
       </div>
     </TooltipProvider>
   );
