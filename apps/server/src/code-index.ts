@@ -143,7 +143,10 @@ export class CodeIndexService {
       let backlog = batch.files.length + batch.remaining;
       for (;;) {
         const run = await settled(batch.run.id);
-        if (run.status !== "completed") return;
+        if (run.status !== "completed") {
+          console.warn(`[crystal] full index stopped: batch run ${run.id} ${run.status}`);
+          return;
+        }
         // The enrichment file just landed; don't wait for the watcher debounce.
         this.invalidate();
         const stale = (await this.dispatchCandidates()).length;

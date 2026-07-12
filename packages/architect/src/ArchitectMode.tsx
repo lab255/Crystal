@@ -16,6 +16,7 @@ import {
   MoreHorizontal,
   PencilRuler,
   Plus,
+  RefreshCw,
   Sparkles,
   Trash2,
   X,
@@ -65,6 +66,7 @@ import {
   cn,
 } from "@crystal/ui";
 import { ArchitectCanvas } from "./ArchitectCanvas.js";
+import { detectDrift, driftSignature, type ArchDrift } from "./auto-map.js";
 import { CodeMapView, requestOpenFile } from "./codemap/CodeMapView.js";
 import { DuplicatesPanel } from "./codemap/DuplicatesPanel.js";
 import { ReviewPanel } from "./codemap/ReviewPanel.js";
@@ -466,6 +468,74 @@ function DiagramsView({
   const saving = Object.keys(pendingSaves).length > 0;
 
   const canSeed = canSeedFromCodeMap(codeSummary);
+
+  /* ---- auto-mapper: an empty diagram populates itself from the code map ---- */
+  // The server creates a blank "Overview" architecture for fresh workspaces;
+  // the moment the code map is analyzable, map it — nothing user-made is at
+  // stake (the graph has zero nodes) and the seed is fully editable after.
+  const autoMappedPaths = useRef(new Set<string>());
+  const selectedPathKey = selected?.path ?? null;
+  const selectedIsEmpty = selected != null && selected.graph.nodes.length === 0;
+  useEffect(() => {
+    if (loading || !infoLoaded || !selectedPathKey || !selectedIsEmpty || activeDraft) return;
+    if (!canSeedFromCodeMap(codeSummary)) return;
+    if (autoMappedPaths.current.has(selectedPathKey)) return;
+    autoMappedPaths.current.add(selectedPathKey);
+    const current = architectures.find((a) => a.path === selectedPathKey);
+    if (!current || current.graph.nodes.length > 0) return;
+    const seededGraph = seedFromCodeMap(current.graph, codeSummary);
+    updateArchitecture(selectedPathKey, seededGraph);
+    setOverlayOn(true);
+    const mapped = seededGraph.nodes.filter((n) => n.codeModule).length;
+    setNotice(
+      `Auto-mapped ${mapped} module${mapped === 1 ? "" : "s"} from the codebase. Edit freely — drift from the code will be flagged here.`,
+    );
+  }, [
+    loading,
+    infoLoaded,
+    selectedPathKey,
+    selectedIsEmpty,
+    activeDraft,
+    codeSummary,
+    architectures,
+    updateArchitecture,
+    setOverlayOn,
+  ]);
+
+  /* ---- drift detector: the saved diagram vs. the live code map ---- */
+  // Recomputes whenever the code map re-analyzes (codemap.changed refreshes
+  // codeSummary) or the diagram is edited. Structural changes only — see
+  // auto-map.ts. Hidden while a draft is open: drafts have their own rebase.
+  const drift = useMemo<ArchDrift | null>(
+    () => (selected && !activeDraft ? detectDrift(selected.graph, codeSummary) : null),
+    [selected, activeDraft, codeSummary],
+  );
+  const [driftDismissed, setDriftDismissed] = useState<string | null>(null);
+  const driftSig = drift && selected ? driftSignature(selected.path, drift) : null;
+  const driftVisible = drift != null && driftSig !== driftDismissed;
+
+  /** One click: write the code map's projection over the diagram. */
+  const syncDrift = useCallback(() => {
+    if (!selected || !drift) return;
+    updateArchitecture(selected.path, drift.projected);
+    setNotice(
+      `Diagram synced to the code — ${drift.total} change${drift.total === 1 ? "" : "s"} applied.`,
+    );
+  }, [selected, drift, updateArchitecture]);
+
+  /** Review first: the projection becomes a draft, opened in split review. */
+  const reviewDrift = useCallback(async () => {
+    if (!selected || !drift) return;
+    const draft = newArchDraft(
+      "Code drift",
+      selected.path,
+      selected.graph,
+      new Date().toISOString(),
+    );
+    const created = await createDraftFile({ ...draft, graph: drift.projected });
+    setDraftPath(created.path);
+    setReviewOn(true);
+  }, [selected, drift, createDraftFile, setDraftPath, setReviewOn]);
 
   async function handleCreate() {
     const name = newName.trim();
@@ -878,6 +948,14 @@ function DiagramsView({
                       onRemove={removeRefactor}
                     />
                   }
+                />
+              ) : null}
+              {!activeDraft && driftVisible && drift ? (
+                <DriftBar
+                  drift={drift}
+                  onSync={syncDrift}
+                  onReview={() => void reviewDrift()}
+                  onDismiss={() => setDriftDismissed(driftSig)}
                 />
               ) : null}
               <ApplyRefactorsDialog
@@ -1331,6 +1409,54 @@ function SeedChoice({
       </span>
       <span className="mt-1 block text-[10.5px] leading-snug text-ink-faint">{children}</span>
     </button>
+  );
+}
+
+/**
+ * Floating bar shown when the code has structurally drifted from the diagram
+ * (modules or import relationships appeared/disappeared): sync in one click,
+ * or stage the projection as a draft and review it side by side. Dismissing
+ * hides this exact drift; any further code movement re-surfaces it.
+ */
+function DriftBar({
+  drift,
+  onSync,
+  onReview,
+  onDismiss,
+}: {
+  drift: ArchDrift;
+  onSync: () => void;
+  onReview: () => void;
+  onDismiss: () => void;
+}) {
+  return (
+    <div className="absolute left-1/2 top-3 z-20 flex -translate-x-1/2 items-center gap-2 rounded-xl border border-info/40 bg-surface-2/95 py-1 pl-2.5 pr-1 shadow-xl shadow-black/30 backdrop-blur">
+      <GitCompareArrows className="h-3.5 w-3.5 shrink-0 text-info" />
+      <Tooltip content={drift.items.join(" · ")}>
+        <span className="text-xs font-semibold text-ink">
+          Code drift — {drift.total} change{drift.total === 1 ? "" : "s"}
+        </span>
+      </Tooltip>
+      <span className="hidden max-w-64 truncate text-[10px] text-ink-faint md:inline">
+        {drift.items.slice(0, 2).join(" · ")}
+      </span>
+      <div className="h-4 w-px bg-edge" />
+      <Tooltip content="Update the diagram to match the code — hand-drawn nodes, notes and flows stay untouched">
+        <Button variant="primary" size="xs" onClick={onSync}>
+          <RefreshCw className="h-3 w-3" /> Sync
+        </Button>
+      </Tooltip>
+      <Tooltip content="Stage the changes as a draft and review them side by side first">
+        <Button variant="secondary" size="xs" onClick={onReview}>
+          <GitCompareArrows className="h-3 w-3" /> Review
+        </Button>
+      </Tooltip>
+      <Tooltip content="Hide until the code moves again">
+        <Button variant="ghost" size="icon-sm" onClick={onDismiss} aria-label="Dismiss drift">
+          <X className="h-3.5 w-3.5" />
+        </Button>
+      </Tooltip>
+    </div>
   );
 }
 

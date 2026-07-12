@@ -206,6 +206,10 @@ export class AgentManager {
     run.status = "running";
     run.startedAt = nowIso();
     this.emitRunChanged(run);
+    // Persist the live run now: if the server dies mid-run, ensureLoaded()
+    // still finds the record and settles it as failed instead of the run
+    // (and any chained work watching it) vanishing without a trace.
+    await this.persist(run);
 
     // Prompt goes over stdin — no shell quoting of user text, ever. Specialist
     // skills ride along as a trailing directive.

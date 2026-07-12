@@ -125,6 +125,16 @@ function IndexSection({
   const busy = runs.some(
     (r) => r.purpose === "index" && (r.status === "running" || r.status === "queued"),
   );
+  // A full scan chains runs until the backlog drains; if the newest index run
+  // ended failed/cancelled while files are still stale, the chain broke off —
+  // say so, or the user is left staring at a silently frozen stale count.
+  const lastRun = runs.find((r) => r.purpose === "index");
+  const interrupted =
+    !busy &&
+    (scoped?.indexStale ?? 0) > 0 &&
+    (lastRun?.status === "failed" || lastRun?.status === "cancelled")
+      ? lastRun
+      : null;
 
   async function run(next: JobScope): Promise<void> {
     setScope(next);
@@ -180,6 +190,12 @@ function IndexSection({
         />
       </div>
       {notice ? <p className="mt-2 text-[11px] text-warn">{notice}</p> : null}
+      {!notice && interrupted ? (
+        <p className="mt-2 text-[11px] text-warn">
+          The last index run {interrupted.status === "cancelled" ? "was cancelled" : "failed"} —
+          indexing picks up where it left off when you run it again.
+        </p>
+      ) : null}
     </Section>
   );
 }
