@@ -19,6 +19,7 @@ import {
   buildSystemOverview,
   computeReviewFindings,
   createArchDraft,
+  diffSystemOverviews,
   suggestFacets,
 } from "@crystal/core";
 import { browseDirs } from "./browse.js";
@@ -26,7 +27,7 @@ import { createConsoleHandler, resolveConsoleDir } from "./console-static.js";
 import { deleteAt, listDir, mkdirAt, readFileCapped, renameAt, writeFileAt } from "./fs-api.js";
 import { changedFiles, gitLog, gitStatus } from "./git.js";
 import { handleMcpRequest, isMcpRequest } from "./mcp/http.js";
-import { snapshotAtRef } from "./ref-snapshot.js";
+import { overviewSourcesAtRef, snapshotAtRef } from "./ref-snapshot.js";
 import { WorkspaceRegistry } from "./workspace-registry.js";
 
 type Handlers = {
@@ -263,6 +264,18 @@ export async function startCrystalServer(opts: {
         ...buildSystemOverview(sources, index),
         generatedAt: new Date().toISOString(),
       };
+    },
+    "codemap.overviewDiff": async ({ ws, ref, repoPath }) => {
+      const rt = registry.get(ws);
+      const [headSources, { index }, atRef] = await Promise.all([
+        rt.codemap.overviewSourceFiles(),
+        rt.codeindex.get(),
+        overviewSourcesAtRef(rt.root, repoPath ?? ".", ref),
+      ]);
+      const generatedAt = new Date().toISOString();
+      const head = { ...buildSystemOverview(headSources, index), generatedAt };
+      const base = { ...buildSystemOverview(atRef.sources, index), generatedAt };
+      return { ref, commit: atRef.commit, base, head, diff: diffSystemOverviews(base, head) };
     },
     "codemap.symbolSource": ({ ws, file, symbol }) =>
       registry.get(ws).codemap.symbolSource(file, symbol),

@@ -18,6 +18,7 @@ import type {
 import type { Project } from "./project.js";
 import type { RefactorApplyResult, RefactorIntent, RefactorPlan } from "./refactor.js";
 import type { SystemOverview } from "./system-overview.js";
+import type { SystemOverviewDiff } from "./system-insights.js";
 import type { TerminalChunk, TerminalInfo } from "./terminal.js";
 import type { TodoList } from "./todo.js";
 import type { WorkspaceManifest } from "./workspace.js";
@@ -285,6 +286,21 @@ export interface BridgeMethods {
    * and weighted inter-system links (see system-overview.ts).
    */
   "codemap.overview": { params: WsScope; result: SystemOverview };
+  /**
+   * Systems-level ref review: the overview at a git ref (branch / commit / PR
+   * head) diffed against the working tree — which systems appeared, which
+   * links and external services changed. `repoPath` scopes to a nested repo.
+   */
+  "codemap.overviewDiff": {
+    params: WsScope & { ref: string; repoPath?: string };
+    result: {
+      ref: string;
+      commit: string;
+      base: SystemOverview;
+      head: SystemOverview;
+      diff: SystemOverviewDiff;
+    };
+  };
   /** Source text of one top-level symbol (capped). */
   "codemap.symbolSource": {
     params: WsScope & { file: string; symbol: string };

@@ -217,6 +217,98 @@ describe("buildSystemOverview", () => {
     expect(payments.intents.map((i) => i.value)).toContain("payments");
   });
 
+  it("keeps a small app whole instead of splitting out presentation dirs", () => {
+    // 8-file React app: components/hooks/pages must fold into one system —
+    // no fake "App imports its own pages" cycles.
+    const web = "apps/web";
+    const overview = buildSystemOverview([
+      src(`${web}/src/App.tsx`, web, {
+        imports: [{ from: `${web}/src/pages/Home.tsx`, names: ["HomePage"] }],
+      }),
+      src(`${web}/src/api.ts`, web, { exports: ["apiClient"] }),
+      src(`${web}/src/pages/Home.tsx`, web, { exports: ["HomePage"] }),
+      src(`${web}/src/pages/Booking.tsx`, web, { exports: ["BookingPage"] }),
+      src(`${web}/src/components/Header.tsx`, web, { exports: ["Header"] }),
+      src(`${web}/src/components/Card.tsx`, web, { exports: ["Card"] }),
+      src(`${web}/src/hooks/useBooking.ts`, web, {
+        imports: [{ from: `${web}/src/api.ts`, names: ["apiClient"] }],
+      }),
+      src(`${web}/src/hooks/useAvailability.ts`, web, { exports: ["useAvailability"] }),
+    ]);
+    expect(overview.systems.map((s) => s.name)).toEqual(["Web"]);
+    expect(overview.links).toEqual([]);
+  });
+
+  it("splits presentation dirs out of packages large enough to warrant it", () => {
+    const web = "apps/web";
+    const files = [
+      ...Array.from({ length: 28 }, (_, i) => src(`${web}/src/f${i}.ts`, web)),
+      src(`${web}/src/components/Header.tsx`, web, { exports: ["Header"] }),
+      src(`${web}/src/components/Card.tsx`, web, { exports: ["Card"] }),
+    ];
+    const overview = buildSystemOverview(files);
+    expect(overview.systems.map((s) => s.name).sort()).toEqual(["Components", "Web"]);
+  });
+
+  it("keeps shared packages structural — tags never rename them to a concept", () => {
+    // A shared/ package full of money helpers is still "Shared", not "Payments".
+    const overview = buildSystemOverview([
+      src("shared/money.ts", "shared", { exports: ["Money", "addMoney"] }),
+      src("shared/invoice.ts", "shared", { exports: ["invoiceTotal"] }),
+      src("server/src/app.ts", "server", {
+        imports: [{ from: "shared/money.ts", names: ["Money"] }],
+      }),
+      src("server/src/billing.ts", "server", { exports: ["charge"] }),
+    ]);
+    const shared = overview.systems.find((s) => s.parts.some((p) => p.pkg === "shared"));
+    expect(shared?.name).toBe("Shared");
+    expect(shared?.concept).toBeNull();
+    expect(shared?.role).toBe("shared");
+  });
+
+  it("names a flat root workspace after its package, roles persistence as data", () => {
+    const overview = buildSystemOverview([
+      { ...src("index.ts", ".", { exports: ["main"] }), pkgName: "driftwood" },
+      { ...src("util.ts", "."), pkgName: "driftwood" },
+      src("packages/db/src/client.ts", "packages/db", { exports: ["createDatabase"] }),
+      src("packages/db/src/repos.ts", "packages/db", { exports: ["BookingsRepository"] }),
+    ]);
+    expect(overview.systems.map((s) => s.name).sort()).toEqual(["Driftwood", "Persistence"]);
+    expect(overview.systems.find((s) => s.name === "Persistence")?.role).toBe("data");
+  });
+
+  it("quarantines fixture codebases from the host repo's systems", () => {
+    const overview = buildSystemOverview([
+      // Host repo core + an example's core with the same name.
+      src("packages/core/src/model.ts", "packages/core", { exports: ["createModel"] }),
+      src("packages/core/src/graph.ts", "packages/core", { exports: ["diffGraphs"] }),
+      src("examples/demoapp/packages/core/src/booking.ts", "examples/demoapp/packages/core", {
+        exports: ["createBooking"],
+      }),
+      src("examples/demoapp/packages/core/src/fare.ts", "examples/demoapp/packages/core", {
+        exports: ["fareQuote"],
+      }),
+    ]);
+    const names = overview.systems.map((s) => s.name).sort();
+    expect(names).toEqual(["Core", "Core (demoapp)"]);
+  });
+
+  it("keeps design-system packages shared, never concept-renamed", () => {
+    // "token" is an auth lexicon word — design tokens must not make the UI
+    // package the Authentication system.
+    const overview = buildSystemOverview([
+      src("packages/ui/src/tokens.ts", "packages/ui", { exports: ["colorTokens", "spaceTokens"] }),
+      src("packages/ui/src/Button.tsx", "packages/ui", { exports: ["Button"] }),
+      src("apps/web/src/App.tsx", "apps/web", {
+        imports: [{ from: "packages/ui/src/Button.tsx", names: ["Button"] }],
+      }),
+      src("apps/web/src/main.tsx", "apps/web", {}),
+    ]);
+    const ui = overview.systems.find((s) => s.parts.some((p) => p.pkg === "packages/ui"));
+    expect(ui?.name).toBe("Ui");
+    expect(ui?.role).toBe("shared");
+  });
+
   it("is deterministic", () => {
     const a = buildSystemOverview(formsgLikeSources());
     const b = buildSystemOverview([...formsgLikeSources()].reverse());

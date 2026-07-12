@@ -42,6 +42,8 @@ export interface OverviewSourceFile {
   path: string;
   /** Owning code-map module (package) path — "." at the workspace root. */
   pkg: string;
+  /** Display name of the owning package (used to name root-level residuals). */
+  pkgName?: string;
   /** Test files are excluded from clustering and edge weights. */
   test?: boolean;
   imports: {
@@ -146,7 +148,16 @@ const CONCEPT_MERGE_SHARE = 0.75;
 /** …and at least this much absolute weight. */
 const CONCEPT_MERGE_WEIGHT = 3;
 /** Name lists for role detection. */
-const SHARED_NAMES = new Set(["shared", "common", "utils", "util", "helpers", "lib", "types", "constants", "config"]);
+const SHARED_NAMES = new Set([
+  "shared", "common", "utils", "util", "helpers", "lib", "types", "constants",
+  "config", "ui", "design-system",
+]);
+/**
+ * Top-level dirs holding self-contained sample codebases. Units inside one
+ * are scoped to it: a fixture's "core" must never fuse with the host repo's
+ * core (or with another fixture's) just because the names match.
+ */
+const FIXTURE_DIRS = new Set(["examples", "example", "fixtures", "__fixtures__", "samples", "demos", "testdata"]);
 const ENTRY_NAMES = new Set(["routes", "pages", "views", "main", "cli", "bin", "scripts", "loaders", "bootstrap"]);
 const INTEGRATION_NAMES = new Set(["integrations", "external", "webhooks"]);
 /**
@@ -159,6 +170,13 @@ const STRUCTURAL_NAMES = new Set([
   "components", "pages", "views", "templates", "hooks", "assets", "theme",
   "styles", "icons", "stories", "mocks", "i18n",
 ]);
+/**
+ * A structural dir only becomes its own system inside a package of at least
+ * this many files. A 14-file React app is one system, not four — splitting
+ * its components/ and hooks/ out manufactures cycles ("App imports its own
+ * pages") that no reviewer should be shown.
+ */
+const STRUCTURAL_SPLIT_MIN_PKG_FILES = 30;
 /** Fraction of files importing a SaaS-ish external service that marks an integration unit. */
 const INTEGRATION_FILE_SHARE = 0.5;
 /** Fraction of files importing a database/cache client that marks a data-layer unit. */
@@ -167,7 +185,7 @@ const DATA_FILE_SHARE = 0.5;
 const SHARED_FAN_IN_SHARE = 0.6;
 const EXPORTS_CAP = 40;
 const EXTERNALS_CAP = 12;
-const LINK_SYMBOLS_CAP = 6;
+const LINK_SYMBOLS_CAP = 12;
 const INTENTS_CAP = 5;
 
 /* ------------------------------------------------------------------ */
@@ -201,6 +219,12 @@ function titleCase(name: string): string {
 
 const slug = (value: string): string =>
   value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "root";
+
+/** Fixture scope of a unit path ("examples/harborview"), or "" for the main tree. */
+function fixtureScopeOf(unitPath: string): string {
+  const [first, second] = unitPath.split("/");
+  return first && second && FIXTURE_DIRS.has(first) ? `${first}/${second}` : "";
+}
 
 /* ------------------------------------------------------------------ */
 /* Stage A — structural units                                          */
@@ -249,7 +273,12 @@ function buildDirTree(files: readonly OverviewSourceFile[], pkgPath: string): Di
 function unitsOfPackage(pkgPath: string, pkgFiles: readonly OverviewSourceFile[]): Unit[] {
   const sorted = [...pkgFiles].sort((a, b) => a.path.localeCompare(b.path));
   const tree = buildDirTree(sorted, pkgPath);
-  const pkgName = lastSegment(pkgPath === "." ? "root" : pkgPath);
+  // Residuals are named for the package: its directory, or (at the workspace
+  // root, where there is no directory to speak of) its declared name.
+  const pkgName =
+    pkgPath === "."
+      ? lastSegment(pkgFiles[0]?.pkgName ?? "root")
+      : lastSegment(pkgPath);
   const units: Unit[] = [];
   const residual: OverviewSourceFile[] = [];
 
@@ -276,10 +305,15 @@ function unitsOfPackage(pkgPath: string, pkgFiles: readonly OverviewSourceFile[]
   collect(tree, "", true);
 
   // Tiny units fold into the residual — a one-file directory is not a system.
+  // Structural dirs (components/, pages/…) fold too unless the package is big
+  // enough that its presentation layers are systems in their own right.
+  const smallPkg = sorted.length < STRUCTURAL_SPLIT_MIN_PKG_FILES;
   const kept: Unit[] = [];
   for (const unit of units) {
-    if (unit.files.length < UNIT_MIN_FILES) residual.push(...unit.files);
-    else kept.push(unit);
+    const structural = STRUCTURAL_NAMES.has(unit.name.toLowerCase());
+    if (unit.files.length < UNIT_MIN_FILES || (structural && smallPkg)) {
+      residual.push(...unit.files);
+    } else kept.push(unit);
   }
   if (residual.length > 0 || kept.length === 0) {
     kept.push({
@@ -339,8 +373,11 @@ function profileUnit(
 
   // The unit's own name asserting a concept is stronger evidence than any
   // tag mass — a directory called "auth" *is* the authentication module.
-  // Structural dirs (components/, templates/…) never take a concept at all.
-  const structural = STRUCTURAL_NAMES.has(unit.name.toLowerCase());
+  // Structural and shared dirs (components/, shared/, utils/…) never take a
+  // concept at all: a shared package full of money helpers is still the
+  // shared package, not the payments system.
+  const lowerName = unit.name.toLowerCase();
+  const structural = STRUCTURAL_NAMES.has(lowerName) || SHARED_NAMES.has(lowerName);
   const nameWords = new Set(structural ? [] : identifierWords(unit.name));
   let nameConcept: string | null = null;
   for (const def of lexicon) {
@@ -401,13 +438,20 @@ function clusterUnits(profiles: UnitProfile[], lexicon: readonly ConceptDef[]): 
   for (const profile of profiles) {
     // Concept-keyed when the unit's name asserts it or the tags dominate;
     // otherwise units of the same (singularized) name merge across packages.
+    // Fixture scopes partition both kinds of merge — and mark the name, so
+    // a host repo's Core and an example's Core stay tell-apart-able.
     const byConcept = profile.concept != null && (profile.nameAsserted || profile.intents.size > 0);
-    const key = byConcept ? `concept:${profile.concept}` : `name:${nameKeyOf(profile.unit.name)}`;
+    const scope = fixtureScopeOf(profile.unit.path);
+    const key =
+      `${scope}::` +
+      (byConcept ? `concept:${profile.concept}` : `name:${nameKeyOf(profile.unit.name)}`);
     let cluster = clusters.get(key);
     if (!cluster) {
-      const name = byConcept
+      const base = byConcept
         ? conceptDisplayName(profile.concept!, lexicon)
         : titleCase(profile.unit.name);
+      const scopeTag = lastSegment(scope);
+      const name = scope && slug(base) !== slug(scopeTag) ? `${base} (${scopeTag})` : base;
       clusters.set(
         key,
         (cluster = { key, concept: byConcept ? profile.concept : null, name, profiles: [] }),
@@ -463,9 +507,20 @@ export function buildSystemOverview(
     for (let n = 2; usedIds.has(id); n++) id = `sys:${slug(cluster.concept ?? cluster.name)}-${n}`;
     usedIds.add(id);
 
-    const parts: SystemPart[] = cluster.profiles
+    // Nested units that clustered together read as one part — "services/api"
+    // + "services/api/src/handlers" is just services/api to a reviewer.
+    const rawParts = cluster.profiles
       .map((p) => ({ path: p.unit.path, pkg: p.unit.pkg, fileCount: p.unit.files.length }))
-      .sort((a, b) => b.fileCount - a.fileCount || a.path.localeCompare(b.path));
+      .sort((a, b) => a.path.length - b.path.length || a.path.localeCompare(b.path));
+    const parts: SystemPart[] = [];
+    for (const part of rawParts) {
+      const ancestor = parts.find(
+        (p) => part.path === p.path || part.path.startsWith(`${p.path}/`),
+      );
+      if (ancestor) ancestor.fileCount += part.fileCount;
+      else parts.push({ ...part });
+    }
+    parts.sort((a, b) => b.fileCount - a.fileCount || a.path.localeCompare(b.path));
     const memberFiles = cluster.profiles.flatMap((p) => p.unit.files);
     for (const f of memberFiles) systemOfFile.set(f.path, id);
 
@@ -523,7 +578,7 @@ export function buildSystemOverview(
       ? "integration"
       : integrationFiles / memberCount >= INTEGRATION_FILE_SHARE
         ? "integration"
-        : dataFiles / memberCount >= DATA_FILE_SHARE
+        : dataFiles / memberCount >= DATA_FILE_SHARE || cluster.concept === "persistence"
           ? "data"
           : nameIn(ENTRY_NAMES)
             ? "entry"
