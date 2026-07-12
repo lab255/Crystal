@@ -111,6 +111,12 @@ export interface CodeSymbol {
   /** 1-based inclusive last line of the declaration. */
   endLine?: number;
   exported?: boolean;
+  /**
+   * Compact declaration signature for function-like symbols —
+   * `"(a: string, b?: number): Promise<Foo>"`. Whitespace-collapsed and
+   * length-capped by the analyzer; absent for non-callables.
+   */
+  signature?: string;
 }
 
 export interface CodeImport {

@@ -171,14 +171,14 @@ export function ArchitectMode() {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <header className="flex items-center gap-2 border-b border-edge bg-surface-1 px-3 py-1.5">
-        <span className="text-[13px] font-semibold text-ink">Architecture</span>
+        <span className="text-[13px] font-semibold text-ink">Code graph</span>
         <div className="ml-auto flex items-center gap-0.5 rounded-lg bg-surface-2 p-0.5">
           {tab("systems", <Boxes className="h-3.5 w-3.5" />, "Systems")}
           {tab(
             "diagrams",
             <PencilRuler className="h-3.5 w-3.5" />,
             <>
-              Architecture
+              Diagrams
               <span className="rounded-full bg-ok/15 px-1.5 text-[9px] text-ok">live</span>
             </>,
           )}

@@ -3,6 +3,9 @@ import { buildCodeIndex, type IndexSourceFile } from "./code-index.js";
 import {
   buildSystemOverview,
   npmPackageOf,
+  routeSegments,
+  routesMatch,
+  type HttpEndpoint,
   type OverviewSourceFile,
   type SystemModule,
 } from "./system-overview.js";
@@ -12,21 +15,29 @@ function src(
   path: string,
   pkg: string,
   opts: {
-    exports?: string[];
+    exports?: (string | { name: string; signature?: string })[];
     imports?: { from?: string; names?: string[]; external?: string }[];
     test?: boolean;
+    endpoints?: HttpEndpoint[];
+    apiCalls?: HttpEndpoint[];
   } = {},
 ): OverviewSourceFile {
   return {
     path,
     pkg,
     test: opts.test,
-    exports: (opts.exports ?? []).map((name) => ({ name, kind: "function" as const })),
+    exports: (opts.exports ?? []).map((e) =>
+      typeof e === "string"
+        ? { name: e, kind: "function" as const }
+        : { name: e.name, kind: "function" as const, signature: e.signature },
+    ),
     imports: (opts.imports ?? []).map((i) => ({
       specifier: i.external ?? `./${i.from}`,
       resolved: i.external ? null : (i.from ?? null),
       names: i.names ?? [],
     })),
+    endpoints: opts.endpoints,
+    apiCalls: opts.apiCalls,
   };
 }
 
@@ -313,5 +324,97 @@ describe("buildSystemOverview", () => {
     const a = buildSystemOverview(formsgLikeSources());
     const b = buildSystemOverview([...formsgLikeSources()].reverse());
     expect(JSON.stringify(a)).toBe(JSON.stringify(b));
+  });
+});
+
+describe("layers", () => {
+  it("classifies frontend by UI-file share, database and integrations by role", () => {
+    const overview = buildSystemOverview([
+      // frontend: mostly .tsx
+      src("apps/web/src/booking/BookingPage.tsx", "apps/web", { exports: ["BookingPage"] }),
+      src("apps/web/src/booking/BookingList.tsx", "apps/web", {}),
+      // backend: plain ts domain logic (name must not share a concept with the
+      // frontend unit, or the two would fuse into one cross-package system)
+      src("apps/api/src/matching/matching.service.ts", "apps/api", { exports: ["matchDriver"] }),
+      src("apps/api/src/matching/matching.rules.ts", "apps/api", {}),
+      // database: repository files importing a db client
+      src("apps/api/src/store/booking.repo.ts", "apps/api", {
+        exports: ["saveBooking"],
+        imports: [{ external: "mongoose" }],
+      }),
+      src("apps/api/src/store/user.repo.ts", "apps/api", { imports: [{ external: "mongoose" }] }),
+      // integrations: SaaS-heavy unit
+      src("apps/api/src/webhooks/stripe.hook.ts", "apps/api", { imports: [{ external: "stripe" }] }),
+      src("apps/api/src/webhooks/twilio.hook.ts", "apps/api", { imports: [{ external: "twilio" }] }),
+    ]);
+    const layerOf = (part: string): string | undefined =>
+      overview.systems.find((s) => s.parts.some((p) => p.path.includes(part)))?.layer;
+    expect(layerOf("web/src/booking")).toBe("frontend");
+    expect(layerOf("api/src/matching")).toBe("backend");
+    expect(layerOf("store")).toBe("database");
+    expect(layerOf("webhooks")).toBe("integrations");
+  });
+});
+
+describe("signatures and link details", () => {
+  it("threads export signatures into consumed exports and link details", () => {
+    const sig = "(id: string): Promise<Form>";
+    const overview = buildSystemOverview([
+      src("src/form/form.service.ts", ".", {
+        exports: [{ name: "getFormById", signature: sig }],
+      }),
+      src("src/form/form.helpers.ts", ".", {}),
+      src("src/submission/submit.ts", ".", {
+        imports: [{ from: "src/form/form.service.ts", names: ["getFormById"] }],
+      }),
+      src("src/submission/validate.ts", ".", {}),
+    ]);
+    const form = overview.systems.find((s) => s.parts.some((p) => p.path === "src/form"))!;
+    expect(form.exports[0]?.signature).toBe(sig);
+    const link = overview.links.find((l) => l.target === form.id);
+    expect(link?.details?.[0]).toMatchObject({ name: "getFormById", count: 1, signature: sig });
+  });
+});
+
+describe("API links", () => {
+  it("matches outgoing HTTP calls to served routes across systems", () => {
+    const overview = buildSystemOverview([
+      // server system: two files, one serving routes
+      src("apps/api/src/routes/booking.routes.ts", "apps/api", {
+        endpoints: [
+          { method: "POST", path: "/api/bookings" },
+          { method: "GET", path: "/api/bookings/:id" },
+        ],
+      }),
+      src("apps/api/src/routes/health.routes.ts", "apps/api", {}),
+      // client system: calls the server over the wire, no imports
+      src("apps/web/src/booking/api.ts", "apps/web", {
+        apiCalls: [
+          { method: "POST", path: "/api/bookings" },
+          { method: "GET", path: "/api/bookings/*" }, // template hole
+          { method: "GET", path: "/api/unknown" }, // no matching route
+        ],
+      }),
+      src("apps/web/src/booking/Booking.tsx", "apps/web", {}),
+    ]);
+    const web = overview.systems.find((s) => s.parts.some((p) => p.path.startsWith("apps/web")))!;
+    const api = overview.systems.find((s) => s.parts.some((p) => p.path.startsWith("apps/api")))!;
+    expect(api.endpoints.map((e) => e.path)).toContain("/api/bookings");
+    const link = overview.links.find((l) => l.source === web.id && l.target === api.id);
+    expect(link).toBeDefined();
+    expect(link?.weight).toBe(0); // API-only edge, no imports
+    expect(link?.apis?.map((a) => `${a.method} ${a.path}`).sort()).toEqual([
+      "GET /api/bookings/:id",
+      "POST /api/bookings",
+    ]);
+  });
+
+  it("normalizes and matches route paths across param conventions", () => {
+    expect(routeSegments("/api/users/:id")).toEqual(["api", "users", "*"]);
+    expect(routeSegments("https://api.example.com/v1/users/{id}")).toEqual(["v1", "users", "*"]);
+    expect(routeSegments("/api/users/*/posts")).toEqual(["api", "users", "*", "posts"]);
+    expect(routesMatch(routeSegments("/api/users/42"), routeSegments("/api/users/:id"))).toBe(true);
+    expect(routesMatch(routeSegments("/api/users/*"), routeSegments("/api/users/:id"))).toBe(true);
+    expect(routesMatch(routeSegments("/api/users"), routeSegments("/api/users/:id"))).toBe(false);
   });
 });

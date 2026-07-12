@@ -8,6 +8,7 @@ export * from "./components/Switch.js";
 export * from "./components/Spinner.js";
 export * from "./components/Kbd.js";
 export * from "./components/Tooltip.js";
+export * from "./components/Combobox.js";
 export * from "./components/ContextMenu.js";
 export * from "./components/Dialog.js";
 export * from "./components/DropdownMenu.js";

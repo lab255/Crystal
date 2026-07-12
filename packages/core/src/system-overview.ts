@@ -54,7 +54,19 @@ export interface OverviewSourceFile {
     /** Imported names ("default" / "*" included). */
     names: string[];
   }[];
-  exports: { name: string; kind: CodeSymbolKind }[];
+  exports: { name: string; kind: CodeSymbolKind; signature?: string }[];
+  /** HTTP routes this file serves (`app.get("/x")`, Next route files…). */
+  endpoints?: HttpEndpoint[];
+  /** Outgoing HTTP calls this file makes (`fetch("/x")`, `axios.post`…). */
+  apiCalls?: HttpEndpoint[];
+}
+
+/** One HTTP surface point — a served route or an outgoing call. */
+export interface HttpEndpoint {
+  /** Upper-case verb; "ALL" when the handler catches every method. */
+  method: string;
+  /** Path as written ("/api/users/:id"); template holes appear as "*". */
+  path: string;
 }
 
 /* ------------------------------------------------------------------ */
@@ -63,6 +75,21 @@ export interface OverviewSourceFile {
 
 export const SYSTEM_ROLES = ["domain", "integration", "shared", "entry", "data"] as const;
 export type SystemRole = (typeof SYSTEM_ROLES)[number];
+
+/**
+ * Architectural layer — the coarse frontend / backend / database /
+ * dependencies-and-integrations split the systems view can group by.
+ * Derived from role + file-extension evidence, never persisted.
+ */
+export const SYSTEM_LAYERS = ["frontend", "backend", "database", "integrations"] as const;
+export type SystemLayer = (typeof SYSTEM_LAYERS)[number];
+
+export const SYSTEM_LAYER_LABELS: Record<SystemLayer, string> = {
+  frontend: "Frontend",
+  backend: "Backend",
+  database: "Database",
+  integrations: "Dependencies & integrations",
+};
 
 /** One structural unit (directory subtree) contributing to a system. */
 export interface SystemPart {
@@ -81,6 +108,13 @@ export interface SystemExport {
   file: string;
   /** Distinct outside files importing it. */
   consumers: number;
+  /** Declaration signature when the export is function-like. */
+  signature?: string;
+}
+
+/** An HTTP route a system serves, with the file declaring it. */
+export interface SystemEndpoint extends HttpEndpoint {
+  file: string;
 }
 
 /** An external service the system talks to (see external-services.ts). */
@@ -100,6 +134,8 @@ export interface SystemModule {
   /** Dominant intent concept when the cluster is tag-driven, else null. */
   concept: string | null;
   role: SystemRole;
+  /** Coarse architectural layer (frontend / backend / database / integrations). */
+  layer: SystemLayer;
   parts: SystemPart[];
   fileCount: number;
   /** Intent profile, heaviest first (for chips/inspection). */
@@ -110,16 +146,32 @@ export interface SystemModule {
   exportedTotal: number;
   /** External services consumed, heaviest first (capped). */
   externals: SystemExternal[];
+  /** HTTP routes served, heaviest declaring file first (capped). */
+  endpoints: SystemEndpoint[];
+}
+
+/** One symbol crossing a link, with what is known about its shape. */
+export interface SystemLinkSymbol {
+  name: string;
+  kind: CodeSymbolKind;
+  /** Import statements bringing this name across the edge. */
+  count: number;
+  /** Declaration signature when the target export is function-like. */
+  signature?: string;
 }
 
 /** A directed "consumes" edge: source imports from target. */
 export interface SystemLink {
   source: string;
   target: string;
-  /** File-level import statements crossing the boundary. */
+  /** File-level import statements crossing the boundary. Zero for API-only links. */
   weight: number;
   /** Most-imported symbol names along this edge (capped). */
   symbols: string[];
+  /** Per-symbol detail (kind, signature) aligned with `symbols`. */
+  details?: SystemLinkSymbol[];
+  /** HTTP calls from source matched to routes served by target (capped). */
+  apis?: (HttpEndpoint & { weight: number })[];
 }
 
 export interface SystemOverview {
@@ -186,7 +238,18 @@ const SHARED_FAN_IN_SHARE = 0.6;
 const EXPORTS_CAP = 40;
 const EXTERNALS_CAP = 12;
 const LINK_SYMBOLS_CAP = 12;
+const LINK_APIS_CAP = 10;
+const ENDPOINTS_CAP = 24;
 const INTENTS_CAP = 5;
+/** Names that assert a frontend unit regardless of tag mass. */
+const FRONTEND_NAMES = new Set([
+  "ui", "web", "client", "frontend", "www", "site", "browser", "components",
+  "pages", "views", "design-system",
+]);
+/** Files whose extension marks UI code. */
+const UI_FILE_RE = /\.(tsx|jsx|vue|svelte|astro|css|scss|less)$/;
+/** Share of UI-extension files that classifies a system as frontend. */
+const FRONTEND_FILE_SHARE = 0.3;
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
@@ -224,6 +287,31 @@ const slug = (value: string): string =>
 function fixtureScopeOf(unitPath: string): string {
   const [first, second] = unitPath.split("/");
   return first && second && FIXTURE_DIRS.has(first) ? `${first}/${second}` : "";
+}
+
+/**
+ * Route path → matchable segments. Parameter segments in any convention
+ * (`:id`, `{id}`, `[id]`, `*`, template holes) normalize to "*"; full URLs
+ * are reduced to their pathname so `fetch("https://api.x.com/v1/users")`
+ * still matches a served `/v1/users`.
+ */
+export function routeSegments(path: string): string[] {
+  let p = path.trim();
+  const url = /^https?:\/\/[^/]+(\/.*)?$/i.exec(p);
+  if (url) p = url[1] ?? "/";
+  p = p.split(/[?#]/, 1)[0] ?? p;
+  return p
+    .split("/")
+    .filter(Boolean)
+    .map((seg) =>
+      /^[:{[*]/.test(seg) || seg.includes("*") || seg.includes("${") ? "*" : seg.toLowerCase(),
+    );
+}
+
+/** Do a call path and a served route path address the same resource? */
+export function routesMatch(call: string[], served: string[]): boolean {
+  if (call.length !== served.length) return false;
+  return call.every((seg, i) => seg === "*" || served[i] === "*" || seg === served[i]);
 }
 
 /* ------------------------------------------------------------------ */
@@ -586,17 +674,43 @@ export function buildSystemOverview(
               ? "shared"
               : "domain";
 
+    // Layer: role decides the data/integration buckets; UI-file share and
+    // frontend-ish names decide frontend; everything else is backend.
+    const uiFiles = memberFiles.filter((f) => UI_FILE_RE.test(f.path)).length;
+    const layer: SystemLayer =
+      role === "data"
+        ? "database"
+        : role === "integration"
+          ? "integrations"
+          : uiFiles / memberCount >= FRONTEND_FILE_SHARE || nameIn(FRONTEND_NAMES)
+            ? "frontend"
+            : "backend";
+
+    // Served HTTP routes, deduped by method+path (first declaring file wins).
+    const endpointMap = new Map<string, SystemEndpoint>();
+    for (const file of memberFiles) {
+      for (const ep of file.endpoints ?? []) {
+        const key = `${ep.method} ${ep.path}`;
+        if (!endpointMap.has(key)) endpointMap.set(key, { ...ep, file: file.path });
+      }
+    }
+    const endpoints = [...endpointMap.values()]
+      .sort((a, b) => a.path.localeCompare(b.path) || a.method.localeCompare(b.method))
+      .slice(0, ENDPOINTS_CAP);
+
     systems.push({
       id,
       name: cluster.name,
       concept: cluster.concept,
       role,
+      layer,
       parts,
       fileCount: memberFiles.length,
       intents,
       exports: [], // filled below, once cross-system imports are counted
       exportedTotal: memberFiles.reduce((n, f) => n + f.exports.length, 0),
       externals,
+      endpoints,
     });
   }
 
@@ -660,24 +774,81 @@ export function buildSystemOverview(
     }
   }
 
+  // What one imported name looks like at its declaration inside a system —
+  // kind + signature, resolved through barrels to the real declaration.
+  const shapeOf = (
+    system: string,
+    name: string,
+  ): { kind: CodeSymbolKind; signature?: string } => {
+    const declaring = declaringFileOf(system).get(name);
+    const exp = declaring
+      ? fileMeta.get(declaring)?.exports.find((e) => e.name === name && e.kind !== "reexport")
+      : undefined;
+    return { kind: exp?.kind ?? "const", signature: exp?.signature };
+  };
+
   const links: SystemLink[] = [...linkAgg.entries()]
     .map(([key, { weight, names }]) => {
       const [source, target] = key.split("\u0000") as [string, string];
-      const symbols = [...names.entries()]
+      const details: SystemLinkSymbol[] = [...names.entries()]
         .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
         .slice(0, LINK_SYMBOLS_CAP)
-        .map(([name]) => name);
-      return { source, target, weight, symbols };
+        .map(([name, count]) => ({ name, count, ...shapeOf(target, name) }));
+      const link: SystemLink = { source, target, weight, symbols: details.map((d) => d.name) };
+      if (details.length > 0) link.details = details;
+      return link;
     })
     .sort((a, b) => b.weight - a.weight || a.source.localeCompare(b.source) || a.target.localeCompare(b.target));
+
+  // HTTP calls matched to served routes: an outgoing call in system A whose
+  // path matches a route served by system B becomes an `apis` entry on the
+  // A→B link — created with weight 0 when no import edge exists (services
+  // talking over the wire rather than through the module graph).
+  const served = systems.flatMap((s) =>
+    s.endpoints.map((ep) => ({ system: s.id, ep, segs: routeSegments(ep.path) })),
+  );
+  if (served.length > 0) {
+    const apiAgg = new Map<string, Map<string, HttpEndpoint & { weight: number }>>();
+    for (const file of sources) {
+      const sourceSystem = systemOfFile.get(file.path);
+      if (!sourceSystem) continue;
+      for (const call of file.apiCalls ?? []) {
+        const segs = routeSegments(call.path);
+        if (segs.length === 0) continue;
+        const hit = served.find(
+          (r) =>
+            r.system !== sourceSystem &&
+            (r.ep.method === "ALL" || call.method === "ALL" || r.ep.method === call.method) &&
+            routesMatch(segs, r.segs),
+        );
+        if (!hit) continue;
+        const linkKey = `${sourceSystem} ${hit.system}`;
+        const byRoute = apiAgg.get(linkKey) ?? new Map<string, HttpEndpoint & { weight: number }>();
+        const routeKey = `${hit.ep.method} ${hit.ep.path}`;
+        const entry = byRoute.get(routeKey) ?? { method: hit.ep.method, path: hit.ep.path, weight: 0 };
+        entry.weight += 1;
+        byRoute.set(routeKey, entry);
+        apiAgg.set(linkKey, byRoute);
+      }
+    }
+    for (const [linkKey, byRoute] of apiAgg) {
+      const [source, target] = linkKey.split(" ") as [string, string];
+      const apis = [...byRoute.values()]
+        .sort((a, b) => b.weight - a.weight || a.path.localeCompare(b.path))
+        .slice(0, LINK_APIS_CAP);
+      const existing = links.find((l) => l.source === source && l.target === target);
+      if (existing) existing.apis = apis;
+      else links.push({ source, target, weight: 0, symbols: [], apis });
+    }
+  }
 
   // Consumed exports per system.
   const exportsBySystem = new Map<string, SystemExport[]>();
   for (const [key, consumers] of exportConsumers) {
     const [system, file, name] = key.split("\u0000") as [string, string, string];
-    const kind = fileMeta.get(file)?.exports.find((e) => e.name === name)?.kind ?? "const";
+    const exp = fileMeta.get(file)?.exports.find((e) => e.name === name);
     const list = exportsBySystem.get(system) ?? [];
-    list.push({ name, kind, file, consumers: consumers.size });
+    list.push({ name, kind: exp?.kind ?? "const", file, consumers: consumers.size, signature: exp?.signature });
     exportsBySystem.set(system, list);
   }
   for (const system of systems) {

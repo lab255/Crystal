@@ -1,6 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
-import type { ChangeScope, GitCommit, GitStatusResult } from "@crystal/core";
+import type { ChangeScope, GitCommit, GitRefsResult, GitStatusResult } from "@crystal/core";
 import { resolveInRoot } from "./paths.js";
 
 const exec = promisify(execFile);
@@ -114,6 +114,76 @@ export async function gitLog(
   const branch = (await runGit(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]).catch(() => ""))
     .trim();
   return { commits, branch: branch && branch !== "HEAD" ? branch : null };
+}
+
+/**
+ * Every ref a picker can offer: local + remote branches, tags, worktrees and
+ * the current branch. Remote branches keep their short form ("origin/main");
+ * symbolic HEADs ("origin/HEAD") are dropped.
+ */
+export async function gitRefs(root: string, repoRel: string): Promise<GitRefsResult> {
+  const cwd = resolveInRoot(root, repoRel || ".");
+  const out = await runGit(cwd, [
+    "for-each-ref",
+    "--format=%(refname:short)\t%(refname)",
+    "refs/heads",
+    "refs/remotes",
+    "refs/tags",
+  ]).catch(() => "");
+  const branches: string[] = [];
+  const remoteBranches: string[] = [];
+  const tags: string[] = [];
+  for (const line of out.split("\n").filter(Boolean)) {
+    const [short, full] = line.split("\t");
+    if (!short || !full) continue;
+    if (full.startsWith("refs/heads/")) branches.push(short);
+    else if (full.startsWith("refs/tags/")) tags.push(short);
+    else if (full.startsWith("refs/remotes/") && !short.endsWith("/HEAD")) remoteBranches.push(short);
+  }
+  const current = (await runGit(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]).catch(() => "")).trim();
+
+  // Worktrees (porcelain records: "worktree <path>" / "branch refs/heads/x").
+  const worktrees: GitRefsResult["worktrees"] = [];
+  const wtOut = await runGit(cwd, ["worktree", "list", "--porcelain"]).catch(() => "");
+  let wtPath: string | null = null;
+  for (const line of `${wtOut}\n`.split("\n")) {
+    if (line.startsWith("worktree ")) wtPath = line.slice(9).trim();
+    else if (line.startsWith("branch ") && wtPath) {
+      worktrees.push({ path: wtPath, branch: line.slice(7).trim().replace(/^refs\/heads\//, "") });
+      wtPath = null;
+    } else if (line === "detached" && wtPath) {
+      worktrees.push({ path: wtPath, branch: null });
+      wtPath = null;
+    }
+  }
+
+  return {
+    branches,
+    remoteBranches,
+    tags,
+    current: current && current !== "HEAD" ? current : null,
+    worktrees,
+  };
+}
+
+/**
+ * Switch the repo to a branch/ref (`git switch`, falling back to detached
+ * checkout for tags/commits). Git itself refuses when the working tree would
+ * conflict — the error surfaces to the caller untouched.
+ */
+export async function gitCheckout(
+  root: string,
+  repoRel: string,
+  ref: string,
+): Promise<{ ok: true; branch: string | null }> {
+  const cwd = resolveInRoot(root, repoRel || ".");
+  try {
+    await runGit(cwd, ["switch", ref]);
+  } catch {
+    await runGit(cwd, ["switch", "--detach", ref]);
+  }
+  const branch = (await runGit(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]).catch(() => "")).trim();
+  return { ok: true, branch: branch && branch !== "HEAD" ? branch : null };
 }
 
 /** Resolve a ref to its short commit hash (throws on unknown refs). */

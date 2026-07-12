@@ -25,7 +25,7 @@ import {
 import { browseDirs } from "./browse.js";
 import { createConsoleHandler, resolveConsoleDir } from "./console-static.js";
 import { deleteAt, listDir, mkdirAt, readFileCapped, renameAt, writeFileAt } from "./fs-api.js";
-import { changedFiles, gitLog, gitStatus } from "./git.js";
+import { changedFiles, gitCheckout, gitLog, gitRefs, gitStatus } from "./git.js";
 import { handleMcpRequest, isMcpRequest } from "./mcp/http.js";
 import { overviewSourcesAtRef, snapshotAtRef } from "./ref-snapshot.js";
 import { WorkspaceRegistry } from "./workspace-registry.js";
@@ -197,6 +197,9 @@ export async function startCrystalServer(opts: {
     "git.log": ({ ws, repoPath, limit }) => gitLog(registry.get(ws).root, repoPath ?? ".", limit),
     "git.changedFiles": ({ ws, repoPath, scope }) =>
       changedFiles(registry.get(ws).root, repoPath ?? ".", scope),
+    "git.refs": ({ ws, repoPath }) => gitRefs(registry.get(ws).root, repoPath ?? "."),
+    "git.checkout": ({ ws, repoPath, ref }) =>
+      gitCheckout(registry.get(ws).root, repoPath ?? ".", ref),
     "agent.start": async ({ ws, ...params }) => {
       const rt = registry.get(ws);
       // Resolve the dispatch profile server-side so model + skills always

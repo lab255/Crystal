@@ -13,7 +13,7 @@ export const CRYSTAL_MODES: CrystalMode[] = [
 
 export const MODE_LABELS: Record<CrystalMode, string> = {
   projects: "Overview",
-  architect: "Architecture",
+  architect: "Code graph",
   orchestrate: "Orchestrate",
   code: "Code",
   jobs: "Jobs",

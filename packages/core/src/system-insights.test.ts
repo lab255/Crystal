@@ -12,12 +12,14 @@ function system(id: string, role: SystemRole = "domain", fileCount = 10): System
     name: id.charAt(0).toUpperCase() + id.slice(1),
     concept: null,
     role,
+    layer: "backend",
     parts: [{ path: id, pkg: ".", fileCount }],
     fileCount,
     intents: [],
     exports: [],
     exportedTotal: 0,
     externals: [],
+    endpoints: [],
   };
 }
 

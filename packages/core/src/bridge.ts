@@ -103,6 +103,19 @@ export interface GitStatusResult {
  */
 export type ChangeScope = "worktree" | "base";
 
+/** Everything a ref picker can offer (see `git.refs`). */
+export interface GitRefsResult {
+  /** Local branch names. */
+  branches: string[];
+  /** Remote-tracking branches in short form ("origin/main"), HEADs dropped. */
+  remoteBranches: string[];
+  tags: string[];
+  /** Currently checked-out branch, null when detached. */
+  current: string | null;
+  /** Linked worktrees (the main worktree included), with their branch. */
+  worktrees: { path: string; branch: string | null }[];
+}
+
 /** One commit from `git.log` — enough to pick a review point. */
 export interface GitCommit {
   hash: string;
@@ -200,6 +213,16 @@ export interface BridgeMethods {
   "git.changedFiles": {
     params: WsScope & { repoPath?: string; scope: ChangeScope };
     result: { files: string[]; base: string | null };
+  };
+  /** Branches / tags / worktrees of a repo — powers ref pickers and the branch switcher. */
+  "git.refs": { params: WsScope & { repoPath?: string }; result: GitRefsResult };
+  /**
+   * Switch the repo to a branch (or detach on a tag/commit). Fails — with
+   * git's own message — when the working tree would conflict.
+   */
+  "git.checkout": {
+    params: WsScope & { repoPath?: string; ref: string };
+    result: { ok: true; branch: string | null };
   };
   "agent.start": {
     params: WsScope & {

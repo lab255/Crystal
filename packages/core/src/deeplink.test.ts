@@ -149,6 +149,34 @@ describe("round trips", () => {
     );
   });
 
+  it("systems grouping and facet lens", () => {
+    const link: DeepLink = {
+      ws: "abc",
+      mode: "architect",
+      architect: {
+        view: "systems",
+        system: "sys:auth",
+        sysGroup: "layers",
+        lens: "intent:auth",
+      },
+    };
+    expect(roundTrip(link)).toEqual(link);
+    expect(formatDeepLink(link)).toBe(
+      "#/architect/systems?ws=abc&system=sys%3Aauth&group=layers&lens=intent%3Aauth",
+    );
+    // "modules" (the default) round-trips too when explicitly set
+    const modules: DeepLink = {
+      ws: "abc",
+      mode: "architect",
+      architect: { view: "systems", sysGroup: "modules" },
+    };
+    expect(roundTrip(modules)).toEqual(modules);
+  });
+
+  it("drops an unknown group value instead of propagating it", () => {
+    expect(parseDeepLink("#/architect/systems?group=bogus").architect?.sysGroup).toBeUndefined();
+  });
+
   it("drops an unknown lod value instead of propagating it", () => {
     expect(parseDeepLink("#/architect/codemap?ws=a&at=workspace&lod=galaxy").architect?.lod).toBeUndefined();
   });

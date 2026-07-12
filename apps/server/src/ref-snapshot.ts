@@ -170,7 +170,9 @@ export async function overviewSourcesAtRef(
         const resolved = resolveImportSpecifier(rel, specifier, fileSet, t.packageNameToModule);
         return { specifier, resolved: resolved ? t.rebase(resolved) : null, names };
       }),
-      exports: parsed.exports.map(({ name, kind }) => ({ name, kind })),
+      exports: parsed.exports.map(({ name, kind, signature }) => ({ name, kind, signature })),
+      endpoints: parsed.endpoints,
+      apiCalls: parsed.apiCalls,
     });
   }
   return { commit: t.commit, sources };

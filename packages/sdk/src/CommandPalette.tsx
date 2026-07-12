@@ -89,7 +89,7 @@ export function CommandPalette({
       },
       {
         id: "mode.architect",
-        title: "Go to Architecture",
+        title: "Go to Code graph",
         icon: Boxes,
         hint: "Ctrl+2",
         run: () => onSwitchMode("architect"),

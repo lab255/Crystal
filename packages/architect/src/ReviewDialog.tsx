@@ -1,8 +1,18 @@
-import { useEffect, useState } from "react";
-import { GitCommit as GitCommitIcon, History, Search } from "lucide-react";
-import type { GitCommit } from "@crystal/core";
+import { useEffect, useMemo, useState } from "react";
+import { GitCommit as GitCommitIcon, History } from "lucide-react";
+import type { GitCommit, GitRefsResult } from "@crystal/core";
 import { useCrystal, useWorkspace } from "@crystal/client";
-import { Badge, Button, Dialog, DialogClose, DialogContent, Input, Spinner, cn } from "@crystal/ui";
+import {
+  Badge,
+  Button,
+  Combobox,
+  Dialog,
+  DialogClose,
+  DialogContent,
+  Spinner,
+  cn,
+  type ComboboxOption,
+} from "@crystal/ui";
 
 /**
  * "Review a commit / branch" — pick a git ref, and the server snapshots the
@@ -30,6 +40,7 @@ export function ReviewDialog({
 
   const [repoPath, setRepoPath] = useState(".");
   const [commits, setCommits] = useState<GitCommit[] | null>(null);
+  const [refs, setRefs] = useState<GitRefsResult | null>(null);
   const [ref, setRef] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -38,6 +49,7 @@ export function ReviewDialog({
     if (!open) return;
     setError(null);
     setCommits(null);
+    setRefs(null);
     let cancelled = false;
     client
       .request("git.log", { repoPath, limit: 30 })
@@ -48,10 +60,27 @@ export function ReviewDialog({
           setError(err.message);
         }
       });
+    client
+      .request("git.refs", { repoPath })
+      .then((r) => !cancelled && setRefs(r))
+      .catch(() => {});
     return () => {
       cancelled = true;
     };
   }, [open, repoPath, client]);
+
+  const refOptions = useMemo<ComboboxOption[]>(() => {
+    if (!refs) return [];
+    const opts: ComboboxOption[] = [];
+    const branches = refs.current
+      ? [refs.current, ...refs.branches.filter((b) => b !== refs.current)]
+      : refs.branches;
+    for (const b of branches)
+      opts.push({ value: b, group: "Branches", hint: b === refs.current ? "current" : undefined });
+    for (const b of refs.remoteBranches) opts.push({ value: b, group: "Remote" });
+    for (const t of refs.tags) opts.push({ value: t, group: "Tags" });
+    return opts;
+  }, [refs]);
 
   async function review(target: string) {
     const trimmed = target.trim();
@@ -107,16 +136,15 @@ export function ReviewDialog({
               void review(ref);
             }}
           >
-            <div className="relative min-w-0 flex-1">
-              <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-ink-faint" />
-              <Input
-                value={ref}
-                onChange={(e) => setRef(e.target.value)}
-                placeholder="branch, tag or commit — e.g. origin/feature-x"
-                className="pl-7"
-                aria-label="Git ref to review"
-              />
-            </div>
+            <Combobox
+              value={ref}
+              onChange={setRef}
+              onSubmit={(v) => void review(v)}
+              options={refOptions}
+              placeholder="branch, tag or commit — e.g. origin/feature-x"
+              className="min-w-0 flex-1"
+              disabled={busy}
+            />
             <Button type="submit" variant="primary" size="sm" disabled={!ref.trim() || busy}>
               {busy ? <Spinner className="h-3.5 w-3.5" /> : <History className="h-3.5 w-3.5" />}
               Review

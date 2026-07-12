@@ -64,6 +64,72 @@ export default function main() {}`,
     expect(exports.find((e) => e.name === "Store")!.line).toBe(2);
   });
 
+  it("captures signatures for function-like exports", () => {
+    const { exports } = parseSource(
+      "svc.ts",
+      `export function getForm(id: string, opts?: { deep: boolean }): Promise<Form> { return load(id); }
+export const submit = async (payload: Payload) => send(payload);
+export const LIMIT = 25;
+export interface Form { id: string }`,
+    );
+    const byName = Object.fromEntries(exports.map((e) => [e.name, e.signature]));
+    expect(byName["getForm"]).toBe("(id: string, opts?: { deep: boolean }): Promise<Form>");
+    expect(byName["submit"]).toBe("(payload: Payload)");
+    expect(byName["LIMIT"]).toBeUndefined();
+    expect(byName["Form"]).toBeUndefined();
+  });
+
+  it("detects served routes on registrar receivers, not map lookups", () => {
+    const { endpoints, apiCalls } = parseSource(
+      "routes.ts",
+      `import express from "express";
+const app = express();
+app.get("/api/forms", listForms);
+app.post("/api/forms/:formId/submissions", submitForm);
+app.get("/no-handler");
+cache.get("/api/forms");
+const map = new Map();
+map.get("/api/forms", extra);`,
+    );
+    expect(endpoints).toEqual([
+      { method: "GET", path: "/api/forms" },
+      { method: "POST", path: "/api/forms/:formId/submissions" },
+    ]);
+    expect(apiCalls).toEqual([]);
+  });
+
+  it("detects outgoing HTTP calls: fetch, axios, template holes", () => {
+    const { endpoints, apiCalls } = parseSource(
+      "client.ts",
+      `import axios from "axios";
+await fetch("/api/forms");
+await fetch(\`/api/forms/\${id}\`, { method: "DELETE" });
+await axios.post("https://api.stripe.com/v1/charges", body);
+await fetch(relativeUrl);`,
+    );
+    expect(endpoints).toEqual([]);
+    expect(apiCalls).toEqual([
+      { method: "GET", path: "/api/forms" },
+      { method: "DELETE", path: "/api/forms/*" },
+      { method: "POST", path: "/v1/charges" },
+    ]);
+  });
+
+  it("derives routes from Next-style file conventions", () => {
+    const appRoute = parseSource(
+      "apps/web/app/api/forms/[formId]/route.ts",
+      `export async function GET(req: Request) { return ok(); }
+export async function POST(req: Request) { return ok(); }
+export function helper() {}`,
+    );
+    expect(appRoute.endpoints).toEqual([
+      { method: "GET", path: "/api/forms/:formId" },
+      { method: "POST", path: "/api/forms/:formId" },
+    ]);
+    const pagesApi = parseSource("apps/web/pages/api/forms/index.ts", `export default function handler() {}`);
+    expect(pagesApi.endpoints).toEqual([{ method: "ALL", path: "/api/forms" }]);
+  });
+
   it("marks re-exports and counts loc", () => {
     const parsed = parseSource("index.ts", `export { A, B } from "./a.js";\nexport * from "./b.js";\n`);
     expect(parsed.exports.map((e) => e.kind)).toEqual(["reexport", "reexport", "reexport"]);

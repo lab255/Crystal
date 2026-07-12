@@ -31,6 +31,8 @@ export interface ArchitectLink {
   view?: ArchitectViewId;
   /** Selected logical system id on the systems overview (e.g. "sys:auth"). */
   system?: string;
+  /** Systems overview grouping: module clusters (default) or layer bands. */
+  sysGroup?: "modules" | "layers";
   /** Selected architecture `.crystal` file path (diagrams + infra views). */
   diagram?: string;
   /** Active facet id — a named lens over the selected diagram. */
@@ -120,6 +122,8 @@ export function formatDeepLink(link: DeepLink): string {
     path += `/${view}`;
     if (view === "systems") {
       if (a.system) add("system", a.system);
+      if (a.sysGroup) add("group", a.sysGroup);
+      if (a.lens) add("lens", a.lens);
     } else if (view === "codemap") {
       const cm = a.codemap;
       if (cm) {
@@ -181,6 +185,8 @@ export function parseDeepLink(hash: string): DeepLink {
       a.view = view;
     const system = params.get("system");
     if (system) a.system = system;
+    const sysGroup = params.get("group");
+    if (sysGroup === "modules" || sysGroup === "layers") a.sysGroup = sysGroup;
     const diagram = params.get("diagram");
     if (diagram) a.diagram = diagram;
     const facet = params.get("facet");

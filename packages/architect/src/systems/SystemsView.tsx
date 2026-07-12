@@ -8,36 +8,50 @@ import {
   Position,
   ReactFlow,
   ReactFlowProvider,
+  useReactFlow,
   type Edge as RfEdge,
   type Node as RfNode,
   type NodeProps,
 } from "@xyflow/react";
 import dagre from "@dagrejs/dagre";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   ArrowDownRight,
   ArrowUpRight,
   Boxes,
+  Copy,
   Database,
   DoorOpen,
   ExternalLink,
   GitCompare,
   Layers,
+  Maximize,
   PencilRuler,
   Plug,
   RefreshCw,
   Search,
+  Sparkles,
   X,
 } from "lucide-react";
 import {
+  SYSTEM_LAYERS,
+  SYSTEM_LAYER_LABELS,
   computeSystemInsights,
+  conceptDisplayName,
   createArchNode,
+  indexFacetVisibility,
+  parseLensTags,
+  tagValue,
   uid,
   type ArchEdge,
   type ArchNode,
   type ArchNodeKind,
+  type CodeIndex,
+  type GitCommit,
+  type GitRefsResult,
   type SystemInsights,
+  type SystemLayer,
   type SystemLink,
   type SystemModule,
   type SystemOverview,
@@ -45,8 +59,20 @@ import {
   type SystemRole,
 } from "@crystal/core";
 import { useCrystal, useNav, useNavUpdate, useWorkspaces } from "@crystal/client";
-import { Badge, Button, EmptyState, Spinner, Tooltip, cn } from "@crystal/ui";
+import {
+  Badge,
+  Button,
+  Combobox,
+  ContextMenu,
+  EmptyState,
+  Spinner,
+  Tooltip,
+  cn,
+  type ComboboxOption,
+  type MenuEntry,
+} from "@crystal/ui";
 import { requestOpenFile } from "../codemap/CodeMapView.js";
+import { FacetsPanel } from "../codemap/FacetsPanel.js";
 
 /**
  * Systems view — the logical architecture overview, built for making calls:
@@ -187,7 +213,28 @@ function SystemNode({ data }: NodeProps<SystemRfNode>) {
   );
 }
 
-const nodeTypes = { system: SystemNode };
+/* ---- layer-band grouping (group-by: layers) ---- */
+
+const BAND_HEADER = 34;
+const BAND_PAD = 20;
+const BAND_GAP = 48;
+
+type LayerBandData = { layer: SystemLayer } & Record<string, unknown>;
+type LayerBandRfNode = RfNode<LayerBandData>;
+/** What the canvas renders: system cards, plus layer bands in layer mode. */
+type ViewNode = SystemRfNode | LayerBandRfNode;
+
+function LayerBandNode({ data }: NodeProps<LayerBandRfNode>) {
+  return (
+    <div className="h-full w-full rounded-2xl border border-edge/80 bg-surface-2/40">
+      <div className="px-4 pt-2.5 text-[10px] font-semibold uppercase tracking-wider text-ink-faint">
+        {SYSTEM_LAYER_LABELS[data.layer]}
+      </div>
+    </div>
+  );
+}
+
+const nodeTypes = { system: SystemNode, layerBand: LayerBandNode };
 
 function layout(nodes: SystemRfNode[], edges: RfEdge[]): SystemRfNode[] {
   const g = new dagre.graphlib.Graph();
@@ -203,6 +250,69 @@ function layout(nodes: SystemRfNode[], edges: RfEdge[]): SystemRfNode[] {
     const h = (n.style?.height as number) ?? 120;
     return { ...n, position: { x: pos.x - CARD_W / 2, y: pos.y - h / 2 } };
   });
+}
+
+/**
+ * Layer mode: dagre runs per layer (same LR options as `layout`), each
+ * non-empty layer becomes a labelled band node and its systems become
+ * children positioned relative to the band. Bands stack vertically in
+ * frontend → backend → database → integrations order. Parents precede
+ * children in the returned array — react-flow requires it, the same
+ * convention `topoOrderNodes` enforces for the diagram model.
+ */
+function layeredLayout(nodes: SystemRfNode[], edges: RfEdge[]): ViewNode[] {
+  const byLayer = new Map<SystemLayer, SystemRfNode[]>();
+  for (const n of nodes) {
+    const layer = n.data.system.layer;
+    const list = byLayer.get(layer);
+    if (list) list.push(n);
+    else byLayer.set(layer, [n]);
+  }
+  const out: ViewNode[] = [];
+  let y = 0;
+  for (const layer of SYSTEM_LAYERS) {
+    const members = byLayer.get(layer);
+    if (!members || members.length === 0) continue;
+    const ids = new Set(members.map((n) => n.id));
+    const laid = layout(
+      members,
+      edges.filter((e) => ids.has(e.source) && ids.has(e.target)),
+    );
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const n of laid) {
+      const h = (n.style?.height as number) ?? 120;
+      minX = Math.min(minX, n.position.x);
+      minY = Math.min(minY, n.position.y);
+      maxX = Math.max(maxX, n.position.x + CARD_W);
+      maxY = Math.max(maxY, n.position.y + h);
+    }
+    const bandId = `layer:${layer}`;
+    const width = maxX - minX + BAND_PAD * 2;
+    const height = maxY - minY + BAND_HEADER + BAND_PAD;
+    out.push({
+      id: bandId,
+      type: "layerBand",
+      position: { x: 0, y },
+      data: { layer },
+      style: { width, height },
+      draggable: false,
+      selectable: false,
+      focusable: false,
+      zIndex: -1,
+    });
+    for (const n of laid) {
+      out.push({
+        ...n,
+        parentId: bandId,
+        position: { x: n.position.x - minX + BAND_PAD, y: n.position.y - minY + BAND_HEADER },
+      });
+    }
+    y += height + BAND_GAP;
+  }
+  return out;
 }
 
 interface RefDiffState {
@@ -226,17 +336,31 @@ export function SystemsView(props: SystemsViewProps = {}) {
   );
 }
 
-type SidePanel = "system" | "edge" | "insights" | "diff" | null;
+type SidePanel = "system" | "edge" | "insights" | "diff" | "facets" | null;
+
+type MenuState =
+  | { kind: "node"; x: number; y: number; id: string }
+  | { kind: "edge"; x: number; y: number; id: string }
+  | { kind: "pane"; x: number; y: number };
+
+const EMPTY_STALE_FILES: string[] = [];
 
 function SystemsInner({ onOpenCode }: SystemsViewProps) {
   const { client } = useCrystal();
   const activeWs = useWorkspaces((s) => s.activeId);
   const nav = useNavUpdate();
+  const { fitView } = useReactFlow();
   const selectedId = useNav((l) => l.architect?.system ?? null);
   const setSelected = useCallback(
     (id: string | null) => nav({ architect: { system: id } }),
     [nav],
   );
+  const sysGroup = useNav((l) => (l.architect?.sysGroup === "layers" ? "layers" : "modules"));
+  const setSysGroup = useCallback(
+    (g: "modules" | "layers") => nav({ architect: { sysGroup: g === "layers" ? "layers" : null } }),
+    [nav],
+  );
+  const lensParam = useNav((l) => l.architect?.lens ?? null);
 
   const [overview, setOverview] = useState<SystemOverview | null>(null);
   const [loading, setLoading] = useState(true);
@@ -247,11 +371,63 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
   const [search, setSearch] = useState("");
   const [selectedEdge, setSelectedEdge] = useState<string | null>(null);
   const [insightsOpen, setInsightsOpen] = useState(false);
+  const [facetsOpen, setFacetsOpen] = useState(false);
+  const [codeIndex, setCodeIndex] = useState<{ index: CodeIndex; staleFiles: string[] } | null>(
+    null,
+  );
   const [diffOpen, setDiffOpen] = useState(false);
   const [refInput, setRefInput] = useState("");
   const [refDiff, setRefDiff] = useState<RefDiffState | null>(null);
   const [refLoading, setRefLoading] = useState(false);
   const [refError, setRefError] = useState<string | null>(null);
+  const [menu, setMenu] = useState<MenuState | null>(null);
+  const [refs, setRefs] = useState<GitRefsResult | null>(null);
+  const [refCommits, setRefCommits] = useState<GitCommit[] | null>(null);
+  const refsFetched = useRef(false);
+  const reviewBoxRef = useRef<HTMLDivElement | null>(null);
+
+  const toggleRole = useCallback((role: SystemRole) => {
+    setHiddenRoles((prev) => {
+      const next = new Set(prev);
+      if (next.has(role)) next.delete(role);
+      else next.add(role);
+      return next;
+    });
+  }, []);
+
+  /** Ref-picker options — fetched once per mount, when the control first gains focus. */
+  const loadRefs = useCallback(() => {
+    if (refsFetched.current) return;
+    refsFetched.current = true;
+    client
+      .request("git.refs", {})
+      .then(setRefs)
+      .catch(() => {});
+    client
+      .request("git.log", { limit: 20 })
+      .then((r) => setRefCommits(r.commits))
+      .catch(() => {});
+  }, [client]);
+
+  const refOptions = useMemo<ComboboxOption[]>(() => {
+    const opts: ComboboxOption[] = [];
+    if (refs) {
+      const branches = refs.current
+        ? [refs.current, ...refs.branches.filter((b) => b !== refs.current)]
+        : refs.branches;
+      for (const b of branches)
+        opts.push({ value: b, group: "Branches", hint: b === refs.current ? "current" : undefined });
+      for (const b of refs.remoteBranches) opts.push({ value: b, group: "Remote" });
+      for (const t of refs.tags) opts.push({ value: t, group: "Tags" });
+    }
+    for (const c of refCommits ?? [])
+      opts.push({
+        value: c.shortHash,
+        group: "Commits",
+        hint: c.subject.length > 42 ? `${c.subject.slice(0, 41)}…` : c.subject,
+      });
+    return opts;
+  }, [refs, refCommits]);
 
   useEffect(() => {
     if (!activeWs) return;
@@ -292,20 +468,64 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
     setRefDiff(null);
     setDiffOpen(false);
     setSelectedEdge(null);
+    setMenu(null);
+    setCodeIndex(null);
+    setRefs(null);
+    setRefCommits(null);
+    refsFetched.current = false;
     setGeneration((g) => g + 1);
   }, [activeWs]);
 
-  // Esc walks back: edge → system → review mode.
+  // Esc walks back: edge → system → review mode. (An open context menu
+  // consumes Escape itself.)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
+      if (e.key !== "Escape" || menu) return;
       if (selectedEdge) setSelectedEdge(null);
       else if (selectedId) setSelected(null);
       else if (refDiff) setRefDiff(null);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [selectedEdge, selectedId, refDiff, setSelected]);
+  }, [selectedEdge, selectedId, refDiff, menu, setSelected]);
+
+  /* ---- code index + facet lens (shares the codemap's `lens` deep link) ---- */
+
+  const lensTags = useMemo(() => (lensParam ? parseLensTags(lensParam) : []), [lensParam]);
+  const wantIndex = facetsOpen || lensTags.length > 0;
+  useEffect(() => {
+    if (!activeWs || !wantIndex) return;
+    let cancelled = false;
+    const fetchIndex = () => {
+      client
+        .request("codeindex.get", {})
+        .then((res) => {
+          if (!cancelled) setCodeIndex(res);
+        })
+        .catch(() => {});
+    };
+    fetchIndex();
+    const dispose = client.events.on("codeindex.changed", ({ ws }) => {
+      if (ws === activeWs) fetchIndex();
+    });
+    return () => {
+      cancelled = true;
+      dispose();
+    };
+  }, [client, activeWs, wantIndex]);
+
+  const lensVis = useMemo(
+    () =>
+      codeIndex && lensTags.length > 0 ? indexFacetVisibility(codeIndex.index, lensTags) : null,
+    [codeIndex, lensTags],
+  );
+  const lensName = useMemo(
+    () =>
+      lensTags
+        .map((t) => (t.startsWith("intent:") ? conceptDisplayName(tagValue(t)) : t))
+        .join(" + "),
+    [lensTags],
+  );
 
   const reviewRef = useCallback(
     async (ref: string) => {
@@ -356,6 +576,22 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
     };
   }, [overview, refDiff]);
 
+  /**
+   * Systems the active facet lens covers. SystemModule exposes parts (dirs),
+   * not files, so a system is "in the lens" when any member file falls under
+   * one of its part paths. Null while no lens (or the index hasn't loaded).
+   */
+  const lensSystems = useMemo(() => {
+    if (!lensVis || !rendered) return null;
+    const files = [...lensVis.files.keys()];
+    const inLens = new Set<string>();
+    for (const s of rendered.overview.systems) {
+      if (s.parts.some((p) => files.some((f) => f === p.path || f.startsWith(`${p.path}/`))))
+        inLens.add(s.id);
+    }
+    return inLens;
+  }, [lensVis, rendered]);
+
   // Insights always describe the live overview, not the review ghosts.
   const insights: SystemInsights | null = useMemo(
     () => (overview ? computeSystemInsights(overview) : null),
@@ -388,7 +624,7 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
   );
 
   const { nodes, edges } = useMemo(() => {
-    if (!rendered) return { nodes: [] as SystemRfNode[], edges: [] as RfEdge[] };
+    if (!rendered) return { nodes: [] as ViewNode[], edges: [] as RfEdge[] };
     const { overview: data, marks, edgeMarks } = rendered;
     const query = search.trim().toLowerCase();
     const links = data.links.filter((l) => visible.has(l.source) && visible.has(l.target));
@@ -412,6 +648,7 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
         const consumes = consumesOf.get(s.id) ?? [];
         const exportsShown = Math.min(s.exports.length, 4);
         const searchMiss = query.length > 0 && !s.name.toLowerCase().includes(query);
+        const lensMiss = lensSystems != null && !lensSystems.has(s.id);
         return {
           id: s.id,
           type: "system",
@@ -422,6 +659,7 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
             selected: s.id === selectedId,
             dimmed:
               searchMiss ||
+              lensMiss ||
               (selectedId != null && s.id !== selectedId && !connected.has(s.id)),
             exportsShown,
             mark: marks.get(s.id),
@@ -434,6 +672,9 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
       const key = `${l.source}->${l.target}`;
       const mark = edgeMarks.get(key);
       const inCycle = cycleEdges.has(key);
+      const apis = l.apis ?? [];
+      // No imports cross this edge — the systems talk over the wire only.
+      const apiOnly = l.weight === 0 && apis.length > 0;
       const active =
         key === selectedEdge ||
         (selectedId != null && (l.source === selectedId || l.target === selectedId));
@@ -446,25 +687,37 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
             ? "var(--color-accent-rose)"
             : active
               ? "var(--color-accent-violet)"
-              : "var(--color-edge-strong)";
+              : apiOnly
+                ? "var(--color-accent-amber)"
+                : "var(--color-edge-strong)";
+      const label =
+        apiOnly
+          ? `${apis[0]!.method} ${apis[0]!.path}${apis.length > 1 ? ` +${apis.length - 1}` : ""}`
+          : `×${l.weight}`;
       return {
         id: key,
         source: l.source,
         target: l.target,
-        label: `×${l.weight}`,
-        labelStyle: { fontSize: 9, fill: "var(--color-ink-faint)" },
+        label,
+        labelStyle: {
+          fontSize: 9,
+          fill: apiOnly ? "var(--color-accent-amber)" : "var(--color-ink-faint)",
+        },
         labelBgStyle: { fill: "var(--color-surface-0)", fillOpacity: 0.8 },
         style: {
           stroke,
           strokeWidth: 1 + 2 * Math.sqrt(l.weight / maxWeight),
-          strokeDasharray: mark === "removed" ? "5 4" : undefined,
+          strokeDasharray: mark === "removed" ? "5 4" : apiOnly ? "4 3" : undefined,
           opacity: faded ? 0.1 : 1,
         },
         markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14 },
       };
     });
-    return { nodes: layout(nodes, edges), edges };
-  }, [rendered, visible, selectedId, selectedEdge, nameOf, search, cycleEdges]);
+    return {
+      nodes: sysGroup === "layers" ? layeredLayout(nodes, edges) : layout(nodes, edges),
+      edges,
+    };
+  }, [rendered, visible, selectedId, selectedEdge, nameOf, search, cycleEdges, sysGroup, lensSystems]);
 
   /** Snapshot the visible systems into a hand-editable diagram. */
   const materialize = useCallback(async () => {
@@ -472,10 +725,19 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
     const created = await client.request("arch.create", { name: "Systems overview" });
     const idMap = new Map<string, ArchNode>();
     const archNodes: ArchNode[] = [];
+    // Layer-band children carry band-relative positions — flatten to absolute.
+    const bandPos = new Map<string, { x: number; y: number }>();
+    for (const n of nodes) if (n.type === "layerBand") bandPos.set(n.id, n.position);
     for (const n of nodes) {
-      const s = n.data.system;
-      if (n.data.mark === "removed") continue;
-      const node = createArchNode(ARCH_KIND_OF_ROLE[s.role], s.name, { ...n.position });
+      if (n.type !== "system") continue;
+      const data = n.data as SystemNodeData;
+      const s = data.system;
+      if (data.mark === "removed") continue;
+      const band = n.parentId ? bandPos.get(n.parentId) : undefined;
+      const position = band
+        ? { x: band.x + n.position.x, y: band.y + n.position.y }
+        : { ...n.position };
+      const node = createArchNode(ARCH_KIND_OF_ROLE[s.role], s.name, position);
       archNodes.push({
         ...node,
         description: `${s.fileCount} files · ${ROLE_META[s.role].label.toLowerCase()}`,
@@ -502,6 +764,132 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
     });
     nav({ architect: { view: "diagrams", diagram: created.path } });
   }, [rendered, nodes, edges, client, nav]);
+
+  const menuEntries = useMemo<MenuEntry[]>(() => {
+    if (!menu || !rendered) return [];
+    if (menu.kind === "node") {
+      const sys = rendered.overview.systems.find((s) => s.id === menu.id);
+      if (!sys) return [];
+      const pkg = sys.parts[0]?.pkg;
+      const entries: MenuEntry[] = [
+        {
+          type: "item",
+          label: "Open details",
+          icon: Boxes,
+          onSelect: () => {
+            setSelectedEdge(null);
+            setSelected(sys.id);
+          },
+        },
+      ];
+      if (onOpenCode && pkg)
+        entries.push({
+          type: "item",
+          label: "Open in code",
+          icon: ExternalLink,
+          onSelect: () => onOpenCode(pkg),
+        });
+      entries.push(
+        { type: "separator" },
+        {
+          type: "item",
+          label: `Hide ${ROLE_META[sys.role].label.toLowerCase()} systems`,
+          icon: ROLE_META[sys.role].icon,
+          onSelect: () => toggleRole(sys.role),
+        },
+        {
+          type: "item",
+          label: "Copy system id",
+          icon: Copy,
+          hint: sys.id,
+          onSelect: () => void navigator.clipboard.writeText(sys.id),
+        },
+      );
+      return entries;
+    }
+    if (menu.kind === "edge") {
+      const link = rendered.overview.links.find((l) => `${l.source}->${l.target}` === menu.id);
+      if (!link) return [];
+      return [
+        {
+          type: "item",
+          label: "Open edge details",
+          icon: ArrowUpRight,
+          onSelect: () => {
+            setSelected(null);
+            setSelectedEdge(menu.id);
+          },
+        },
+        {
+          type: "item",
+          label: "Copy symbols",
+          icon: Copy,
+          disabled: link.symbols.length === 0,
+          onSelect: () => void navigator.clipboard.writeText(link.symbols.join(", ")),
+        },
+      ];
+    }
+    return [
+      {
+        type: "item",
+        label: "Group by module",
+        checked: sysGroup === "modules",
+        onSelect: () => setSysGroup("modules"),
+      },
+      {
+        type: "item",
+        label: "Group by layer",
+        checked: sysGroup === "layers",
+        onSelect: () => setSysGroup("layers"),
+      },
+      { type: "separator" },
+      {
+        type: "submenu",
+        label: "Roles",
+        icon: Layers,
+        entries: (Object.keys(ROLE_META) as SystemRole[]).map((role) => ({
+          type: "item",
+          label: ROLE_META[role].label,
+          checked: !hiddenRoles.has(role),
+          onSelect: () => toggleRole(role),
+        })),
+      },
+      { type: "separator" },
+      {
+        type: "item",
+        label: "Materialize as diagram",
+        icon: PencilRuler,
+        onSelect: () => void materialize(),
+      },
+      {
+        type: "item",
+        label: refDiff ? "Review changes…" : "Review vs ref…",
+        icon: GitCompare,
+        onSelect: () => {
+          if (refDiff) setDiffOpen(true);
+          else reviewBoxRef.current?.querySelector("input")?.focus();
+        },
+      },
+      {
+        type: "item",
+        label: "Fit view",
+        icon: Maximize,
+        onSelect: () => void fitView({ padding: 0.2, duration: 300 }),
+      },
+    ];
+  }, [
+    menu,
+    rendered,
+    onOpenCode,
+    toggleRole,
+    sysGroup,
+    setSysGroup,
+    hiddenRoles,
+    materialize,
+    refDiff,
+    fitView,
+    setSelected,
+  ]);
 
   const selected = rendered?.overview.systems.find((s) => s.id === selectedId) ?? null;
   const selectedLink = selectedEdge
@@ -535,9 +923,11 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
       ? "system"
       : diffOpen && refDiff
         ? "diff"
-        : insightsOpen
-          ? "insights"
-          : null;
+        : facetsOpen
+          ? "facets"
+          : insightsOpen
+            ? "insights"
+            : null;
 
   return (
     <div className="flex h-full min-h-0">
@@ -547,6 +937,7 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
           edges={edges}
           nodeTypes={nodeTypes}
           onNodeClick={(_, n) => {
+            if (n.type !== "system") return;
             setSelectedEdge(null);
             setSelected(n.id === selectedId ? null : n.id);
           }}
@@ -557,6 +948,19 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
           onPaneClick={() => {
             setSelected(null);
             setSelectedEdge(null);
+          }}
+          onNodeContextMenu={(evt, n) => {
+            evt.preventDefault();
+            if (n.type !== "system") return;
+            setMenu({ kind: "node", x: evt.clientX, y: evt.clientY, id: n.id });
+          }}
+          onEdgeContextMenu={(evt, e) => {
+            evt.preventDefault();
+            setMenu({ kind: "edge", x: evt.clientX, y: evt.clientY, id: e.id });
+          }}
+          onPaneContextMenu={(evt) => {
+            evt.preventDefault();
+            setMenu({ kind: "pane", x: evt.clientX, y: evt.clientY });
           }}
           nodesDraggable={false}
           nodesConnectable={false}
@@ -623,6 +1027,44 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
               </button>
             )}
           </div>
+          <div className="flex w-fit items-center gap-0.5 rounded-lg border border-edge bg-surface-1/95 p-0.5 shadow-sm">
+            {(["modules", "layers"] as const).map((g) => (
+              <button
+                key={g}
+                type="button"
+                aria-pressed={sysGroup === g}
+                onClick={() => setSysGroup(g)}
+                className={cn(
+                  "rounded-md px-2 py-0.5 text-[10px] transition-colors",
+                  sysGroup === g
+                    ? "bg-surface-3 text-ink"
+                    : "text-ink-faint hover:text-ink-muted",
+                )}
+              >
+                {g === "modules" ? "By module" : "By layer"}
+              </button>
+            ))}
+          </div>
+          {lensTags.length > 0 && (
+            <div className="flex w-fit items-center gap-1.5 rounded-lg border border-edge bg-surface-1/95 px-2 py-1 shadow-sm">
+              <Sparkles className="h-3 w-3 shrink-0 text-crystal-300" />
+              <span className="max-w-40 truncate text-[10px] font-medium text-ink">
+                {lensName}
+              </span>
+              <span className="text-[9px] text-ink-faint">
+                {lensVis
+                  ? `${lensSystems?.size ?? 0} systems · ${lensVis.memberCount} members`
+                  : "reading index…"}
+              </span>
+              <button
+                type="button"
+                onClick={() => nav({ architect: { lens: null } })}
+                aria-label="Clear facet lens"
+              >
+                <X className="h-3 w-3 text-ink-faint hover:text-ink" />
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Top-right: review-vs-ref + insights + materialize. */}
@@ -649,25 +1091,50 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
               </button>
             </div>
           ) : (
-            <form
+            <div
+              ref={reviewBoxRef}
+              onFocusCapture={loadRefs}
               className="flex items-center gap-1 rounded-lg border border-edge bg-surface-1/95 px-1.5 py-1 shadow-sm"
-              onSubmit={(e) => {
-                e.preventDefault();
-                void reviewRef(refInput);
-              }}
             >
               <GitCompare className="ml-0.5 h-3 w-3 shrink-0 text-ink-faint" />
-              <input
+              <Combobox
                 value={refInput}
-                onChange={(e) => setRefInput(e.target.value)}
+                onChange={setRefInput}
+                onSubmit={(v) => void reviewRef(v)}
+                options={refOptions}
                 placeholder="Review vs ref…"
-                className="w-32 bg-transparent text-[11px] text-ink outline-none placeholder:text-ink-faint"
+                className="w-44"
+                inputClassName="h-6 rounded-md border-0 bg-transparent px-1 text-[11px] focus:ring-0"
               />
-              <Button type="submit" size="sm" variant="ghost" disabled={refLoading}>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                disabled={refLoading}
+                onClick={() => void reviewRef(refInput)}
+              >
                 {refLoading ? <RefreshCw className="h-3 w-3 animate-spin" /> : "Go"}
               </Button>
-            </form>
+            </div>
           )}
+          <button
+            type="button"
+            aria-pressed={facetsOpen}
+            onClick={() => {
+              setFacetsOpen((v) => !v);
+              setInsightsOpen(false);
+              setDiffOpen(false);
+            }}
+            className={cn(
+              "flex items-center gap-1.5 rounded-lg border border-edge bg-surface-1/95 px-2 py-1.5 text-[11px] shadow-sm transition-colors",
+              facetsOpen ? "text-ink" : "text-ink-muted hover:text-ink",
+            )}
+          >
+            <Sparkles
+              className={cn("h-3 w-3", lensTags.length > 0 ? "text-crystal-300" : "text-ink-faint")}
+            />
+            Facets
+          </button>
           <button
             type="button"
             onClick={() => {
@@ -707,6 +1174,9 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
             {refError}
           </div>
         )}
+        {menu && (
+          <ContextMenu x={menu.x} y={menu.y} entries={menuEntries} onClose={() => setMenu(null)} />
+        )}
       </div>
 
       {panel === "edge" && selectedLink && (
@@ -732,6 +1202,18 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
       )}
       {panel === "diff" && refDiff && (
         <DiffPanel state={refDiff} onSelect={setSelected} onClose={() => setDiffOpen(false)} />
+      )}
+      {panel === "facets" && (
+        <div className="flex w-72 shrink-0 flex-col border-l border-edge">
+          <FacetsPanel
+            index={codeIndex?.index ?? null}
+            staleFiles={codeIndex?.staleFiles ?? EMPTY_STALE_FILES}
+            activeTags={lensTags}
+            onSelect={(s) => nav({ architect: { lens: s.tags.join(",") } })}
+            onClear={() => nav({ architect: { lens: null } })}
+            onClose={() => setFacetsOpen(false)}
+          />
+        </div>
       )}
       {panel === "insights" && insights && (
         <InsightsPanel
@@ -797,6 +1279,8 @@ function EdgeDetail({
   onSelect: (id: string) => void;
   onClose: () => void;
 }) {
+  const apis = link.apis ?? [];
+  const apiOnly = link.weight === 0 && apis.length > 0;
   return (
     <Pane
       title={
@@ -810,21 +1294,60 @@ function EdgeDetail({
           </button>
         </span>
       }
-      subtitle={`${link.weight} import${link.weight === 1 ? "" : "s"} across the boundary`}
+      subtitle={
+        apiOnly
+          ? "API-only — talks over the wire, no imports cross the boundary"
+          : `${link.weight} import${link.weight === 1 ? "" : "s"} across the boundary`
+      }
       onClose={onClose}
     >
       <Section title={`Symbols travelling this edge · top ${link.symbols.length}`}>
         {link.symbols.length === 0 && (
           <div className="px-1.5 py-0.5 text-[10px] text-ink-faint">
-            Side-effect or namespace imports only.
+            {apiOnly ? "No symbols — HTTP calls only." : "Side-effect or namespace imports only."}
           </div>
         )}
-        {link.symbols.map((s) => (
-          <div key={s} className="px-1.5 py-0.5 font-mono text-[10px] text-ink">
-            {s}
-          </div>
-        ))}
+        {link.details && link.details.length > 0
+          ? link.details.map((d) => (
+              <div key={d.name} className="px-1.5 py-1">
+                <div className="flex items-baseline gap-1.5">
+                  <span className="min-w-0 truncate font-mono text-[10px] text-ink">{d.name}</span>
+                  <span className="shrink-0 rounded bg-surface-3 px-1 py-px text-[8px] uppercase tracking-wide text-ink-faint">
+                    {d.kind}
+                  </span>
+                  <span className="ml-auto shrink-0 text-[9px] text-ink-faint">×{d.count}</span>
+                </div>
+                {d.signature && (
+                  <div
+                    className="truncate font-mono text-[9px] text-ink-faint"
+                    title={d.signature}
+                  >
+                    {d.signature}
+                  </div>
+                )}
+              </div>
+            ))
+          : link.symbols.map((s) => (
+              <div key={s} className="px-1.5 py-0.5 font-mono text-[10px] text-ink">
+                {s}
+              </div>
+            ))}
       </Section>
+      {apis.length > 0 && (
+        <Section title={`API calls · ${apis.length}`}>
+          {apis.map((a) => (
+            <div key={`${a.method} ${a.path}`} className="flex items-center gap-1.5 px-1.5 py-0.5">
+              <span className="shrink-0 rounded bg-accent-amber/15 px-1 font-mono text-[9px] font-semibold uppercase text-accent-amber">
+                {a.method}
+              </span>
+              <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-ink">
+                {a.path}
+              </span>
+              <span className="shrink-0 text-[9px] text-ink-faint">×{a.weight}</span>
+            </div>
+          ))}
+        </Section>
+      )}
     </Pane>
   );
 }
@@ -929,15 +1452,46 @@ function SystemDetail({
             key={`${e.file}#${e.name}`}
             type="button"
             onClick={() => requestOpenFile(e.file)}
-            className="flex w-full items-baseline gap-1.5 rounded-md px-1.5 py-0.5 text-left hover:bg-surface-2"
+            className="w-full rounded-md px-1.5 py-0.5 text-left hover:bg-surface-2"
             title={e.file}
           >
-            <span className="shrink-0 text-[9px] uppercase text-ink-faint">{e.kind.slice(0, 2)}</span>
-            <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-ink">{e.name}</span>
-            <span className="shrink-0 text-[9px] text-ink-faint">×{e.consumers}</span>
+            <span className="flex items-baseline gap-1.5">
+              <span className="shrink-0 text-[9px] uppercase text-ink-faint">{e.kind.slice(0, 2)}</span>
+              <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-ink">{e.name}</span>
+              <span className="shrink-0 text-[9px] text-ink-faint">×{e.consumers}</span>
+            </span>
+            {e.signature && (
+              <span
+                className="block truncate pl-4 font-mono text-[9px] text-ink-faint"
+                title={e.signature}
+              >
+                {e.signature}
+              </span>
+            )}
           </button>
         ))}
       </Section>
+
+      {system.endpoints.length > 0 && (
+        <Section title={`Serves · ${system.endpoints.length} route${system.endpoints.length === 1 ? "" : "s"}`}>
+          {system.endpoints.map((ep) => (
+            <button
+              key={`${ep.method} ${ep.path}@${ep.file}`}
+              type="button"
+              onClick={() => requestOpenFile(ep.file)}
+              title={ep.file}
+              className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-0.5 text-left hover:bg-surface-2"
+            >
+              <span className="shrink-0 rounded bg-accent-amber/15 px-1 font-mono text-[9px] font-semibold uppercase text-accent-amber">
+                {ep.method}
+              </span>
+              <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-ink">
+                {ep.path}
+              </span>
+            </button>
+          ))}
+        </Section>
+      )}
 
       {(outbound.length > 0 || system.externals.length > 0) && (
         <Section title="Consumes">

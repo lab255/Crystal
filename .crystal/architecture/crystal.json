@@ -44,7 +44,7 @@
         "id": "node_0ca44ca43426",
         "kind": "service",
         "label": "@crystal/server",
-        "description": "14 files",
+        "description": "24 files",
         "parentId": null,
         "position": {
           "x": 1510,
@@ -84,7 +84,7 @@
         "id": "node_4806fb807167",
         "kind": "repo",
         "label": "@crystal/architect",
-        "description": "41 files",
+        "description": "67 files",
         "parentId": "node_ee44861d5f2a",
         "position": {
           "x": 40,
@@ -104,7 +104,7 @@
         "id": "node_b5bdcf4990e2",
         "kind": "repo",
         "label": "@crystal/client",
-        "description": "9 files",
+        "description": "12 files",
         "parentId": "node_ee44861d5f2a",
         "position": {
           "x": 1259,
@@ -124,7 +124,7 @@
         "id": "node_b4e60cab8fff",
         "kind": "repo",
         "label": "@crystal/core",
-        "description": "24 files",
+        "description": "47 files",
         "parentId": "node_ee44861d5f2a",
         "position": {
           "x": 1840,
@@ -164,7 +164,7 @@
         "id": "node_6a2ad29ddede",
         "kind": "repo",
         "label": "@crystal/orchestrator",
-        "description": "7 files",
+        "description": "9 files",
         "parentId": "node_ee44861d5f2a",
         "position": {
           "x": 1603,
@@ -184,7 +184,7 @@
         "id": "node_f0e8ea5654b4",
         "kind": "repo",
         "label": "@crystal/sdk",
-        "description": "9 files",
+        "description": "18 files",
         "parentId": "node_ee44861d5f2a",
         "position": {
           "x": 1102,
@@ -204,7 +204,7 @@
         "id": "node_be33858f6b30",
         "kind": "repo",
         "label": "@crystal/ui",
-        "description": "18 files",
+        "description": "22 files",
         "parentId": "node_ee44861d5f2a",
         "position": {
           "x": 384,
@@ -219,6 +219,96 @@
             "runtime": ""
           }
         }
+      },
+      {
+        "id": "node_86baa840aa67",
+        "kind": "package",
+        "label": "driftwood",
+        "description": "7 files",
+        "parentId": null,
+        "position": {
+          "x": 24,
+          "y": 136
+        },
+        "size": null,
+        "tech": [],
+        "placements": {},
+        "codeModule": "examples/driftwood"
+      },
+      {
+        "id": "node_3a75e2a6f318",
+        "kind": "package",
+        "label": "harborview",
+        "description": "59 files",
+        "parentId": null,
+        "position": {
+          "x": 24,
+          "y": 256
+        },
+        "size": null,
+        "tech": [],
+        "placements": {},
+        "codeModule": "examples/harborview"
+      },
+      {
+        "id": "node_ba2fa5af6a39",
+        "kind": "package",
+        "label": "@ledgerline/admin",
+        "description": "10 files",
+        "parentId": null,
+        "position": {
+          "x": 24,
+          "y": 376
+        },
+        "size": null,
+        "tech": [],
+        "placements": {},
+        "codeModule": "examples/ledgerline/admin"
+      },
+      {
+        "id": "node_8626c34fa25d",
+        "kind": "package",
+        "label": "@ledgerline/server",
+        "description": "12 files",
+        "parentId": null,
+        "position": {
+          "x": 24,
+          "y": 496
+        },
+        "size": null,
+        "tech": [],
+        "placements": {},
+        "codeModule": "examples/ledgerline/server"
+      },
+      {
+        "id": "node_4816fc60acf1",
+        "kind": "package",
+        "label": "@ledgerline/shared",
+        "description": "5 files",
+        "parentId": null,
+        "position": {
+          "x": 24,
+          "y": 616
+        },
+        "size": null,
+        "tech": [],
+        "placements": {},
+        "codeModule": "examples/ledgerline/shared"
+      },
+      {
+        "id": "node_b1f081a508a3",
+        "kind": "package",
+        "label": "@ledgerline/worker",
+        "description": "5 files",
+        "parentId": null,
+        "position": {
+          "x": 24,
+          "y": 736
+        },
+        "size": null,
+        "tech": [],
+        "placements": {},
+        "codeModule": "examples/ledgerline/worker"
       }
     ],
     "edges": [
@@ -227,7 +317,7 @@
         "source": "node_0ca44ca43426",
         "target": "node_b4e60cab8fff",
         "kind": "dependency",
-        "label": "×10"
+        "label": "×20"
       },
       {
         "id": "edge_88e63cfc26d1",
@@ -241,28 +331,28 @@
         "source": "node_4806fb807167",
         "target": "node_b4e60cab8fff",
         "kind": "dependency",
-        "label": "×37"
+        "label": "×55"
       },
       {
         "id": "edge_a3ada29426e3",
         "source": "node_4806fb807167",
         "target": "node_b5bdcf4990e2",
         "kind": "dependency",
-        "label": "×10"
+        "label": "×16"
       },
       {
         "id": "edge_8dcb0966c323",
         "source": "node_4806fb807167",
         "target": "node_be33858f6b30",
         "kind": "dependency",
-        "label": "×19"
+        "label": "×27"
       },
       {
         "id": "edge_d0d3fd939a3b",
         "source": "node_b5bdcf4990e2",
         "target": "node_b4e60cab8fff",
         "kind": "dependency",
-        "label": "×6"
+        "label": "×10"
       },
       {
         "id": "edge_d615560eecfc",
@@ -290,49 +380,49 @@
         "source": "node_6a2ad29ddede",
         "target": "node_b4e60cab8fff",
         "kind": "dependency",
-        "label": "×5"
+        "label": "×7"
       },
       {
         "id": "edge_1bc99ce59804",
         "source": "node_6a2ad29ddede",
         "target": "node_b5bdcf4990e2",
         "kind": "dependency",
-        "label": "×4"
+        "label": "×5"
       },
       {
         "id": "edge_1348a566b326",
         "source": "node_6a2ad29ddede",
         "target": "node_be33858f6b30",
         "kind": "dependency",
-        "label": "×4"
+        "label": "×6"
       },
       {
         "id": "edge_fe0ad95c0a42",
         "source": "node_f0e8ea5654b4",
         "target": "node_b5bdcf4990e2",
         "kind": "dependency",
-        "label": "×6"
+        "label": "×14"
       },
       {
         "id": "edge_e1ed0b99c188",
         "source": "node_f0e8ea5654b4",
         "target": "node_be33858f6b30",
         "kind": "dependency",
-        "label": "×3"
+        "label": "×11"
       },
       {
         "id": "edge_8c63fd0be2c3",
         "source": "node_f0e8ea5654b4",
         "target": "node_b4e60cab8fff",
         "kind": "dependency",
-        "label": "×4"
+        "label": "×11"
       },
       {
         "id": "edge_268f1ffdcd89",
         "source": "node_f0e8ea5654b4",
         "target": "node_4806fb807167",
         "kind": "dependency",
-        "label": "×1"
+        "label": "×2"
       },
       {
         "id": "edge_8c35127bd8b9",
@@ -347,6 +437,34 @@
         "target": "node_9abce7327c17",
         "kind": "dependency",
         "label": "×1"
+      },
+      {
+        "id": "edge_306246ac6574",
+        "source": "node_ba2fa5af6a39",
+        "target": "node_4816fc60acf1",
+        "kind": "dependency",
+        "label": "×3"
+      },
+      {
+        "id": "edge_0891db66aafe",
+        "source": "node_8626c34fa25d",
+        "target": "node_4816fc60acf1",
+        "kind": "dependency",
+        "label": "×6"
+      },
+      {
+        "id": "edge_29099a70770e",
+        "source": "node_8626c34fa25d",
+        "target": "node_b1f081a508a3",
+        "kind": "dependency",
+        "label": "×1"
+      },
+      {
+        "id": "edge_e1a064c8b285",
+        "source": "node_b1f081a508a3",
+        "target": "node_4816fc60acf1",
+        "kind": "dependency",
+        "label": "×3"
       }
     ],
     "environments": [
@@ -432,8 +550,8 @@
       }
     ],
     "viewport": {
-      "x": -99.40574546556508,
-      "y": -415.95017418623,
+      "x": 305.59425453443487,
+      "y": -174.9501741862298,
       "zoom": 0.527750554639863
     }
   }

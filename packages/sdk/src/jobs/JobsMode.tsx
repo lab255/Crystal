@@ -345,7 +345,7 @@ function SurveySection({ scoped, runs }: { scoped: Scoped | null; runs: AgentRun
           }
           className="mt-2 flex items-center gap-1 text-[11px] text-crystal-300 hover:text-crystal-200"
         >
-          Imported “{imported.name}” — open in Architecture <ArrowUpRight className="h-3 w-3" />
+          Imported “{imported.name}” — open in Code graph <ArrowUpRight className="h-3 w-3" />
         </button>
       ) : null}
       {notice ? <p className="mt-2 text-[11px] text-warn">{notice}</p> : null}
