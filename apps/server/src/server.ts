@@ -16,6 +16,7 @@ import {
 } from "@crystal/core";
 import {
   applyCodeSnapshotToGraph,
+  buildSystemOverview,
   computeReviewFindings,
   createArchDraft,
   suggestFacets,
@@ -252,6 +253,17 @@ export async function startCrystalServer(opts: {
     "codemap.file": ({ ws, path: p }) => registry.get(ws).codemap.fileDetail(p),
     "codemap.details": ({ ws, modules }) => registry.get(ws).codemap.bulkDetails(modules),
     "codemap.cross": () => registry.crossMap(),
+    "codemap.overview": async ({ ws }) => {
+      const rt = registry.get(ws);
+      const [sources, { index }] = await Promise.all([
+        rt.codemap.overviewSourceFiles(),
+        rt.codeindex.get(),
+      ]);
+      return {
+        ...buildSystemOverview(sources, index),
+        generatedAt: new Date().toISOString(),
+      };
+    },
     "codemap.symbolSource": ({ ws, file, symbol }) =>
       registry.get(ws).codemap.symbolSource(file, symbol),
     "codemap.trace": ({ ws, file, symbol, maxDepth }) =>

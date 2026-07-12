@@ -82,6 +82,7 @@ import { ReviewDialog } from "./ReviewDialog.js";
 import { ReviewView } from "./ReviewView.js";
 import { canSeedFromCodeMap, seedFromCodeMap } from "./seed.js";
 import { SurveySection } from "./SurveyPanel.js";
+import { SystemsView } from "./systems/SystemsView.js";
 
 const EMPTY_ARCHITECTURES: never[] = [];
 const EMPTY_DRAFTS: never[] = [];
@@ -89,12 +90,12 @@ const EMPTY_REFACTORS: never[] = [];
 const EMPTY_PROJECTS: never[] = [];
 const EMPTY_RUNS: never[] = [];
 
-type ArchitectView = "diagrams" | "infra" | "codemap";
+type ArchitectView = "systems" | "diagrams" | "infra" | "codemap";
 
 export function ArchitectMode() {
   // View + draft selection live in the deep-linkable nav store.
   const nav = useNavUpdate();
-  const view = useNav((l) => l.architect?.view) ?? "diagrams";
+  const view = useNav((l) => l.architect?.view) ?? "systems";
   const setView = useCallback(
     (v: ArchitectView) => nav({ architect: { view: v } }),
     [nav],
@@ -172,6 +173,7 @@ export function ArchitectMode() {
       <header className="flex items-center gap-2 border-b border-edge bg-surface-1 px-3 py-1.5">
         <span className="text-[13px] font-semibold text-ink">Architecture</span>
         <div className="ml-auto flex items-center gap-0.5 rounded-lg bg-surface-2 p-0.5">
+          {tab("systems", <Boxes className="h-3.5 w-3.5" />, "Systems")}
           {tab(
             "diagrams",
             <PencilRuler className="h-3.5 w-3.5" />,
@@ -186,7 +188,9 @@ export function ArchitectMode() {
         </div>
       </header>
       <div className="min-h-0 flex-1">
-        {view === "codemap" ? (
+        {view === "systems" ? (
+          <SystemsView onOpenCode={expandCode} />
+        ) : view === "codemap" ? (
           <CodeMapView
             origin={{ label: "Architecture", onExit: () => setView("diagrams") }}
             onEnterWorkspace={(ws) => {

@@ -17,6 +17,7 @@ import type {
 } from "./codemap.js";
 import type { Project } from "./project.js";
 import type { RefactorApplyResult, RefactorIntent, RefactorPlan } from "./refactor.js";
+import type { SystemOverview } from "./system-overview.js";
 import type { TerminalChunk, TerminalInfo } from "./terminal.js";
 import type { TodoList } from "./todo.js";
 import type { WorkspaceManifest } from "./workspace.js";
@@ -277,6 +278,13 @@ export interface BridgeMethods {
   };
   /** Import/export graph across every open workspace. */
   "codemap.cross": { params: Record<string, never>; result: CrossWorkspaceMap };
+  /**
+   * The logical system overview: the codebase clustered into architecture
+   * modules (authentication, submission, external integrations…) with the
+   * exports each one serves, the systems and external services it consumes,
+   * and weighted inter-system links (see system-overview.ts).
+   */
+  "codemap.overview": { params: WsScope; result: SystemOverview };
   /** Source text of one top-level symbol (capped). */
   "codemap.symbolSource": {
     params: WsScope & { file: string; symbol: string };

@@ -17,7 +17,7 @@
 import { CODE_LOD_LEVELS, type CodeLodLevel } from "./codemap.js";
 
 export type CrystalModeId = "projects" | "architect" | "orchestrate" | "code" | "jobs";
-export type ArchitectViewId = "diagrams" | "infra" | "codemap";
+export type ArchitectViewId = "systems" | "diagrams" | "infra" | "codemap";
 export type OrchestratorTabId = "board" | "runs" | "agents";
 
 /** Mirrors the code map's drill levels (all workspaces → workspace → module → file). */
@@ -29,6 +29,8 @@ export type CodeMapLevelLink =
 
 export interface ArchitectLink {
   view?: ArchitectViewId;
+  /** Selected logical system id on the systems overview (e.g. "sys:auth"). */
+  system?: string;
   /** Selected architecture `.crystal` file path (diagrams + infra views). */
   diagram?: string;
   /** Active facet id — a named lens over the selected diagram. */
@@ -116,7 +118,9 @@ export function formatDeepLink(link: DeepLink): string {
     const a = link.architect ?? {};
     const view = a.view ?? "diagrams";
     path += `/${view}`;
-    if (view === "codemap") {
+    if (view === "systems") {
+      if (a.system) add("system", a.system);
+    } else if (view === "codemap") {
       const cm = a.codemap;
       if (cm) {
         add("at", cm.kind);
@@ -173,7 +177,10 @@ export function parseDeepLink(hash: string): DeepLink {
     link.mode = "architect";
     const a: ArchitectLink = {};
     const view = segments[1];
-    if (view === "diagrams" || view === "infra" || view === "codemap") a.view = view;
+    if (view === "systems" || view === "diagrams" || view === "infra" || view === "codemap")
+      a.view = view;
+    const system = params.get("system");
+    if (system) a.system = system;
     const diagram = params.get("diagram");
     if (diagram) a.diagram = diagram;
     const facet = params.get("facet");

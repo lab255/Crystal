@@ -1,0 +1,650 @@
+import type { CodeIndex } from "./code-index.js";
+import { CONCEPT_LEXICON, conceptDisplayName, identifierWords, type ConceptDef } from "./code-index.js";
+import type { CodeSymbolKind } from "./codemap.js";
+import { classifyExternalPackage } from "./external-services.js";
+import { tagDimension, tagValue } from "./tags.js";
+
+/**
+ * System overview — the codebase projected as *logical* architecture modules
+ * (authentication, submission, external integrations…) rather than language
+ * packages. Where the code map answers "what directories/packages exist and
+ * which files import which", this answers the architect's questions:
+ *
+ *   1. what systems exist            → `SystemModule` (clustered units)
+ *   2. what each one exports         → `SystemModule.exports` (consumed API)
+ *   3. what each one consumes        → `links` (per pair) + `externals`
+ *   4. how systems interact          → `SystemLink` (weighted, with symbols)
+ *
+ * Clustering is evidence-based and deterministic:
+ *
+ *  - *structural units* — directory subtrees inside each package, split at
+ *    collection dirs (`modules/`, `features/`, `services/`…) and transparent
+ *    wrappers (`src/`, `app/`). A DDD-ish tree (`src/auth`, `src/billing`)
+ *    and a conventional one (`modules/auth`) both yield one unit per domain
+ *    dir; a monolith with no such structure degrades to one unit per package
+ *    (the honest fallback — no fake subsystems).
+ *  - *semantic merge* — units are fused into one logical system when they
+ *    share a name (`features/auth` + `modules/auth`, across packages) or a
+ *    dominant `intent:` concept from the code index (heuristic + symbolic +
+ *    agent tags). The index refines the structure; it never invents units.
+ *
+ * Pure and deterministic: same (sources, index) → same overview. The caller
+ * stamps `generatedAt`.
+ */
+
+/* ------------------------------------------------------------------ */
+/* Input                                                               */
+/* ------------------------------------------------------------------ */
+
+/** What the builder needs to know about one source file. */
+export interface OverviewSourceFile {
+  /** Workspace-relative path. */
+  path: string;
+  /** Owning code-map module (package) path — "." at the workspace root. */
+  pkg: string;
+  /** Test files are excluded from clustering and edge weights. */
+  test?: boolean;
+  imports: {
+    /** Import specifier as written. */
+    specifier: string;
+    /** Workspace-relative resolved file when internal, null when external. */
+    resolved: string | null;
+    /** Imported names ("default" / "*" included). */
+    names: string[];
+  }[];
+  exports: { name: string; kind: CodeSymbolKind }[];
+}
+
+/* ------------------------------------------------------------------ */
+/* Output                                                              */
+/* ------------------------------------------------------------------ */
+
+export const SYSTEM_ROLES = ["domain", "integration", "shared", "entry", "data"] as const;
+export type SystemRole = (typeof SYSTEM_ROLES)[number];
+
+/** One structural unit (directory subtree) contributing to a system. */
+export interface SystemPart {
+  /** Workspace-relative directory path of the unit. */
+  path: string;
+  /** Owning package (code-map module path). */
+  pkg: string;
+  fileCount: number;
+}
+
+/** An exported symbol that code outside the system actually imports. */
+export interface SystemExport {
+  name: string;
+  kind: CodeSymbolKind;
+  /** File declaring the export. */
+  file: string;
+  /** Distinct outside files importing it. */
+  consumers: number;
+}
+
+/** An external service the system talks to (see external-services.ts). */
+export interface SystemExternal {
+  /** Stable service id ("stripe", "mongodb"…). */
+  id: string;
+  name: string;
+  /** Import statements across the system's files. */
+  weight: number;
+}
+
+export interface SystemModule {
+  /** Stable id derived from the cluster key, e.g. "sys:auth". */
+  id: string;
+  /** Display name, e.g. "Authentication" or "Submission". */
+  name: string;
+  /** Dominant intent concept when the cluster is tag-driven, else null. */
+  concept: string | null;
+  role: SystemRole;
+  parts: SystemPart[];
+  fileCount: number;
+  /** Intent profile, heaviest first (for chips/inspection). */
+  intents: { value: string; weight: number }[];
+  /** Externally-consumed exports, most-consumed first (capped). */
+  exports: SystemExport[];
+  /** Total exported symbols across the system's files. */
+  exportedTotal: number;
+  /** External services consumed, heaviest first (capped). */
+  externals: SystemExternal[];
+}
+
+/** A directed "consumes" edge: source imports from target. */
+export interface SystemLink {
+  source: string;
+  target: string;
+  /** File-level import statements crossing the boundary. */
+  weight: number;
+  /** Most-imported symbol names along this edge (capped). */
+  symbols: string[];
+}
+
+export interface SystemOverview {
+  systems: SystemModule[];
+  links: SystemLink[];
+  /** Non-test files covered by the overview. */
+  fileTotal: number;
+  /** ISO timestamp; informational only (stamped by the server). */
+  generatedAt: string;
+}
+
+/* ------------------------------------------------------------------ */
+/* Tunables                                                            */
+/* ------------------------------------------------------------------ */
+
+/** Directories whose children are candidate units, not units themselves. */
+const COLLECTION_DIRS = new Set([
+  "modules", "features", "domains", "services", "apps", "packages", "libs", "plugins",
+]);
+/** Wrapper directories that never name a unit — walk straight through. */
+const TRANSPARENT_DIRS = new Set(["src", "app", "source"]);
+/** Units smaller than this fold into their parent's residual unit. */
+const UNIT_MIN_FILES = 2;
+/** A tag-dominant concept needs this share of a unit's intent weight to cluster by it. */
+const CONCEPT_MERGE_SHARE = 0.75;
+/** …and at least this much absolute weight. */
+const CONCEPT_MERGE_WEIGHT = 3;
+/** Name lists for role detection. */
+const SHARED_NAMES = new Set(["shared", "common", "utils", "util", "helpers", "lib", "types", "constants", "config"]);
+const ENTRY_NAMES = new Set(["routes", "pages", "views", "main", "cli", "bin", "scripts", "loaders", "bootstrap"]);
+const INTEGRATION_NAMES = new Set(["integrations", "external", "webhooks"]);
+/**
+ * Presentation/support directories that are structural by nature: they never
+ * merge into a domain concept, however their tag mass leans (a `components/`
+ * tree full of email widgets is still the component library, not the
+ * notifications system).
+ */
+const STRUCTURAL_NAMES = new Set([
+  "components", "pages", "views", "templates", "hooks", "assets", "theme",
+  "styles", "icons", "stories", "mocks", "i18n",
+]);
+/** Fraction of files importing a SaaS-ish external service that marks an integration unit. */
+const INTEGRATION_FILE_SHARE = 0.5;
+/** Fraction of files importing a database/cache client that marks a data-layer unit. */
+const DATA_FILE_SHARE = 0.5;
+/** A system consumed by this share of the others (≥3) plays a shared/platform role. */
+const SHARED_FAN_IN_SHARE = 0.6;
+const EXPORTS_CAP = 40;
+const EXTERNALS_CAP = 12;
+const LINK_SYMBOLS_CAP = 6;
+const INTENTS_CAP = 5;
+
+/* ------------------------------------------------------------------ */
+/* Helpers                                                             */
+/* ------------------------------------------------------------------ */
+
+/** npm package name of an external specifier ("@scope/pkg/sub" → "@scope/pkg"). */
+export function npmPackageOf(specifier: string): string | null {
+  if (specifier.startsWith(".") || specifier.startsWith("/") || specifier.startsWith("#")) return null;
+  const clean = specifier.startsWith("node:") ? null : specifier;
+  if (!clean) return null;
+  const parts = clean.split("/");
+  if (clean.startsWith("@")) return parts.length >= 2 ? `${parts[0]}/${parts[1]}` : null;
+  return parts[0] || null;
+}
+
+const lastSegment = (dir: string): string => dir.split("/").at(-1) ?? dir;
+
+/** Merge key for a unit name: lowercase, naive singular so "forms" ≡ "form". */
+function nameKeyOf(name: string): string {
+  const lower = name.toLowerCase();
+  if (lower.length > 3 && lower.endsWith("s") && !lower.endsWith("ss")) return lower.slice(0, -1);
+  return lower;
+}
+
+/** "admin-form" → "Admin form". */
+function titleCase(name: string): string {
+  const words = name.replace(/[-_.]+/g, " ").trim();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+const slug = (value: string): string =>
+  value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "root";
+
+/* ------------------------------------------------------------------ */
+/* Stage A — structural units                                          */
+/* ------------------------------------------------------------------ */
+
+interface Unit {
+  /** Directory path of the unit (workspace-relative; pkg root for residuals). */
+  path: string;
+  /** Display-ish name: last meaningful path segment (pkg name for residuals). */
+  name: string;
+  pkg: string;
+  files: OverviewSourceFile[];
+}
+
+interface DirNode {
+  files: OverviewSourceFile[];
+  children: Map<string, DirNode>;
+  total: number;
+}
+
+function buildDirTree(files: readonly OverviewSourceFile[], pkgPath: string): DirNode {
+  const root: DirNode = { files: [], children: new Map(), total: 0 };
+  const prefix = pkgPath === "." ? "" : `${pkgPath}/`;
+  for (const file of files) {
+    const rel = prefix ? file.path.slice(prefix.length) : file.path;
+    const segments = rel.split("/");
+    let node = root;
+    node.total += 1;
+    for (const segment of segments.slice(0, -1)) {
+      let child = node.children.get(segment);
+      if (!child) node.children.set(segment, (child = { files: [], children: new Map(), total: 0 }));
+      node = child;
+      node.total += 1;
+    }
+    node.files.push(file);
+  }
+  return root;
+}
+
+/**
+ * Split one package into units. Recursion descends only through the package
+ * root, transparent wrappers and collection dirs; every other directory is a
+ * unit (whole subtree). Direct files of a split level pool into a residual
+ * unit named for the package.
+ */
+function unitsOfPackage(pkgPath: string, pkgFiles: readonly OverviewSourceFile[]): Unit[] {
+  const sorted = [...pkgFiles].sort((a, b) => a.path.localeCompare(b.path));
+  const tree = buildDirTree(sorted, pkgPath);
+  const pkgName = lastSegment(pkgPath === "." ? "root" : pkgPath);
+  const units: Unit[] = [];
+  const residual: OverviewSourceFile[] = [];
+
+  const collect = (node: DirNode, dirRel: string, split: boolean): void => {
+    if (!split) {
+      const all: OverviewSourceFile[] = [];
+      const gather = (n: DirNode): void => {
+        all.push(...n.files);
+        for (const child of n.children.values()) gather(child);
+      };
+      gather(node);
+      const dirPath = pkgPath === "." ? dirRel : dirRel ? `${pkgPath}/${dirRel}` : pkgPath;
+      units.push({ path: dirPath, name: lastSegment(dirRel), pkg: pkgPath, files: all });
+      return;
+    }
+    residual.push(...node.files);
+    for (const [name, child] of [...node.children.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+      const childRel = dirRel ? `${dirRel}/${name}` : name;
+      const descend = TRANSPARENT_DIRS.has(name) || COLLECTION_DIRS.has(name);
+      collect(child, childRel, descend);
+    }
+  };
+
+  collect(tree, "", true);
+
+  // Tiny units fold into the residual — a one-file directory is not a system.
+  const kept: Unit[] = [];
+  for (const unit of units) {
+    if (unit.files.length < UNIT_MIN_FILES) residual.push(...unit.files);
+    else kept.push(unit);
+  }
+  if (residual.length > 0 || kept.length === 0) {
+    kept.push({
+      path: pkgPath,
+      name: pkgName,
+      pkg: pkgPath,
+      files: residual.sort((a, b) => a.path.localeCompare(b.path)),
+    });
+  }
+  return kept.filter((u) => u.files.length > 0);
+}
+
+/* ------------------------------------------------------------------ */
+/* Stage B — concept profiles                                          */
+/* ------------------------------------------------------------------ */
+
+interface UnitProfile {
+  unit: Unit;
+  /** intent value → confidence-weighted tag mass across the unit's files. */
+  intents: Map<string, number>;
+  /** Dominant concept when strong enough to cluster by, else null. */
+  concept: string | null;
+  /** The unit's own name asserts the concept (word match). */
+  nameAsserted: boolean;
+  /** role:util/role:shared tag share, for role detection. */
+  sharedShare: number;
+}
+
+function profileUnit(
+  unit: Unit,
+  index: CodeIndex | null,
+  lexicon: readonly ConceptDef[],
+): UnitProfile {
+  const intents = new Map<string, number>();
+  let roleTags = 0;
+  let sharedTags = 0;
+
+  if (index) {
+    const byPath = indexByPath(index);
+    for (const file of unit.files) {
+      const indexed = byPath.get(file.path);
+      if (!indexed) continue;
+      const addTag = (tag: string, confidence: number): void => {
+        const dimension = tagDimension(tag);
+        if (dimension === "intent") {
+          const value = tagValue(tag);
+          intents.set(value, (intents.get(value) ?? 0) + confidence);
+        } else if (dimension === "role") {
+          roleTags += 1;
+          if (tag === "role:util" || tag === "role:shared") sharedTags += 1;
+        }
+      };
+      for (const t of indexed.tags) addTag(t.tag, t.confidence);
+      for (const sym of indexed.symbols) for (const t of sym.tags) addTag(t.tag, t.confidence);
+    }
+  }
+
+  // The unit's own name asserting a concept is stronger evidence than any
+  // tag mass — a directory called "auth" *is* the authentication module.
+  // Structural dirs (components/, templates/…) never take a concept at all.
+  const structural = STRUCTURAL_NAMES.has(unit.name.toLowerCase());
+  const nameWords = new Set(structural ? [] : identifierWords(unit.name));
+  let nameConcept: string | null = null;
+  for (const def of lexicon) {
+    if (def.words.some((w) => nameWords.has(w))) {
+      nameConcept = def.value;
+      break;
+    }
+  }
+  if (!nameConcept) {
+    // Agent-minted intents ("intent:submission") match on the value itself.
+    for (const value of [...intents.keys()].sort()) {
+      if (nameWords.has(value)) {
+        nameConcept = value;
+        break;
+      }
+    }
+  }
+
+  let concept: string | null = nameConcept;
+  const nameAsserted = nameConcept != null;
+  if (!concept && !structural && intents.size > 0) {
+    const total = [...intents.values()].reduce((a, b) => a + b, 0);
+    const [top, weight] = [...intents.entries()].sort(
+      (a, b) => b[1] - a[1] || a[0].localeCompare(b[0]),
+    )[0]!;
+    if (weight >= CONCEPT_MERGE_WEIGHT && weight / total >= CONCEPT_MERGE_SHARE) concept = top;
+  }
+
+  return {
+    unit,
+    intents,
+    concept,
+    nameAsserted,
+    sharedShare: roleTags > 0 ? sharedTags / roleTags : 0,
+  };
+}
+
+const indexCache = new WeakMap<CodeIndex, Map<string, CodeIndex["files"][number]>>();
+function indexByPath(index: CodeIndex): Map<string, CodeIndex["files"][number]> {
+  let map = indexCache.get(index);
+  if (!map) indexCache.set(index, (map = new Map(index.files.map((f) => [f.path, f]))));
+  return map;
+}
+
+/* ------------------------------------------------------------------ */
+/* Stage C — cluster units into systems                                */
+/* ------------------------------------------------------------------ */
+
+interface Cluster {
+  key: string;
+  concept: string | null;
+  name: string;
+  profiles: UnitProfile[];
+}
+
+function clusterUnits(profiles: UnitProfile[], lexicon: readonly ConceptDef[]): Cluster[] {
+  const clusters = new Map<string, Cluster>();
+  for (const profile of profiles) {
+    // Concept-keyed when the unit's name asserts it or the tags dominate;
+    // otherwise units of the same (singularized) name merge across packages.
+    const byConcept = profile.concept != null && (profile.nameAsserted || profile.intents.size > 0);
+    const key = byConcept ? `concept:${profile.concept}` : `name:${nameKeyOf(profile.unit.name)}`;
+    let cluster = clusters.get(key);
+    if (!cluster) {
+      const name = byConcept
+        ? conceptDisplayName(profile.concept!, lexicon)
+        : titleCase(profile.unit.name);
+      clusters.set(
+        key,
+        (cluster = { key, concept: byConcept ? profile.concept : null, name, profiles: [] }),
+      );
+    }
+    cluster.profiles.push(profile);
+  }
+  return [...clusters.values()];
+}
+
+/* ------------------------------------------------------------------ */
+/* Stage D — aggregation                                               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Build the overview. Pure — same `(files, index)` in, same overview out;
+ * `generatedAt` is left empty for the caller to stamp.
+ */
+export function buildSystemOverview(
+  files: readonly OverviewSourceFile[],
+  index: CodeIndex | null = null,
+  lexicon: readonly ConceptDef[] = CONCEPT_LEXICON,
+): SystemOverview {
+  const sources = files.filter((f) => !f.test);
+
+  // A. structural units, per package.
+  const byPkg = new Map<string, OverviewSourceFile[]>();
+  for (const file of sources) {
+    const list = byPkg.get(file.pkg) ?? [];
+    list.push(file);
+    byPkg.set(file.pkg, list);
+  }
+  const units = [...byPkg.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .flatMap(([pkg, pkgFiles]) => unitsOfPackage(pkg, pkgFiles));
+
+  // B + C. semantic profiles → clusters.
+  const profiles = units.map((u) => profileUnit(u, index, lexicon));
+  const clusters = clusterUnits(profiles, lexicon);
+
+  // Assemble systems (ids must be unique — slug collisions get a suffix).
+  const usedIds = new Set<string>();
+  const systems: SystemModule[] = [];
+  const systemOfFile = new Map<string, string>();
+  const fileMeta = new Map(sources.map((f) => [f.path, f]));
+
+  for (const cluster of [...clusters].sort(
+    (a, b) =>
+      b.profiles.reduce((n, p) => n + p.unit.files.length, 0) -
+        a.profiles.reduce((n, p) => n + p.unit.files.length, 0) || a.name.localeCompare(b.name),
+  )) {
+    let id = `sys:${slug(cluster.concept ?? cluster.name)}`;
+    for (let n = 2; usedIds.has(id); n++) id = `sys:${slug(cluster.concept ?? cluster.name)}-${n}`;
+    usedIds.add(id);
+
+    const parts: SystemPart[] = cluster.profiles
+      .map((p) => ({ path: p.unit.path, pkg: p.unit.pkg, fileCount: p.unit.files.length }))
+      .sort((a, b) => b.fileCount - a.fileCount || a.path.localeCompare(b.path));
+    const memberFiles = cluster.profiles.flatMap((p) => p.unit.files);
+    for (const f of memberFiles) systemOfFile.set(f.path, id);
+
+    // Intent profile (merged across units).
+    const intentMass = new Map<string, number>();
+    for (const p of cluster.profiles) {
+      for (const [value, weight] of p.intents) {
+        intentMass.set(value, (intentMass.get(value) ?? 0) + weight);
+      }
+    }
+    const intents = [...intentMass.entries()]
+      .map(([value, weight]) => ({ value, weight: Math.round(weight * 10) / 10 }))
+      .sort((a, b) => b.weight - a.weight || a.value.localeCompare(b.value))
+      .slice(0, INTENTS_CAP);
+
+    // External services consumed. Databases/caches are the data layer, not
+    // integrations — they feed the `data` role instead.
+    const externalWeights = new Map<string, { name: string; weight: number }>();
+    let integrationFiles = 0;
+    let dataFiles = 0;
+    for (const file of memberFiles) {
+      let integrates = false;
+      let touchesData = false;
+      for (const imp of file.imports) {
+        if (imp.resolved) continue;
+        const pkg = npmPackageOf(imp.specifier);
+        const meta = pkg ? classifyExternalPackage(pkg) : null;
+        if (!meta) continue;
+        const entry = externalWeights.get(meta.id) ?? { name: meta.name, weight: 0 };
+        entry.weight += 1;
+        externalWeights.set(meta.id, entry);
+        if (meta.category === "database" || meta.category === "cache") touchesData = true;
+        else if (meta.category !== "http") integrates = true;
+      }
+      if (integrates) integrationFiles += 1;
+      if (touchesData) dataFiles += 1;
+    }
+    const externals: SystemExternal[] = [...externalWeights.entries()]
+      .map(([sid, { name, weight }]) => ({ id: sid, name, weight }))
+      .sort((a, b) => b.weight - a.weight || a.name.localeCompare(b.name))
+      .slice(0, EXTERNALS_CAP);
+
+    // Role: explicit names first, then external-usage and tag evidence.
+    const names = new Set(
+      cluster.profiles.flatMap((p) => [p.unit.name.toLowerCase(), nameKeyOf(p.unit.name)]),
+    );
+    const nameIn = (set: ReadonlySet<string>): boolean =>
+      [...names].some((n) => set.has(n) || set.has(`${n}s`));
+    const sharedByTags =
+      cluster.profiles.reduce((s, p) => s + p.sharedShare * p.unit.files.length, 0) /
+        Math.max(1, memberFiles.length) >=
+      0.5;
+    const memberCount = Math.max(1, memberFiles.length);
+    const role: SystemRole = nameIn(INTEGRATION_NAMES)
+      ? "integration"
+      : integrationFiles / memberCount >= INTEGRATION_FILE_SHARE
+        ? "integration"
+        : dataFiles / memberCount >= DATA_FILE_SHARE
+          ? "data"
+          : nameIn(ENTRY_NAMES)
+            ? "entry"
+            : nameIn(SHARED_NAMES) || nameIn(STRUCTURAL_NAMES) || sharedByTags
+              ? "shared"
+              : "domain";
+
+    systems.push({
+      id,
+      name: cluster.name,
+      concept: cluster.concept,
+      role,
+      parts,
+      fileCount: memberFiles.length,
+      intents,
+      exports: [], // filled below, once cross-system imports are counted
+      exportedTotal: memberFiles.reduce((n, f) => n + f.exports.length, 0),
+      externals,
+    });
+  }
+
+  // D. cross-system links + consumed exports.
+  const linkAgg = new Map<string, { weight: number; names: Map<string, number> }>();
+  // (system, file, exportName) → distinct outside consumer files.
+  const exportConsumers = new Map<string, Set<string>>();
+
+  // Per-system export name → declaring file (built lazily; declarations beat
+  // named re-exports so "open export" lands on real code, not a barrel).
+  const declaringMemo = new Map<string, Map<string, string>>();
+  const sortedSources = [...sources].sort((a, b) => a.path.localeCompare(b.path));
+  const declaringFileOf = (system: string): Map<string, string> => {
+    let map = declaringMemo.get(system);
+    if (map) return map;
+    declaringMemo.set(system, (map = new Map()));
+    const reexports = new Set<string>();
+    for (const file of sortedSources) {
+      if (systemOfFile.get(file.path) !== system) continue;
+      for (const e of file.exports) {
+        if (!map.has(e.name)) {
+          map.set(e.name, file.path);
+          if (e.kind === "reexport") reexports.add(e.name);
+        } else if (reexports.has(e.name) && e.kind !== "reexport") {
+          map.set(e.name, file.path);
+          reexports.delete(e.name);
+        }
+      }
+    }
+    return map;
+  };
+
+  for (const file of sources) {
+    const sourceSystem = systemOfFile.get(file.path);
+    if (!sourceSystem) continue;
+    for (const imp of file.imports) {
+      if (!imp.resolved) continue;
+      const target = fileMeta.get(imp.resolved);
+      const targetSystem = target ? systemOfFile.get(target.path) : undefined;
+      if (!target || !targetSystem || targetSystem === sourceSystem) continue;
+
+      const key = `${sourceSystem}\u0000${targetSystem}`;
+      const link = linkAgg.get(key) ?? { weight: 0, names: new Map() };
+      link.weight += 1;
+      for (const name of imp.names) {
+        if (name === "*" || name === "default") continue;
+        link.names.set(name, (link.names.get(name) ?? 0) + 1);
+        // Barrel entrypoints (`export * from …`) don't declare the names they
+        // serve — fall back to the file inside the system that does.
+        const declaring = target.exports.some((e) => e.name === name)
+          ? target.path
+          : declaringFileOf(targetSystem).get(name);
+        if (declaring) {
+          const exportKey = `${targetSystem}\u0000${declaring}\u0000${name}`;
+          const consumers = exportConsumers.get(exportKey) ?? new Set();
+          consumers.add(file.path);
+          exportConsumers.set(exportKey, consumers);
+        }
+      }
+      linkAgg.set(key, link);
+    }
+  }
+
+  const links: SystemLink[] = [...linkAgg.entries()]
+    .map(([key, { weight, names }]) => {
+      const [source, target] = key.split("\u0000") as [string, string];
+      const symbols = [...names.entries()]
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+        .slice(0, LINK_SYMBOLS_CAP)
+        .map(([name]) => name);
+      return { source, target, weight, symbols };
+    })
+    .sort((a, b) => b.weight - a.weight || a.source.localeCompare(b.source) || a.target.localeCompare(b.target));
+
+  // Consumed exports per system.
+  const exportsBySystem = new Map<string, SystemExport[]>();
+  for (const [key, consumers] of exportConsumers) {
+    const [system, file, name] = key.split("\u0000") as [string, string, string];
+    const kind = fileMeta.get(file)?.exports.find((e) => e.name === name)?.kind ?? "const";
+    const list = exportsBySystem.get(system) ?? [];
+    list.push({ name, kind, file, consumers: consumers.size });
+    exportsBySystem.set(system, list);
+  }
+  for (const system of systems) {
+    system.exports = (exportsBySystem.get(system.id) ?? [])
+      .sort((a, b) => b.consumers - a.consumers || a.name.localeCompare(b.name) || a.file.localeCompare(b.file))
+      .slice(0, EXPORTS_CAP);
+  }
+
+  // High fan-in without a domain concept reads as platform/shared.
+  const inbound = new Map<string, number>();
+  for (const link of links) inbound.set(link.target, (inbound.get(link.target) ?? 0) + 1);
+  for (const system of systems) {
+    if (system.role !== "domain" || system.concept != null) continue;
+    const others = systems.length - 1;
+    const fanIn = inbound.get(system.id) ?? 0;
+    if (others >= 3 && fanIn / others >= SHARED_FAN_IN_SHARE) system.role = "shared";
+  }
+
+  return {
+    systems: systems.sort((a, b) => b.fileCount - a.fileCount || a.name.localeCompare(b.name)),
+    links,
+    fileTotal: sources.length,
+    generatedAt: "",
+  };
+}
