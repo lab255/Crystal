@@ -10,6 +10,8 @@
     "tauri": "tauri"
   },
   "devDependencies": {
+    "@crystal/server": "workspace:*",
+    "@crystal/web": "workspace:*",
     "@tauri-apps/cli": "^2.2.0"
   }
 }
