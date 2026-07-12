@@ -9,6 +9,8 @@ import {
 import { useStore } from "zustand";
 import {
   BRIDGE_PATH,
+  BRIDGE_TOKEN_COOKIE,
+  BRIDGE_TOKEN_PARAM,
   DEFAULT_BRIDGE_PORT,
   createTaskQuestion,
   nowIso,
@@ -53,11 +55,52 @@ export interface CrystalContextValue {
 
 const CrystalContext = createContext<CrystalContextValue | null>(null);
 
+/**
+ * Bearer token for a remote bridge. Sourced (in order) from `?token=` on the
+ * URL — which is then persisted and stripped from the address bar — an
+ * injected `window.__CRYSTAL_CONFIG__`, or a prior localStorage save. Usually
+ * null in the same-origin flow: the server promotes `?token=` to an HttpOnly
+ * cookie before the SPA loads, and that cookie authenticates the WS upgrade.
+ */
+function resolveBridgeToken(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const url = new URL(window.location.href);
+    const q = url.searchParams.get(BRIDGE_TOKEN_PARAM);
+    if (q) {
+      try {
+        localStorage.setItem(BRIDGE_TOKEN_COOKIE, q);
+      } catch {
+        /* storage may be unavailable (private mode) */
+      }
+      url.searchParams.delete(BRIDGE_TOKEN_PARAM);
+      window.history.replaceState({}, "", url.pathname + url.search + url.hash);
+      return q;
+    }
+  } catch {
+    /* malformed URL — fall through */
+  }
+  const injected = (window as unknown as { __CRYSTAL_CONFIG__?: { token?: string } })
+    .__CRYSTAL_CONFIG__?.token;
+  if (injected) return injected;
+  try {
+    return localStorage.getItem(BRIDGE_TOKEN_COOKIE);
+  } catch {
+    return null;
+  }
+}
+
 export function defaultBridgeUrl(): string {
   if (typeof window !== "undefined" && window.location.protocol.startsWith("http")) {
-    const host = window.location.hostname || "127.0.0.1";
-    return `ws://${host}:${DEFAULT_BRIDGE_PORT}${BRIDGE_PATH}`;
+    // Served same-origin (web console / remote deploy): derive scheme and host
+    // (incl. port) from the page so it works on 443, on 4517, or behind any
+    // reverse proxy — and upgrade to wss:// whenever the page is https.
+    const scheme = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const token = resolveBridgeToken();
+    const query = token ? `?${BRIDGE_TOKEN_PARAM}=${encodeURIComponent(token)}` : "";
+    return `${scheme}//${window.location.host}${BRIDGE_PATH}${query}`;
   }
+  // Tauri desktop (asset protocol): the sidecar bridge is always local.
   return `ws://127.0.0.1:${DEFAULT_BRIDGE_PORT}${BRIDGE_PATH}`;
 }
 

@@ -404,3 +404,13 @@ export type BridgeMessage = BridgeRequest | BridgeResponse | BridgeEventMessage;
 
 export const DEFAULT_BRIDGE_PORT = 4517;
 export const BRIDGE_PATH = "/crystal";
+
+/**
+ * Bearer-token wiring for a remotely-exposed bridge. The token rides on the
+ * console/ws URL as `?token=…` and, once the console page loads, is promoted
+ * to an HttpOnly cookie so subsequent asset loads and the WS upgrade carry it
+ * without leaking it in every URL. Both server and client import these so the
+ * param/cookie names never drift.
+ */
+export const BRIDGE_TOKEN_PARAM = "token";
+export const BRIDGE_TOKEN_COOKIE = "crystal_token";

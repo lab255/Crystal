@@ -19,8 +19,11 @@ function argValues(flag: string): string[] {
 const roots = argValues("--root").map(canonicalRoot);
 if (roots.length === 0) roots.push(canonicalRoot(process.cwd()));
 const port = Number(argValue("--port") ?? process.env.CRYSTAL_PORT ?? DEFAULT_BRIDGE_PORT);
+// Loopback by default; a non-loopback host forces a token (see server.ts).
+const host = argValue("--host") ?? process.env.CRYSTAL_HOST ?? "127.0.0.1";
+const token = process.env.CRYSTAL_TOKEN ?? null;
 
-startCrystalServer({ root: roots, port }).catch((err) => {
+startCrystalServer({ root: roots, port, host, token }).catch((err) => {
   console.error("[crystal] failed to start:", err);
   process.exit(1);
 });

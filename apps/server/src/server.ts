@@ -1,8 +1,11 @@
+import crypto from "node:crypto";
 import http from "node:http";
 import path from "node:path";
 import { WebSocketServer, WebSocket } from "ws";
 import {
   BRIDGE_PATH,
+  BRIDGE_TOKEN_COOKIE,
+  BRIDGE_TOKEN_PARAM,
   type BridgeEventMessage,
   type BridgeEventName,
   type BridgeEvents,
@@ -18,6 +21,7 @@ import {
   suggestFacets,
 } from "@crystal/core";
 import { browseDirs } from "./browse.js";
+import { createConsoleHandler, resolveConsoleDir } from "./console-static.js";
 import { deleteAt, listDir, mkdirAt, readFileCapped, renameAt, writeFileAt } from "./fs-api.js";
 import { changedFiles, gitLog, gitStatus } from "./git.js";
 import { handleMcpRequest, isMcpRequest } from "./mcp/http.js";
@@ -39,6 +43,22 @@ export async function startCrystalServer(opts: {
   /** Roots to open at startup; the first becomes the default workspace. */
   root: string | string[];
   port: number;
+  /**
+   * Interface to bind. Default `127.0.0.1` (loopback) keeps the server local
+   * and unauthenticated. A non-loopback host (e.g. `0.0.0.0`) requires a token
+   * — one is generated and printed if `token` is not supplied.
+   */
+  host?: string;
+  /**
+   * Bearer token gating the console + WS upgrade. `null`/omitted on a loopback
+   * bind disables auth (preserves the desktop + `pnpm dev` experience).
+   */
+  token?: string | null;
+  /**
+   * Directory of the built web console to serve same-origin. `undefined`
+   * auto-detects (`resolveConsoleDir`); `null` disables console serving.
+   */
+  consoleDir?: string | null;
   /** Also reopen workspaces persisted by a previous run (default true). */
   restorePersisted?: boolean;
   /** Override where the open-workspace set persists; null disables it. */
@@ -311,10 +331,69 @@ export async function startCrystalServer(opts: {
     },
   };
 
+  // --- Networking: host bind, bearer-token auth, same-origin console ---
+  const host = opts.host ?? "127.0.0.1";
+  const isLoopback = host === "127.0.0.1" || host === "::1" || host === "localhost";
+  let token = opts.token ?? null;
+  if (!token && !isLoopback) {
+    // Refuse to expose fs/git/terminal/agent execution on a public interface
+    // with no credential — mint one so remote binds are never wide open.
+    token = crypto.randomBytes(32).toString("base64url");
+  }
+  const authEnabled = token !== null;
+
+  const digest = (s: string) => crypto.createHash("sha256").update(s).digest();
+  // Hash both sides to a fixed length before comparing: `timingSafeEqual`
+  // throws on length mismatch and would otherwise leak the token length.
+  const tokenValid = (candidate: string | null): boolean => {
+    if (!token) return true; // auth disabled (loopback, no token)
+    if (!candidate) return false;
+    return crypto.timingSafeEqual(digest(candidate), digest(token));
+  };
+  const tokenFromReq = (req: http.IncomingMessage): string | null => {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const q = url.searchParams.get(BRIDGE_TOKEN_PARAM);
+    if (q) return q;
+    const auth = req.headers.authorization; // non-browser clients (CLI, tests)
+    if (auth?.startsWith("Bearer ")) return auth.slice(7);
+    const cookie = req.headers.cookie ?? ""; // browser, after the console load
+    const m = new RegExp(`(?:^|;\\s*)${BRIDGE_TOKEN_COOKIE}=([^;]+)`).exec(cookie);
+    return m ? decodeURIComponent(m[1]!) : null;
+  };
+  // `ws` doesn't check Origin, so any web page could open our socket. Reject
+  // cross-origin upgrades (a token alone wouldn't stop a same-machine browser).
+  const originAllowed = (origin: string | undefined): boolean => {
+    if (!origin) return true; // native/non-browser clients send no Origin
+    const allow = process.env.CRYSTAL_ALLOWED_ORIGINS;
+    if (allow) return allow.split(",").map((s) => s.trim()).includes(origin);
+    try {
+      const u = new URL(origin);
+      return (
+        u.host === `${host}:${opts.port}` ||
+        u.hostname === host ||
+        u.hostname === "localhost" ||
+        u.hostname === "127.0.0.1"
+      );
+    } catch {
+      return false;
+    }
+  };
+
+  const consoleDir = opts.consoleDir === undefined ? resolveConsoleDir() : opts.consoleDir;
+  const serveConsole = createConsoleHandler(consoleDir);
+
   const httpServer = http.createServer((req, res) => {
-    if (req.url === "/health") {
+    const url = new URL(req.url ?? "/", "http://localhost");
+
+    // Health stays unauthenticated for readiness probes / load balancers, but
+    // must not leak absolute host paths once a token is configured.
+    if (url.pathname === "/health") {
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ ok: true, roots: registry.list().map((w) => w.root) }));
+      res.end(
+        JSON.stringify(
+          authEnabled ? { ok: true } : { ok: true, roots: registry.list().map((w) => w.root) },
+        ),
+      );
       return;
     }
     if (isMcpRequest(req.url)) {
@@ -330,11 +409,41 @@ export async function startCrystalServer(opts: {
       });
       return;
     }
-    res.writeHead(404);
-    res.end();
+
+    // Console-load handshake: a valid `?token=` is promoted to an HttpOnly
+    // cookie and redirected away, so the token leaves the address bar/history
+    // and never reaches app JS. Assets + the WS upgrade then use the cookie.
+    const queryToken = url.searchParams.get(BRIDGE_TOKEN_PARAM);
+    if (authEnabled && queryToken && tokenValid(queryToken)) {
+      const secure = req.headers["x-forwarded-proto"] === "https" ? "; Secure" : "";
+      url.searchParams.delete(BRIDGE_TOKEN_PARAM);
+      res.writeHead(302, {
+        "set-cookie": `${BRIDGE_TOKEN_COOKIE}=${encodeURIComponent(queryToken)}; HttpOnly; SameSite=Strict; Path=/${secure}`,
+        location: url.pathname + url.search,
+      });
+      res.end();
+      return;
+    }
+
+    // Everything else (the console shell + its assets) is token-gated.
+    if (!tokenValid(tokenFromReq(req))) {
+      res.writeHead(401, { "content-type": "text/plain" });
+      res.end("Unauthorized");
+      return;
+    }
+
+    serveConsole(req, res);
   });
 
-  const wss = new WebSocketServer({ server: httpServer, path: BRIDGE_PATH });
+  const wss = new WebSocketServer({
+    server: httpServer,
+    path: BRIDGE_PATH,
+    verifyClient: (info, cb) => {
+      if (!originAllowed(info.origin)) return cb(false, 403, "Forbidden");
+      if (!tokenValid(tokenFromReq(info.req))) return cb(false, 401, "Unauthorized");
+      cb(true);
+    },
+  });
 
   function broadcast<E extends BridgeEventName>(event: E, payload: BridgeEvents[E]): void {
     const msg: BridgeEventMessage<E> = { type: "evt", event, payload };
@@ -385,13 +494,32 @@ export async function startCrystalServer(opts: {
 
   await new Promise<void>((resolve, reject) => {
     httpServer.once("error", reject);
-    httpServer.listen(opts.port, "127.0.0.1", () => resolve());
+    httpServer.listen(opts.port, host, () => resolve());
   });
 
   const roots = registry.list().map((w) => path.resolve(w.root));
   console.log(
-    `[crystal] bridge server on ws://127.0.0.1:${opts.port}${BRIDGE_PATH} (workspaces: ${roots.join(", ")})`,
+    `[crystal] bridge server on ws://${host}:${opts.port}${BRIDGE_PATH} (workspaces: ${roots.join(", ")})`,
   );
+  if (authEnabled && !opts.token) {
+    console.log(
+      `\n[crystal] auth enabled — generated a session token (set CRYSTAL_TOKEN to pin one):\n\n` +
+        `    ${token}\n\n` +
+        `[crystal] open the console:  http://${host}:${opts.port}/?${BRIDGE_TOKEN_PARAM}=${token}\n`,
+    );
+  } else if (authEnabled) {
+    console.log(`[crystal] auth enabled (token from CRYSTAL_TOKEN)`);
+  } else {
+    console.log(`[crystal] auth disabled — loopback bind, no token required`);
+  }
+  if (consoleDir) {
+    console.log(`[crystal] serving web console from ${consoleDir}`);
+  } else {
+    console.log(
+      `[crystal] web console bundle not found — serving API only ` +
+        `(build @crystal/web or set CRYSTAL_CONSOLE_DIR)`,
+    );
+  }
 
   return {
     port: opts.port,

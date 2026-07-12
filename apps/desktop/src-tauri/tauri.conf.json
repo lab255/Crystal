@@ -7,7 +7,7 @@
     "devUrl": "http://localhost:5173",
     "frontendDist": "../../web/dist",
     "beforeDevCommand": "pnpm --filter @crystal/server --filter @crystal/web --parallel dev",
-    "beforeBuildCommand": "pnpm --filter @crystal/web build"
+    "beforeBuildCommand": "pnpm --filter @crystal/web build && pnpm --filter @crystal/server build:sidecar"
   },
   "app": {
     "windows": [
@@ -28,8 +28,17 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
-    "icon": ["icons/icon.ico", "icons/icon.png"],
-    "externalBin": ["binaries/crystal-server"]
+    "targets": ["app", "dmg", "nsis", "deb", "appimage"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "externalBin": ["binaries/crystal-server"],
+    "resources": {
+      "resources/sidecar": "sidecar"
+    }
   }
 }

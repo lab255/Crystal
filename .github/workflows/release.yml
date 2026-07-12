@@ -1,0 +1,58 @@
+name: Desktop build
+
+# Node SEA can't cross-compile (it patches the running node binary, and macOS
+# must codesign locally), so each OS/arch artifact is built on its own runner.
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14 # Apple Silicon → aarch64-apple-darwin
+          - os: macos-13 # Intel → x86_64-apple-darwin
+          - os: windows-latest # x86_64-pc-windows-msvc
+          - os: ubuntu-22.04 # old glibc → portable AppImage/deb
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux system deps (webkit + tauri)
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # beforeBuildCommand builds @crystal/web and the host sidecar (which also
+      # stages the host's node-pty prebuild), then Tauri bundles everything.
+      - run: pnpm --filter @crystal/desktop build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: crystal-${{ matrix.os }}
+          path: |
+            apps/desktop/src-tauri/target/release/bundle/**
+          if-no-files-found: error

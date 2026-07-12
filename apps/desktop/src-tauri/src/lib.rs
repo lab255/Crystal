@@ -25,12 +25,21 @@ fn workspace_root() -> std::path::PathBuf {
 /// binary (`crystal-server.exe`, a Node SEA build of @crystal/server).
 /// Development: `pnpm dev` already runs it, so nothing is spawned unless the
 /// `CRYSTAL_SPAWN_SERVER` env var provides an explicit command line.
-fn spawn_bridge() -> Option<Child> {
+///
+/// `module_base` is the staged-resources dir (`<resource>/sidecar`) that holds
+/// node-pty's native module; it's passed to the sidecar as
+/// `CRYSTAL_SIDECAR_MODULE_BASE` so the SEA bundle's require() can find it.
+fn spawn_bridge(module_base: Option<&std::path::Path>) -> Option<Child> {
     if let Ok(cmdline) = std::env::var("CRYSTAL_SPAWN_SERVER") {
         let mut parts = cmdline.split_whitespace();
         let program = parts.next()?;
         let args: Vec<&str> = parts.collect();
-        return match Command::new(program).args(&args).spawn() {
+        let mut cmd = Command::new(program);
+        cmd.args(&args);
+        if let Some(base) = module_base {
+            cmd.env("CRYSTAL_SIDECAR_MODULE_BASE", base);
+        }
+        return match cmd.spawn() {
             Ok(child) => Some(child),
             Err(err) => {
                 eprintln!("[crystal] failed to spawn bridge server: {err}");
@@ -46,10 +55,12 @@ fn spawn_bridge() -> Option<Child> {
         return None;
     }
     let root = workspace_root();
-    match Command::new(&sidecar)
-        .args(["--root", &root.to_string_lossy(), "--port", "4517"])
-        .spawn()
-    {
+    let mut cmd = Command::new(&sidecar);
+    cmd.args(["--root", &root.to_string_lossy(), "--port", "4517"]);
+    if let Some(base) = module_base {
+        cmd.env("CRYSTAL_SIDECAR_MODULE_BASE", base);
+    }
+    match cmd.spawn() {
         Ok(child) => Some(child),
         Err(err) => {
             eprintln!("[crystal] failed to spawn sidecar {sidecar:?}: {err}");
@@ -60,10 +71,18 @@ fn spawn_bridge() -> Option<Child> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let bridge = BridgeProcess(Mutex::new(spawn_bridge()));
-
     tauri::Builder::default()
-        .manage(bridge)
+        .setup(|app| {
+            // The staged node-pty resource lives at `<resource>/sidecar`; the
+            // SEA sidecar anchors its require() there to load the native addon.
+            let base = app
+                .path()
+                .resolve("sidecar", tauri::path::BaseDirectory::Resource)
+                .ok();
+            let child = spawn_bridge(base.as_deref());
+            app.manage(BridgeProcess(Mutex::new(child)));
+            Ok(())
+        })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {
                 let state = window.state::<BridgeProcess>();

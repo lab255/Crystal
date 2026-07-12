@@ -1,0 +1,7 @@
+{
+  "manifest": "v1",
+  "type": "container",
+  "name": "crystal",
+  "port": 4517,
+  "platform": "linux/amd64"
+}
