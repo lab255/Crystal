@@ -16,6 +16,7 @@ import {
   identifierWords,
   indexFacetVisibility,
   parseLensTags,
+  propagateCallIntents,
   staleIndexFiles,
   suggestFacets,
   suggestIndexFacets,
@@ -172,6 +173,77 @@ describe("buildCodeIndex", () => {
     expect(auth).toHaveLength(1);
     expect(auth[0]!.source).toBe("heuristic");
     expect(auth[0]!.evidence).toContain("checks password");
+  });
+});
+
+/* ---------------- symbolic call-graph propagation ---------------- */
+
+describe("propagateCallIntents", () => {
+  const call = (file: string, symbol: string) => ({ file, symbol });
+  /** login + verifyToken seed intent:auth by name; callers are neutrally named. */
+  const authFile = src("b/auth.ts", "b", [sym("login"), sym("verifyToken", "function", 9)]);
+
+  it("propagates an intent carried by two callees, decayed, with evidence", () => {
+    const flow = src("c/flow.ts", "c", [
+      { ...sym("beginFlow"), calls: [call("b/auth.ts", "login"), call("b/auth.ts", "verifyToken")] },
+    ]);
+    const tags = propagateCallIntents([authFile, flow]).get("c/flow.ts#beginFlow")!;
+    expect(tags).toHaveLength(1);
+    expect(tags[0]).toMatchObject({
+      tag: "intent:auth",
+      source: "symbolic",
+      confidence: 0.6,
+      evidence: ["calls: login, verifyToken"],
+    });
+  });
+
+  it("does not propagate from a single tagged callee, even referenced twice", () => {
+    const flow = src("c/flow.ts", "c", [
+      { ...sym("beginFlow"), calls: [call("b/auth.ts", "login"), call("b/auth.ts", "login")] },
+    ]);
+    expect(propagateCallIntents([authFile, flow]).has("c/flow.ts#beginFlow")).toBe(false);
+  });
+
+  it("flows along call chains with per-hop decay and a confidence floor", () => {
+    const mids = src("c/mid.ts", "c", [
+      { ...sym("stepOne"), calls: [call("b/auth.ts", "login"), call("b/auth.ts", "verifyToken")] },
+      { ...sym("stepTwo", "function", 9), calls: [call("b/auth.ts", "login"), call("b/auth.ts", "verifyToken")] },
+    ]);
+    const top = src("d/top.ts", "d", [
+      { ...sym("runAll"), calls: [call("c/mid.ts", "stepOne"), call("c/mid.ts", "stepTwo")] },
+      { ...sym("runMore", "function", 9), calls: [call("c/mid.ts", "stepOne"), call("c/mid.ts", "stepTwo")] },
+    ]);
+    const further = src("e/outer.ts", "e", [
+      { ...sym("outermost"), calls: [call("d/top.ts", "runAll"), call("d/top.ts", "runMore")] },
+    ]);
+    const out = propagateCallIntents([authFile, mids, top, further]);
+    expect(out.get("d/top.ts#runAll")![0]!.confidence).toBeCloseTo(0.36);
+    // 0.36 * 0.6 = 0.216 falls below the floor — the chain stops here.
+    expect(out.has("e/outer.ts#outermost")).toBe(false);
+  });
+
+  it("never re-emits an intent the symbol already carries from its own name", () => {
+    const flow = src("c/login-flow.ts", "c", [
+      { ...sym("loginFlow"), calls: [call("b/auth.ts", "login"), call("b/auth.ts", "verifyToken")] },
+    ]);
+    expect(propagateCallIntents([authFile, flow]).has("c/login-flow.ts#loginFlow")).toBe(false);
+  });
+
+  it("merges symbolic tags into the built index", () => {
+    const flow = src("c/flow.ts", "c", [
+      { ...sym("beginFlow"), calls: [call("b/auth.ts", "login"), call("b/auth.ts", "verifyToken")] },
+    ]);
+    const index = buildCodeIndex([authFile, flow]);
+    const begin = index.files.find((f) => f.path === "c/flow.ts")!.symbols[0]!;
+    const auth = begin.tags.find((t) => t.tag === "intent:auth");
+    expect(auth).toMatchObject({ source: "symbolic", confidence: 0.6 });
+  });
+
+  it("is deterministic across calls", () => {
+    const flow = src("c/flow.ts", "c", [
+      { ...sym("beginFlow"), calls: [call("b/auth.ts", "login"), call("b/auth.ts", "verifyToken")] },
+    ]);
+    expect(propagateCallIntents([authFile, flow])).toEqual(propagateCallIntents([authFile, flow]));
   });
 });
 

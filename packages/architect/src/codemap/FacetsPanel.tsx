@@ -111,7 +111,7 @@ export function FacetsPanel({
       <div className="border-t border-edge px-3 py-2.5">
         <div className="mb-1.5 text-[10px] text-ink-faint">
           {staleFiles.length > 0
-            ? `${staleFiles.length} file${staleFiles.length !== 1 ? "s" : ""} not yet agent-indexed — name/path heuristics only.`
+            ? `${staleFiles.length} file${staleFiles.length !== 1 ? "s" : ""} not yet agent-indexed — symbolic tags (names, paths, call graph) only.`
             : "Every file carries a fresh agent enrichment."}
         </div>
         <Button variant="secondary" size="xs" onClick={() => updateNav({ mode: "jobs" })}>

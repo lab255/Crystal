@@ -6,12 +6,18 @@ import { tagValue } from "./tags.js";
 
 /**
  * Code index — semantic tags over a codebase's top-level symbols (functions,
- * constants, components…), keyed `file#symbol`. Two tag layers, one index:
+ * constants, components…), keyed `file#symbol`. Three tag layers, one index:
  *
  *  - `heuristic` — computed from names, paths, kinds and import fan-in alone.
  *    Purely deterministic: the same source tree always produces the same
  *    tags. Rebuilt incrementally by the server whenever the code map changes;
  *    never persisted (it is derived state, like the code map itself).
+ *  - `symbolic` — intents propagated through the resolved call graph: a
+ *    symbol leaning on several callees that carry an intent inherits it with
+ *    decayed confidence (see `propagateCallIntents`). Still fully
+ *    deterministic and token-free — it densifies the index using structure
+ *    the code map already extracted, so agent runs become an optional
+ *    refinement rather than the only way most code gets intent tags.
  *  - `agent` — *intentions* asserted by a small, cheap model that reads the
  *    files ("this function verifies webhook signatures" → `intent:auth`).
  *    Agents write **enrichment** files to `.crystal/index/` (the durable,
@@ -31,7 +37,7 @@ export const ENRICHMENT_SCHEMA_VERSION = 1;
 /* Index shapes                                                        */
 /* ------------------------------------------------------------------ */
 
-export const TAG_SOURCES = ["heuristic", "agent"] as const;
+export const TAG_SOURCES = ["heuristic", "symbolic", "agent"] as const;
 export const TagSourceSchema = z.enum(TAG_SOURCES);
 export type TagSource = z.infer<typeof TagSourceSchema>;
 
@@ -295,12 +301,21 @@ function conceptTags(
   return out;
 }
 
+/** A resolved reference to another top-level symbol in the workspace. */
+export interface SymbolCallRef {
+  /** Workspace-relative path declaring the callee. */
+  file: string;
+  symbol: string;
+}
+
 /** What the heuristic tagger needs to know about one symbol. */
 export interface IndexSymbolInput {
   name: string;
   kind: (typeof CODE_SYMBOL_KINDS)[number];
   line: number;
   exported: boolean;
+  /** Resolved callees from the code map's call graph (feeds `symbolic` tags). */
+  calls?: readonly SymbolCallRef[];
 }
 
 /** What the heuristic tagger needs to know about one file. */
@@ -367,6 +382,120 @@ export function heuristicFileTags(
   return sortTags(tags);
 }
 
+/* ------------------------------------------------------------------ */
+/* Symbolic propagation over the call graph                            */
+/* ------------------------------------------------------------------ */
+
+/** Confidence multiplier per call-graph hop. */
+const PROPAGATION_DECAY = 0.6;
+/** Propagated tags below this confidence are dropped (bounds hop depth). */
+const PROPAGATION_MIN_CONFIDENCE = 0.3;
+/**
+ * Distinct callees that must carry an intent before it flows to the caller.
+ * One is not enough — every function calls *some* tagged symbol (a logger, a
+ * validator) without being about it; leaning on two is a real signal.
+ */
+const PROPAGATION_MIN_SUPPORT = 2;
+const PROPAGATION_MAX_EVIDENCE = 3;
+
+const symbolKey = (file: string, symbol: string): string => `${file}#${symbol}`;
+
+/**
+ * Propagate `intent:` tags through the resolved call graph, callee → caller:
+ * a symbol whose callees carry an intent inherits it at decayed confidence
+ * (`PROPAGATION_DECAY` per hop, ≥ `PROPAGATION_MIN_SUPPORT` distinct callees,
+ * cut off below `PROPAGATION_MIN_CONFIDENCE`). Seeds are the name-lexicon
+ * hits from `heuristicSymbolTags`; iteration runs to a fixed point, so intent
+ * flows along call chains without any file ever being read by a model.
+ * Returns `symbolKey` → symbolic tags (seeded intents are never re-emitted).
+ * Pure and deterministic, like the heuristics.
+ */
+export function propagateCallIntents(
+  sources: readonly IndexSourceFile[],
+  lexicon: readonly ConceptDef[] = CONCEPT_LEXICON,
+): Map<string, SymbolTag[]> {
+  interface SymbolState {
+    name: string;
+    calls: readonly SymbolCallRef[];
+    /** intent value → best confidence so far (seeds at their heuristic confidence). */
+    intents: Map<string, number>;
+    seeded: Set<string>;
+  }
+
+  const states = new Map<string, SymbolState>();
+  for (const source of [...sources].sort((a, b) => a.path.localeCompare(b.path))) {
+    for (const sym of source.symbols) {
+      const intents = new Map<string, number>();
+      for (const tag of heuristicSymbolTags(sym, lexicon)) {
+        if (tag.tag.startsWith("intent:")) intents.set(tagValue(tag.tag), tag.confidence);
+      }
+      // Distinct callees only — support must never double-count one callee.
+      const calls = [
+        ...new Map((sym.calls ?? []).map((c) => [symbolKey(c.file, c.symbol), c])).values(),
+      ];
+      states.set(symbolKey(source.path, sym.name), {
+        name: sym.name,
+        calls,
+        intents,
+        seeded: new Set(intents.keys()),
+      });
+    }
+  }
+
+  // Fixed point: confidences only ever increase and live on a finite grid
+  // (decay powers above the cutoff), so this terminates in a few rounds.
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const state of states.values()) {
+      if (state.calls.length === 0) continue;
+      const support = new Map<string, { count: number; best: number }>();
+      for (const call of state.calls) {
+        const callee = states.get(symbolKey(call.file, call.symbol));
+        if (!callee || callee === state) continue;
+        for (const [value, confidence] of callee.intents) {
+          const s = support.get(value) ?? { count: 0, best: 0 };
+          s.count += 1;
+          s.best = Math.max(s.best, confidence);
+          support.set(value, s);
+        }
+      }
+      for (const [value, s] of support) {
+        if (s.count < PROPAGATION_MIN_SUPPORT) continue;
+        const confidence = s.best * PROPAGATION_DECAY;
+        if (confidence < PROPAGATION_MIN_CONFIDENCE) continue;
+        if (confidence > (state.intents.get(value) ?? 0) + 1e-9) {
+          state.intents.set(value, confidence);
+          changed = true;
+        }
+      }
+    }
+  }
+
+  const out = new Map<string, SymbolTag[]>();
+  for (const [key, state] of states) {
+    const tags: SymbolTag[] = [];
+    for (const [value, confidence] of state.intents) {
+      if (state.seeded.has(value)) continue;
+      // Evidence from the final state: the callees that actually carry it.
+      const carriers = state.calls
+        .filter((c) => {
+          const callee = states.get(symbolKey(c.file, c.symbol));
+          return callee !== undefined && callee !== state && callee.intents.has(value);
+        })
+        .map((c) => c.symbol)
+        .sort();
+      tags.push({
+        tag: `intent:${value}`,
+        source: "symbolic",
+        confidence: Math.round(confidence * 100) / 100,
+        evidence: [`calls: ${[...new Set(carriers)].slice(0, PROPAGATION_MAX_EVIDENCE).join(", ")}`],
+      });
+    }
+    if (tags.length > 0) out.set(key, sortTags(tags));
+  }
+  return out;
+}
+
 function sortTags(tags: SymbolTag[]): SymbolTag[] {
   return tags.sort((a, b) => a.tag.localeCompare(b.tag));
 }
@@ -392,10 +521,11 @@ function mergeTags(base: SymbolTag[], extra: SymbolTag[]): SymbolTag[] {
 }
 
 /**
- * Build the index: heuristic tags for every file/symbol, then agent tags from
- * enrichments folded in wherever the echoed hash still matches the file. Pure
- * and deterministic — the result is a function of (sources, enrichments)
- * alone; the caller stamps `generatedAt`.
+ * Build the index: heuristic tags for every file/symbol, symbolic intents
+ * propagated through the call graph, then agent tags from enrichments folded
+ * in wherever the echoed hash still matches the file. Pure and deterministic
+ * — the result is a function of (sources, enrichments) alone; the caller
+ * stamps `generatedAt`.
  */
 export function buildCodeIndex(
   sources: readonly IndexSourceFile[],
@@ -419,6 +549,8 @@ export function buildCodeIndex(
     }
   }
 
+  const symbolic = propagateCallIntents(sources, lexicon);
+
   const files: IndexedFile[] = [...sources]
     .sort((a, b) => a.path.localeCompare(b.path))
     .map((source) => {
@@ -439,7 +571,13 @@ export function buildCodeIndex(
             kind: sym.kind,
             line: sym.line,
             exported: sym.exported,
-            tags: mergeTags(heuristicSymbolTags(sym, lexicon), agentTagsFor(sym.name)),
+            tags: mergeTags(
+              mergeTags(
+                heuristicSymbolTags(sym, lexicon),
+                symbolic.get(symbolKey(source.path, sym.name)) ?? [],
+              ),
+              agentTagsFor(sym.name),
+            ),
           })),
         enriched: entries.length > 0 || covered.has(source.path),
       };
