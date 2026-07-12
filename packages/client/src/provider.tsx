@@ -90,17 +90,36 @@ function resolveBridgeToken(): string | null {
   }
 }
 
+/**
+ * True inside the Tauri desktop WebView. Tauri v2 always injects
+ * `__TAURI_INTERNALS__` (and `isTauri`) into the page — independent of the
+ * `withGlobalTauri` option that only controls `window.__TAURI__`.
+ */
+function inTauriWebview(): boolean {
+  if (typeof window === "undefined") return false;
+  const w = window as unknown as Record<string, unknown>;
+  return "__TAURI_INTERNALS__" in w || "isTauri" in w || "__TAURI__" in w;
+}
+
 export function defaultBridgeUrl(): string {
-  if (typeof window !== "undefined" && window.location.protocol.startsWith("http")) {
+  if (
+    typeof window !== "undefined" &&
+    window.location.protocol.startsWith("http") &&
+    !inTauriWebview()
+  ) {
     // Served same-origin (web console / remote deploy): derive scheme and host
     // (incl. port) from the page so it works on 443, on 4517, or behind any
-    // reverse proxy — and upgrade to wss:// whenever the page is https.
+    // reverse proxy — and upgrade to wss:// whenever the page is https. In the
+    // Vite dev server this yields ws://localhost:5173/crystal, which the dev
+    // proxy (apps/web/vite.config.ts) forwards to the bridge on :4517.
     const scheme = window.location.protocol === "https:" ? "wss:" : "ws:";
     const token = resolveBridgeToken();
     const query = token ? `?${BRIDGE_TOKEN_PARAM}=${encodeURIComponent(token)}` : "";
     return `${scheme}//${window.location.host}${BRIDGE_PATH}${query}`;
   }
-  // Tauri desktop (asset protocol): the sidecar bridge is always local.
+  // Tauri desktop: the WebView serves the app from tauri.localhost (Windows
+  // WebView2) or the tauri:// asset protocol (macOS/Linux) — neither is the
+  // bridge origin. The sidecar bridge is always local on loopback:4517.
   return `ws://127.0.0.1:${DEFAULT_BRIDGE_PORT}${BRIDGE_PATH}`;
 }
 

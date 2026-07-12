@@ -397,7 +397,11 @@ export async function startCrystalServer(opts: {
         u.host === `${host}:${opts.port}` ||
         u.hostname === host ||
         u.hostname === "localhost" ||
-        u.hostname === "127.0.0.1"
+        u.hostname === "127.0.0.1" ||
+        // Tauri desktop serves the app from `tauri.localhost` (Windows
+        // WebView2). All `*.localhost` names are loopback-reserved (RFC 6761),
+        // so this is the same trust boundary as the bridge itself.
+        u.hostname.endsWith(".localhost")
       );
     } catch {
       return false;
