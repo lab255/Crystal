@@ -126,6 +126,16 @@ export interface SystemExternal {
   weight: number;
 }
 
+/** An import edge between two parts of the same system. */
+export interface SystemPartLink {
+  /** Source part path (see SystemPart.path). */
+  source: string;
+  /** Target part path. */
+  target: string;
+  /** Import statements crossing between the parts. */
+  weight: number;
+}
+
 export interface SystemModule {
   /** Stable id derived from the cluster key, e.g. "sys:auth". */
   id: string;
@@ -148,6 +158,8 @@ export interface SystemModule {
   externals: SystemExternal[];
   /** HTTP routes served, heaviest declaring file first (capped). */
   endpoints: SystemEndpoint[];
+  /** Intra-system imports between parts, heaviest first (capped). Absent when nothing crosses. */
+  partLinks?: SystemPartLink[];
 }
 
 /** One symbol crossing a link, with what is known about its shape. */
@@ -158,6 +170,8 @@ export interface SystemLinkSymbol {
   count: number;
   /** Declaration signature when the target export is function-like. */
   signature?: string;
+  /** File declaring the symbol inside the target system (through barrels). */
+  file?: string;
 }
 
 /** A directed "consumes" edge: source imports from target. */
@@ -172,6 +186,8 @@ export interface SystemLink {
   details?: SystemLinkSymbol[];
   /** HTTP calls from source matched to routes served by target (capped). */
   apis?: (HttpEndpoint & { weight: number })[];
+  /** Cross-boundary imports attributed to (source part → target part) pairs, heaviest first (capped). */
+  parts?: { sourcePart: string; targetPart: string; weight: number }[];
 }
 
 export interface SystemOverview {
@@ -239,6 +255,8 @@ const EXPORTS_CAP = 40;
 const EXTERNALS_CAP = 12;
 const LINK_SYMBOLS_CAP = 12;
 const LINK_APIS_CAP = 10;
+const LINK_PARTS_CAP = 16;
+const PART_LINKS_CAP = 40;
 const ENDPOINTS_CAP = 24;
 const INTENTS_CAP = 5;
 /** Names that assert a frontend unit regardless of tag mass. */
@@ -264,6 +282,9 @@ export function npmPackageOf(specifier: string): string | null {
   if (clean.startsWith("@")) return parts.length >= 2 ? `${parts[0]}/${parts[1]}` : null;
   return parts[0] || null;
 }
+
+/** Join/split separator for aggregation keys — NUL never appears in ids or paths. */
+const SEP = String.fromCharCode(0);
 
 const lastSegment = (dir: string): string => dir.split("/").at(-1) ?? dir;
 
@@ -584,6 +605,7 @@ export function buildSystemOverview(
   const usedIds = new Set<string>();
   const systems: SystemModule[] = [];
   const systemOfFile = new Map<string, string>();
+  const partOfFile = new Map<string, string>();
   const fileMeta = new Map(sources.map((f) => [f.path, f]));
 
   for (const cluster of [...clusters].sort(
@@ -611,6 +633,14 @@ export function buildSystemOverview(
     parts.sort((a, b) => b.fileCount - a.fileCount || a.path.localeCompare(b.path));
     const memberFiles = cluster.profiles.flatMap((p) => p.unit.files);
     for (const f of memberFiles) systemOfFile.set(f.path, id);
+    // Which collapsed part owns each file — powers part-level link attribution.
+    // Parts are pairwise non-nested after folding, so each unit matches one.
+    for (const p of cluster.profiles) {
+      const owner = parts.find(
+        (part) => p.unit.path === part.path || p.unit.path.startsWith(`${part.path}/`),
+      );
+      if (owner) for (const f of p.unit.files) partOfFile.set(f.path, owner.path);
+    }
 
     // Intent profile (merged across units).
     const intentMass = new Map<string, number>();
@@ -715,7 +745,12 @@ export function buildSystemOverview(
   }
 
   // D. cross-system links + consumed exports.
-  const linkAgg = new Map<string, { weight: number; names: Map<string, number> }>();
+  const linkAgg = new Map<
+    string,
+    { weight: number; names: Map<string, number>; parts: Map<string, number> }
+  >();
+  // (system, source part, target part) → intra-system import count.
+  const intraAgg = new Map<string, number>();
   // (system, file, exportName) → distinct outside consumer files.
   const exportConsumers = new Map<string, Set<string>>();
 
@@ -750,11 +785,24 @@ export function buildSystemOverview(
       if (!imp.resolved) continue;
       const target = fileMeta.get(imp.resolved);
       const targetSystem = target ? systemOfFile.get(target.path) : undefined;
-      if (!target || !targetSystem || targetSystem === sourceSystem) continue;
+      if (!target || !targetSystem) continue;
+      const sourcePart = partOfFile.get(file.path);
+      const targetPart = partOfFile.get(target.path);
+      if (targetSystem === sourceSystem) {
+        if (sourcePart && targetPart && sourcePart !== targetPart) {
+          const intraKey = [sourceSystem, sourcePart, targetPart].join(SEP);
+          intraAgg.set(intraKey, (intraAgg.get(intraKey) ?? 0) + 1);
+        }
+        continue;
+      }
 
       const key = `${sourceSystem}\u0000${targetSystem}`;
-      const link = linkAgg.get(key) ?? { weight: 0, names: new Map() };
+      const link = linkAgg.get(key) ?? { weight: 0, names: new Map(), parts: new Map() };
       link.weight += 1;
+      if (sourcePart && targetPart) {
+        const partKey = sourcePart + SEP + targetPart;
+        link.parts.set(partKey, (link.parts.get(partKey) ?? 0) + 1);
+      }
       for (const name of imp.names) {
         if (name === "*" || name === "default") continue;
         link.names.set(name, (link.names.get(name) ?? 0) + 1);
@@ -779,16 +827,16 @@ export function buildSystemOverview(
   const shapeOf = (
     system: string,
     name: string,
-  ): { kind: CodeSymbolKind; signature?: string } => {
+  ): { kind: CodeSymbolKind; signature?: string; file?: string } => {
     const declaring = declaringFileOf(system).get(name);
     const exp = declaring
       ? fileMeta.get(declaring)?.exports.find((e) => e.name === name && e.kind !== "reexport")
       : undefined;
-    return { kind: exp?.kind ?? "const", signature: exp?.signature };
+    return { kind: exp?.kind ?? "const", signature: exp?.signature, file: declaring };
   };
 
   const links: SystemLink[] = [...linkAgg.entries()]
-    .map(([key, { weight, names }]) => {
+    .map(([key, { weight, names, parts }]) => {
       const [source, target] = key.split("\u0000") as [string, string];
       const details: SystemLinkSymbol[] = [...names.entries()]
         .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
@@ -796,9 +844,36 @@ export function buildSystemOverview(
         .map(([name, count]) => ({ name, count, ...shapeOf(target, name) }));
       const link: SystemLink = { source, target, weight, symbols: details.map((d) => d.name) };
       if (details.length > 0) link.details = details;
+      const partDetail = [...parts.entries()]
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+        .slice(0, LINK_PARTS_CAP)
+        .map(([partKey, w]) => {
+          const [sourcePart, targetPart] = partKey.split(SEP) as [string, string];
+          return { sourcePart, targetPart, weight: w };
+        });
+      if (partDetail.length > 0) link.parts = partDetail;
       return link;
     })
     .sort((a, b) => b.weight - a.weight || a.source.localeCompare(b.source) || a.target.localeCompare(b.target));
+
+  // Intra-system part-to-part imports — the expanded ("components") view of a system.
+  const intraBySystem = new Map<string, SystemPartLink[]>();
+  for (const [intraKey, weight] of intraAgg) {
+    const [system, source, target] = intraKey.split(SEP) as [string, string, string];
+    const list = intraBySystem.get(system) ?? [];
+    list.push({ source, target, weight });
+    intraBySystem.set(system, list);
+  }
+  for (const system of systems) {
+    const list = intraBySystem.get(system.id);
+    if (!list) continue;
+    system.partLinks = list
+      .sort(
+        (a, b) =>
+          b.weight - a.weight || a.source.localeCompare(b.source) || a.target.localeCompare(b.target),
+      )
+      .slice(0, PART_LINKS_CAP);
+  }
 
   // HTTP calls matched to served routes: an outgoing call in system A whose
   // path matches a route served by system B becomes an `apis` entry on the
@@ -822,7 +897,7 @@ export function buildSystemOverview(
             routesMatch(segs, r.segs),
         );
         if (!hit) continue;
-        const linkKey = `${sourceSystem} ${hit.system}`;
+        const linkKey = sourceSystem + SEP + hit.system;
         const byRoute = apiAgg.get(linkKey) ?? new Map<string, HttpEndpoint & { weight: number }>();
         const routeKey = `${hit.ep.method} ${hit.ep.path}`;
         const entry = byRoute.get(routeKey) ?? { method: hit.ep.method, path: hit.ep.path, weight: 0 };
@@ -832,7 +907,7 @@ export function buildSystemOverview(
       }
     }
     for (const [linkKey, byRoute] of apiAgg) {
-      const [source, target] = linkKey.split(" ") as [string, string];
+      const [source, target] = linkKey.split(SEP) as [string, string];
       const apis = [...byRoute.values()]
         .sort((a, b) => b.weight - a.weight || a.path.localeCompare(b.path))
         .slice(0, LINK_APIS_CAP);

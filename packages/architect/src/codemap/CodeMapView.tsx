@@ -48,6 +48,7 @@ import {
   type CodeModuleDetail,
   type CrossWorkspaceEdge,
   type CrossWorkspaceMap,
+  type SystemOverview,
   type HighlightRef,
   type RefactorIntent,
 } from "@crystal/core";
@@ -163,6 +164,7 @@ export function CodeMapView(props: CodeMapViewProps = {}) {
 }
 
 const EMPTY_REFACTORS: RefactorIntent[] = [];
+const EMPTY_LENS_FILES: ReadonlyMap<string, "all" | ReadonlySet<string>> = new Map();
 
 interface CacheEntry<T> {
   gen: number;
@@ -212,7 +214,13 @@ function CodeMapInner({
   const [modulePositions, setModulePositions] = useState<ReadonlyMap<string, { x: number; y: number }>>(
     () => new Map(),
   );
-  const [selectedFile, setSelectedFile] = useState<string | null>(null);
+  // The selected file card rides the deep link next to the drill level, so
+  // back/forward and shared links restore it.
+  const selectedFile = useNav((l) => l.architect?.file ?? null);
+  const setSelectedFile = useCallback(
+    (path: string | null) => nav({ architect: { file: path } }),
+    [nav],
+  );
   const [focus, setFocus] = useState<{ id: string; nonce: number } | null>(null);
   const focusNonce = useRef(0);
   const inflight = useRef(new Set<string>());
@@ -222,10 +230,12 @@ function CodeMapInner({
   const lodParam = useNav((l) => l.architect?.lod ?? null);
   const lod: CodeLodLevel = lodParam ?? "packages";
   const lensParam = useNav((l) => l.architect?.lens ?? null);
+  const lensCtx = useNav((l) => l.architect?.lensCtx) ?? false;
   const [codeIndex, setCodeIndex] = useState<{ index: CodeIndex; staleFiles: string[] } | null>(
     null,
   );
-  const [showFacets, setShowFacets] = useState(false);
+  // Facets panel open state deep-links (same param as the systems overview).
+  const showFacets = useNav((l) => l.architect?.facets) ?? false;
   // Generation for which the bulk (all modules + files) details are cached.
   const [bulkLoadedGen, setBulkLoadedGen] = useState(-1);
   const bulkData = useRef<{
@@ -269,6 +279,7 @@ function CodeMapInner({
   const lastWs = useRef<string | null>(null);
   useEffect(() => {
     if (!wsKey || lastWs.current === wsKey) return;
+    const isSwitch = lastWs.current != null;
     lastWs.current = wsKey;
     setSummary(null);
     setModuleDetails(new Map());
@@ -277,14 +288,16 @@ function CodeMapInner({
     setExpandedFiles(new Set());
     setOpenCode(new Set());
     setModulePositions(new Map());
-    setSelectedFile(null);
+    // Nav-held selection clears only on a real switch — on mount this
+    // would erase a deep-linked file selection.
+    if (isSwitch) setSelectedFile(null);
     setFocus(null);
     setCodeIndex(null);
     setBulkLoadedGen(-1);
     bulkData.current = null;
     lodInit.current = false;
     appliedLens.current = null;
-  }, [wsKey]);
+  }, [wsKey, setSelectedFile]);
 
   /* ---- fetching ---- */
 
@@ -430,7 +443,7 @@ function CodeMapInner({
       setModulePositions(new Map());
       setRefitNonce((n) => n + 1);
     },
-    [ensureBulk],
+    [ensureBulk, setSelectedFile],
   );
 
   const setLod = useCallback(
@@ -473,7 +486,14 @@ function CodeMapInner({
 
   /* ---- code index + facet lens ---- */
 
-  const wantIndex = showFacets || (lensParam != null && lensParam.length > 0);
+  const lensTags = useMemo(() => (lensParam ? parseLensTags(lensParam) : []), [lensParam]);
+  const lensKey = lensTags.join(",");
+  // System lenses ("sys:auth" — a systems-overview cluster id) resolve
+  // structurally against the overview; every other tag goes through the
+  // semantic index (intent facets).
+  const sysTags = useMemo(() => lensTags.filter((t) => t.startsWith("sys:")), [lensTags]);
+  const intentTags = useMemo(() => lensTags.filter((t) => !t.startsWith("sys:")), [lensTags]);
+  const wantIndex = showFacets || intentTags.length > 0;
   useEffect(() => {
     if (!wsKey || !wantIndex) return;
     let cancelled = false;
@@ -495,26 +515,96 @@ function CodeMapInner({
     };
   }, [client, wsKey, wantIndex]);
 
-  const lensTags = useMemo(() => (lensParam ? parseLensTags(lensParam) : []), [lensParam]);
-  const lensKey = lensTags.join(",");
   const lensVis = useMemo(
     () =>
-      codeIndex && lensTags.length > 0 ? indexFacetVisibility(codeIndex.index, lensTags) : null,
-    [codeIndex, lensTags],
+      codeIndex && intentTags.length > 0 ? indexFacetVisibility(codeIndex.index, intentTags) : null,
+    [codeIndex, intentTags],
   );
+  // Overview backing the system lens — fetched only while a sys: tag is active.
+  const [overview, setOverview] = useState<SystemOverview | null>(null);
+  const wantOverview = sysTags.length > 0;
+  useEffect(() => {
+    if (!wsKey || !wantOverview) {
+      setOverview(null);
+      return;
+    }
+    let cancelled = false;
+    client
+      .request("codemap.overview", { ws: wsKey })
+      .then((res) => {
+        if (!cancelled) setOverview(res);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [client, wsKey, wantOverview, generation]);
+  const lensSysModules = useMemo(
+    () => (wantOverview && overview ? overview.systems.filter((s) => sysTags.includes(s.id)) : null),
+    [wantOverview, overview, sysTags],
+  );
+
+  /** Combined lens membership: intent files/modules ∪ system parts (dirs). */
+  const lensCore = useMemo(() => {
+    const hasIntent = lensVis != null && lensVis.files.size > 0;
+    const hasSys = lensSysModules != null && lensSysModules.length > 0;
+    if (!hasIntent && !hasSys) return null;
+    const modules = new Set<string>(hasIntent ? lensVis.modules : []);
+    const dirs: string[] = [];
+    let fileCount = hasIntent ? lensVis.fileCount : 0;
+    for (const s of lensSysModules ?? []) {
+      fileCount += s.fileCount;
+      for (const p of s.parts) {
+        modules.add(p.pkg);
+        dirs.push(p.path);
+      }
+    }
+    return {
+      files: hasIntent ? lensVis.files : EMPTY_LENS_FILES,
+      dirs,
+      modules,
+      fileCount,
+      memberCount: hasIntent ? lensVis.memberCount : null,
+    };
+  }, [lensVis, lensSysModules]);
+
+  // First-degree neighbors of the lens: modules outside it sharing an import
+  // edge with a member — the "+N connected" context toggle's candidate set.
+  const lensNeighbors = useMemo(() => {
+    if (!lensCore || !summary) return null;
+    const neighbors = new Set<string>();
+    for (const d of summary.deps) {
+      if (d.source === d.target) continue;
+      const sourceIn = lensCore.modules.has(d.source);
+      const targetIn = lensCore.modules.has(d.target);
+      if (sourceIn && !targetIn) neighbors.add(d.target);
+      else if (targetIn && !sourceIn) neighbors.add(d.source);
+    }
+    return neighbors;
+  }, [lensCore, summary]);
   const mapLens = useMemo<MapLens | null>(
     () =>
-      lensVis && lensVis.files.size > 0
-        ? { files: lensVis.files, modules: lensVis.modules }
+      lensCore
+        ? {
+            files: lensCore.files,
+            dirs: lensCore.dirs,
+            modules: lensCore.modules,
+            context:
+              lensCtx && lensNeighbors && lensNeighbors.size > 0 ? lensNeighbors : undefined,
+          }
         : null,
-    [lensVis],
+    [lensCore, lensCtx, lensNeighbors],
   );
   const lensName = useMemo(
     () =>
       lensTags
-        .map((t) => (t.startsWith("intent:") ? conceptDisplayName(tagValue(t)) : t))
+        .map((t) =>
+          t.startsWith("intent:")
+            ? conceptDisplayName(tagValue(t))
+            : (overview?.systems.find((s) => s.id === t)?.name ?? t),
+        )
         .join(" + "),
-    [lensTags],
+    [lensTags, overview],
   );
 
   // Entering a lens focuses the members that carry it; leaving restores the level.
@@ -533,6 +623,14 @@ function CodeMapInner({
       void applyLodExpansion(lod);
     }
   }, [mapLens, lensKey, lensTags.length, lod, ensureBulk, applyLodExpansion]);
+
+  // Toggling the connected-context ring re-poses the lens scene — refit.
+  const lastLensCtx = useRef(lensCtx);
+  useEffect(() => {
+    if (lastLensCtx.current === lensCtx) return;
+    lastLensCtx.current = lensCtx;
+    if (mapLens) setRefitNonce((n) => n + 1);
+  }, [lensCtx, mapLens]);
 
   /* ---- drag-a-symbol refactor intents (plan mode) ---- */
 
@@ -1067,7 +1165,7 @@ function CodeMapInner({
               <button
                 type="button"
                 aria-pressed={showFacets}
-                onClick={() => setShowFacets((v) => !v)}
+                onClick={() => nav({ architect: { facets: !showFacets } })}
                 className={cn(
                   "flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] transition-colors",
                   showFacets ? "bg-crystal-500/15 text-crystal-300" : "text-ink-faint hover:text-ink-muted",
@@ -1080,15 +1178,33 @@ function CodeMapInner({
             {lensParam ? (
               <span className="flex items-center gap-1.5 rounded-md bg-crystal-500/15 px-1.5 py-0.5 text-[10px] text-crystal-300">
                 <span className="max-w-40 truncate font-medium">{lensName}</span>
-                {lensVis ? (
+                {lensCore ? (
                   <span className="text-crystal-400/80">
-                    {lensVis.memberCount} members · {lensVis.fileCount} files
+                    {lensCore.memberCount != null ? `${lensCore.memberCount} members · ` : ""}
+                    {lensCore.fileCount} files
                   </span>
-                ) : codeIndex ? (
+                ) : (intentTags.length === 0 || codeIndex) && (sysTags.length === 0 || overview) ? (
                   <span className="text-warn">no matches</span>
                 ) : (
                   <Spinner className="h-3 w-3" />
                 )}
+                {lensNeighbors && lensNeighbors.size > 0 ? (
+                  <Tooltip content="Also show first-degree neighbor modules — collapsed and dimmed — with their edges into the facet">
+                    <button
+                      type="button"
+                      aria-pressed={lensCtx}
+                      onClick={() => nav({ architect: { lensCtx: !lensCtx } })}
+                      className={cn(
+                        "rounded px-1 py-0.5 transition-colors",
+                        lensCtx
+                          ? "bg-crystal-500/15 text-crystal-300"
+                          : "text-ink-faint hover:text-ink-muted",
+                      )}
+                    >
+                      +{lensNeighbors.size} connected
+                    </button>
+                  </Tooltip>
+                ) : null}
                 <button
                   type="button"
                   onClick={() => nav({ architect: { lens: null } })}
@@ -1256,7 +1372,7 @@ function CodeMapInner({
               activeTags={lensTags}
               onSelect={(s) => nav({ architect: { lens: s.tags.join(",") } })}
               onClear={() => nav({ architect: { lens: null } })}
-              onClose={() => setShowFacets(false)}
+              onClose={() => nav({ architect: { facets: null } })}
             />
           </Pane>
         ) : null}

@@ -126,21 +126,19 @@ export function ArchitectMode() {
     setExpandRequest({ module, file, nonce: ++expandNonce.current });
   }, [setView]);
 
-  /** The standalone map remains only for the cross-workspace level. */
+  /** The standalone map: cross-workspace level, plus drilled module/file deep links. */
   const openWorkspacesMap = useCallback(
     () => nav({ architect: { view: "codemap", codemap: { kind: "all" } } }),
     [nav],
   );
 
-  // The workspace-level map is unified into the canvas — old code-map links
-  // (workspace/module/file levels) land on the diagram instead.
+  // Module- and file-level code-map links open the standalone map drilled in
+  // ("expand this module" from the systems overview deep-links here). Only the
+  // plain workspace level stays unified into the canvas.
   const codemapLevel = useNav((l) => l.architect?.codemap ?? null);
   useEffect(() => {
-    if (view !== "codemap" || !codemapLevel || codemapLevel.kind === "all") return;
-    if (codemapLevel.kind === "module") expandCode(codemapLevel.path);
-    else if (codemapLevel.kind === "file") expandCode("", codemapLevel.path);
-    else setView("diagrams");
-  }, [view, codemapLevel, expandCode, setView]);
+    if (view === "codemap" && codemapLevel?.kind === "workspace") setView("diagrams");
+  }, [view, codemapLevel, setView]);
 
   const startJourneyFromCode = useCallback(
     (seed: JourneySeed) => {

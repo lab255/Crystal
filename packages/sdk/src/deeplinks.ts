@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { formatDeepLink, parseDeepLink } from "@crystal/core";
+import { deepLinkNavIdentity, formatDeepLink, parseDeepLink } from "@crystal/core";
 import { useCrystal } from "@crystal/client";
 import type { CrystalMode } from "./modes.js";
 
@@ -9,9 +9,10 @@ import type { CrystalMode } from "./modes.js";
  * - On load (and on back/forward/manual hash edits) the hash is parsed into
  *   the nav store; a linked workspace id is activated once the workspace list
  *   arrives (one-shot — a stale id from another machine is simply ignored).
- * - Nav-store changes write the canonical hash back: pushState when the path
- *   part changes (mode/view — back-button-worthy), replaceState for
- *   selection/param tweaks, so history isn't spammed by every click.
+ * - Nav-store changes write the canonical hash back: pushState when the
+ *   navigation identity changes (mode, subview, drill level, open document —
+ *   back-button-worthy; see `deepLinkNavIdentity`), replaceState for
+ *   selection/panel tweaks, so history isn't spammed by every click.
  * - The URL always mirrors the *active* workspace; the store keeps every
  *   mode's view state so mode switches restore where you were.
  */
@@ -46,21 +47,25 @@ export function useDeepLinks(enabled: boolean, defaultMode: CrystalMode): void {
       tryActivateWs();
     };
 
-    const writeUrl = () => {
-      const hash = formatDeepLink(navStore.getState().link);
+    const writeUrl = (replaceOnly = false) => {
+      const link = navStore.getState().link;
+      const hash = formatDeepLink(link);
       if (!hash || hash === window.location.hash) return;
       const url = `${window.location.pathname}${window.location.search}${hash}`;
-      const samePath = window.location.hash.split("?")[0] === hash.split("?")[0];
-      if (samePath) history.replaceState(null, "", url);
+      const samePlace =
+        replaceOnly ||
+        deepLinkNavIdentity(parseDeepLink(window.location.hash)) === deepLinkNavIdentity(link);
+      if (samePlace) history.replaceState(null, "", url);
       else history.pushState(null, "", url);
     };
 
     if (window.location.hash.length > 1) applyFromUrl();
     if (!navStore.getState().link.mode) navStore.getState().update({ mode: defaultMode });
-    // Normalize the address bar immediately so "copy link" works from the start.
-    writeUrl();
+    // Normalize the address bar in place so "copy link" works from the start —
+    // never push here, or the fresh session starts with a dead back entry.
+    writeUrl(true);
 
-    const unsubNav = navStore.subscribe(writeUrl);
+    const unsubNav = navStore.subscribe(() => writeUrl());
     const unsubWs = workspacesStore.subscribe(() => {
       tryActivateWs();
       const { activeId } = workspacesStore.getState();

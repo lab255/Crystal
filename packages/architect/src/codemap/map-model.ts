@@ -98,6 +98,8 @@ export interface ModuleNodeData extends Record<string, unknown> {
   truncated?: boolean;
   intentMark?: "source" | "target";
   emphasis?: boolean;
+  /** Lens-context neighbor — rendered muted, outside the facet itself. */
+  dimmed?: boolean;
 }
 
 export interface FileNodeData extends Record<string, unknown> {
@@ -163,7 +165,28 @@ export type MapRfNode = RfNode<MapNodeData>;
  */
 export interface MapLens {
   files: ReadonlyMap<string, "all" | ReadonlySet<string>>;
+  /**
+   * Directory prefixes whose files are wholly in the lens — structural
+   * lenses (a system's parts) that need no per-file enumeration.
+   */
+  dirs?: readonly string[];
   modules: ReadonlySet<string>;
+  /**
+   * First-degree neighbor modules (an import edge to/from a lens member),
+   * disjoint from `modules`. Rendered collapsed and dimmed for context —
+   * their files are outside the lens.
+   */
+  context?: ReadonlySet<string>;
+}
+
+/** What the lens exposes of one file: everything, some members, or nothing. */
+export function lensFileVisibility(
+  lens: MapLens,
+  path: string,
+): "all" | ReadonlySet<string> | undefined {
+  const direct = lens.files.get(path);
+  if (direct) return direct;
+  return lens.dirs?.some((d) => path === d || path.startsWith(`${d}/`)) ? "all" : undefined;
 }
 
 /* ---- scene input ---- */
@@ -296,7 +319,7 @@ export function buildMapScene(input: MapSceneInput): MapScene {
   const visibleModules = summary.modules.filter(
     (m) =>
       (m.fileCount > 0 || summary.deps.some((d) => d.source === m.path || d.target === m.path)) &&
-      (!lens || lens.modules.has(m.path)),
+      (!lens || lens.modules.has(m.path) || lens.context?.has(m.path)),
   );
   const modulePathSet = new Set(visibleModules.map((m) => m.path));
 
@@ -321,7 +344,10 @@ export function buildMapScene(input: MapSceneInput): MapScene {
   }[] = [];
 
   for (const m of visibleModules) {
-    const expanded = input.expandedModules.has(m.path);
+    // Context neighbors always render collapsed — their files are outside the
+    // lens, so expanding them would show an empty shell.
+    const isContext = lens?.context?.has(m.path) ?? false;
+    const expanded = !isContext && input.expandedModules.has(m.path);
     const detail = expanded ? input.moduleDetails.get(m.path) : undefined;
     if (!expanded || !detail) {
       moduleBuilds.push({
@@ -335,7 +361,9 @@ export function buildMapScene(input: MapSceneInput): MapScene {
       continue;
     }
 
-    const shownFiles = lens ? detail.files.filter((f) => lens.files.has(f.path)) : detail.files;
+    const shownFiles = lens
+      ? detail.files.filter((f) => lensFileVisibility(lens, f.path) != null)
+      : detail.files;
     const files: BuiltFile[] = shownFiles.map((f) =>
       buildFile(f.path, f.name, m.path, f.exportCount, input, moves),
     );
@@ -401,10 +429,15 @@ export function buildMapScene(input: MapSceneInput): MapScene {
       height: Math.max(b.h, reserve?.h ?? 0),
     });
   }
+  // With a lens active, an edge must touch a lens member — context modules
+  // connect to the facet, never to each other.
+  const depVisible = (d: CodeModuleDep) =>
+    d.source !== d.target &&
+    modulePathSet.has(d.source) &&
+    modulePathSet.has(d.target) &&
+    (!lens || lens.modules.has(d.source) || lens.modules.has(d.target));
   for (const d of summary.deps) {
-    if (d.source !== d.target && modulePathSet.has(d.source) && modulePathSet.has(d.target)) {
-      g.setEdge(d.source, d.target);
-    }
+    if (depVisible(d)) g.setEdge(d.source, d.target);
   }
   dagre.layout(g);
 
@@ -435,6 +468,7 @@ export function buildMapScene(input: MapSceneInput): MapScene {
         truncated: b.detail?.truncated,
         intentMark: moduleMark.get(b.module.path),
         emphasis: input.focusId === id,
+        dimmed: lens?.context?.has(b.module.path) || undefined,
       },
     });
     for (const f of b.files) {
@@ -448,8 +482,7 @@ export function buildMapScene(input: MapSceneInput): MapScene {
   /* ---- edges ---- */
   const edges: RfEdge[] = [];
   for (const d of summary.deps) {
-    if (d.source === d.target) continue;
-    if (!modulePathSet.has(d.source) || !modulePathSet.has(d.target)) continue;
+    if (!depVisible(d)) continue;
     edges.push(depEdge(d.source, d.target, d.weight));
   }
 
@@ -569,7 +602,7 @@ export function buildFile(
   }
 
   const symbolMoves = moves.filter((m): m is MoveIntent => m.kind === "move");
-  const lensMembers = input.lens?.files.get(path);
+  const lensMembers = input.lens ? lensFileVisibility(input.lens, path) : undefined;
   const all =
     lensMembers && lensMembers !== "all"
       ? (detail.symbols ?? detail.exports).filter((s) => lensMembers.has(s.name))
@@ -764,11 +797,11 @@ export function groupModulesByRepo(summary: CodeMapSummary): {
     const source = repoOf.get(d.source) ?? ".";
     const target = repoOf.get(d.target) ?? ".";
     if (source === target) continue;
-    const key = `${source} ${target}`;
+    const key = `${source}\0${target}`;
     weights.set(key, (weights.get(key) ?? 0) + d.weight);
   }
   const deps: CodeModuleDep[] = [...weights.entries()].map(([key, weight]) => {
-    const [source, target] = key.split(" ") as [string, string];
+    const [source, target] = key.split("\0") as [string, string];
     return { source, target, weight };
   });
 

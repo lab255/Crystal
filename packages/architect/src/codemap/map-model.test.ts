@@ -440,6 +440,61 @@ describe("buildMapScene — facet lens", () => {
     const chips = scene.nodes.filter((n) => n.data.nodeKind === "symbol");
     expect(chips.map((c) => (c.data as SymbolNodeData).name)).toEqual(["foo", "Bar", "hidden"]);
   });
+
+  it("dir prefixes admit whole files — the structural (system) lens", () => {
+    const scene = buildMapScene(
+      input({
+        moduleDetails: new Map([["packages/core", coreDetail()]]),
+        fileDetails: new Map([[A, fileDetailA()]]),
+        expandedModules: new Set(["packages/core"]),
+        expandedFiles: new Set([A]),
+        lens: { files: new Map(), dirs: ["packages/core/src"], modules: new Set(["packages/core"]) },
+      }),
+    );
+    // Both core files fall under the dir; every member of A renders ("all").
+    const files = scene.nodes.filter((n) => n.data.nodeKind === "file");
+    expect(files.map((f) => f.id).sort()).toEqual(
+      [fileId(A), fileId("packages/core/src/d.ts")].sort(),
+    );
+    const chips = scene.nodes.filter((n) => n.data.nodeKind === "symbol");
+    expect(chips.map((c) => (c.data as SymbolNodeData).name)).toEqual(["foo", "Bar", "hidden"]);
+    // A sibling dir does not match by mere string prefix ("src2" ≠ "src/…").
+    const miss = buildMapScene(
+      input({
+        moduleDetails: new Map([["packages/core", coreDetail()]]),
+        expandedModules: new Set(["packages/core"]),
+        lens: { files: new Map(), dirs: ["packages/core/sr"], modules: new Set(["packages/core"]) },
+      }),
+    );
+    expect(miss.nodes.filter((n) => n.data.nodeKind === "file")).toHaveLength(0);
+  });
+
+  it("context modules render collapsed + dimmed, wired only into the lens", () => {
+    const scene = buildMapScene(
+      input({
+        moduleDetails: new Map([
+          ["packages/core", coreDetail()],
+          ["packages/ui", uiDetail()],
+        ]),
+        fileDetails: new Map([[A, fileDetailA()]]),
+        expandedModules: new Set(["packages/core", "packages/ui"]),
+        expandedFiles: new Set([A]),
+        lens: {
+          files: new Map([[A, "all"]]),
+          modules: new Set(["packages/core"]),
+          context: new Set(["packages/ui"]),
+        },
+      }),
+    );
+    const ui = scene.nodes.find((n) => n.id === moduleId("packages/ui"))!;
+    const uiData = ui.data as ModuleNodeData;
+    expect(uiData.dimmed).toBe(true);
+    // Collapsed despite being in expandedModules — its files are out of lens.
+    expect(uiData.expanded).toBe(false);
+    expect(scene.nodes.some((n) => n.id === fileId(B))).toBe(false);
+    // The ui→core edge survives because it touches a lens member.
+    expect(scene.edges.map((e) => e.id)).toEqual(["dep:packages/ui->packages/core"]);
+  });
 });
 
 describe("buildMapScene — reserved layout", () => {

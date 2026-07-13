@@ -121,6 +121,7 @@ export const ModuleNode = memo(function ModuleNode({ data, selected }: NodeProps
         "relative h-full w-full rounded-xl border-[1.5px] transition-colors",
         selected ? "border-crystal-400" : "border-edge-strong",
         d.emphasis && "ring-2 ring-crystal-400/50",
+        d.dimmed && "opacity-40",
         dragOver && "ring-2 ring-warn",
       )}
       style={{ background: `color-mix(in srgb, ${d.accent} 5%, var(--color-surface-1) 55%)` }}

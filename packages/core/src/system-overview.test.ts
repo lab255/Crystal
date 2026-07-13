@@ -372,7 +372,13 @@ describe("signatures and link details", () => {
     const form = overview.systems.find((s) => s.parts.some((p) => p.path === "src/form"))!;
     expect(form.exports[0]?.signature).toBe(sig);
     const link = overview.links.find((l) => l.target === form.id);
-    expect(link?.details?.[0]).toMatchObject({ name: "getFormById", count: 1, signature: sig });
+    expect(link?.details?.[0]).toMatchObject({
+      name: "getFormById",
+      count: 1,
+      signature: sig,
+      // Declaring file rides along — the contract inspector jumps to it.
+      file: "src/form/form.service.ts",
+    });
   });
 });
 
@@ -416,5 +422,51 @@ describe("API links", () => {
     expect(routesMatch(routeSegments("/api/users/42"), routeSegments("/api/users/:id"))).toBe(true);
     expect(routesMatch(routeSegments("/api/users/*"), routeSegments("/api/users/:id"))).toBe(true);
     expect(routesMatch(routeSegments("/api/users"), routeSegments("/api/users/:id"))).toBe(false);
+  });
+});
+
+describe("part links", () => {
+  it("attributes intra-system imports to part pairs when units fuse", () => {
+    const overview = buildSystemOverview([
+      src("apps/web/src/booking/list.ts", "apps/web", {
+        imports: [{ from: "apps/api/src/booking/service.ts", names: ["listBookings"] }],
+      }),
+      src("apps/web/src/booking/detail.ts", "apps/web", {
+        imports: [{ from: "apps/api/src/booking/service.ts", names: ["getBooking"] }],
+      }),
+      src("apps/api/src/booking/service.ts", "apps/api", {
+        exports: ["listBookings", "getBooking"],
+      }),
+      src("apps/api/src/booking/model.ts", "apps/api", {}),
+    ]);
+    const booking = byName(overview, "Booking");
+    expect(booking.parts.map((p) => p.path).sort()).toEqual([
+      "apps/api/src/booking",
+      "apps/web/src/booking",
+    ]);
+    expect(booking.partLinks).toEqual([
+      { source: "apps/web/src/booking", target: "apps/api/src/booking", weight: 2 },
+    ]);
+  });
+
+  it("attributes cross-system links to (source part, target part) pairs", () => {
+    const overview = buildSystemOverview([
+      src("apps/web/src/portal/home.ts", "apps/web", {
+        imports: [{ from: "apps/api/src/matching/engine.ts", names: ["match"] }],
+      }),
+      src("apps/web/src/portal/results.ts", "apps/web", {
+        imports: [{ from: "apps/api/src/matching/engine.ts", names: ["match"] }],
+      }),
+      src("apps/api/src/matching/engine.ts", "apps/api", { exports: ["match"] }),
+      src("apps/api/src/matching/rules.ts", "apps/api", {}),
+    ]);
+    const portal = byName(overview, "Portal");
+    const matching = byName(overview, "Matching");
+    const link = overview.links.find((l) => l.source === portal.id && l.target === matching.id);
+    expect(link?.parts).toEqual([
+      { sourcePart: "apps/web/src/portal", targetPart: "apps/api/src/matching", weight: 2 },
+    ]);
+    // Single-part systems carry no intra-system links.
+    expect(portal.partLinks).toBeUndefined();
   });
 });

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { formatDeepLink, parseDeepLink, type DeepLink } from "./deeplink.js";
+import {
+  applyDeepLink,
+  deepLinkNavIdentity,
+  formatDeepLink,
+  parseDeepLink,
+  type DeepLink,
+} from "./deeplink.js";
 
 const roundTrip = (link: DeepLink) => parseDeepLink(formatDeepLink(link));
 
@@ -26,6 +32,15 @@ describe("formatDeepLink", () => {
       code: {},
     });
     expect(hash).toBe("#/code");
+  });
+
+  it("defaults the architect view to systems — what ArchitectMode renders when unset", () => {
+    expect(formatDeepLink({ mode: "architect" })).toBe("#/architect/systems");
+    // Params set before the user ever touches the view switcher land on the
+    // systems branch, not silently dropped by a diagrams default.
+    expect(formatDeepLink({ mode: "architect", architect: { system: "sys:auth" } })).toBe(
+      "#/architect/systems?system=sys%3Aauth",
+    );
   });
 
   it("omits the code-map workspace when it matches the active one", () => {
@@ -103,7 +118,9 @@ describe("round trips", () => {
     };
     expect(roundTrip(link)).toEqual(link);
     // review is a lens on a draft — meaningless (and omitted) without one
-    expect(formatDeepLink({ mode: "architect", architect: { review: true } })).toBe("#/architect/diagrams");
+    expect(
+      formatDeepLink({ mode: "architect", architect: { view: "diagrams", review: true } }),
+    ).toBe("#/architect/diagrams");
     expect(parseDeepLink("#/architect/diagrams?review=1").architect?.review).toBeUndefined();
   });
 
@@ -145,8 +162,30 @@ describe("round trips", () => {
     };
     expect(roundTrip(link)).toEqual(link);
     expect(formatDeepLink(link)).toBe(
-      "#/architect/codemap?ws=abc&at=workspace&lod=members&lens=intent%3Aauth%2Cintent%3Apayments",
+      "#/architect/codemap?ws=abc&at=workspace&lod=members&lens=intent%3Aauth,intent%3Apayments",
     );
+  });
+
+  it("code map lens context toggle", () => {
+    const link: DeepLink = {
+      ws: "abc",
+      mode: "architect",
+      architect: {
+        view: "codemap",
+        codemap: { kind: "workspace", ws: "abc" },
+        lens: "intent:auth",
+        lensCtx: true,
+      },
+    };
+    expect(roundTrip(link)).toEqual(link);
+    expect(formatDeepLink(link)).toBe(
+      "#/architect/codemap?ws=abc&at=workspace&lens=intent%3Aauth&lensctx=1",
+    );
+    // off = omitted entirely
+    expect(formatDeepLink({ ...link, architect: { ...link.architect, lensCtx: false } })).toBe(
+      "#/architect/codemap?ws=abc&at=workspace&lens=intent%3Aauth",
+    );
+    expect(parseDeepLink("#/architect/codemap?ws=abc&at=workspace").architect?.lensCtx).toBeUndefined();
   });
 
   it("systems grouping and facet lens", () => {
@@ -171,6 +210,28 @@ describe("round trips", () => {
       architect: { view: "systems", sysGroup: "modules" },
     };
     expect(roundTrip(modules)).toEqual(modules);
+  });
+
+  it("systems lens context toggle (system-id lens)", () => {
+    const link: DeepLink = {
+      ws: "abc",
+      mode: "architect",
+      architect: {
+        view: "systems",
+        lens: "sys:auth",
+        lensCtx: true,
+      },
+    };
+    expect(roundTrip(link)).toEqual(link);
+    expect(formatDeepLink(link)).toBe("#/architect/systems?ws=abc&lens=sys%3Aauth&lensctx=1");
+    // lensCtx without a lens is meaningless — not emitted
+    expect(
+      formatDeepLink({
+        ws: "abc",
+        mode: "architect",
+        architect: { view: "systems", lensCtx: true },
+      }),
+    ).toBe("#/architect/systems?ws=abc");
   });
 
   it("drops an unknown group value instead of propagating it", () => {
@@ -236,5 +297,170 @@ describe("round trips", () => {
     const a = formatDeepLink({ mode: "code", ws: "w", code: { file: "x.ts" } });
     const b = formatDeepLink(parseDeepLink(a));
     expect(b).toBe(a);
+  });
+
+  it("systems panels, edge selection and in-place expansion", () => {
+    const link: DeepLink = {
+      ws: "abc",
+      mode: "architect",
+      architect: {
+        view: "systems",
+        edge: "sys:auth->sys:data",
+        expanded: "sys:auth,sys:submission",
+        contracts: true,
+      },
+    };
+    expect(roundTrip(link)).toEqual(link);
+    expect(formatDeepLink(link)).toBe(
+      "#/architect/systems?ws=abc&edge=sys%3Aauth-%3Esys%3Adata&expand=sys%3Aauth,sys%3Asubmission&contracts=1",
+    );
+    const insights: DeepLink = {
+      ws: "abc",
+      mode: "architect",
+      architect: { view: "systems", insights: true, facets: true },
+    };
+    expect(roundTrip(insights)).toEqual(insights);
+  });
+
+  it("code map facets panel and selected file card", () => {
+    const link: DeepLink = {
+      ws: "abc",
+      mode: "architect",
+      architect: {
+        view: "codemap",
+        codemap: { kind: "module", ws: "abc", path: "packages/core" },
+        facets: true,
+        file: "packages/core/src/bridge.ts",
+      },
+    };
+    expect(roundTrip(link)).toEqual(link);
+  });
+});
+
+describe("applyDeepLink", () => {
+  it("replaces only the incoming subview's fields, keeping sibling-subview state", () => {
+    const current: DeepLink = {
+      mode: "architect",
+      ws: "w1",
+      architect: {
+        view: "codemap",
+        codemap: { kind: "module", ws: "w1", path: "packages/core" },
+        lod: "modules",
+        diagram: "a.crystal",
+        system: "sys:auth",
+      },
+    };
+    // Back onto a systems URL: systems-owned fields are replaced (stale
+    // `system` cleared, `sysGroup` applied); the drill level, LoD and the
+    // diagrams selection — which a systems URL cannot express — survive.
+    const next = applyDeepLink(current, {
+      mode: "architect",
+      architect: { view: "systems", sysGroup: "layers" },
+    });
+    expect(next.architect).toEqual({
+      view: "systems",
+      sysGroup: "layers",
+      codemap: { kind: "module", ws: "w1", path: "packages/core" },
+      lod: "modules",
+      diagram: "a.crystal",
+    });
+  });
+
+  it("keeps board selection while popping through runs URLs", () => {
+    const current: DeepLink = {
+      mode: "orchestrate",
+      orchestrate: { tab: "board", project: "p.crystal", task: "t1", group: "epic" },
+    };
+    const next = applyDeepLink(current, {
+      mode: "orchestrate",
+      orchestrate: { tab: "runs", project: "p.crystal", run: "r1" },
+    });
+    expect(next.orchestrate).toEqual({
+      tab: "runs",
+      project: "p.crystal",
+      run: "r1",
+      task: "t1",
+      group: "epic",
+    });
+  });
+
+  it("treats a bare architect URL as the default view with nothing selected", () => {
+    const current: DeepLink = {
+      mode: "architect",
+      architect: { view: "systems", system: "sys:auth", lod: "members" },
+    };
+    const next = applyDeepLink(current, { mode: "architect" });
+    // systems-owned fields clear; the code map's LoD survives.
+    expect(next.architect).toEqual({ lod: "members" });
+  });
+
+  it("leaves other modes' sections untouched and lets ws/mode win", () => {
+    const current: DeepLink = {
+      mode: "architect",
+      ws: "w1",
+      architect: { diagram: "a.crystal" },
+      orchestrate: { task: "t1" },
+    };
+    const next = applyDeepLink(current, { mode: "code", ws: "w2", code: { file: "x.ts" } });
+    expect(next).toEqual({
+      mode: "code",
+      ws: "w2",
+      code: { file: "x.ts" },
+      architect: { diagram: "a.crystal" },
+      orchestrate: { task: "t1" },
+    });
+  });
+});
+
+describe("deepLinkNavIdentity", () => {
+  const base: DeepLink = { mode: "architect", architect: { view: "systems" } };
+
+  it("ignores selections and panels", () => {
+    expect(
+      deepLinkNavIdentity({
+        ...base,
+        architect: { view: "systems", system: "sys:auth", insights: true },
+      }),
+    ).toBe(deepLinkNavIdentity(base));
+  });
+
+  it("matches the render default when the view is unset", () => {
+    expect(deepLinkNavIdentity({ mode: "architect" })).toBe(deepLinkNavIdentity(base));
+  });
+
+  it("changes when the subview, drill level or document changes", () => {
+    expect(deepLinkNavIdentity({ mode: "architect", architect: { view: "codemap" } })).not.toBe(
+      deepLinkNavIdentity(base),
+    );
+    const drillA: DeepLink = {
+      mode: "architect",
+      architect: { view: "codemap", codemap: { kind: "module", ws: "w", path: "a" } },
+    };
+    const drillB: DeepLink = {
+      mode: "architect",
+      architect: { view: "codemap", codemap: { kind: "module", ws: "w", path: "b" } },
+    };
+    expect(deepLinkNavIdentity(drillA)).not.toBe(deepLinkNavIdentity(drillB));
+    expect(
+      deepLinkNavIdentity({ mode: "architect", architect: { view: "diagrams", diagram: "a" } }),
+    ).not.toBe(
+      deepLinkNavIdentity({ mode: "architect", architect: { view: "diagrams", diagram: "b" } }),
+    );
+    expect(deepLinkNavIdentity({ mode: "code", code: { file: "a.ts" } })).not.toBe(
+      deepLinkNavIdentity({ mode: "code", code: { file: "b.ts" } }),
+    );
+  });
+
+  it("orchestrate: tab and project are places, task/run selections are not", () => {
+    const board: DeepLink = { mode: "orchestrate", orchestrate: { tab: "board", project: "p" } };
+    expect(
+      deepLinkNavIdentity({ mode: "orchestrate", orchestrate: { tab: "board", project: "p", task: "t" } }),
+    ).toBe(deepLinkNavIdentity(board));
+    expect(
+      deepLinkNavIdentity({ mode: "orchestrate", orchestrate: { tab: "runs", project: "p" } }),
+    ).not.toBe(deepLinkNavIdentity(board));
+    expect(
+      deepLinkNavIdentity({ mode: "orchestrate", orchestrate: { tab: "board", project: "q" } }),
+    ).not.toBe(deepLinkNavIdentity(board));
   });
 });

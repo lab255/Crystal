@@ -1,10 +1,11 @@
 import { createStore, type StoreApi } from "zustand/vanilla";
-import type {
-  ArchitectLink,
-  CodeLink,
-  CrystalModeId,
-  DeepLink,
-  OrchestrateLink,
+import {
+  applyDeepLink,
+  type ArchitectLink,
+  type CodeLink,
+  type CrystalModeId,
+  type DeepLink,
+  type OrchestrateLink,
 } from "@crystal/core";
 
 /**
@@ -33,9 +34,10 @@ export interface NavState {
   /** Merge a patch (per-mode sections merge field-by-field; `null` clears a field). */
   update(patch: NavPatch): void;
   /**
-   * Apply a parsed URL: mode/ws win when present, and the incoming mode's
-   * section replaces the stored one wholesale (a bare `#/code` really means
-   * "editor, nothing selected"). Other modes' sections are untouched.
+   * Apply a parsed URL (back/forward): mode/ws win when present, and the
+   * incoming subview's URL-expressible fields replace the stored ones —
+   * see `applyDeepLink` in @crystal/core. State the URL never carried
+   * (other subviews' drills, selections, panels) survives.
    */
   apply(next: DeepLink): void;
 }
@@ -93,21 +95,7 @@ export function createNavStore(initial: DeepLink = {}): NavStore {
 
     apply(next) {
       const cur = get().link;
-      const link: DeepLink = { ...cur };
-      if (next.ws) link.ws = next.ws;
-      if (next.mode) {
-        link.mode = next.mode;
-        if (next.mode === "architect") {
-          if (next.architect) link.architect = next.architect;
-          else delete link.architect;
-        } else if (next.mode === "orchestrate") {
-          if (next.orchestrate) link.orchestrate = next.orchestrate;
-          else delete link.orchestrate;
-        } else if (next.mode === "code") {
-          if (next.code) link.code = next.code;
-          else delete link.code;
-        }
-      }
+      const link = applyDeepLink(cur, next);
       if (!deepEqual(link, cur)) set({ link });
     },
   }));

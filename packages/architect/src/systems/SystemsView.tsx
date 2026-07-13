@@ -18,12 +18,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   ArrowDownRight,
+  ArrowRightLeft,
   ArrowUpRight,
   Boxes,
   Copy,
-  Database,
-  DoorOpen,
+  Expand,
   ExternalLink,
+  Folder,
+  FolderGit2,
   GitCompare,
   Layers,
   Maximize,
@@ -31,6 +33,7 @@ import {
   Plug,
   RefreshCw,
   Search,
+  Shrink,
   Sparkles,
   X,
 } from "lucide-react";
@@ -54,6 +57,7 @@ import {
   type SystemLayer,
   type SystemLink,
   type SystemModule,
+  type SystemPart,
   type SystemOverview,
   type SystemOverviewDiff,
   type SystemRole,
@@ -65,6 +69,8 @@ import {
   Combobox,
   ContextMenu,
   EmptyState,
+  Pane as SplitPane,
+  Split,
   Spinner,
   Tooltip,
   cn,
@@ -73,6 +79,8 @@ import {
 } from "@crystal/ui";
 import { requestOpenFile } from "../codemap/CodeMapView.js";
 import { FacetsPanel } from "../codemap/FacetsPanel.js";
+import { ContractInspector, linkKeyOf } from "./ContractInspector.js";
+import { ROLE_META } from "./role-meta.js";
 
 /**
  * Systems view — the logical architecture overview, built for making calls:
@@ -88,14 +96,6 @@ import { FacetsPanel } from "../codemap/FacetsPanel.js";
  * Data is the pure `codemap.overview` projection; the view re-fetches as the
  * code or the semantic index change.
  */
-
-const ROLE_META: Record<SystemRole, { label: string; accent: string; icon: typeof Boxes }> = {
-  domain: { label: "Domain", accent: "var(--color-accent-violet)", icon: Boxes },
-  integration: { label: "Integration", accent: "var(--color-accent-amber)", icon: Plug },
-  data: { label: "Data", accent: "var(--color-accent-emerald)", icon: Database },
-  shared: { label: "Shared", accent: "var(--color-accent-slate)", icon: Layers },
-  entry: { label: "Entry", accent: "var(--color-accent-cyan)", icon: DoorOpen },
-};
 
 /** Diagram node kind a materialized system gets, by role. */
 const ARCH_KIND_OF_ROLE: Record<SystemRole, ArchNodeKind> = {
@@ -213,6 +213,101 @@ function SystemNode({ data }: NodeProps<SystemRfNode>) {
   );
 }
 
+/* ---- expanded systems (components + dependencies in place) ---- */
+
+const PART_W = 190;
+const PART_H = 46;
+const GROUP_HEADER_H = 40;
+const GROUP_PAD = 14;
+
+interface SystemGroupData extends Record<string, unknown> {
+  system: SystemModule;
+  selected: boolean;
+  dimmed: boolean;
+  mark?: DiffMark;
+  onCollapse: (id: string) => void;
+}
+type SystemGroupRfNode = RfNode<SystemGroupData>;
+
+interface SystemPartData extends Record<string, unknown> {
+  sysId: string;
+  part: SystemPart;
+  accent: string;
+  dimmed: boolean;
+}
+type SystemPartRfNode = RfNode<SystemPartData>;
+
+/** A system opened in place: header + its parts as child nodes. */
+function SystemGroupNode({ data }: NodeProps<SystemGroupRfNode>) {
+  const { system, selected, dimmed, mark, onCollapse } = data;
+  const meta = ROLE_META[system.role];
+  const Icon = meta.icon;
+  return (
+    <div
+      className={cn(
+        "h-full w-full rounded-lg border bg-surface-1/60 transition-opacity",
+        selected ? "border-ink/40 ring-2 ring-ink/20" : "border-edge",
+        mark === "removed" && "border-dashed",
+        dimmed && "opacity-25",
+      )}
+      style={{ borderTopColor: meta.accent, borderTopWidth: 2 }}
+    >
+      <Handle type="target" position={Position.Left} className="!bg-edge" />
+      <Handle type="source" position={Position.Right} className="!bg-edge" />
+      <div className="flex items-center gap-2 px-3 pt-2">
+        <Icon className="h-3.5 w-3.5 shrink-0" style={{ color: meta.accent }} />
+        <span className="truncate text-[12px] font-semibold text-ink">{system.name}</span>
+        {mark === "added" && (
+          <span className="shrink-0 rounded-full bg-ok/15 px-1.5 text-[9px] text-ok">new</span>
+        )}
+        {mark === "removed" && (
+          <span className="shrink-0 rounded-full bg-danger/15 px-1.5 text-[9px] text-danger">gone</span>
+        )}
+        <span className="text-[10px] text-ink-faint">
+          {system.parts.length} components · {system.fileCount} files
+        </span>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onCollapse(system.id);
+          }}
+          aria-label="Collapse system"
+          className="ml-auto text-ink-faint hover:text-ink"
+        >
+          <Shrink className="h-3 w-3" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** One component (structural part) of an expanded system. */
+function SystemPartNode({ data }: NodeProps<SystemPartRfNode>) {
+  const { part, accent, dimmed } = data;
+  const name = part.path.split("/").at(-1) ?? part.path;
+  return (
+    <div
+      className={cn(
+        "flex h-full w-full flex-col justify-center rounded-md border border-edge bg-surface-2 px-2 py-1 shadow-sm transition-opacity",
+        dimmed && "opacity-25",
+      )}
+      style={{ borderLeftColor: accent, borderLeftWidth: 2 }}
+    >
+      <Handle type="target" position={Position.Left} className="!bg-edge" />
+      <Handle type="source" position={Position.Right} className="!bg-edge" />
+      <div className="flex items-center gap-1.5">
+        <Folder className="h-3 w-3 shrink-0 text-ink-faint" />
+        <span className="min-w-0 truncate text-[11px] font-medium text-ink">{name}</span>
+        <span className="ml-auto shrink-0 text-[9px] text-ink-faint">{part.fileCount}</span>
+      </div>
+      <div className="truncate pl-4.5 font-mono text-[9px] text-ink-faint" title={part.path}>
+        {part.path}
+      </div>
+    </div>
+  );
+}
+
 /* ---- layer-band grouping (group-by: layers) ---- */
 
 const BAND_HEADER = 34;
@@ -221,8 +316,10 @@ const BAND_GAP = 48;
 
 type LayerBandData = { layer: SystemLayer } & Record<string, unknown>;
 type LayerBandRfNode = RfNode<LayerBandData>;
-/** What the canvas renders: system cards, plus layer bands in layer mode. */
-type ViewNode = SystemRfNode | LayerBandRfNode;
+/** A top-level system card: collapsed, or expanded into a component group. */
+type SysCardNode = SystemRfNode | SystemGroupRfNode;
+/** What the canvas renders: system cards/groups, their parts, layer bands. */
+type ViewNode = SysCardNode | SystemPartRfNode | LayerBandRfNode;
 
 function LayerBandNode({ data }: NodeProps<LayerBandRfNode>) {
   return (
@@ -234,21 +331,39 @@ function LayerBandNode({ data }: NodeProps<LayerBandRfNode>) {
   );
 }
 
-const nodeTypes = { system: SystemNode, layerBand: LayerBandNode };
+const nodeTypes = {
+  system: SystemNode,
+  systemGroup: SystemGroupNode,
+  systemPart: SystemPartNode,
+  layerBand: LayerBandNode,
+};
 
-function layout(nodes: SystemRfNode[], edges: RfEdge[]): SystemRfNode[] {
+/** System-level dependency pairs — the layout skeleton (part edges excluded). */
+interface SysPair {
+  source: string;
+  target: string;
+}
+
+function layout(nodes: SysCardNode[], pairs: readonly SysPair[]): SysCardNode[] {
   const g = new dagre.graphlib.Graph();
   g.setGraph({ rankdir: "LR", nodesep: 28, ranksep: 90, marginx: 24, marginy: 24 });
   g.setDefaultEdgeLabel(() => ({}));
+  const ids = new Set(nodes.map((n) => n.id));
   for (const n of nodes) {
-    g.setNode(n.id, { width: CARD_W, height: (n.style?.height as number) ?? 120 });
+    g.setNode(n.id, {
+      width: (n.style?.width as number) ?? CARD_W,
+      height: (n.style?.height as number) ?? 120,
+    });
   }
-  for (const e of edges) if (e.source !== e.target) g.setEdge(e.source, e.target);
+  for (const e of pairs) {
+    if (e.source !== e.target && ids.has(e.source) && ids.has(e.target)) g.setEdge(e.source, e.target);
+  }
   dagre.layout(g);
   return nodes.map((n) => {
     const pos = g.node(n.id);
+    const w = (n.style?.width as number) ?? CARD_W;
     const h = (n.style?.height as number) ?? 120;
-    return { ...n, position: { x: pos.x - CARD_W / 2, y: pos.y - h / 2 } };
+    return { ...n, position: { x: pos.x - w / 2, y: pos.y - h / 2 } };
   });
 }
 
@@ -260,8 +375,8 @@ function layout(nodes: SystemRfNode[], edges: RfEdge[]): SystemRfNode[] {
  * children in the returned array — react-flow requires it, the same
  * convention `topoOrderNodes` enforces for the diagram model.
  */
-function layeredLayout(nodes: SystemRfNode[], edges: RfEdge[]): ViewNode[] {
-  const byLayer = new Map<SystemLayer, SystemRfNode[]>();
+function layeredLayout(nodes: SysCardNode[], pairs: readonly SysPair[]): ViewNode[] {
+  const byLayer = new Map<SystemLayer, SysCardNode[]>();
   for (const n of nodes) {
     const layer = n.data.system.layer;
     const list = byLayer.get(layer);
@@ -276,17 +391,18 @@ function layeredLayout(nodes: SystemRfNode[], edges: RfEdge[]): ViewNode[] {
     const ids = new Set(members.map((n) => n.id));
     const laid = layout(
       members,
-      edges.filter((e) => ids.has(e.source) && ids.has(e.target)),
+      pairs.filter((e) => ids.has(e.source) && ids.has(e.target)),
     );
     let minX = Infinity;
     let minY = Infinity;
     let maxX = -Infinity;
     let maxY = -Infinity;
     for (const n of laid) {
+      const w = (n.style?.width as number) ?? CARD_W;
       const h = (n.style?.height as number) ?? 120;
       minX = Math.min(minX, n.position.x);
       minY = Math.min(minY, n.position.y);
-      maxX = Math.max(maxX, n.position.x + CARD_W);
+      maxX = Math.max(maxX, n.position.x + w);
       maxY = Math.max(maxY, n.position.y + h);
     }
     const bandId = `layer:${layer}`;
@@ -315,6 +431,52 @@ function layeredLayout(nodes: SystemRfNode[], edges: RfEdge[]): ViewNode[] {
   return out;
 }
 
+/** Stable node id of one part inside an expanded system. */
+const partNodeId = (sysId: string, partPath: string): string => `part|${sysId}|${partPath}`;
+
+/**
+ * Inner layout of an expanded system: dagre (LR) over its parts wired by the
+ * intra-system part links. Returns band-relative child positions and the
+ * container size the group node needs.
+ */
+function expandLayout(system: SystemModule): {
+  width: number;
+  height: number;
+  children: { part: SystemPart; x: number; y: number }[];
+} {
+  const g = new dagre.graphlib.Graph();
+  g.setGraph({ rankdir: "LR", nodesep: 16, ranksep: 46, marginx: 0, marginy: 0 });
+  g.setDefaultEdgeLabel(() => ({}));
+  for (const p of system.parts) g.setNode(p.path, { width: PART_W, height: PART_H });
+  for (const l of system.partLinks ?? []) {
+    if (l.source !== l.target) g.setEdge(l.source, l.target);
+  }
+  dagre.layout(g);
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  const raw = system.parts.map((part) => {
+    const pos = g.node(part.path);
+    const x = pos.x - PART_W / 2;
+    const y = pos.y - PART_H / 2;
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x + PART_W);
+    maxY = Math.max(maxY, y + PART_H);
+    return { part, x, y };
+  });
+  return {
+    width: Math.max(maxX - minX + GROUP_PAD * 2, CARD_W),
+    height: maxY - minY + GROUP_HEADER_H + GROUP_PAD,
+    children: raw.map((c) => ({
+      part: c.part,
+      x: c.x - minX + GROUP_PAD,
+      y: c.y - minY + GROUP_HEADER_H,
+    })),
+  };
+}
+
 interface RefDiffState {
   ref: string;
   commit: string;
@@ -336,10 +498,11 @@ export function SystemsView(props: SystemsViewProps = {}) {
   );
 }
 
-type SidePanel = "system" | "edge" | "insights" | "diff" | "facets" | null;
+type SidePanel = "system" | "edge" | "insights" | "diff" | "facets" | "contracts" | null;
 
 type MenuState =
   | { kind: "node"; x: number; y: number; id: string }
+  | { kind: "part"; x: number; y: number; sys: string; path: string; pkg: string }
   | { kind: "edge"; x: number; y: number; id: string }
   | { kind: "pane"; x: number; y: number };
 
@@ -361,6 +524,7 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
     [nav],
   );
   const lensParam = useNav((l) => l.architect?.lens ?? null);
+  const lensCtx = useNav((l) => l.architect?.lensCtx) ?? false;
 
   const [overview, setOverview] = useState<SystemOverview | null>(null);
   const [loading, setLoading] = useState(true);
@@ -369,9 +533,27 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
     () => new Set(QUIET_ROLES),
   );
   const [search, setSearch] = useState("");
-  const [selectedEdge, setSelectedEdge] = useState<string | null>(null);
-  const [insightsOpen, setInsightsOpen] = useState(false);
-  const [facetsOpen, setFacetsOpen] = useState(false);
+  // Edge selection, panel toggles and in-place expansion are navigational —
+  // they live in the nav store so back/forward and shared links restore the
+  // exact screen, panels included.
+  const selectedEdge = useNav((l) => l.architect?.edge ?? null);
+  const setSelectedEdge = useCallback(
+    (key: string | null) => nav({ architect: { edge: key } }),
+    [nav],
+  );
+  const insightsOpen = useNav((l) => l.architect?.insights) ?? false;
+  const facetsOpen = useNav((l) => l.architect?.facets) ?? false;
+  const contractsOpen = useNav((l) => l.architect?.contracts) ?? false;
+  const expandedIds = useNav((l) => l.architect?.expanded ?? null);
+  const expandedSystems = useMemo<ReadonlySet<string>>(
+    () => new Set(expandedIds ? expandedIds.split(",") : []),
+    [expandedIds],
+  );
+  const setExpandedSystems = useCallback(
+    (next: ReadonlySet<string>) =>
+      nav({ architect: { expanded: next.size > 0 ? [...next].join(",") : null } }),
+    [nav],
+  );
   const [codeIndex, setCodeIndex] = useState<{ index: CodeIndex; staleFiles: string[] } | null>(
     null,
   );
@@ -385,6 +567,55 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
   const [refCommits, setRefCommits] = useState<GitCommit[] | null>(null);
   const refsFetched = useRef(false);
   const reviewBoxRef = useRef<HTMLDivElement | null>(null);
+
+  /** A component (part) → the deep-linked code map, drilled into its package. */
+  const openCodemapModule = useCallback(
+    (pkg: string) => {
+      if (!activeWs) return;
+      nav({ architect: { view: "codemap", codemap: { kind: "module", ws: activeWs, path: pkg } } });
+    },
+    [nav, activeWs],
+  );
+
+  /**
+   * "Expand" a system → the deep-linked code map, lens-filtered to the
+   * system's exact boundary (its id is the lens tag) with first-degree
+   * dependency context around it, focused on its dominant module.
+   */
+  const openSystemInCodemap = useCallback(
+    (sys: SystemModule) => {
+      const pkg = sys.parts[0]?.pkg;
+      if (!activeWs || !pkg) return;
+      nav({
+        architect: {
+          view: "codemap",
+          codemap: { kind: "module", ws: activeWs, path: pkg },
+          lens: sys.id,
+          lensCtx: true,
+        },
+      });
+    },
+    [nav, activeWs],
+  );
+
+  const toggleExpanded = useCallback(
+    (id: string) => {
+      const next = new Set(expandedSystems);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      setExpandedSystems(next);
+    },
+    [expandedSystems, setExpandedSystems],
+  );
+  const collapseSystem = useCallback(
+    (id: string) => {
+      if (!expandedSystems.has(id)) return;
+      const next = new Set(expandedSystems);
+      next.delete(id);
+      setExpandedSystems(next);
+    },
+    [expandedSystems, setExpandedSystems],
+  );
 
   const toggleRole = useCallback((role: SystemRole) => {
     setHiddenRoles((prev) => {
@@ -461,13 +692,14 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
     };
   }, [client, activeWs]);
 
-  // Reset per-workspace state when switching workspaces.
+  // Reset per-workspace *local* state when switching workspaces. Nav-held
+  // state (selection, edge, panels, expansion) is left alone — this effect
+  // also fires on mount, where clearing it would defeat deep links.
   useEffect(() => {
     setOverview(null);
     setLoading(true);
     setRefDiff(null);
     setDiffOpen(false);
-    setSelectedEdge(null);
     setMenu(null);
     setCodeIndex(null);
     setRefs(null);
@@ -492,7 +724,11 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
   /* ---- code index + facet lens (shares the codemap's `lens` deep link) ---- */
 
   const lensTags = useMemo(() => (lensParam ? parseLensTags(lensParam) : []), [lensParam]);
-  const wantIndex = facetsOpen || lensTags.length > 0;
+  // "sys:*" tags are system ids — resolved right here against the overview;
+  // everything else is an intent facet resolved through the semantic index.
+  const sysTags = useMemo(() => lensTags.filter((t) => t.startsWith("sys:")), [lensTags]);
+  const intentTags = useMemo(() => lensTags.filter((t) => !t.startsWith("sys:")), [lensTags]);
+  const wantIndex = facetsOpen || intentTags.length > 0;
   useEffect(() => {
     if (!activeWs || !wantIndex) return;
     let cancelled = false;
@@ -516,15 +752,19 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
 
   const lensVis = useMemo(
     () =>
-      codeIndex && lensTags.length > 0 ? indexFacetVisibility(codeIndex.index, lensTags) : null,
-    [codeIndex, lensTags],
+      codeIndex && intentTags.length > 0 ? indexFacetVisibility(codeIndex.index, intentTags) : null,
+    [codeIndex, intentTags],
   );
   const lensName = useMemo(
     () =>
       lensTags
-        .map((t) => (t.startsWith("intent:") ? conceptDisplayName(tagValue(t)) : t))
+        .map((t) =>
+          t.startsWith("intent:")
+            ? conceptDisplayName(tagValue(t))
+            : (overview?.systems.find((s) => s.id === t)?.name ?? t),
+        )
         .join(" + "),
-    [lensTags],
+    [lensTags, overview],
   );
 
   const reviewRef = useCallback(
@@ -582,15 +822,33 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
    * one of its part paths. Null while no lens (or the index hasn't loaded).
    */
   const lensSystems = useMemo(() => {
-    if (!lensVis || !rendered) return null;
-    const files = [...lensVis.files.keys()];
-    const inLens = new Set<string>();
-    for (const s of rendered.overview.systems) {
-      if (s.parts.some((p) => files.some((f) => f === p.path || f.startsWith(`${p.path}/`))))
-        inLens.add(s.id);
+    if (!rendered || (!lensVis && sysTags.length === 0)) return null;
+    const inLens = new Set<string>(
+      sysTags.filter((t) => rendered.overview.systems.some((s) => s.id === t)),
+    );
+    if (lensVis) {
+      const files = [...lensVis.files.keys()];
+      for (const s of rendered.overview.systems) {
+        if (s.parts.some((p) => files.some((f) => f === p.path || f.startsWith(`${p.path}/`))))
+          inLens.add(s.id);
+      }
     }
     return inLens;
-  }, [lensVis, rendered]);
+  }, [lensVis, sysTags, rendered]);
+
+  // First-degree neighbors of the lens systems — the "+N connected" context
+  // ring (same gesture as the code map's lens context, same deep link).
+  const lensNeighborSystems = useMemo(() => {
+    if (!lensSystems || !rendered) return null;
+    const neighbors = new Set<string>();
+    for (const l of rendered.overview.links) {
+      const sourceIn = lensSystems.has(l.source);
+      const targetIn = lensSystems.has(l.target);
+      if (sourceIn && !targetIn) neighbors.add(l.target);
+      else if (targetIn && !sourceIn) neighbors.add(l.source);
+    }
+    return neighbors;
+  }, [lensSystems, rendered]);
 
   // Insights always describe the live overview, not the review ghosts.
   const insights: SystemInsights | null = useMemo(
@@ -642,33 +900,79 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
       list.push(nameOf(l.target));
       consumesOf.set(l.source, list);
     }
-    const nodes: SystemRfNode[] = data.systems
-      .filter((s) => visible.has(s.id))
-      .map((s) => {
-        const consumes = consumesOf.get(s.id) ?? [];
-        const exportsShown = Math.min(s.exports.length, 4);
-        const searchMiss = query.length > 0 && !s.name.toLowerCase().includes(query);
-        const lensMiss = lensSystems != null && !lensSystems.has(s.id);
-        return {
+    // Only multi-part systems open — a single part is the card itself.
+    const expanded = new Set(
+      [...expandedSystems].filter((id) => {
+        if (!visible.has(id)) return false;
+        return (data.systems.find((s) => s.id === id)?.parts.length ?? 0) > 1;
+      }),
+    );
+
+    const cards: SysCardNode[] = [];
+    const partNodes: SystemPartRfNode[] = [];
+    for (const s of data.systems) {
+      if (!visible.has(s.id)) continue;
+      const searchMiss = query.length > 0 && !s.name.toLowerCase().includes(query);
+      const lensMiss =
+        lensSystems != null &&
+        !lensSystems.has(s.id) &&
+        !(lensCtx && lensNeighborSystems?.has(s.id));
+      const dimmed =
+        searchMiss ||
+        lensMiss ||
+        (selectedId != null && s.id !== selectedId && !connected.has(s.id));
+      const mark = marks.get(s.id);
+      if (expanded.has(s.id)) {
+        const inner = expandLayout(s);
+        cards.push({
           id: s.id,
-          type: "system",
+          type: "systemGroup",
           position: { x: 0, y: 0 },
           data: {
             system: s,
-            consumes,
             selected: s.id === selectedId,
-            dimmed:
-              searchMiss ||
-              lensMiss ||
-              (selectedId != null && s.id !== selectedId && !connected.has(s.id)),
-            exportsShown,
-            mark: marks.get(s.id),
+            dimmed,
+            mark,
+            onCollapse: collapseSystem,
           },
-          style: { width: CARD_W, height: cardHeight(s, exportsShown, consumes) },
-        };
+          style: { width: inner.width, height: inner.height },
+        });
+        const accent = ROLE_META[s.role].accent;
+        for (const c of inner.children) {
+          partNodes.push({
+            id: partNodeId(s.id, c.part.path),
+            type: "systemPart",
+            parentId: s.id,
+            position: { x: c.x, y: c.y },
+            draggable: false,
+            data: { sysId: s.id, part: c.part, accent, dimmed },
+            style: { width: PART_W, height: PART_H },
+          });
+        }
+        continue;
+      }
+      const consumes = consumesOf.get(s.id) ?? [];
+      const exportsShown = Math.min(s.exports.length, 4);
+      cards.push({
+        id: s.id,
+        type: "system",
+        position: { x: 0, y: 0 },
+        data: {
+          system: s,
+          consumes,
+          selected: s.id === selectedId,
+          dimmed,
+          exportsShown,
+          mark,
+        },
+        style: { width: CARD_W, height: cardHeight(s, exportsShown, consumes) },
       });
+    }
+
     const maxWeight = links.reduce((m, l) => Math.max(m, l.weight), 1);
-    const edges: RfEdge[] = links.map((l) => {
+    const trunc = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+    const edges: RfEdge[] = [];
+    for (const l of links) {
       const key = `${l.source}->${l.target}`;
       const mark = edgeMarks.get(key);
       const inCycle = cycleEdges.has(key);
@@ -690,34 +994,116 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
               : apiOnly
                 ? "var(--color-accent-amber)"
                 : "var(--color-edge-strong)";
-      const label =
-        apiOnly
-          ? `${apis[0]!.method} ${apis[0]!.path}${apis.length > 1 ? ` +${apis.length - 1}` : ""}`
-          : `×${l.weight}`;
-      return {
-        id: key,
-        source: l.source,
-        target: l.target,
-        label,
+      const shared = {
+        data: { linkKey: key },
         labelStyle: {
           fontSize: 9,
           fill: apiOnly ? "var(--color-accent-amber)" : "var(--color-ink-faint)",
         },
         labelBgStyle: { fill: "var(--color-surface-0)", fillOpacity: 0.8 },
+        markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14 },
+      };
+      // With an expanded endpoint, the edge splits along its part attribution.
+      const splitEnds =
+        !apiOnly && l.parts && (expanded.has(l.source) || expanded.has(l.target))
+          ? [
+              ...l.parts
+                .reduce((agg, p) => {
+                  const source = expanded.has(l.source)
+                    ? partNodeId(l.source, p.sourcePart)
+                    : l.source;
+                  const target = expanded.has(l.target)
+                    ? partNodeId(l.target, p.targetPart)
+                    : l.target;
+                  const k = `${source}->${target}`;
+                  const entry = agg.get(k) ?? { source, target, weight: 0 };
+                  entry.weight += p.weight;
+                  return agg.set(k, entry);
+                }, new Map<string, { source: string; target: string; weight: number }>())
+                .values(),
+            ]
+          : null;
+      if (splitEnds) {
+        splitEnds.forEach((sp, i) => {
+          edges.push({
+            ...shared,
+            id: `${key}#${i}`,
+            source: sp.source,
+            target: sp.target,
+            zIndex: 1,
+            label: `×${sp.weight}`,
+            style: {
+              stroke,
+              strokeWidth: 1 + 2 * Math.sqrt(sp.weight / maxWeight),
+              strokeDasharray: mark === "removed" ? "5 4" : undefined,
+              opacity: faded ? 0.1 : 1,
+            },
+          });
+        });
+        continue;
+      }
+      const topSymbol = l.symbols[0];
+      const label = apiOnly
+        ? `${apis[0]!.method} ${apis[0]!.path}${apis.length > 1 ? ` +${apis.length - 1}` : ""}`
+        : topSymbol
+          ? `${trunc(topSymbol, 18)} ×${l.weight}`
+          : `×${l.weight}`;
+      edges.push({
+        ...shared,
+        id: key,
+        source: l.source,
+        target: l.target,
+        label,
         style: {
           stroke,
           strokeWidth: 1 + 2 * Math.sqrt(l.weight / maxWeight),
           strokeDasharray: mark === "removed" ? "5 4" : apiOnly ? "4 3" : undefined,
           opacity: faded ? 0.1 : 1,
         },
-        markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14 },
-      };
-    });
-    return {
-      nodes: sysGroup === "layers" ? layeredLayout(nodes, edges) : layout(nodes, edges),
-      edges,
-    };
-  }, [rendered, visible, selectedId, selectedEdge, nameOf, search, cycleEdges, sysGroup, lensSystems]);
+      });
+    }
+    // Internal wiring of each expanded system.
+    for (const id of expanded) {
+      const s = data.systems.find((x) => x.id === id);
+      for (const pl of s?.partLinks ?? []) {
+        const faded = (selectedId != null || selectedEdge != null) && selectedId !== id;
+        edges.push({
+          id: `intra#${id}#${pl.source}->${pl.target}`,
+          source: partNodeId(id, pl.source),
+          target: partNodeId(id, pl.target),
+          data: { sysId: id },
+          zIndex: 1,
+          label: `×${pl.weight}`,
+          labelStyle: { fontSize: 8, fill: "var(--color-ink-faint)" },
+          labelBgStyle: { fill: "var(--color-surface-1)", fillOpacity: 0.85 },
+          style: {
+            stroke: "var(--color-edge-strong)",
+            strokeWidth: 1,
+            opacity: faded ? 0.1 : 0.9,
+          },
+          markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12 },
+        });
+      }
+    }
+
+    const pairs: SysPair[] = links.map((l) => ({ source: l.source, target: l.target }));
+    const top = sysGroup === "layers" ? layeredLayout(cards, pairs) : layout(cards, pairs);
+    return { nodes: [...top, ...partNodes] as ViewNode[], edges };
+  }, [
+    rendered,
+    visible,
+    selectedId,
+    selectedEdge,
+    nameOf,
+    search,
+    cycleEdges,
+    sysGroup,
+    lensSystems,
+    lensNeighborSystems,
+    lensCtx,
+    expandedSystems,
+    collapseSystem,
+  ]);
 
   /** Snapshot the visible systems into a hand-editable diagram. */
   const materialize = useCallback(async () => {
@@ -729,8 +1115,8 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
     const bandPos = new Map<string, { x: number; y: number }>();
     for (const n of nodes) if (n.type === "layerBand") bandPos.set(n.id, n.position);
     for (const n of nodes) {
-      if (n.type !== "system") continue;
-      const data = n.data as SystemNodeData;
+      if (n.type !== "system" && n.type !== "systemGroup") continue;
+      const data = n.data as SystemNodeData | SystemGroupData;
       const s = data.system;
       if (data.mark === "removed") continue;
       const band = n.parentId ? bandPos.get(n.parentId) : undefined;
@@ -746,16 +1132,22 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
       idMap.set(s.id, archNodes[archNodes.length - 1]!);
     }
     const archEdges: ArchEdge[] = [];
+    // Split part-level edges fold back into one system-level dependency.
+    const seenPairs = new Set<string>();
     for (const e of edges) {
-      const source = idMap.get(e.source);
-      const target = idMap.get(e.target);
+      const linkKey = (e.data as { linkKey?: string } | undefined)?.linkKey;
+      if (!linkKey || seenPairs.has(linkKey)) continue;
+      const [src, tgt] = linkKey.split("->") as [string, string];
+      const source = idMap.get(src);
+      const target = idMap.get(tgt);
       if (!source || !target) continue;
+      seenPairs.add(linkKey);
       archEdges.push({
         id: uid("edge"),
         source: source.id,
         target: target.id,
         kind: "dependency",
-        label: typeof e.label === "string" ? e.label : "",
+        label: e.id === linkKey && typeof e.label === "string" ? e.label : "",
       });
     }
     await client.request("arch.save", {
@@ -776,12 +1168,24 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
           type: "item",
           label: "Open details",
           icon: Boxes,
-          onSelect: () => {
-            setSelectedEdge(null);
-            setSelected(sys.id);
-          },
+          onSelect: () => nav({ architect: { edge: null, system: sys.id } }),
         },
       ];
+      if (sys.parts.length > 1)
+        entries.push({
+          type: "item",
+          label: expandedSystems.has(sys.id) ? "Collapse components" : "Expand components",
+          icon: expandedSystems.has(sys.id) ? Shrink : Expand,
+          onSelect: () => toggleExpanded(sys.id),
+        });
+      if (pkg)
+        entries.push({
+          type: "item",
+          label: "Show in code map",
+          icon: FolderGit2,
+          disabled: !activeWs,
+          onSelect: () => openSystemInCodemap(sys),
+        });
       if (onOpenCode && pkg)
         entries.push({
           type: "item",
@@ -807,6 +1211,41 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
       );
       return entries;
     }
+    if (menu.kind === "part") {
+      const entries: MenuEntry[] = [
+        {
+          type: "item",
+          label: "Show in code map",
+          icon: FolderGit2,
+          disabled: !activeWs,
+          onSelect: () => openCodemapModule(menu.pkg),
+        },
+      ];
+      if (onOpenCode)
+        entries.push({
+          type: "item",
+          label: "Open in code",
+          icon: ExternalLink,
+          onSelect: () => onOpenCode(menu.pkg),
+        });
+      entries.push(
+        {
+          type: "item",
+          label: "Copy path",
+          icon: Copy,
+          hint: menu.path,
+          onSelect: () => void navigator.clipboard.writeText(menu.path),
+        },
+        { type: "separator" },
+        {
+          type: "item",
+          label: "Collapse system",
+          icon: Shrink,
+          onSelect: () => collapseSystem(menu.sys),
+        },
+      );
+      return entries;
+    }
     if (menu.kind === "edge") {
       const link = rendered.overview.links.find((l) => `${l.source}->${l.target}` === menu.id);
       if (!link) return [];
@@ -815,10 +1254,7 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
           type: "item",
           label: "Open edge details",
           icon: ArrowUpRight,
-          onSelect: () => {
-            setSelected(null);
-            setSelectedEdge(menu.id);
-          },
+          onSelect: () => nav({ architect: { system: null, edge: menu.id } }),
         },
         {
           type: "item",
@@ -857,6 +1293,15 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
       { type: "separator" },
       {
         type: "item",
+        label: "Contracts…",
+        icon: ArrowRightLeft,
+        onSelect: () => {
+          nav({ architect: { contracts: true, insights: null, facets: null } });
+          setDiffOpen(false);
+        },
+      },
+      {
+        type: "item",
         label: "Materialize as diagram",
         icon: PencilRuler,
         onSelect: () => void materialize(),
@@ -881,6 +1326,9 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
     menu,
     rendered,
     onOpenCode,
+    openCodemapModule,
+    openSystemInCodemap,
+    activeWs,
     toggleRole,
     sysGroup,
     setSysGroup,
@@ -888,13 +1336,26 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
     materialize,
     refDiff,
     fitView,
-    setSelected,
+    nav,
+    expandedSystems,
+    toggleExpanded,
+    collapseSystem,
   ]);
 
   const selected = rendered?.overview.systems.find((s) => s.id === selectedId) ?? null;
   const selectedLink = selectedEdge
     ? (rendered?.overview.links.find((l) => `${l.source}->${l.target}` === selectedEdge) ?? null)
     : null;
+
+  /** Visible boundaries, heaviest traffic first — the contract inspector's nav order. */
+  const boundaryLinks = useMemo(() => {
+    if (!rendered) return [];
+    const traffic = (l: SystemLink) =>
+      l.weight + (l.apis ?? []).reduce((n, a) => n + a.weight, 0);
+    return rendered.overview.links
+      .filter((l) => visible.has(l.source) && visible.has(l.target))
+      .sort((a, b) => traffic(b) - traffic(a) || linkKeyOf(a).localeCompare(linkKeyOf(b)));
+  }, [rendered, visible]);
   const roleCounts = useMemo(() => {
     const counts = new Map<SystemRole, number>();
     for (const s of rendered?.overview.systems ?? [])
@@ -923,40 +1384,71 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
       ? "system"
       : diffOpen && refDiff
         ? "diff"
-        : facetsOpen
-          ? "facets"
-          : insightsOpen
-            ? "insights"
-            : null;
+        : contractsOpen
+          ? "contracts"
+          : facetsOpen
+            ? "facets"
+            : insightsOpen
+              ? "insights"
+              : null;
 
   return (
-    <div className="flex h-full min-h-0">
+    <Split storageKey="architect:systems" direction="horizontal">
+      <SplitPane minSize="45%">
+        <div className="flex h-full min-h-0">
       <div className="relative min-w-0 flex-1">
         <ReactFlow
           nodes={nodes}
           edges={edges}
           nodeTypes={nodeTypes}
           onNodeClick={(_, n) => {
-            if (n.type !== "system") return;
-            setSelectedEdge(null);
-            setSelected(n.id === selectedId ? null : n.id);
+            if (n.type === "systemPart") {
+              const d = n.data as SystemPartData;
+              nav({ architect: { edge: null, system: d.sysId === selectedId ? null : d.sysId } });
+              return;
+            }
+            if (n.type !== "system" && n.type !== "systemGroup") return;
+            nav({ architect: { edge: null, system: n.id === selectedId ? null : n.id } });
+          }}
+          onNodeDoubleClick={(_, n) => {
+            if (n.type !== "system" && n.type !== "systemGroup") return;
+            const sys = (n.data as SystemNodeData | SystemGroupData).system;
+            if (sys.parts[0]?.pkg && activeWs) openSystemInCodemap(sys);
+            else toggleExpanded(n.id);
           }}
           onEdgeClick={(_, e) => {
-            setSelected(null);
-            setSelectedEdge(e.id === selectedEdge ? null : e.id);
+            const d = e.data as { linkKey?: string; sysId?: string } | undefined;
+            if (d?.sysId) {
+              // Internal wiring — open the owning system instead.
+              nav({ architect: { edge: null, system: d.sysId } });
+              return;
+            }
+            const key = d?.linkKey ?? e.id;
+            nav({ architect: { system: null, edge: key === selectedEdge ? null : key } });
           }}
-          onPaneClick={() => {
-            setSelected(null);
-            setSelectedEdge(null);
-          }}
+          onPaneClick={() => nav({ architect: { system: null, edge: null } })}
           onNodeContextMenu={(evt, n) => {
             evt.preventDefault();
-            if (n.type !== "system") return;
+            if (n.type === "systemPart") {
+              const d = n.data as SystemPartData;
+              setMenu({
+                kind: "part",
+                x: evt.clientX,
+                y: evt.clientY,
+                sys: d.sysId,
+                path: d.part.path,
+                pkg: d.part.pkg,
+              });
+              return;
+            }
+            if (n.type !== "system" && n.type !== "systemGroup") return;
             setMenu({ kind: "node", x: evt.clientX, y: evt.clientY, id: n.id });
           }}
           onEdgeContextMenu={(evt, e) => {
             evt.preventDefault();
-            setMenu({ kind: "edge", x: evt.clientX, y: evt.clientY, id: e.id });
+            const d = e.data as { linkKey?: string } | undefined;
+            if (!d?.linkKey) return;
+            setMenu({ kind: "edge", x: evt.clientX, y: evt.clientY, id: d.linkKey });
           }}
           onPaneContextMenu={(evt) => {
             evt.preventDefault();
@@ -1052,13 +1544,30 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
                 {lensName}
               </span>
               <span className="text-[9px] text-ink-faint">
-                {lensVis
-                  ? `${lensSystems?.size ?? 0} systems · ${lensVis.memberCount} members`
+                {lensSystems
+                  ? `${lensSystems.size} systems${lensVis ? ` · ${lensVis.memberCount} members` : ""}`
                   : "reading index…"}
               </span>
+              {lensNeighborSystems && lensNeighborSystems.size > 0 ? (
+                <Tooltip content="Also light up first-degree neighbor systems — everything the lens touches">
+                  <button
+                    type="button"
+                    aria-pressed={lensCtx}
+                    onClick={() => nav({ architect: { lensCtx: !lensCtx } })}
+                    className={cn(
+                      "rounded px-1 py-0.5 text-[9px] transition-colors",
+                      lensCtx
+                        ? "bg-crystal-500/15 text-crystal-300"
+                        : "text-ink-faint hover:text-ink-muted",
+                    )}
+                  >
+                    +{lensNeighborSystems.size} connected
+                  </button>
+                </Tooltip>
+              ) : null}
               <button
                 type="button"
-                onClick={() => nav({ architect: { lens: null } })}
+                onClick={() => nav({ architect: { lens: null, lensCtx: false } })}
                 aria-label="Clear facet lens"
               >
                 <X className="h-3 w-3 text-ink-faint hover:text-ink" />
@@ -1119,10 +1628,24 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
           )}
           <button
             type="button"
+            aria-pressed={contractsOpen}
+            onClick={() => {
+              nav({ architect: { contracts: !contractsOpen, insights: null, facets: null } });
+              setDiffOpen(false);
+            }}
+            className={cn(
+              "flex items-center gap-1.5 rounded-lg border border-edge bg-surface-1/95 px-2 py-1.5 text-[11px] shadow-sm transition-colors",
+              contractsOpen ? "text-ink" : "text-ink-muted hover:text-ink",
+            )}
+          >
+            <ArrowRightLeft className="h-3 w-3 text-ink-faint" />
+            Contracts
+          </button>
+          <button
+            type="button"
             aria-pressed={facetsOpen}
             onClick={() => {
-              setFacetsOpen((v) => !v);
-              setInsightsOpen(false);
+              nav({ architect: { facets: !facetsOpen, insights: null, contracts: null } });
               setDiffOpen(false);
             }}
             className={cn(
@@ -1138,10 +1661,8 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
           <button
             type="button"
             onClick={() => {
-              setInsightsOpen((v) => !v);
+              nav({ architect: { insights: !insightsOpen, contracts: null, system: null, edge: null } });
               setDiffOpen(false);
-              setSelected(null);
-              setSelectedEdge(null);
             }}
             className={cn(
               "flex items-center gap-1.5 rounded-lg border border-edge bg-surface-1/95 px-2 py-1.5 text-[11px] shadow-sm transition-colors",
@@ -1179,17 +1700,6 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
         )}
       </div>
 
-      {panel === "edge" && selectedLink && (
-        <EdgeDetail
-          link={selectedLink}
-          nameOf={nameOf}
-          onSelect={(id) => {
-            setSelectedEdge(null);
-            setSelected(id);
-          }}
-          onClose={() => setSelectedEdge(null)}
-        />
-      )}
       {panel === "system" && selected && (
         <SystemDetail
           system={selected}
@@ -1203,6 +1713,16 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
       {panel === "diff" && refDiff && (
         <DiffPanel state={refDiff} onSelect={setSelected} onClose={() => setDiffOpen(false)} />
       )}
+      {panel === "contracts" && (
+        <ContractsPanel
+          links={rendered.overview.links.filter(
+            (l) => visible.has(l.source) && visible.has(l.target),
+          )}
+          nameOf={nameOf}
+          onSelectEdge={(key) => nav({ architect: { system: null, edge: key } })}
+          onClose={() => nav({ architect: { contracts: null } })}
+        />
+      )}
       {panel === "facets" && (
         <div className="flex w-72 shrink-0 flex-col border-l border-edge">
           <FacetsPanel
@@ -1211,7 +1731,7 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
             activeTags={lensTags}
             onSelect={(s) => nav({ architect: { lens: s.tags.join(",") } })}
             onClear={() => nav({ architect: { lens: null } })}
-            onClose={() => setFacetsOpen(false)}
+            onClose={() => nav({ architect: { facets: null } })}
           />
         </div>
       )}
@@ -1219,10 +1739,27 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
         <InsightsPanel
           insights={insights}
           onSelect={(id) => setSelected(id)}
-          onClose={() => setInsightsOpen(false)}
+          onClose={() => nav({ architect: { insights: null } })}
         />
       )}
-    </div>
+        </div>
+      </SplitPane>
+
+      {/* The contract inspector rides a real split — resizable, code inline. */}
+      {panel === "edge" && selectedLink ? (
+        <SplitPane defaultSize={440} minSize={320} maxSize={760}>
+          <ContractInspector
+            link={selectedLink}
+            links={boundaryLinks}
+            systems={rendered.overview.systems}
+            nameOf={nameOf}
+            onSelectEdge={(key) => nav({ architect: { system: null, edge: key } })}
+            onSelectSystem={(id) => nav({ architect: { edge: null, system: id } })}
+            onClose={() => setSelectedEdge(null)}
+          />
+        </SplitPane>
+      ) : null}
+    </Split>
   );
 }
 
@@ -1268,86 +1805,99 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-function EdgeDetail({
-  link,
+function ContractsPanel({
+  links,
   nameOf,
-  onSelect,
+  onSelectEdge,
   onClose,
 }: {
-  link: SystemLink;
+  links: SystemLink[];
   nameOf: (id: string) => string;
-  onSelect: (id: string) => void;
+  onSelectEdge: (key: string) => void;
   onClose: () => void;
 }) {
-  const apis = link.apis ?? [];
-  const apiOnly = link.weight === 0 && apis.length > 0;
+  const [query, setQuery] = useState("");
+  const rows = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return links
+      .filter((l) => {
+        if (!q) return true;
+        return (
+          nameOf(l.source).toLowerCase().includes(q) ||
+          nameOf(l.target).toLowerCase().includes(q) ||
+          l.symbols.some((s) => s.toLowerCase().includes(q)) ||
+          (l.apis ?? []).some((a) => a.path.toLowerCase().includes(q))
+        );
+      })
+      .map((l) => ({
+        link: l,
+        key: `${l.source}->${l.target}`,
+        traffic: l.weight + (l.apis ?? []).reduce((n, a) => n + a.weight, 0),
+      }))
+      .sort((a, b) => b.traffic - a.traffic || a.key.localeCompare(b.key));
+  }, [links, nameOf, query]);
   return (
     <Pane
-      title={
-        <span className="flex items-center gap-1">
-          <button type="button" className="hover:underline" onClick={() => onSelect(link.source)}>
-            {nameOf(link.source)}
-          </button>
-          <ArrowUpRight className="h-3 w-3 text-ink-faint" />
-          <button type="button" className="hover:underline" onClick={() => onSelect(link.target)}>
-            {nameOf(link.target)}
-          </button>
-        </span>
-      }
-      subtitle={
-        apiOnly
-          ? "API-only — talks over the wire, no imports cross the boundary"
-          : `${link.weight} import${link.weight === 1 ? "" : "s"} across the boundary`
-      }
+      title="Contracts"
+      subtitle={`${links.length} boundar${links.length === 1 ? "y" : "ies"} between systems`}
       onClose={onClose}
     >
-      <Section title={`Symbols travelling this edge · top ${link.symbols.length}`}>
-        {link.symbols.length === 0 && (
-          <div className="px-1.5 py-0.5 text-[10px] text-ink-faint">
-            {apiOnly ? "No symbols — HTTP calls only." : "Side-effect or namespace imports only."}
-          </div>
-        )}
-        {link.details && link.details.length > 0
-          ? link.details.map((d) => (
-              <div key={d.name} className="px-1.5 py-1">
-                <div className="flex items-baseline gap-1.5">
-                  <span className="min-w-0 truncate font-mono text-[10px] text-ink">{d.name}</span>
-                  <span className="shrink-0 rounded bg-surface-3 px-1 py-px text-[8px] uppercase tracking-wide text-ink-faint">
-                    {d.kind}
-                  </span>
-                  <span className="ml-auto shrink-0 text-[9px] text-ink-faint">×{d.count}</span>
-                </div>
-                {d.signature && (
-                  <div
-                    className="truncate font-mono text-[9px] text-ink-faint"
-                    title={d.signature}
-                  >
-                    {d.signature}
-                  </div>
-                )}
-              </div>
-            ))
-          : link.symbols.map((s) => (
-              <div key={s} className="px-1.5 py-0.5 font-mono text-[10px] text-ink">
-                {s}
-              </div>
-            ))}
-      </Section>
-      {apis.length > 0 && (
-        <Section title={`API calls · ${apis.length}`}>
-          {apis.map((a) => (
-            <div key={`${a.method} ${a.path}`} className="flex items-center gap-1.5 px-1.5 py-0.5">
-              <span className="shrink-0 rounded bg-accent-amber/15 px-1 font-mono text-[9px] font-semibold uppercase text-accent-amber">
-                {a.method}
-              </span>
-              <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-ink">
-                {a.path}
-              </span>
-              <span className="shrink-0 text-[9px] text-ink-faint">×{a.weight}</span>
-            </div>
-          ))}
-        </Section>
+      <div className="border-b border-edge/60 px-3 py-2">
+        <div className="flex items-center gap-1.5 rounded-lg border border-edge bg-surface-2 px-2 py-1">
+          <Search className="h-3 w-3 shrink-0 text-ink-faint" />
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="System, symbol or route…"
+            className="w-full bg-transparent text-[11px] text-ink outline-none placeholder:text-ink-faint"
+          />
+        </div>
+      </div>
+      {rows.length === 0 && (
+        <div className="px-3 py-2 text-[10px] text-ink-faint">No boundary matches.</div>
       )}
+      {rows.map(({ link, key }) => {
+        const apis = link.apis ?? [];
+        return (
+          <button
+            key={key}
+            type="button"
+            onClick={() => onSelectEdge(key)}
+            className="block w-full border-b border-edge/40 px-3 py-1.5 text-left hover:bg-surface-2"
+          >
+            <span className="flex items-center gap-1 text-[11px] text-ink">
+              <span className="truncate">{nameOf(link.source)}</span>
+              <ArrowUpRight className="h-3 w-3 shrink-0 text-ink-faint" />
+              <span className="truncate">{nameOf(link.target)}</span>
+              <span className="ml-auto flex shrink-0 items-center gap-1">
+                {link.weight > 0 && (
+                  <span className="rounded bg-surface-3 px-1 text-[9px] text-ink-muted">
+                    ×{link.weight}
+                  </span>
+                )}
+                {apis.length > 0 && (
+                  <span className="rounded bg-accent-amber/15 px-1 text-[9px] text-accent-amber">
+                    {apis.length} API
+                  </span>
+                )}
+              </span>
+            </span>
+            {link.symbols.length > 0 ? (
+              <span className="block truncate font-mono text-[9px] text-ink-faint">
+                {link.symbols.slice(0, 3).join(", ")}
+                {link.symbols.length > 3 ? ` +${link.symbols.length - 3}` : ""}
+              </span>
+            ) : apis.length > 0 ? (
+              <span className="block truncate font-mono text-[9px] text-accent-amber">
+                {apis
+                  .slice(0, 2)
+                  .map((a) => `${a.method} ${a.path}`)
+                  .join(" · ")}
+              </span>
+            ) : null}
+          </button>
+        );
+      })}
     </Pane>
   );
 }
@@ -1428,6 +1978,32 @@ function SystemDetail({
           </div>
         ))}
       </Section>
+
+      {(system.partLinks?.length ?? 0) > 0 && (
+        <Section title="Internal wiring">
+          {system.partLinks!.map((pl) => (
+            <div
+              key={`${pl.source}->${pl.target}`}
+              className="flex items-center gap-1 px-1.5 py-0.5"
+            >
+              <span
+                className="min-w-0 truncate font-mono text-[10px] text-ink-muted"
+                title={pl.source}
+              >
+                {pl.source.split("/").at(-1)}
+              </span>
+              <ArrowUpRight className="h-3 w-3 shrink-0 text-ink-faint" />
+              <span
+                className="min-w-0 truncate font-mono text-[10px] text-ink-muted"
+                title={pl.target}
+              >
+                {pl.target.split("/").at(-1)}
+              </span>
+              <span className="ml-auto shrink-0 text-[9px] text-ink-faint">×{pl.weight}</span>
+            </div>
+          ))}
+        </Section>
+      )}
 
       {system.intents.length > 0 && (
         <Section title="Intents">
