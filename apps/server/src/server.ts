@@ -359,6 +359,12 @@ export async function startCrystalServer(opts: {
       const { index } = await rt.codeindex.get();
       return { suggestions: suggestFacets(arch.graph, index) };
     },
+    "surfaces.get": ({ ws }) => registry.get(ws).codemap.surfaces(),
+    "quality.detect": ({ ws }) => registry.get(ws).quality.detect(),
+    "quality.run": ({ ws, ...params }) => registry.get(ws).quality.run(params),
+    "quality.cancel": ({ ws, runId }) => registry.get(ws).quality.cancel(runId),
+    "quality.runs": ({ ws }) => registry.get(ws).quality.runs(),
+    "quality.coverage": ({ ws }) => registry.get(ws).quality.coverage(),
     "refactor.preview": ({ ws, intents }) => registry.get(ws).refactor().preview(intents),
     "refactor.apply": async ({ ws, intents }) => {
       const rt = registry.get(ws);

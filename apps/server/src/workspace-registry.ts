@@ -16,6 +16,7 @@ import { AgentManager } from "./agent-manager.js";
 import { CodeIndexService } from "./code-index.js";
 import { CodeMapAnalyzer, type CrossSurface } from "./code-map.js";
 import { appDataDir, isIgnoredDir, workspaceIdFor } from "./paths.js";
+import { QualityService } from "./quality-runner.js";
 import { RefactorEngine } from "./refactor.js";
 import { TerminalManager } from "./terminal-manager.js";
 import { WorkspaceStore } from "./workspace-store.js";
@@ -51,6 +52,7 @@ export class WorkspaceRuntime {
   readonly terminals: TerminalManager;
   readonly codemap: CodeMapAnalyzer;
   readonly codeindex: CodeIndexService;
+  readonly quality: QualityService;
   /** Manifest name, kept fresh by workspace.get / saveManifest handlers. */
   name: string;
 
@@ -77,6 +79,7 @@ export class WorkspaceRuntime {
     this.terminals = new TerminalManager(root);
     this.codemap = new CodeMapAnalyzer(root);
     this.codeindex = new CodeIndexService(root, this.codemap);
+    this.quality = new QualityService(root);
   }
 
   descriptor(): WorkspaceDescriptor {
@@ -99,6 +102,12 @@ export class WorkspaceRuntime {
       ),
       this.terminals.events.on("changed", ({ terminal }) =>
         broadcast("terminal.changed", { ws: this.id, terminal }),
+      ),
+      this.quality.events.on("runChanged", ({ run }) =>
+        broadcast("quality.runChanged", { ws: this.id, run }),
+      ),
+      this.quality.events.on("coverageChanged", () =>
+        broadcast("quality.coverageChanged", { ws: this.id }),
       ),
     ];
     try {
@@ -135,6 +144,7 @@ export class WorkspaceRuntime {
     for (const dispose of this.disposeAgentListeners) dispose();
     this.disposeAgentListeners = [];
     this.terminals.disposeAll();
+    this.quality.dispose();
     this.refactorEngine?.dispose();
     this.refactorEngine = null;
   }
