@@ -1,9 +1,10 @@
 # Crystal — notes for Claude Code
 
-Crystal is a pnpm-workspace IDE with four modes (cross-project overview with traffic-light
-todos, architecture diagrammer, PM/agent orchestration, Monaco editor) plus a bottom
-terminal panel that runs shells and agent consoles in any open workspace. Read `README.md`
-for the product shape; this file is the mechanics.
+Crystal is a pnpm-workspace IDE with seven modes (cross-project overview with traffic-light
+todos, architecture diagrammer, surfaces explorer — screens/components/stories/APIs/schemas,
+PM/agent orchestration, Monaco editor, quality — test runner + coverage, jobs hub) plus a
+bottom terminal panel that runs shells and agent consoles in any open workspace. Read
+`README.md` for the product shape; this file is the mechanics.
 
 ## Commands
 

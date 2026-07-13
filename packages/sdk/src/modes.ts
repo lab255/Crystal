@@ -6,16 +6,20 @@ export type CrystalMode = CrystalModeId;
 export const CRYSTAL_MODES: CrystalMode[] = [
   "projects",
   "architect",
+  "surfaces",
   "orchestrate",
   "code",
+  "quality",
   "jobs",
 ];
 
 export const MODE_LABELS: Record<CrystalMode, string> = {
   projects: "Overview",
   architect: "Architecture",
+  surfaces: "Surfaces",
   orchestrate: "Orchestrate",
   code: "Code",
+  quality: "Quality",
   jobs: "Jobs",
 };
 
@@ -25,4 +29,11 @@ export const MODE_LABELS: Record<CrystalMode, string> = {
  * hierarchy as the cross-workspace overview (the "home" tab), so it is not a
  * facet.
  */
-export const WORKSPACE_FACETS: CrystalMode[] = ["architect", "orchestrate", "code", "jobs"];
+export const WORKSPACE_FACETS: CrystalMode[] = [
+  "architect",
+  "surfaces",
+  "orchestrate",
+  "code",
+  "quality",
+  "jobs",
+];

@@ -8,16 +8,18 @@ exists and how it connects), as **work** (what's being built, by whom — human 
 and as **code** (the files themselves). Changing facets doesn't change context: diagrams,
 boards and code all live in your repos and version with them.
 
-## The three modes
+## The modes
 
 | Mode | What it is | Built on |
 | --- | --- | --- |
 | **Architecture** | Four views. *Systems*: the **logical architecture overview** — the codebase clustered into systems (authentication, submission, external integrations…) by directory structure + the semantic code index, each card showing the exports the rest of the code consumes, the systems and external services it leans on, and weighted inter-system links. Built for making calls: **insights** (dependency cycles tinted on the canvas, layering violations, coupling hot-spots, orphans), **ref review** (diff the systems against a branch/commit — what a change adds, drops or reshapes), and one-click **materialize to diagram**. *Diagrams*: hand-authored, with nesting, grouping, drag-in/drag-out containment, typed edges (sync / async / data / dependency), auto-layout, inspector — plus **ref review**: pick a commit or branch (a PR head) and its code architecture is snapshotted into a draft, diffed against the current diagram in a split pane with every change listed. *Infrastructure*: a per-environment service map — components grouped by deployment target, with **dependencies detected from the code** overlaid: module-import edges between placed components and the external services (databases, caches, queues, SaaS APIs) their npm imports imply. *Code map*: architecture **derived from the source itself** — modules and their import edges, drill into a module's files, drill into a file's exports (functions, classes, interfaces, enums, types) and import neighborhood. The code map is live: it re-analyzes and re-renders as the codebase changes on disk. | `@xyflow/react` + dagre; TypeScript compiler API |
 | **Orchestrate** | Project boards + agent orchestration: tasks link to repos and architecture nodes, and can be handed to Claude Code with live streaming output, tool-call traces, cost and history. Runs can be **isolated in disposable git worktrees** — parallel-safe, with a live diff view and one-click discard. | Claude Code CLI (`claude -p --output-format stream-json`) |
 | **Code** | Editor with file tree (git status decorations), tabs, quick-open (`Ctrl+P`) and three keybinding profiles: VS Code, IntelliJ, Vim | Monaco (+ `monaco-vim`) |
+| **Surfaces** | Everything the product presents to the outside world, in five views. *Screens*: routed pages detected from Next conventions / react-router configs, with a **live dev-server preview** embedded per route. *Components*: exported React components ranked by usage, cross-linked to their definition, import sites, stories and screens. *Stories*: CSF stories grouped by title with a **live Storybook render** per story. *APIs*: every served route — definition, an interactive call-graph flamegraph, and every caller attributed to its system. *Schemas*: zod objects, prisma models, mongoose schemas and model interfaces with their fields inline. | TypeScript compiler API; iframes onto your own dev servers |
+| **Quality** | The workspace's own test suite run from inside Crystal (vitest / jest / `test` script — detected, never assumed), with per-test results streaming live, failures unfolding in place (message, expected/received, jump-to-line), and single-file / single-test re-runs from the context menu. *Coverage* renders whatever istanbul output exists — produced here or by your own `--coverage` run — as a banded directory tree with clickable uncovered-line ranges. | the workspace's own runner, JSON reporters, istanbul output |
 
-Global: `Ctrl+K` command palette, `Ctrl+1/2/3` mode switching. "Open in editor" from the
-code map jumps straight into the Code mode.
+Global: `Ctrl+K` command palette, `Ctrl+1…7` mode switching. "Open in editor" from the
+code map, surfaces or quality views jumps straight into the Code mode.
 
 ## Everything is a file
 

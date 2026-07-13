@@ -1,9 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   Activity,
+  AppWindow,
+  BookOpenText,
   Bot,
   Boxes,
   Code2,
+  Component,
+  Database,
+  FlaskConical,
   Folder,
   FolderPlus,
   Globe2,
@@ -11,10 +16,13 @@ import {
   KanbanSquare,
   Layers,
   LayoutGrid,
+  PanelsTopLeft,
   PencilRuler,
   Plus,
+  ShieldCheck,
   Sparkles,
   TerminalSquare,
+  Umbrella,
   Webhook,
   type LucideIcon,
 } from "lucide-react";
@@ -107,24 +115,38 @@ export function CommandPalette({
         run: () => onSwitchMode("architect"),
       },
       {
+        id: "mode.surfaces",
+        title: "Go to Surfaces",
+        icon: PanelsTopLeft,
+        hint: "Ctrl+3",
+        run: () => onSwitchMode("surfaces"),
+      },
+      {
         id: "mode.orchestrate",
         title: "Go to Orchestrate",
         icon: KanbanSquare,
-        hint: "Ctrl+3",
+        hint: "Ctrl+4",
         run: () => onSwitchMode("orchestrate"),
       },
       {
         id: "mode.code",
         title: "Go to Code",
         icon: Code2,
-        hint: "Ctrl+4",
+        hint: "Ctrl+5",
         run: () => onSwitchMode("code"),
+      },
+      {
+        id: "mode.quality",
+        title: "Go to Quality",
+        icon: ShieldCheck,
+        hint: "Ctrl+6",
+        run: () => onSwitchMode("quality"),
       },
       {
         id: "mode.jobs",
         title: "Go to Jobs",
         icon: Activity,
-        hint: "Ctrl+5",
+        hint: "Ctrl+7",
         run: () => onSwitchMode("jobs"),
       },
       // Views inside a mode are jump targets too — a palette hit lands on the
@@ -147,13 +169,39 @@ export function CommandPalette({
           nav({ architect: { view: "systems" } });
         },
       },
-      {
-        id: "view.architect.apis",
-        title: "Architecture: API explorer",
-        icon: Webhook,
+      ...(
+        [
+          ["screens", "Screens", AppWindow],
+          ["components", "Components", Component],
+          ["stories", "Stories", BookOpenText],
+          ["apis", "API explorer", Webhook],
+          ["schemas", "Data schemas", Database],
+        ] as const
+      ).map(([view, label, icon]) => ({
+        id: `view.surfaces.${view}`,
+        title: `Surfaces: ${label}`,
+        icon: icon as LucideIcon,
         run: () => {
-          onSwitchMode("architect");
-          nav({ architect: { view: "apis" } });
+          onSwitchMode("surfaces");
+          nav({ surfaces: { view } });
+        },
+      })),
+      {
+        id: "view.quality.tests",
+        title: "Quality: Test runner",
+        icon: FlaskConical,
+        run: () => {
+          onSwitchMode("quality");
+          nav({ quality: { view: "tests" } });
+        },
+      },
+      {
+        id: "view.quality.coverage",
+        title: "Quality: Coverage",
+        icon: Umbrella,
+        run: () => {
+          onSwitchMode("quality");
+          nav({ quality: { view: "coverage" } });
         },
       },
       {

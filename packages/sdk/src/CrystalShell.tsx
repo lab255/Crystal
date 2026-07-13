@@ -8,6 +8,8 @@ import {
   KanbanSquare,
   LayoutGrid,
   Link2,
+  PanelsTopLeft,
+  ShieldCheck,
   TerminalSquare,
   type LucideIcon,
 } from "lucide-react";
@@ -51,20 +53,30 @@ const OverviewMode = lazy(() =>
 const JobsMode = lazy(() =>
   import("./jobs/JobsMode.js").then((m) => ({ default: m.JobsMode })),
 );
+const SurfacesMode = lazy(() =>
+  import("@crystal/surfaces").then((m) => ({ default: m.SurfacesMode })),
+);
+const QualityMode = lazy(() =>
+  import("@crystal/quality").then((m) => ({ default: m.QualityMode })),
+);
 
 const MODE_COMPONENTS: Record<CrystalMode, React.LazyExoticComponent<() => React.JSX.Element>> = {
   projects: OverviewMode,
   architect: ArchitectMode,
+  surfaces: SurfacesMode,
   orchestrate: OrchestratorMode,
   code: EditorMode,
+  quality: QualityMode,
   jobs: JobsMode,
 };
 
 const MODE_ICONS: Record<CrystalMode, LucideIcon> = {
   projects: LayoutGrid,
   architect: Boxes,
+  surfaces: PanelsTopLeft,
   orchestrate: KanbanSquare,
   code: Code2,
+  quality: ShieldCheck,
   jobs: Activity,
 };
 
@@ -164,7 +176,12 @@ export function CrystalShell({
           e.preventDefault();
           selectWorkspace(ws.id);
         }
-      } else if ((e.ctrlKey || e.metaKey) && !e.altKey && ["1", "2", "3", "4", "5"].includes(e.key)) {
+      } else if (
+        (e.ctrlKey || e.metaKey) &&
+        !e.altKey &&
+        Number(e.key) >= 1 &&
+        Number(e.key) <= CRYSTAL_MODES.length
+      ) {
         e.preventDefault();
         switchMode(CRYSTAL_MODES[Number(e.key) - 1]!);
       } else if ((e.ctrlKey || e.metaKey) && e.key === "`") {
