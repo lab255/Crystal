@@ -18,7 +18,9 @@ import type {
   SymbolSearchHit,
 } from "./codemap.js";
 import type { Project } from "./project.js";
+import type { CoverageReport, QualityRun, TestRunnerInfo } from "./quality.js";
 import type { RefactorApplyResult, RefactorIntent, RefactorPlan } from "./refactor.js";
+import type { SurfacesReport } from "./surfaces.js";
 import type { SystemOverview } from "./system-overview.js";
 import type { SystemOverviewDiff } from "./system-insights.js";
 import type { SystemsLayout } from "./systems-layout.js";
@@ -437,6 +439,32 @@ export interface BridgeMethods {
     params: WsScope;
     result: { findings: ReviewFinding[]; generatedAt: string };
   };
+  /**
+   * The workspace's product surfaces: frontend screens/components/stories and
+   * backend routes/schemas, derived from the code map's syntax analysis (see
+   * surfaces.ts). Recomputed lazily; `codemap.changed` signals staleness.
+   */
+  "surfaces.get": { params: WsScope; result: SurfacesReport };
+  /** How (and whether) this workspace can run tests — see quality.ts. */
+  "quality.detect": { params: WsScope; result: TestRunnerInfo };
+  /**
+   * Start a test run (optionally scoped to a file / name filter, optionally
+   * with coverage). One run at a time per workspace; starting while one is
+   * live fails. Progress streams as `quality.runChanged` events.
+   */
+  "quality.run": {
+    params: WsScope & { file?: string; testName?: string; coverage?: boolean };
+    result: { run: QualityRun };
+  };
+  "quality.cancel": { params: WsScope & { runId: string }; result: { ok: true } };
+  /** Recent runs, newest first (capped) — the live run included. */
+  "quality.runs": { params: WsScope; result: { runs: QualityRun[] } };
+  /**
+   * The latest coverage report — parsed from the workspace's istanbul output
+   * (`coverage/coverage-final.json`), whether Crystal or the user produced
+   * it. Null until a coverage run (or an external one) exists.
+   */
+  "quality.coverage": { params: WsScope; result: { coverage: CoverageReport | null } };
   /** Dry-run of refactor intents — per-intent engine + change summaries. */
   "refactor.preview": {
     params: WsScope & { intents: RefactorIntent[] };
@@ -489,6 +517,10 @@ export interface BridgeEvents {
   "codemap.changed": { ws: string };
   /** The code index changed (code re-analyzed or an enrichment file landed). */
   "codeindex.changed": { ws: string };
+  /** A test run started, streamed new results, or settled (payload = full run). */
+  "quality.runChanged": { ws: string; run: QualityRun };
+  /** New coverage data landed (a coverage run finished or external output changed). */
+  "quality.coverageChanged": { ws: string };
   /** The set of open workspaces changed (opened/closed/renamed). */
   "workspaces.changed": Record<string, never>;
 }

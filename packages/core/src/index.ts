@@ -20,6 +20,8 @@ export * from "./codemap.js";
 export * from "./code-index.js";
 export * from "./system-overview.js";
 export * from "./system-insights.js";
+export * from "./surfaces.js";
+export * from "./quality.js";
 export * from "./systems-layout.js";
 export * from "./code-review.js";
 export * from "./bridge.js";

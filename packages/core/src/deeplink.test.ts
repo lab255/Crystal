@@ -110,17 +110,28 @@ describe("round trips", () => {
     expect(roundTrip(link)).toEqual(link);
   });
 
-  it("api explorer selection round-trips", () => {
+  it("api explorer selection round-trips (surfaces mode)", () => {
     const link: DeepLink = {
       ws: "abc",
-      mode: "architect",
-      architect: { view: "apis", system: "sys:submission", api: "POST /api/v3/forms/:formId" },
+      mode: "surfaces",
+      surfaces: { view: "apis", system: "sys:submission", api: "POST /api/v3/forms/:formId" },
     };
     expect(roundTrip(link)).toEqual(link);
   });
 
+  it("legacy architect/apis links redirect to the surfaces API explorer", () => {
+    const link = parseDeepLink(
+      "#/architect/apis?ws=abc&system=sys%3Asubmission&api=POST%20/api/v3/forms/%3AformId",
+    );
+    expect(link).toEqual({
+      ws: "abc",
+      mode: "surfaces",
+      surfaces: { view: "apis", system: "sys:submission", api: "POST /api/v3/forms/:formId" },
+    });
+  });
+
   it("global find travels on every architect subview", () => {
-    for (const view of ["systems", "diagrams", "infra", "codemap", "apis"] as const) {
+    for (const view of ["systems", "diagrams", "infra", "codemap"] as const) {
       const link: DeepLink = {
         ws: "abc",
         mode: "architect",
@@ -304,6 +315,91 @@ describe("round trips", () => {
     expect(roundTrip(link)).toEqual(link);
   });
 
+  it("surfaces subviews round-trip their selections", () => {
+    const screens: DeepLink = {
+      ws: "abc",
+      mode: "surfaces",
+      surfaces: { view: "screens", screen: "next-app:/forms/:formId", demo: true, find: "form" },
+    };
+    expect(roundTrip(screens)).toEqual(screens);
+    const components: DeepLink = {
+      ws: "abc",
+      mode: "surfaces",
+      surfaces: { view: "components", component: "src/components/Button.tsx#Button" },
+    };
+    expect(roundTrip(components)).toEqual(components);
+    const stories: DeepLink = {
+      ws: "abc",
+      mode: "surfaces",
+      surfaces: { view: "stories", story: "src/Button.stories.tsx#Primary" },
+    };
+    expect(roundTrip(stories)).toEqual(stories);
+    const schemas: DeepLink = {
+      ws: "abc",
+      mode: "surfaces",
+      surfaces: { view: "schemas", schema: "src/models/form.ts#FormSchema" },
+    };
+    expect(roundTrip(schemas)).toEqual(schemas);
+  });
+
+  it("architecture side pane travels on every surfaces subview", () => {
+    for (const view of ["screens", "components", "stories", "apis", "schemas"] as const) {
+      const link: DeepLink = {
+        ws: "abc",
+        mode: "surfaces",
+        surfaces: { view, arch: true },
+      };
+      expect(roundTrip(link)).toEqual(link);
+    }
+    // off = omitted entirely
+    expect(parseDeepLink("#/surfaces/apis").surfaces?.arch).toBeUndefined();
+  });
+
+  it("surfaces defaults to the screens view and scopes params per subview", () => {
+    expect(formatDeepLink({ mode: "surfaces" })).toBe("#/surfaces/screens");
+    // A components URL cannot carry a screen selection.
+    expect(
+      formatDeepLink({
+        mode: "surfaces",
+        surfaces: { view: "components", screen: "next-app:/", component: "a.tsx#A" },
+      }),
+    ).toBe("#/surfaces/components?component=a.tsx%23A");
+    // demo is a lens on screens/stories only.
+    expect(formatDeepLink({ mode: "surfaces", surfaces: { view: "apis", demo: true } })).toBe(
+      "#/surfaces/apis",
+    );
+  });
+
+  it("quality subviews round-trip their selections", () => {
+    const tests: DeepLink = {
+      ws: "abc",
+      mode: "quality",
+      quality: {
+        view: "tests",
+        file: "packages/core/src/deeplink.test.ts",
+        test: "round trips > code map levels",
+        run: "q-3",
+      },
+    };
+    expect(roundTrip(tests)).toEqual(tests);
+    const coverage: DeepLink = {
+      ws: "abc",
+      mode: "quality",
+      quality: { view: "coverage", covPath: "packages/core/src", find: "deeplink" },
+    };
+    expect(roundTrip(coverage)).toEqual(coverage);
+  });
+
+  it("quality defaults to the tests view and scopes params per subview", () => {
+    expect(formatDeepLink({ mode: "quality" })).toBe("#/quality/tests");
+    expect(
+      formatDeepLink({
+        mode: "quality",
+        quality: { view: "coverage", file: "a.test.ts", covPath: "src" },
+      }),
+    ).toBe("#/quality/coverage?path=src");
+  });
+
   it("editor file with special characters", () => {
     const link: DeepLink = {
       ws: "abc",
@@ -447,6 +543,33 @@ describe("applyDeepLink", () => {
     expect(next.architect).toEqual({ lod: "members" });
   });
 
+  it("keeps sibling-subview state across surfaces and quality URLs", () => {
+    const current: DeepLink = {
+      mode: "surfaces",
+      surfaces: { view: "apis", api: "GET /x", system: "sys:a", component: "b.tsx#B" },
+    };
+    // Back onto a components URL: apis-owned fields survive (a components URL
+    // cannot express them); the component selection is replaced.
+    const next = applyDeepLink(current, {
+      mode: "surfaces",
+      surfaces: { view: "components", component: "a.tsx#A" },
+    });
+    expect(next.surfaces).toEqual({
+      view: "components",
+      component: "a.tsx#A",
+      api: "GET /x",
+      system: "sys:a",
+    });
+    const qCurrent: DeepLink = {
+      mode: "quality",
+      quality: { view: "tests", file: "a.test.ts", covPath: "src" },
+    };
+    const qNext = applyDeepLink(qCurrent, { mode: "quality", quality: { view: "coverage" } });
+    // coverage-owned covPath clears (bare coverage URL = nothing selected);
+    // the tests-view file selection survives.
+    expect(qNext.quality).toEqual({ view: "coverage", file: "a.test.ts" });
+  });
+
   it("leaves other modes' sections untouched and lets ws/mode win", () => {
     const current: DeepLink = {
       mode: "architect",
@@ -501,6 +624,27 @@ describe("deepLinkNavIdentity", () => {
     );
     expect(deepLinkNavIdentity({ mode: "code", code: { file: "a.ts" } })).not.toBe(
       deepLinkNavIdentity({ mode: "code", code: { file: "b.ts" } }),
+    );
+  });
+
+  it("surfaces/quality: the subview is the place, selections are not", () => {
+    const screens: DeepLink = { mode: "surfaces", surfaces: { view: "screens" } };
+    expect(
+      deepLinkNavIdentity({
+        mode: "surfaces",
+        surfaces: { view: "screens", screen: "next-app:/", demo: true },
+      }),
+    ).toBe(deepLinkNavIdentity(screens));
+    expect(deepLinkNavIdentity({ mode: "surfaces" })).toBe(deepLinkNavIdentity(screens));
+    expect(deepLinkNavIdentity({ mode: "surfaces", surfaces: { view: "apis" } })).not.toBe(
+      deepLinkNavIdentity(screens),
+    );
+    const tests: DeepLink = { mode: "quality", quality: { view: "tests" } };
+    expect(
+      deepLinkNavIdentity({ mode: "quality", quality: { view: "tests", file: "a.test.ts" } }),
+    ).toBe(deepLinkNavIdentity(tests));
+    expect(deepLinkNavIdentity({ mode: "quality", quality: { view: "coverage" } })).not.toBe(
+      deepLinkNavIdentity(tests),
     );
   });
 

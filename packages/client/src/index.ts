@@ -32,6 +32,7 @@ export {
   type TerminalsStore,
 } from "./terminal-store.js";
 export { createNavStore, type NavPatch, type NavState, type NavStore } from "./nav-store.js";
+export { requestOpenFile } from "./open-file.js";
 export {
   createHighlightStore,
   type HighlightState,

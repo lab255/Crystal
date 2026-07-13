@@ -15,9 +15,18 @@
  */
 
 import { CODE_LOD_LEVELS, type CodeLodLevel } from "./codemap.js";
+import type { QualityViewId } from "./quality.js";
+import type { SurfaceViewId } from "./surfaces.js";
 
-export type CrystalModeId = "projects" | "architect" | "orchestrate" | "code" | "jobs";
-export type ArchitectViewId = "systems" | "diagrams" | "infra" | "codemap" | "apis";
+export type CrystalModeId =
+  | "projects"
+  | "architect"
+  | "orchestrate"
+  | "code"
+  | "jobs"
+  | "surfaces"
+  | "quality";
+export type ArchitectViewId = "systems" | "diagrams" | "infra" | "codemap";
 export type OrchestratorTabId = "board" | "runs" | "agents";
 
 /** Mirrors the code map's drill levels (all workspaces → workspace → module → file). */
@@ -94,11 +103,6 @@ export interface ArchitectLink {
    * (systems, code diagrams, infrastructure); each view dims what misses.
    */
   find?: string;
-  /**
-   * Selected endpoint in the API explorer, "METHOD /path" (the serving
-   * system rides in `system` when it matters).
-   */
-  api?: string;
 }
 
 export interface OrchestrateLink {
@@ -120,6 +124,47 @@ export interface CodeLink {
   file?: string;
 }
 
+export interface SurfacesLink {
+  view?: SurfaceViewId;
+  /** Selected screen id (`ScreenSurface.id`). */
+  screen?: string;
+  /** Selected component, `${file}#${name}`. */
+  component?: string;
+  /** Selected story id (`StorySurface.id`). */
+  story?: string;
+  /** Selected endpoint in the APIs view, "METHOD /path". */
+  api?: string;
+  /** System filter / disambiguator for the APIs view (system id). */
+  system?: string;
+  /** Selected schema id (`SchemaSurface.id`). */
+  schema?: string;
+  /** Live demo pane open (screens + stories views). */
+  demo?: boolean;
+  /**
+   * Architecture side pane open — an embedded systems overview every surfaces
+   * subview can highlight into (callers, callees, integrations). Selection
+   * inside the pane rides the `architect` section, so expanding to the full
+   * architecture view keeps it.
+   */
+  arch?: boolean;
+  /** Find query shared by every surfaces subview. */
+  find?: string;
+}
+
+export interface QualityLink {
+  view?: QualityViewId;
+  /** Selected test file (tests view). */
+  file?: string;
+  /** Selected test full name within `file`. */
+  test?: string;
+  /** Selected run id (tests view; latest when unset). */
+  run?: string;
+  /** Selected path in the coverage tree — a directory or file. */
+  covPath?: string;
+  /** Find query shared by both quality subviews. */
+  find?: string;
+}
+
 export interface DeepLink {
   /** Active workspace id (`workspaceIdFor(root)` — stable across restarts). */
   ws?: string;
@@ -127,6 +172,8 @@ export interface DeepLink {
   architect?: ArchitectLink;
   orchestrate?: OrchestrateLink;
   code?: CodeLink;
+  surfaces?: SurfacesLink;
+  quality?: QualityLink;
 }
 
 // encodeURIComponent, but keep `/` and `,` readable — file/module paths and
@@ -167,9 +214,6 @@ export function formatDeepLink(link: DeepLink): string {
       if (a.insights) add("insights", "1");
       if (a.contracts) add("contracts", "1");
       if (a.facets) add("facets", "1");
-    } else if (view === "apis") {
-      if (a.system) add("system", a.system);
-      if (a.api) add("api", a.api);
     } else if (view === "codemap") {
       const cm = a.codemap;
       if (cm) {
@@ -207,6 +251,38 @@ export function formatDeepLink(link: DeepLink): string {
     if ((tab === "runs" || tab === "agents") && o.run) add("run", o.run);
   } else if (mode === "code") {
     if (link.code?.file) add("file", link.code.file);
+  } else if (mode === "surfaces") {
+    const s = link.surfaces ?? {};
+    const view = s.view ?? "screens";
+    path += `/${view}`;
+    if (view === "screens") {
+      if (s.screen) add("screen", s.screen);
+      if (s.demo) add("demo", "1");
+    } else if (view === "components") {
+      if (s.component) add("component", s.component);
+    } else if (view === "stories") {
+      if (s.story) add("story", s.story);
+      if (s.demo) add("demo", "1");
+    } else if (view === "apis") {
+      if (s.system) add("system", s.system);
+      if (s.api) add("api", s.api);
+    } else if (view === "schemas") {
+      if (s.schema) add("schema", s.schema);
+    }
+    if (s.arch) add("arch", "1");
+    if (s.find) add("find", s.find);
+  } else if (mode === "quality") {
+    const q = link.quality ?? {};
+    const view = q.view ?? "tests";
+    path += `/${view}`;
+    if (view === "tests") {
+      if (q.file) add("file", q.file);
+      if (q.test) add("test", q.test);
+      if (q.run) add("run", q.run);
+    } else {
+      if (q.covPath) add("path", q.covPath);
+    }
+    if (q.find) add("find", q.find);
   }
   // "projects" (cross-workspace overview) and "jobs" (agent job hub) are
   // stateless — nothing to encode beyond ws.
@@ -227,20 +303,25 @@ export function parseDeepLink(hash: string): DeepLink {
   if (ws) link.ws = ws;
 
   const mode = segments[0];
+  // The API explorer moved from architecture to surfaces — old links redirect.
+  if (mode === "architect" && segments[1] === "apis") {
+    link.mode = "surfaces";
+    const s: SurfacesLink = { view: "apis" };
+    const api = params.get("api");
+    if (api) s.api = api;
+    const system = params.get("system");
+    if (system) s.system = system;
+    const find = params.get("find");
+    if (find) s.find = find;
+    link.surfaces = s;
+    return link;
+  }
   if (mode === "architect") {
     link.mode = "architect";
     const a: ArchitectLink = {};
     const view = segments[1];
-    if (
-      view === "systems" ||
-      view === "diagrams" ||
-      view === "infra" ||
-      view === "codemap" ||
-      view === "apis"
-    )
+    if (view === "systems" || view === "diagrams" || view === "infra" || view === "codemap")
       a.view = view;
-    const api = params.get("api");
-    if (api) a.api = api;
     const system = params.get("system");
     if (system) a.system = system;
     const sysGroup = params.get("group");
@@ -306,6 +387,51 @@ export function parseDeepLink(hash: string): DeepLink {
     link.mode = "code";
     const file = params.get("file");
     if (file) link.code = { file };
+  } else if (mode === "surfaces") {
+    link.mode = "surfaces";
+    const s: SurfacesLink = {};
+    const view = segments[1];
+    if (
+      view === "screens" ||
+      view === "components" ||
+      view === "stories" ||
+      view === "apis" ||
+      view === "schemas"
+    )
+      s.view = view;
+    const screen = params.get("screen");
+    if (screen) s.screen = screen;
+    const component = params.get("component");
+    if (component) s.component = component;
+    const story = params.get("story");
+    if (story) s.story = story;
+    const api = params.get("api");
+    if (api) s.api = api;
+    const system = params.get("system");
+    if (system) s.system = system;
+    const schema = params.get("schema");
+    if (schema) s.schema = schema;
+    if (params.get("demo") === "1") s.demo = true;
+    if (params.get("arch") === "1") s.arch = true;
+    const find = params.get("find");
+    if (find) s.find = find;
+    if (Object.keys(s).length) link.surfaces = s;
+  } else if (mode === "quality") {
+    link.mode = "quality";
+    const q: QualityLink = {};
+    const view = segments[1];
+    if (view === "tests" || view === "coverage") q.view = view;
+    const file = params.get("file");
+    if (file) q.file = file;
+    const test = params.get("test");
+    if (test) q.test = test;
+    const run = params.get("run");
+    if (run) q.run = run;
+    const covPath = params.get("path");
+    if (covPath) q.covPath = covPath;
+    const find = params.get("find");
+    if (find) q.find = find;
+    if (Object.keys(q).length) link.quality = q;
   } else if (mode === "projects") {
     link.mode = "projects";
   } else if (mode === "jobs") {
@@ -326,13 +452,25 @@ const ARCHITECT_VIEW_FIELDS: Record<ArchitectViewId, readonly (keyof ArchitectLi
   codemap: ["view", "codemap", "lod", "lens", "lensCtx", "duplicates", "findings", "facets", "file", "sel", "find"],
   diagrams: ["view", "diagram", "facet", "draft", "review", "journey", "overlay", "sel", "find"],
   infra: ["view", "diagram", "facet", "draft", "review", "journey", "overlay", "sel", "find"],
-  apis: ["view", "system", "api", "sel", "find"],
 };
 
 const ORCHESTRATE_TAB_FIELDS: Record<OrchestratorTabId, readonly (keyof OrchestrateLink)[]> = {
   board: ["tab", "project", "task", "group", "sort"],
   runs: ["tab", "project", "run"],
   agents: ["tab", "project", "run"],
+};
+
+const SURFACES_VIEW_FIELDS: Record<SurfaceViewId, readonly (keyof SurfacesLink)[]> = {
+  screens: ["view", "screen", "demo", "arch", "find"],
+  components: ["view", "component", "arch", "find"],
+  stories: ["view", "story", "demo", "arch", "find"],
+  apis: ["view", "api", "system", "arch", "find"],
+  schemas: ["view", "schema", "arch", "find"],
+};
+
+const QUALITY_VIEW_FIELDS: Record<QualityViewId, readonly (keyof QualityLink)[]> = {
+  tests: ["view", "file", "test", "run", "find"],
+  coverage: ["view", "covPath", "find"],
 };
 
 /** Replace the owned fields with the incoming section's; keep everything else. */
@@ -373,6 +511,16 @@ export function applyDeepLink(current: DeepLink, next: DeepLink): DeepLink {
   } else if (next.mode === "code") {
     if (next.code) link.code = next.code;
     else delete link.code;
+  } else if (next.mode === "surfaces") {
+    const view = next.surfaces?.view ?? "screens";
+    const merged = replaceOwned(current.surfaces, next.surfaces, SURFACES_VIEW_FIELDS[view]);
+    if (merged) link.surfaces = merged;
+    else delete link.surfaces;
+  } else if (next.mode === "quality") {
+    const view = next.quality?.view ?? "tests";
+    const merged = replaceOwned(current.quality, next.quality, QUALITY_VIEW_FIELDS[view]);
+    if (merged) link.quality = merged;
+    else delete link.quality;
   }
   return link;
 }
@@ -410,5 +558,7 @@ export function deepLinkNavIdentity(link: DeepLink): string {
     return `orchestrate/${o.tab ?? "board"}/${o.project ?? ""}`;
   }
   if (mode === "code") return `code/${link.code?.file ?? ""}`;
+  if (mode === "surfaces") return `surfaces/${link.surfaces?.view ?? "screens"}`;
+  if (mode === "quality") return `quality/${link.quality?.view ?? "tests"}`;
   return mode;
 }
