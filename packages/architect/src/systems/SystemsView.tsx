@@ -1826,7 +1826,8 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
           label: "Explore APIs",
           icon: Webhook,
           hint: `${sys.endpoints.length}`,
-          onSelect: () => nav({ architect: { view: "apis", system: sys.id, api: null } }),
+          onSelect: () =>
+            nav({ mode: "surfaces", surfaces: { view: "apis", system: sys.id, api: null } }),
         });
       if (pkg)
         entries.push({
@@ -1948,12 +1949,13 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
                 hint: `${link.apis!.length} route${link.apis!.length === 1 ? "" : "s"}`,
                 onSelect: () =>
                   nav({
-                    architect: {
+                    mode: "surfaces",
+                    surfaces: {
                       view: "apis",
                       system: link.target,
                       api: `${firstApi.method} ${firstApi.path}`,
-                      edge: null,
                     },
+                    architect: { edge: null },
                   }),
               } as MenuEntry,
             ]

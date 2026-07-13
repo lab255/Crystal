@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   ArrowRight,
+  Boxes,
   ChevronDown,
+  Copy,
   ExternalLink,
   ListFilter,
   Maximize2,
   Minimize2,
+  TerminalSquare,
   Webhook,
   X,
 } from "lucide-react";
@@ -18,11 +21,10 @@ import {
   type SystemModule,
   type SystemOverview,
 } from "@crystal/core";
-import { useCrystal, useNav, useNavUpdate, useWorkspaces } from "@crystal/client";
+import { requestOpenFile, useCrystal, useNav, useNavUpdate, useWorkspaces } from "@crystal/client";
 import { EmptyState, Pane as SplitPane, Split, Spinner, Tooltip, cn } from "@crystal/ui";
-import { requestOpenFile } from "../codemap/CodeMapView.js";
-import { JourneyProfilePanel } from "../ProfilePanel.js";
-import { ROLE_META } from "./role-meta.js";
+import { JourneyProfilePanel, ROLE_META } from "@crystal/architect";
+import { DetailSection, copyText, useArchHighlight, useMenu, useSurfaces } from "./common.js";
 
 /**
  * API explorer — every served route in the workspace, one selection away from
@@ -34,8 +36,9 @@ import { ROLE_META } from "./role-meta.js";
  *   callers    — every call site addressing the route, attributed to the
  *                calling systems, plus the boundary contracts it rides.
  *
- * The selection deep-links (`#/architect/apis?api=GET /x&system=…`), and the
- * systems view's context menus jump here.
+ * Lives in the surfaces mode (`#/surfaces/apis?api=GET /x&system=…`); the
+ * architecture systems view's context menus jump here, and old
+ * `#/architect/apis` links redirect.
  */
 
 const METHOD_CLASS: Record<string, string> = {
@@ -47,7 +50,7 @@ const METHOD_CLASS: Record<string, string> = {
   ALL: "bg-surface-3 text-ink-muted",
 };
 
-function MethodChip({ method, className }: { method: string; className?: string }) {
+export function MethodChip({ method, className }: { method: string; className?: string }) {
   return (
     <span
       className={cn(
@@ -63,19 +66,28 @@ function MethodChip({ method, className }: { method: string; className?: string 
 
 const apiKeyOf = (ep: { method: string; path: string }): string => `${ep.method} ${ep.path}`;
 
+/** `curl -X POST 'http://localhost:3000/api/x'` for the copy menu. */
+function curlOf(ep: { method: string; path: string }, baseUrl: string | null): string {
+  const base = baseUrl ?? "http://localhost:3000";
+  const method = ep.method === "ALL" ? "GET" : ep.method;
+  return `curl -X ${method} '${base}${ep.path}'`;
+}
+
 interface EndpointRow {
   system: SystemModule;
   ep: SystemEndpoint;
   key: string;
 }
 
-export function ApiExplorer() {
+export function ApiExplorer({ appUrl }: { appUrl: string | null }) {
   const { client } = useCrystal();
   const activeWs = useWorkspaces((s) => s.activeId);
   const nav = useNavUpdate();
-  const selectedKey = useNav((l) => l.architect?.api ?? null);
-  const systemFilter = useNav((l) => l.architect?.system ?? null);
-  const find = (useNav((l) => l.architect?.find) ?? "").trim().toLowerCase();
+  const arch = useArchHighlight();
+  const selectedKey = useNav((l) => l.surfaces?.api ?? null);
+  const systemFilter = useNav((l) => l.surfaces?.system ?? null);
+  const find = (useNav((l) => l.surfaces?.find) ?? "").trim().toLowerCase();
+  const menu = useMenu();
 
   const [overview, setOverview] = useState<SystemOverview | null>(null);
   const [loading, setLoading] = useState(true);
@@ -165,13 +177,60 @@ export function ApiExplorer() {
       <EmptyState icon={Webhook} title="No served routes detected">
         Routes appear when the analyzer sees registrations (`app.get("/x", h)`, `*Router.post`,
         Next route files…). API calls without a matching server in this workspace show up on the
-        systems view as external traffic instead.
+        architecture systems view as external traffic instead.
       </EmptyState>
     );
   }
 
+  const rowMenu = (r: EndpointRow): Parameters<typeof menu.open>[1] => [
+    { type: "heading", label: r.key },
+    {
+      type: "item",
+      label: "Open registration in editor",
+      icon: ExternalLink,
+      hint: `${r.ep.file.split("/").at(-1)}${r.ep.line != null ? `:${r.ep.line}` : ""}`,
+      onSelect: () => requestOpenFile(r.ep.file, r.ep.line),
+    },
+    {
+      type: "item",
+      label: "Highlight serving system",
+      icon: Boxes,
+      hint: r.system.name,
+      onSelect: () => arch.system(r.system.id),
+    },
+    {
+      type: "item",
+      label: "Open in architecture view",
+      icon: Boxes,
+      onSelect: () =>
+        nav({ mode: "architect", architect: { view: "systems", system: r.system.id } }),
+    },
+    { type: "separator" },
+    {
+      type: "item",
+      label: systemFilter === r.system.id ? "Clear system filter" : "Filter to this system",
+      icon: ListFilter,
+      onSelect: () =>
+        nav({ surfaces: { system: systemFilter === r.system.id ? null : r.system.id } }),
+    },
+    { type: "separator" },
+    {
+      type: "item",
+      label: "Copy route",
+      icon: Copy,
+      hint: r.key,
+      onSelect: () => copyText(r.key),
+    },
+    {
+      type: "item",
+      label: "Copy as curl",
+      icon: TerminalSquare,
+      onSelect: () => copyText(curlOf(r.ep, appUrl)),
+    },
+  ];
+
   return (
-    <Split storageKey="architect:apis" direction="horizontal">
+    <Split storageKey="surfaces:apis" direction="horizontal">
       <SplitPane defaultSize={320} minSize={240} maxSize={520}>
         <aside className="flex h-full flex-col border-r border-edge bg-surface-1">
           <div className="flex items-center gap-2 px-3 py-2">
@@ -188,7 +247,7 @@ export function ApiExplorer() {
                 <span className="min-w-0 truncate text-[10px] text-ink">{filterName}</span>
                 <button
                   type="button"
-                  onClick={() => nav({ architect: { system: null } })}
+                  onClick={() => nav({ surfaces: { system: null } })}
                   aria-label="Clear system filter"
                 >
                   <X className="h-3 w-3 text-ink-faint hover:text-ink" />
@@ -206,7 +265,7 @@ export function ApiExplorer() {
                   <button
                     type="button"
                     onClick={() =>
-                      nav({ architect: { system: systemFilter === system.id ? null : system.id } })
+                      nav({ surfaces: { system: systemFilter === system.id ? null : system.id } })
                     }
                     className="flex w-full items-center gap-1.5 px-1.5 py-1 text-left"
                     title="Filter to this system"
@@ -221,7 +280,8 @@ export function ApiExplorer() {
                     <button
                       key={`${r.system.id}|${r.key}|${r.ep.file}`}
                       type="button"
-                      onClick={() => nav({ architect: { api: r.key, system: r.system.id } })}
+                      onClick={() => nav({ surfaces: { api: r.key, system: r.system.id } })}
+                      onContextMenu={(e) => menu.open(e, rowMenu(r))}
                       className={cn(
                         "flex w-full items-center gap-1.5 rounded-lg px-2 py-1 text-left",
                         selected === r
@@ -253,6 +313,7 @@ export function ApiExplorer() {
             key={`${selected.system.id}|${selected.key}|${selected.ep.file}`}
             row={selected}
             overview={overview}
+            appUrl={appUrl}
           />
         ) : (
           <EmptyState icon={Webhook} title="Pick a route">
@@ -261,6 +322,7 @@ export function ApiExplorer() {
           </EmptyState>
         )}
       </SplitPane>
+      {menu.element}
     </Split>
   );
 }
@@ -272,9 +334,19 @@ export function ApiExplorer() {
 const EMPTY_GRAPH = createArchitectureGraph("API trace");
 const SNIPPET_COLLAPSED_LINES = 14;
 
-function ApiDetail({ row, overview }: { row: EndpointRow; overview: SystemOverview }) {
+function ApiDetail({
+  row,
+  overview,
+  appUrl,
+}: {
+  row: EndpointRow;
+  overview: SystemOverview;
+  appUrl: string | null;
+}) {
   const { client } = useCrystal();
   const nav = useNavUpdate();
+  const arch = useArchHighlight();
+  const { systemOfFile } = useSurfaces();
   const { system, ep } = row;
 
   const [fileDetail, setFileDetail] = useState<CodeFileDetail | null>(null);
@@ -286,6 +358,7 @@ function ApiDetail({ row, overview }: { row: EndpointRow; overview: SystemOvervi
   >(null);
   const [snippetOpen, setSnippetOpen] = useState(false);
   const [traceTall, setTraceTall] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   // The symbol the definition/trace anchor on — resolved, best first:
   //   1. the registration's handler reference ("Controller.createForm"),
@@ -380,14 +453,11 @@ function ApiDetail({ row, overview }: { row: EndpointRow; overview: SystemOvervi
     };
   }, [client, candidates]);
 
-  /** file → owning system, longest part-path prefix wins. */
-  const systemOfFile = useMemo(() => {
-    const parts: { path: string; system: SystemModule }[] = [];
-    for (const s of overview.systems) for (const p of s.parts) parts.push({ path: p.path, system: s });
-    parts.sort((a, b) => b.path.length - a.path.length);
-    return (file: string): SystemModule | null =>
-      parts.find((p) => file === p.path || file.startsWith(`${p.path}/`))?.system ?? null;
-  }, [overview]);
+  useEffect(() => {
+    if (!copied) return;
+    const t = setTimeout(() => setCopied(false), 1500);
+    return () => clearTimeout(t);
+  }, [copied]);
 
   /** Caller systems, heaviest first — the chips above the raw site list. */
   const callerSystems = useMemo(() => {
@@ -435,17 +505,36 @@ function ApiDetail({ row, overview }: { row: EndpointRow; overview: SystemOvervi
           <span className="min-w-0 flex-1 break-all font-mono text-[13px] font-semibold text-ink">
             {ep.path}
           </span>
+          <Tooltip content={copied ? "Copied!" : "Copy as curl"}>
+            <button
+              type="button"
+              onClick={() => {
+                copyText(curlOf(ep, appUrl));
+                setCopied(true);
+              }}
+              className={cn(
+                "flex shrink-0 items-center gap-1 rounded-md border border-edge bg-surface-2 px-1.5 py-0.5 text-[10px]",
+                copied ? "text-ok" : "text-ink-muted hover:text-ink",
+              )}
+            >
+              <TerminalSquare className="h-3 w-3" /> curl
+            </button>
+          </Tooltip>
         </div>
         <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px] text-ink-muted">
-          <button
-            type="button"
-            onClick={() => nav({ architect: { view: "systems", system: system.id } })}
-            className="flex items-center gap-1 rounded-md border border-edge bg-surface-2 px-1.5 py-0.5 hover:text-ink"
-            title="Show the serving system on the systems overview"
-          >
-            <SysIcon className="h-3 w-3" style={{ color: meta.accent }} />
-            {system.name}
-          </button>
+          <Tooltip content="Click: highlight in the architecture pane · double-click: open the full view">
+            <button
+              type="button"
+              onClick={() => arch.system(system.id)}
+              onDoubleClick={() =>
+                nav({ mode: "architect", architect: { view: "systems", system: system.id } })
+              }
+              className="flex items-center gap-1 rounded-md border border-edge bg-surface-2 px-1.5 py-0.5 hover:text-ink"
+            >
+              <SysIcon className="h-3 w-3" style={{ color: meta.accent }} />
+              {system.name}
+            </button>
+          </Tooltip>
           <button
             type="button"
             onClick={() => requestOpenFile(ep.file, ep.line)}
@@ -527,12 +616,14 @@ function ApiDetail({ row, overview }: { row: EndpointRow; overview: SystemOvervi
               traceTall ? "h-[36rem]" : "h-72",
             )}
           >
+            {/* Flamegraph semantics: single click highlights the owning
+                system in the architecture pane; double click opens the code. */}
             <JourneyProfilePanel
               trace={trace}
               graph={EMPTY_GRAPH}
               summary={null}
               onOpenStep={(step) => requestOpenFile(step.ref.file, step.line)}
-              onSelectStep={(step) => requestOpenFile(step.ref.file, step.line)}
+              onSelectStep={(step) => arch.file(step.ref.file, step.line)}
             />
           </div>
         ) : traceError ? (
@@ -557,17 +648,23 @@ function ApiDetail({ row, overview }: { row: EndpointRow; overview: SystemOvervi
               const m = ROLE_META[sys.role];
               const Icon = m.icon;
               return (
-                <button
+                <Tooltip
                   key={sys.id}
-                  type="button"
-                  onClick={() => nav({ architect: { view: "systems", system: sys.id } })}
-                  className="flex items-center gap-1 rounded-full border border-edge bg-surface-2 px-2 py-0.5 text-[10px] text-ink-muted hover:text-ink"
-                  title="Show on the systems overview"
+                  content="Click: highlight in the architecture pane · double-click: open the full view"
                 >
-                  <Icon className="h-3 w-3" style={{ color: m.accent }} />
-                  {sys.name}
-                  <span className="text-ink-faint">×{count}</span>
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => arch.system(sys.id)}
+                    onDoubleClick={() =>
+                      nav({ mode: "architect", architect: { view: "systems", system: sys.id } })
+                    }
+                    className="flex items-center gap-1 rounded-full border border-edge bg-surface-2 px-2 py-0.5 text-[10px] text-ink-muted hover:text-ink"
+                  >
+                    <Icon className="h-3 w-3" style={{ color: m.accent }} />
+                    {sys.name}
+                    <span className="text-ink-faint">×{count}</span>
+                  </button>
+                </Tooltip>
               );
             })}
           </div>
@@ -575,19 +672,24 @@ function ApiDetail({ row, overview }: { row: EndpointRow; overview: SystemOvervi
         {boundaries.length > 0 ? (
           <div className="mb-2 flex flex-wrap items-center gap-1.5">
             {boundaries.map((l) => (
-              <button
+              <Tooltip
                 key={`${l.source}->${l.target}`}
-                type="button"
-                onClick={() =>
-                  nav({
-                    architect: { view: "systems", system: null, edge: `${l.source}->${l.target}` },
-                  })
-                }
-                className="flex items-center gap-1 rounded-full border border-accent-amber/40 bg-accent-amber/10 px-2 py-0.5 text-[10px] text-accent-amber hover:brightness-110"
-                title="Open the boundary contract"
+                content="Click: highlight this integration in the architecture pane · double-click: open the full view"
               >
-                {nameOf(l.source)} <ArrowRight className="h-3 w-3" /> {nameOf(l.target)}
-              </button>
+                <button
+                  type="button"
+                  onClick={() => arch.edge(`${l.source}->${l.target}`)}
+                  onDoubleClick={() =>
+                    nav({
+                      mode: "architect",
+                      architect: { view: "systems", system: null, edge: `${l.source}->${l.target}` },
+                    })
+                  }
+                  className="flex items-center gap-1 rounded-full border border-accent-amber/40 bg-accent-amber/10 px-2 py-0.5 text-[10px] text-accent-amber hover:brightness-110"
+                >
+                  {nameOf(l.source)} <ArrowRight className="h-3 w-3" /> {nameOf(l.target)}
+                </button>
+              </Tooltip>
             ))}
           </div>
         ) : null}
@@ -601,11 +703,17 @@ function ApiDetail({ row, overview }: { row: EndpointRow; overview: SystemOvervi
         ) : (
           <div className="space-y-0.5">
             {sites.map((site, i) => (
-              <button
+              <div
                 key={`${site.file}:${site.line ?? 0}:${i}`}
-                type="button"
-                onClick={() => requestOpenFile(site.file, site.line)}
-                className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left hover:bg-surface-2"
+                role="button"
+                tabIndex={0}
+                onClick={() => arch.file(site.file, site.line)}
+                onDoubleClick={() => requestOpenFile(site.file, site.line)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") arch.file(site.file, site.line);
+                }}
+                title="Click: highlight the calling system in the architecture pane · double-click: open the code"
+                className="flex w-full cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1 text-left hover:bg-surface-2"
               >
                 <MethodChip method={site.method} />
                 <span className="min-w-0 shrink-[2] truncate font-mono text-[10px] text-ink-muted">
@@ -616,42 +724,30 @@ function ApiDetail({ row, overview }: { row: EndpointRow; overview: SystemOvervi
                     {site.file}
                     {site.line != null ? `:${site.line}` : ""}
                   </span>
-                  <ExternalLink className="h-3 w-3 shrink-0" />
+                  {systemOfFile(site.file) ? (
+                    <span className="rounded bg-surface-3 px-1 text-[8.5px] uppercase">
+                      {systemOfFile(site.file)!.name}
+                    </span>
+                  ) : null}
                 </span>
-              </button>
+                <Tooltip content="View in code">
+                  <button
+                    type="button"
+                    aria-label={`Open ${site.file} in the editor`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      requestOpenFile(site.file, site.line);
+                    }}
+                    className="shrink-0 rounded p-0.5 text-ink-faint hover:bg-surface-3 hover:text-ink"
+                  >
+                    <ExternalLink className="h-3 w-3" />
+                  </button>
+                </Tooltip>
+              </div>
             ))}
           </div>
         )}
       </DetailSection>
     </div>
-  );
-}
-
-function DetailSection({
-  title,
-  hint,
-  actions,
-  children,
-}: {
-  title: string;
-  hint?: string;
-  actions?: React.ReactNode;
-  children: React.ReactNode;
-}) {
-  return (
-    <section className="border-b border-edge/60 px-4 py-3">
-      <div className="mb-2 flex items-baseline gap-2">
-        <h3 className="text-[11px] font-semibold uppercase tracking-wider text-ink-faint">
-          {title}
-        </h3>
-        {hint ? (
-          <Tooltip content={hint}>
-            <span className="min-w-0 truncate text-[10px] text-ink-faint/80">{hint}</span>
-          </Tooltip>
-        ) : null}
-        <span className="ml-auto">{actions}</span>
-      </div>
-      {children}
-    </section>
   );
 }

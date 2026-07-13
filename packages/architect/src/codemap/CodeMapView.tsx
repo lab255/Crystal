@@ -52,7 +52,7 @@ import {
   type HighlightRef,
   type RefactorIntent,
 } from "@crystal/core";
-import { useCrystal, useNav, useNavUpdate, useWorkspaces } from "@crystal/client";
+import { requestOpenFile, useCrystal, useNav, useNavUpdate, useWorkspaces } from "@crystal/client";
 import {
   Badge,
   Button,
@@ -124,10 +124,9 @@ function mapHlRef(data: MapRfNode["data"]): HighlightRef | null {
   return null;
 }
 
-/** Fires a cross-mode "open this file in the editor" request handled by the shell. */
-export function requestOpenFile(path: string, line?: number): void {
-  window.dispatchEvent(new CustomEvent("crystal:open-file", { detail: { path, line } }));
-}
+// requestOpenFile moved to @crystal/client so every mode can link into the
+// editor; re-exported for the architect-internal imports of this module.
+export { requestOpenFile };
 
 export interface CodeMapViewProps {
   /** Start at this module instead of the workspace overview ("zoom in" entry). */

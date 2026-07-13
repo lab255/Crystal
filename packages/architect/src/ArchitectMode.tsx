@@ -14,7 +14,6 @@ import {
   History,
   Layers,
   MoreHorizontal,
-  Webhook,
   PencilRuler,
   Plus,
   RefreshCw,
@@ -84,7 +83,6 @@ import { ReviewDialog } from "./ReviewDialog.js";
 import { ReviewView } from "./ReviewView.js";
 import { canSeedFromCodeMap, seedFromCodeMap } from "./seed.js";
 import { SurveySection } from "./SurveyPanel.js";
-import { ApiExplorer } from "./systems/ApiExplorer.js";
 import { SystemsView, type OpenCodeFacet } from "./systems/SystemsView.js";
 
 const EMPTY_ARCHITECTURES: never[] = [];
@@ -93,7 +91,7 @@ const EMPTY_REFACTORS: never[] = [];
 const EMPTY_PROJECTS: never[] = [];
 const EMPTY_RUNS: never[] = [];
 
-type ArchitectView = "systems" | "diagrams" | "infra" | "codemap" | "apis";
+type ArchitectView = "systems" | "diagrams" | "infra" | "codemap";
 
 export function ArchitectMode() {
   // View + draft selection live in the deep-linkable nav store.
@@ -234,7 +232,6 @@ export function ArchitectMode() {
           {/* Cross-workspace map — always one click away when reviewing how the systems relate. */}
           {tab("codemap", <Layers className="h-3.5 w-3.5" />, "Workspaces", openWorkspacesMap)}
           {tab("systems", <Boxes className="h-3.5 w-3.5" />, "Systems")}
-          {tab("apis", <Webhook className="h-3.5 w-3.5" />, "APIs")}
           {tab(
             "diagrams",
             <PencilRuler className="h-3.5 w-3.5" />,
@@ -249,8 +246,6 @@ export function ArchitectMode() {
       <div className="min-h-0 flex-1">
         {view === "systems" ? (
           <SystemsView onOpenCode={openCodeFromSystems} />
-        ) : view === "apis" ? (
-          <ApiExplorer />
         ) : view === "codemap" ? (
           <CodeMapView
             origin={{ label: "Architecture", onExit: () => setView("diagrams") }}
