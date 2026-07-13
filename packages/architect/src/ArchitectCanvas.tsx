@@ -837,6 +837,32 @@ function CanvasInner({
     return m;
   }, [viewGraph, hlRefFor]);
 
+  // Global find (the Architecture header's box): nodes that miss the query
+  // dim. Matches name, description, tech and code links; ancestors of a match
+  // stay visible so a hit inside a container keeps its context readable.
+  const findQuery = (useNav((l) => l.architect?.find) ?? "").trim().toLowerCase();
+  const findMisses = useMemo(() => {
+    if (!findQuery) return null;
+    const byId = new Map(viewGraph.nodes.map((n) => [n.id, n]));
+    const matches = new Set<string>();
+    for (const n of viewGraph.nodes) {
+      const text = [n.label, n.description ?? "", ...n.tech, n.codeModule ?? "", n.codeFile ?? ""]
+        .join("\n")
+        .toLowerCase();
+      if (text.includes(findQuery)) matches.add(n.id);
+    }
+    for (const id of [...matches]) {
+      let parent = byId.get(id)?.parentId;
+      while (parent) {
+        matches.add(parent);
+        parent = byId.get(parent)?.parentId;
+      }
+    }
+    const misses = new Set<string>();
+    for (const n of viewGraph.nodes) if (!matches.has(n.id)) misses.add(n.id);
+    return misses;
+  }, [findQuery, viewGraph]);
+
   /** Hover published by another surface — this canvas echoes its own via the lens. */
   const externalHover = hoverSource !== "canvas" ? extHover : null;
 
@@ -909,6 +935,14 @@ function CanvasInner({
         } as CanvasNode;
       });
     }
+    if (findMisses && findMisses.size > 0) {
+      // Live-code children ride their module's verdict (they carry generated ids).
+      nodes = nodes.map((n) =>
+        findMisses.has(n.id) || (n.parentId && findMisses.has(n.parentId))
+          ? ({ ...n, className: cn(n.className, "arch-find-miss") } as CanvasNode)
+          : n,
+      );
+    }
     if (flashId) {
       nodes = nodes.map((n) =>
         n.id === flashId ? ({ ...n, className: cn(n.className, "arch-flash") } as CanvasNode) : n,
@@ -948,7 +982,7 @@ function CanvasInner({
       });
     }
     return nodes;
-  }, [viewGraph, selectedNodes, slotSizes, overlay, blockPreviews, flow, expanded, codeContent, dragOverrides, displacements, dragActive, hoverNeighborhood, hovered, flashId, nodeHlRefs, externalHover, pinned, hlRefForChild]);
+  }, [viewGraph, selectedNodes, slotSizes, overlay, blockPreviews, flow, expanded, codeContent, dragOverrides, displacements, dragActive, hoverNeighborhood, hovered, flashId, findMisses, nodeHlRefs, externalHover, pinned, hlRefForChild]);
 
   const rfEdges = useMemo(() => {
     let edges = [...toRfEdges(viewGraph, selectedEdges), ...(codeContent.edges as ArchRfEdge[])];

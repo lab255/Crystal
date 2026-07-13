@@ -8,17 +8,20 @@ import type {
   CodeFileDetail,
   CodeMapSummary,
   CodeModuleDetail,
+  CodeSymbolSites,
   CodeSymbolSource,
   CodeTrace,
   CrossWorkspaceMap,
   DuplicateCluster,
   JourneySuggestion,
+  PartCrossings,
   SymbolSearchHit,
 } from "./codemap.js";
 import type { Project } from "./project.js";
 import type { RefactorApplyResult, RefactorIntent, RefactorPlan } from "./refactor.js";
 import type { SystemOverview } from "./system-overview.js";
 import type { SystemOverviewDiff } from "./system-insights.js";
+import type { SystemsLayout } from "./systems-layout.js";
 import type { TerminalChunk, TerminalInfo } from "./terminal.js";
 import type { TodoList } from "./todo.js";
 import type { WorkspaceManifest } from "./workspace.js";
@@ -193,6 +196,13 @@ export interface BridgeMethods {
   /** The agent roster (`.crystal/agents.json`; seeded defaults when absent). */
   "agents.get": { params: WsScope; result: { roster: AgentRoster } };
   "agents.save": { params: WsScope & { roster: AgentRoster }; result: { ok: true } };
+  /**
+   * Hand arrangement of the systems overview (`.crystal/systems-layout.json`).
+   * `layout` is null until the user first edits the canvas — views auto-group
+   * a fresh overview client-side (see systems-layout.ts).
+   */
+  "syslayout.get": { params: WsScope; result: { layout: SystemsLayout | null } };
+  "syslayout.save": { params: WsScope & { layout: SystemsLayout }; result: { ok: true } };
   "fs.list": { params: WsScope & { path: string }; result: { entries: FileEntry[] } };
   "fs.read": { params: WsScope & { path: string }; result: { content: string; truncated: boolean } };
   "fs.write": { params: WsScope & { path: string; content: string }; result: { ok: true } };
@@ -289,7 +299,16 @@ export interface BridgeMethods {
     result: { chunks: TerminalChunk[] };
   };
   "codemap.get": { params: WsScope; result: CodeMapSummary };
-  "codemap.module": { params: WsScope & { path: string }; result: CodeModuleDetail };
+  /**
+   * `prefer`: workspace-relative files or directory prefixes that must survive
+   * the module's file-list truncation — the active facet lens's membership.
+   * Without it a drilled system whose files rank below the truncation cap
+   * renders as an empty shell.
+   */
+  "codemap.module": {
+    params: WsScope & { path: string; prefer?: string[] };
+    result: CodeModuleDetail;
+  };
   "codemap.file": { params: WsScope & { path: string }; result: CodeFileDetail };
   /**
    * Bulk expansion for the LoD slider: details of every listed module (all
@@ -297,7 +316,7 @@ export interface BridgeMethods {
    * the member level would otherwise be hundreds of requests.
    */
   "codemap.details": {
-    params: WsScope & { modules?: string[] };
+    params: WsScope & { modules?: string[]; prefer?: string[] };
     result: { modules: CodeModuleDetail[]; files: CodeFileDetail[] };
   };
   /** Import/export graph across every open workspace. */
@@ -329,6 +348,32 @@ export interface BridgeMethods {
     params: WsScope & { file: string; symbol: string };
     result: CodeSymbolSource;
   };
+  /**
+   * Everywhere one symbol crosses into consumers: the import statements that
+   * bring it in (barrel re-exports followed) and the call sites invoking it,
+   * each with its source line inline (capped).
+   */
+  "codemap.symbolSites": {
+    params: WsScope & { file: string; symbol: string };
+    result: CodeSymbolSites;
+  };
+  /**
+   * The concrete integration points of one part-pair on a system boundary:
+   * every import statement from files owned by `sourcePart` into files owned
+   * by `targetPart`, with its source line inline (capped). `sourceParts` /
+   * `targetParts` are the ownership universe — pass every system's part
+   * paths so longest-prefix attribution matches the overview's (a file under
+   * any nested part, even another system's, must not count as this part's).
+   */
+  "codemap.partCrossings": {
+    params: WsScope & {
+      sourcePart: string;
+      targetPart: string;
+      sourceParts?: string[];
+      targetParts?: string[];
+    };
+    result: PartCrossings;
+  };
   /** BFS call-graph trace from an entry symbol (syntax-resolved, capped). */
   "codemap.trace": {
     params: WsScope & { file: string; symbol: string; maxDepth?: number };
@@ -348,6 +393,15 @@ export interface BridgeMethods {
   "codemap.symbols": {
     params: WsScope & { query: string; limit?: number };
     result: { symbols: SymbolSearchHit[] };
+  };
+  /**
+   * All call sites addressing a served route (the API explorer's callers
+   * list) — method-compatible calls whose path the served path matches, or
+   * suffix-matches through unseen router mounts.
+   */
+  "codemap.apiSites": {
+    params: WsScope & { method: string; path: string };
+    result: { sites: { file: string; line?: number; method: string; path: string }[] };
   };
   /**
    * The semantic code index: deterministic heuristic tags rebuilt live from

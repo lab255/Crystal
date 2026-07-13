@@ -8,6 +8,7 @@ import {
   Position,
   ReactFlow,
   ReactFlowProvider,
+  useNodesState,
   useReactFlow,
   type Edge as RfEdge,
   type Node as RfNode,
@@ -21,13 +22,16 @@ import {
   ArrowRightLeft,
   ArrowUpRight,
   Boxes,
+  Component,
   Copy,
   Expand,
   ExternalLink,
   Folder,
   FolderGit2,
   GitCompare,
+  Group,
   Layers,
+  ListFilter,
   Maximize,
   PencilRuler,
   Plug,
@@ -35,11 +39,14 @@ import {
   Search,
   Shrink,
   Sparkles,
+  Ungroup,
+  Webhook,
   X,
 } from "lucide-react";
 import {
   SYSTEM_LAYERS,
   SYSTEM_LAYER_LABELS,
+  autoGroupSystems,
   computeSystemInsights,
   conceptDisplayName,
   createArchNode,
@@ -61,6 +68,8 @@ import {
   type SystemOverview,
   type SystemOverviewDiff,
   type SystemRole,
+  type SystemsGroup,
+  type SystemsLayout,
 } from "@crystal/core";
 import { useCrystal, useNav, useNavUpdate, useWorkspaces } from "@crystal/client";
 import {
@@ -121,6 +130,8 @@ interface SystemNodeData extends Record<string, unknown> {
   consumes: string[];
   selected: boolean;
   dimmed: boolean;
+  /** Member of the focus filter — the endpoints whose traffic is animated. */
+  focused: boolean;
   exportsShown: number;
   mark?: DiffMark;
 }
@@ -134,7 +145,7 @@ function cardHeight(system: SystemModule, exportsShown: number, consumes: string
 }
 
 function SystemNode({ data }: NodeProps<SystemRfNode>) {
-  const { system, consumes, selected, dimmed, exportsShown, mark } = data;
+  const { system, consumes, selected, dimmed, focused, exportsShown, mark } = data;
   const meta = ROLE_META[system.role];
   const Icon = meta.icon;
   const packages = [...new Set(system.parts.map((p) => p.pkg))];
@@ -142,7 +153,11 @@ function SystemNode({ data }: NodeProps<SystemRfNode>) {
     <div
       className={cn(
         "flex h-full w-full flex-col rounded-lg border bg-surface-1 shadow-sm transition-opacity",
-        selected ? "border-ink/40 ring-2 ring-ink/20" : "border-edge",
+        selected
+          ? "border-ink/40 ring-2 ring-ink/20"
+          : focused
+            ? "border-crystal-500/70 ring-2 ring-crystal-500/25"
+            : "border-edge",
         mark === "removed" && "border-dashed",
         dimmed && "opacity-25",
         !dimmed && mark === "removed" && "opacity-50",
@@ -167,6 +182,9 @@ function SystemNode({ data }: NodeProps<SystemRfNode>) {
           </div>
           <div className="truncate text-[10px] text-ink-faint">
             {system.fileCount} files
+            {system.componentCount > 0
+              ? ` · ${system.componentCount} component${system.componentCount === 1 ? "" : "s"}`
+              : ""}
             {packages.length > 1
               ? ` · ${packages.length} packages`
               : packages[0] && packages[0] !== "."
@@ -182,6 +200,9 @@ function SystemNode({ data }: NodeProps<SystemRfNode>) {
           </div>
           {system.exports.slice(0, exportsShown).map((e) => (
             <div key={`${e.file}#${e.name}`} className="flex items-baseline gap-1.5 leading-[18px]">
+              {e.kind === "component" && (
+                <Component className="h-2.5 w-2.5 shrink-0 self-center text-accent-violet" />
+              )}
               <span className="truncate font-mono text-[10px] text-ink-muted">{e.name}</span>
               <span className="ml-auto shrink-0 text-[9px] text-ink-faint">×{e.consumers}</span>
             </div>
@@ -224,6 +245,8 @@ interface SystemGroupData extends Record<string, unknown> {
   system: SystemModule;
   selected: boolean;
   dimmed: boolean;
+  /** Member of the focus filter — the endpoints whose traffic is animated. */
+  focused: boolean;
   mark?: DiffMark;
   onCollapse: (id: string) => void;
 }
@@ -239,14 +262,18 @@ type SystemPartRfNode = RfNode<SystemPartData>;
 
 /** A system opened in place: header + its parts as child nodes. */
 function SystemGroupNode({ data }: NodeProps<SystemGroupRfNode>) {
-  const { system, selected, dimmed, mark, onCollapse } = data;
+  const { system, selected, dimmed, focused, mark, onCollapse } = data;
   const meta = ROLE_META[system.role];
   const Icon = meta.icon;
   return (
     <div
       className={cn(
         "h-full w-full rounded-lg border bg-surface-1/60 transition-opacity",
-        selected ? "border-ink/40 ring-2 ring-ink/20" : "border-edge",
+        selected
+          ? "border-ink/40 ring-2 ring-ink/20"
+          : focused
+            ? "border-crystal-500/70 ring-2 ring-crystal-500/25"
+            : "border-edge",
         mark === "removed" && "border-dashed",
         dimmed && "opacity-25",
       )}
@@ -318,8 +345,71 @@ type LayerBandData = { layer: SystemLayer } & Record<string, unknown>;
 type LayerBandRfNode = RfNode<LayerBandData>;
 /** A top-level system card: collapsed, or expanded into a component group. */
 type SysCardNode = SystemRfNode | SystemGroupRfNode;
-/** What the canvas renders: system cards/groups, their parts, layer bands. */
-type ViewNode = SysCardNode | SystemPartRfNode | LayerBandRfNode;
+
+/* ---- user grouping (movable, persisted clusters) ---- */
+
+const CLUSTER_HEADER = 40;
+const CLUSTER_PAD = 18;
+
+interface SysClusterData extends Record<string, unknown> {
+  group: SystemsGroup;
+  /** Members currently on the canvas (filters can hide some). */
+  memberCount: number;
+  /** Inline-rename mode (entered from the context menu or a double-click). */
+  renaming: boolean;
+  onStartRename: (id: string) => void;
+  /** Commit (trimmed name) or cancel (null) an inline rename. */
+  onRename: (id: string, name: string | null) => void;
+}
+type SysClusterRfNode = RfNode<SysClusterData>;
+
+/** A user group: a movable container the systems inside ride along with. */
+function SysClusterNode({ data }: NodeProps<SysClusterRfNode>) {
+  const { group, memberCount, renaming, onStartRename, onRename } = data;
+  const [draft, setDraft] = useState(group.name);
+  useEffect(() => {
+    setDraft(group.name);
+  }, [group.name, renaming]);
+  return (
+    <div className="h-full w-full rounded-2xl border border-edge bg-surface-2/50 shadow-sm">
+      <div className="flex items-center gap-1.5 px-4 pt-2.5">
+        <Group className="h-3 w-3 shrink-0 text-ink-faint" />
+        {renaming ? (
+          <input
+            autoFocus
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={() => onRename(group.id, draft.trim() || null)}
+            onKeyDown={(e) => {
+              // Enter/Escape are the rename's, not the canvas shortcuts'.
+              e.stopPropagation();
+              if (e.key === "Enter") onRename(group.id, draft.trim() || null);
+              else if (e.key === "Escape") onRename(group.id, null);
+            }}
+            onClick={(e) => e.stopPropagation()}
+            aria-label="Group name"
+            className="nodrag w-40 rounded border border-edge bg-surface-1 px-1 py-0.5 text-[10px] font-semibold text-ink outline-none focus:border-crystal-400"
+          />
+        ) : (
+          <span
+            onDoubleClick={(e) => {
+              e.stopPropagation();
+              onStartRename(group.id);
+            }}
+            title="Double-click to rename"
+            className="text-[10px] font-semibold uppercase tracking-wider text-ink-faint"
+          >
+            {group.name}
+          </span>
+        )}
+        <span className="text-[9px] text-ink-faint">{memberCount}</span>
+      </div>
+    </div>
+  );
+}
+
+/** What the canvas renders: system cards/groups, their parts, layer bands, user clusters. */
+type ViewNode = SysCardNode | SystemPartRfNode | LayerBandRfNode | SysClusterRfNode;
 
 function LayerBandNode({ data }: NodeProps<LayerBandRfNode>) {
   return (
@@ -336,6 +426,7 @@ const nodeTypes = {
   systemGroup: SystemGroupNode,
   systemPart: SystemPartNode,
   layerBand: LayerBandNode,
+  sysCluster: SysClusterNode,
 };
 
 /** System-level dependency pairs — the layout skeleton (part edges excluded). */
@@ -431,6 +522,140 @@ function layeredLayout(nodes: SysCardNode[], pairs: readonly SysPair[]): ViewNod
   return out;
 }
 
+/**
+ * Default (module) mode layout with user groups and manual positions. Each
+ * group lays out its members with dagre and becomes a movable container;
+ * groups + ungrouped cards then dagre at the top level (edges collapsed onto
+ * the containers). Manual positions — absolute for top-level nodes, group-
+ * relative for members — override the computed spot, so a hand arrangement
+ * survives re-renders and data refreshes. Parents precede children in the
+ * returned array (react-flow requires it).
+ */
+function groupedLayout(
+  cards: SysCardNode[],
+  pairs: readonly SysPair[],
+  groups: readonly SystemsGroup[],
+  positions: Readonly<Record<string, { x: number; y: number }>>,
+  clusterExtras: Pick<SysClusterData, "onStartRename" | "onRename"> & {
+    renamingId: string | null;
+  },
+): ViewNode[] {
+  const memberOf = new Map<string, string>();
+  for (const g of groups) for (const m of g.members) if (!memberOf.has(m)) memberOf.set(m, g.id);
+
+  const byGroup = new Map<string, SysCardNode[]>();
+  const loose: SysCardNode[] = [];
+  for (const card of cards) {
+    const gid = memberOf.get(card.id);
+    if (gid) {
+      const list = byGroup.get(gid);
+      if (list) list.push(card);
+      else byGroup.set(gid, [card]);
+    } else loose.push(card);
+  }
+
+  // Inner layout per group: dagre over the members, manual (group-relative)
+  // positions winning; the container sizes to the result.
+  const shells: { group: SystemsGroup; width: number; height: number; children: SysCardNode[] }[] =
+    [];
+  for (const group of groups) {
+    const members = byGroup.get(group.id);
+    if (!members || members.length === 0) continue;
+    const ids = new Set(members.map((n) => n.id));
+    const laid = layout(
+      members,
+      pairs.filter((e) => ids.has(e.source) && ids.has(e.target)),
+    );
+    let minX = Infinity;
+    let minY = Infinity;
+    for (const n of laid) {
+      minX = Math.min(minX, n.position.x);
+      minY = Math.min(minY, n.position.y);
+    }
+    const children = laid.map((n) => ({
+      ...n,
+      parentId: group.id,
+      position:
+        positions[n.id] ??
+        { x: n.position.x - minX + CLUSTER_PAD, y: n.position.y - minY + CLUSTER_HEADER },
+    }));
+    let maxX = 0;
+    let maxY = 0;
+    for (const n of children) {
+      maxX = Math.max(maxX, n.position.x + ((n.style?.width as number) ?? CARD_W));
+      maxY = Math.max(maxY, n.position.y + ((n.style?.height as number) ?? 120));
+    }
+    shells.push({
+      group,
+      width: Math.max(maxX + CLUSTER_PAD, CARD_W + CLUSTER_PAD * 2),
+      height: maxY + CLUSTER_PAD,
+      children,
+    });
+  }
+
+  // Top level: groups as super-nodes, ungrouped cards as themselves.
+  const superOf = (id: string): string => {
+    const gid = memberOf.get(id);
+    return gid && shells.some((s) => s.group.id === gid) ? gid : id;
+  };
+  const g = new dagre.graphlib.Graph();
+  g.setGraph({ rankdir: "LR", nodesep: 44, ranksep: 110, marginx: 24, marginy: 24 });
+  g.setDefaultEdgeLabel(() => ({}));
+  for (const shell of shells) g.setNode(shell.group.id, { width: shell.width, height: shell.height });
+  for (const n of loose) {
+    g.setNode(n.id, {
+      width: (n.style?.width as number) ?? CARD_W,
+      height: (n.style?.height as number) ?? 120,
+    });
+  }
+  const topIds = new Set([...shells.map((s) => s.group.id), ...loose.map((n) => n.id)]);
+  const seenPairs = new Set<string>();
+  for (const e of pairs) {
+    const source = superOf(e.source);
+    const target = superOf(e.target);
+    if (source === target || !topIds.has(source) || !topIds.has(target)) continue;
+    const key = `${source}->${target}`;
+    if (seenPairs.has(key)) continue;
+    seenPairs.add(key);
+    g.setEdge(source, target);
+  }
+  dagre.layout(g);
+  const topPos = (id: string, width: number, height: number): { x: number; y: number } => {
+    const manual = positions[id];
+    if (manual) return { ...manual };
+    const pos = g.node(id);
+    return { x: pos.x - width / 2, y: pos.y - height / 2 };
+  };
+
+  const out: ViewNode[] = [];
+  for (const shell of shells) {
+    out.push({
+      id: shell.group.id,
+      type: "sysCluster",
+      position: topPos(shell.group.id, shell.width, shell.height),
+      data: {
+        group: shell.group,
+        memberCount: shell.children.length,
+        renaming: clusterExtras.renamingId === shell.group.id,
+        onStartRename: clusterExtras.onStartRename,
+        onRename: clusterExtras.onRename,
+      },
+      style: { width: shell.width, height: shell.height },
+      selectable: false,
+      focusable: false,
+      zIndex: -1,
+    });
+    out.push(...shell.children);
+  }
+  for (const n of loose) {
+    out.push({
+      ...n,
+      position: topPos(n.id, (n.style?.width as number) ?? CARD_W, (n.style?.height as number) ?? 120),
+    });
+  }
+  return out;
+}
+
 /** Stable node id of one part inside an expanded system. */
 const partNodeId = (sysId: string, partPath: string): string => `part|${sysId}|${partPath}`;
 
@@ -485,9 +710,23 @@ interface RefDiffState {
   diff: SystemOverviewDiff;
 }
 
+/**
+ * The slice of code a systems-view jump carries into the diagram canvas —
+ * materialized there as a facet so the code view highlights exactly the files
+ * the user was looking at (and the facet id deep-links in the URL).
+ */
+export interface OpenCodeFacet {
+  /** Facet name — the system (or component) being looked at. */
+  name: string;
+  /** Code-map module paths; diagram nodes match on `codeModule`. */
+  modules: string[];
+  /** Workspace-relative dirs; file-linked nodes match by prefix. */
+  paths: string[];
+}
+
 export interface SystemsViewProps {
   /** "Show this system's code" — drills into the code map / diagram canvas. */
-  onOpenCode?: (module: string) => void;
+  onOpenCode?: (module: string, facet?: OpenCodeFacet) => void;
 }
 
 export function SystemsView(props: SystemsViewProps = {}) {
@@ -504,9 +743,11 @@ type MenuState =
   | { kind: "node"; x: number; y: number; id: string }
   | { kind: "part"; x: number; y: number; sys: string; path: string; pkg: string }
   | { kind: "edge"; x: number; y: number; id: string }
+  | { kind: "group"; x: number; y: number; id: string }
   | { kind: "pane"; x: number; y: number };
 
 const EMPTY_STALE_FILES: string[] = [];
+const EMPTY_POSITIONS: Readonly<Record<string, { x: number; y: number }>> = {};
 
 function SystemsInner({ onOpenCode }: SystemsViewProps) {
   const { client } = useCrystal();
@@ -532,7 +773,8 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
   const [hiddenRoles, setHiddenRoles] = useState<ReadonlySet<SystemRole>>(
     () => new Set(QUIET_ROLES),
   );
-  const [search, setSearch] = useState("");
+  // Global find (the Architecture header's box) — dims systems that miss.
+  const search = useNav((l) => l.architect?.find) ?? "";
   // Edge selection, panel toggles and in-place expansion are navigational —
   // they live in the nav store so back/forward and shared links restore the
   // exact screen, panels included.
@@ -554,6 +796,34 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
       nav({ architect: { expanded: next.size > 0 ? [...next].join(",") : null } }),
     [nav],
   );
+  // Focus filter — the canvas trimmed to one or two systems plus their
+  // first-degree neighbors, with the traffic between the focused systems
+  // animated. Nav-held (deep-linkable) like every other selection.
+  const focusParam = useNav((l) => l.architect?.focus ?? null);
+  const focusSolo = useNav((l) => l.architect?.focusSolo) ?? false;
+  const focusSystems = useMemo<ReadonlySet<string>>(
+    () => new Set(focusParam ? focusParam.split(",") : []),
+    [focusParam],
+  );
+  const setFocusSystems = useCallback(
+    (next: ReadonlySet<string>) =>
+      nav({
+        architect: {
+          focus: next.size > 0 ? [...next].join(",") : null,
+          ...(next.size > 0 ? {} : { focusSolo: null }),
+        },
+      }),
+    [nav],
+  );
+  const toggleFocus = useCallback(
+    (id: string) => {
+      const next = new Set(focusSystems);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      setFocusSystems(next);
+    },
+    [focusSystems, setFocusSystems],
+  );
   const [codeIndex, setCodeIndex] = useState<{ index: CodeIndex; staleFiles: string[] } | null>(
     null,
   );
@@ -567,6 +837,138 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
   const [refCommits, setRefCommits] = useState<GitCommit[] | null>(null);
   const refsFetched = useRef(false);
   const reviewBoxRef = useRef<HTMLDivElement | null>(null);
+
+  /* ---- hand arrangement: manual positions + user groups ---- */
+
+  // Saved layout (`.crystal/systems-layout.json`); null = never touched, so
+  // the overview auto-groups itself (by layer) until the user edits.
+  const [savedLayout, setSavedLayout] = useState<SystemsLayout | null>(null);
+  const [renamingGroup, setRenamingGroup] = useState<string | null>(null);
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (!activeWs) return;
+    let cancelled = false;
+    client
+      .request("syslayout.get", {})
+      .then((res) => {
+        if (!cancelled) setSavedLayout(res.layout);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [client, activeWs]);
+
+  /** Apply + debounce-save a layout edit. `ws` is captured at schedule time —
+   *  the flush can land after the user switches workspaces. */
+  const persistLayout = useCallback(
+    (next: SystemsLayout) => {
+      setSavedLayout(next);
+      if (saveTimer.current) clearTimeout(saveTimer.current);
+      const ws = activeWs ?? undefined;
+      saveTimer.current = setTimeout(() => {
+        client.request("syslayout.save", { ws, layout: next }).catch(() => {});
+      }, 600);
+    },
+    [client, activeWs],
+  );
+
+  // Groups on the canvas: the saved arrangement, or (untouched) the automatic
+  // layer grouping the overview suggests — which the first edit materializes.
+  const effectiveGroups = useMemo<SystemsGroup[]>(() => {
+    if (savedLayout) return savedLayout.groups;
+    return overview ? autoGroupSystems(overview) : [];
+  }, [savedLayout, overview]);
+  const manualPositions = savedLayout?.positions ?? EMPTY_POSITIONS;
+
+  /** The layout an edit starts from — the first edit adopts the auto groups. */
+  const layoutForEdit = useCallback(
+    (): SystemsLayout =>
+      savedLayout ?? {
+        positions: {},
+        groups: effectiveGroups.map((g) => ({ ...g, members: [...g.members] })),
+      },
+    [savedLayout, effectiveGroups],
+  );
+
+  const renameGroup = useCallback(
+    (id: string, name: string | null) => {
+      setRenamingGroup(null);
+      if (!name) return;
+      const base = layoutForEdit();
+      persistLayout({
+        ...base,
+        groups: base.groups.map((g) => (g.id === id ? { ...g, name } : g)),
+      });
+    },
+    [layoutForEdit, persistLayout],
+  );
+
+  const dissolveGroup = useCallback(
+    (id: string) => {
+      const base = layoutForEdit();
+      const group = base.groups.find((g) => g.id === id);
+      // Member positions were group-relative — they'd land near the origin.
+      const positions = { ...base.positions };
+      delete positions[id];
+      for (const m of group?.members ?? []) delete positions[m];
+      persistLayout({ positions, groups: base.groups.filter((g) => g.id !== id) });
+    },
+    [layoutForEdit, persistLayout],
+  );
+
+  /** Move a system into a group (null = out of any group). */
+  const moveToGroup = useCallback(
+    (sysId: string, groupId: string | null) => {
+      const base = layoutForEdit();
+      const positions = { ...base.positions };
+      delete positions[sysId]; // stale relative/absolute position either way
+      let groups = base.groups.map((g) => ({
+        ...g,
+        members: g.members.filter((m) => m !== sysId),
+      }));
+      if (groupId)
+        groups = groups.map((g) =>
+          g.id === groupId ? { ...g, members: [...g.members, sysId] } : g,
+        );
+      persistLayout({ positions, groups });
+    },
+    [layoutForEdit, persistLayout],
+  );
+
+  const newGroupWith = useCallback(
+    (sysId: string) => {
+      const base = layoutForEdit();
+      const positions = { ...base.positions };
+      delete positions[sysId];
+      const group: SystemsGroup = { id: uid("grp"), name: "New group", members: [sysId] };
+      persistLayout({
+        positions,
+        groups: [
+          ...base.groups.map((g) => ({ ...g, members: g.members.filter((m) => m !== sysId) })),
+          group,
+        ],
+      });
+      setRenamingGroup(group.id);
+    },
+    [layoutForEdit, persistLayout],
+  );
+
+  const autoGroupNow = useCallback(() => {
+    if (!overview) return;
+    // Re-derived groups invalidate every stored position (members go relative).
+    persistLayout({ positions: {}, groups: autoGroupSystems(overview) });
+  }, [overview, persistLayout]);
+
+  const clearGroups = useCallback(() => {
+    persistLayout({ positions: {}, groups: [] });
+  }, [persistLayout]);
+
+  const resetPositions = useCallback(() => {
+    const base = layoutForEdit();
+    persistLayout({ positions: {}, groups: base.groups });
+  }, [layoutForEdit, persistLayout]);
 
   /** A component (part) → the deep-linked code map, drilled into its package. */
   const openCodemapModule = useCallback(
@@ -704,22 +1106,25 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
     setCodeIndex(null);
     setRefs(null);
     setRefCommits(null);
+    setSavedLayout(null);
+    setRenamingGroup(null);
     refsFetched.current = false;
     setGeneration((g) => g + 1);
   }, [activeWs]);
 
-  // Esc walks back: edge → system → review mode. (An open context menu
-  // consumes Escape itself.)
+  // Esc walks back: edge → system → focus filter → review mode. (An open
+  // context menu consumes Escape itself.)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape" || menu) return;
       if (selectedEdge) setSelectedEdge(null);
       else if (selectedId) setSelected(null);
+      else if (focusSystems.size > 0) setFocusSystems(new Set());
       else if (refDiff) setRefDiff(null);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [selectedEdge, selectedId, refDiff, menu, setSelected]);
+  }, [selectedEdge, selectedId, focusSystems, setFocusSystems, refDiff, menu, setSelected]);
 
   /* ---- code index + facet lens (shares the codemap's `lens` deep link) ---- */
 
@@ -850,6 +1255,46 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
     return neighbors;
   }, [lensSystems, rendered]);
 
+  // Everything the facet lens keeps on the canvas — the same mechanism as the
+  // code map: the canvas compacts to the lens members, plus (with the chip's
+  // "+N connected" toggle) their first-degree neighbors rendered dimmed.
+  // Null = no lens filter.
+  const lensVisible = useMemo(() => {
+    if (!lensSystems) return null;
+    const keep = new Set(lensSystems);
+    if (lensCtx) for (const id of lensNeighborSystems ?? []) keep.add(id);
+    return keep;
+  }, [lensSystems, lensCtx, lensNeighborSystems]);
+
+  // First-degree neighbors of the focused systems — shown by default so the
+  // filter answers "what do these touch", hidden via the chip's toggle.
+  const focusNeighbors = useMemo(() => {
+    if (focusSystems.size === 0 || !rendered) return null;
+    const neighbors = new Set<string>();
+    for (const l of rendered.overview.links) {
+      const sourceIn = focusSystems.has(l.source);
+      const targetIn = focusSystems.has(l.target);
+      if (sourceIn && !targetIn) neighbors.add(l.target);
+      else if (targetIn && !sourceIn) neighbors.add(l.source);
+    }
+    return neighbors;
+  }, [focusSystems, rendered]);
+
+  // Everything the focus filter keeps on the canvas; null = no filter.
+  const focusVisible = useMemo(() => {
+    if (focusSystems.size === 0) return null;
+    const keep = new Set(focusSystems);
+    if (!focusSolo) for (const id of focusNeighbors ?? []) keep.add(id);
+    return keep;
+  }, [focusSystems, focusSolo, focusNeighbors]);
+
+  // Refit the viewport when the focus filter or the facet lens reshapes the
+  // canvas — the laid out graph can shrink to a corner of the old extents.
+  useEffect(() => {
+    const t = setTimeout(() => void fitView({ padding: 0.2, duration: 300 }), 80);
+    return () => clearTimeout(t);
+  }, [focusParam, focusSolo, lensParam, lensCtx, fitView]);
+
   // Insights always describe the live overview, not the review ghosts.
   const insights: SystemInsights | null = useMemo(
     () => (overview ? computeSystemInsights(overview) : null),
@@ -885,7 +1330,16 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
     if (!rendered) return { nodes: [] as ViewNode[], edges: [] as RfEdge[] };
     const { overview: data, marks, edgeMarks } = rendered;
     const query = search.trim().toLowerCase();
-    const links = data.links.filter((l) => visible.has(l.source) && visible.has(l.target));
+    // The focus filter and the facet lens both *remove* everything outside
+    // their slice (lens: members + optional neighbor ring) — dagre then lays
+    // out just what's left, the same compaction the code map's lens does.
+    const links = data.links.filter(
+      (l) =>
+        visible.has(l.source) &&
+        visible.has(l.target) &&
+        (!focusVisible || (focusVisible.has(l.source) && focusVisible.has(l.target))) &&
+        (!lensVisible || (lensVisible.has(l.source) && lensVisible.has(l.target))),
+    );
     const connected = new Set(
       selectedId
         ? links.flatMap((l) =>
@@ -900,6 +1354,37 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
       list.push(nameOf(l.target));
       consumesOf.set(l.source, list);
     }
+    // Search covers the whole card, not just the title: exported symbols,
+    // component paths/packages, external services, consumed systems — and the
+    // system's boundary traffic (crossing symbols, served API routes), so a
+    // route or interface name lights up both ends of the contract.
+    const boundaryText = new Map<string, string[]>();
+    if (query.length > 0) {
+      for (const l of data.links) {
+        const texts = [
+          ...l.symbols,
+          ...(l.apis ?? []).map((a) => `${a.method} ${a.path}`.toLowerCase()),
+        ].map((t) => t.toLowerCase());
+        if (texts.length === 0) continue;
+        for (const id of [l.source, l.target]) {
+          const list = boundaryText.get(id) ?? [];
+          list.push(...texts);
+          boundaryText.set(id, list);
+        }
+      }
+    }
+    const matchesSearch = (s: SystemModule): boolean =>
+      s.name.toLowerCase().includes(query) ||
+      s.parts.some(
+        (p) => p.path.toLowerCase().includes(query) || p.pkg.toLowerCase().includes(query),
+      ) ||
+      s.exports.some(
+        (e) => e.name.toLowerCase().includes(query) || e.file.toLowerCase().includes(query),
+      ) ||
+      s.externals.some((x) => x.name.toLowerCase().includes(query)) ||
+      s.components.some((c) => c.name.toLowerCase().includes(query)) ||
+      (consumesOf.get(s.id) ?? []).some((n) => n.toLowerCase().includes(query)) ||
+      (boundaryText.get(s.id) ?? []).some((t) => t.includes(query));
     // Only multi-part systems open — a single part is the card itself.
     const expanded = new Set(
       [...expandedSystems].filter((id) => {
@@ -912,14 +1397,16 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
     const partNodes: SystemPartRfNode[] = [];
     for (const s of data.systems) {
       if (!visible.has(s.id)) continue;
-      const searchMiss = query.length > 0 && !s.name.toLowerCase().includes(query);
-      const lensMiss =
-        lensSystems != null &&
-        !lensSystems.has(s.id) &&
-        !(lensCtx && lensNeighborSystems?.has(s.id));
+      if (focusVisible && !focusVisible.has(s.id)) continue;
+      if (lensVisible && !lensVisible.has(s.id)) continue;
+      const focused = focusSystems.has(s.id);
+      const searchMiss = query.length > 0 && !matchesSearch(s);
+      // Lens neighbors survive the filter as dimmed context (the "+N
+      // connected" ring); members render at full strength.
+      const lensNeighbor = lensSystems != null && !lensSystems.has(s.id);
       const dimmed =
         searchMiss ||
-        lensMiss ||
+        lensNeighbor ||
         (selectedId != null && s.id !== selectedId && !connected.has(s.id));
       const mark = marks.get(s.id);
       if (expanded.has(s.id)) {
@@ -932,6 +1419,7 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
             system: s,
             selected: s.id === selectedId,
             dimmed,
+            focused,
             mark,
             onCollapse: collapseSystem,
           },
@@ -962,6 +1450,7 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
           consumes,
           selected: s.id === selectedId,
           dimmed,
+          focused,
           exportsShown,
           mark,
         },
@@ -983,25 +1472,46 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
         key === selectedEdge ||
         (selectedId != null && (l.source === selectedId || l.target === selectedId));
       const faded = (selectedId != null || selectedEdge != null) && !active;
+      // Information flow the focus filter is asking about: traffic between
+      // focused systems — or, with a single system focused, all its traffic.
+      const flow =
+        focusSystems.size > 0 &&
+        ((focusSystems.has(l.source) && focusSystems.has(l.target)) ||
+          (focusSystems.size === 1 &&
+            (focusSystems.has(l.source) || focusSystems.has(l.target))));
       const stroke = mark === "added"
         ? "var(--color-ok)"
         : mark === "removed"
           ? "var(--color-danger)"
-          : inCycle
-            ? "var(--color-accent-rose)"
-            : active
-              ? "var(--color-accent-violet)"
-              : apiOnly
-                ? "var(--color-accent-amber)"
-                : "var(--color-edge-strong)";
+          : flow
+            ? "var(--color-accent-cyan)"
+            : inCycle
+              ? "var(--color-accent-rose)"
+              : active
+                ? "var(--color-accent-violet)"
+                : apiOnly
+                  ? "var(--color-accent-amber)"
+                  : "var(--color-edge-strong)";
       const shared = {
         data: { linkKey: key },
+        // Flow edges march (xyflow's animated dash) toward the consumer, with
+        // a matching arrowhead — the "moving arrows" of the focus filter.
+        animated: flow,
         labelStyle: {
           fontSize: 9,
-          fill: apiOnly ? "var(--color-accent-amber)" : "var(--color-ink-faint)",
+          fill: flow
+            ? "var(--color-accent-cyan)"
+            : apiOnly
+              ? "var(--color-accent-amber)"
+              : "var(--color-ink-faint)",
         },
         labelBgStyle: { fill: "var(--color-surface-0)", fillOpacity: 0.8 },
-        markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14 },
+        markerEnd: {
+          type: MarkerType.ArrowClosed,
+          width: flow ? 16 : 14,
+          height: flow ? 16 : 14,
+          color: flow ? "var(--color-accent-cyan)" : undefined,
+        },
       };
       // With an expanded endpoint, the edge splits along its part attribution.
       const splitEnds =
@@ -1034,7 +1544,7 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
             label: `×${sp.weight}`,
             style: {
               stroke,
-              strokeWidth: 1 + 2 * Math.sqrt(sp.weight / maxWeight),
+              strokeWidth: Math.max(flow ? 2 : 0, 1 + 2 * Math.sqrt(sp.weight / maxWeight)),
               strokeDasharray: mark === "removed" ? "5 4" : undefined,
               opacity: faded ? 0.1 : 1,
             },
@@ -1056,7 +1566,7 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
         label,
         style: {
           stroke,
-          strokeWidth: 1 + 2 * Math.sqrt(l.weight / maxWeight),
+          strokeWidth: Math.max(flow ? 2 : 0, 1 + 2 * Math.sqrt(l.weight / maxWeight)),
           strokeDasharray: mark === "removed" ? "5 4" : apiOnly ? "4 3" : undefined,
           opacity: faded ? 0.1 : 1,
         },
@@ -1087,7 +1597,14 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
     }
 
     const pairs: SysPair[] = links.map((l) => ({ source: l.source, target: l.target }));
-    const top = sysGroup === "layers" ? layeredLayout(cards, pairs) : layout(cards, pairs);
+    const top =
+      sysGroup === "layers"
+        ? layeredLayout(cards, pairs)
+        : groupedLayout(cards, pairs, effectiveGroups, manualPositions, {
+            renamingId: renamingGroup,
+            onStartRename: setRenamingGroup,
+            onRename: renameGroup,
+          });
     return { nodes: [...top, ...partNodes] as ViewNode[], edges };
   }, [
     rendered,
@@ -1099,11 +1616,86 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
     cycleEdges,
     sysGroup,
     lensSystems,
-    lensNeighborSystems,
-    lensCtx,
+    lensVisible,
+    focusSystems,
+    focusVisible,
     expandedSystems,
     collapseSystem,
+    effectiveGroups,
+    manualPositions,
+    renamingGroup,
+    renameGroup,
   ]);
+
+  // Dragging needs live node state; the computed scene re-syncs it whenever
+  // the data (or the persisted arrangement) changes.
+  const [rfNodes, setRfNodes, onNodesChange] = useNodesState<ViewNode>(nodes);
+  useEffect(() => {
+    setRfNodes(nodes);
+  }, [nodes, setRfNodes]);
+
+  /**
+   * Drop handling: group containers persist their new spot; a system card
+   * dropped inside a group joins it (position stored group-relative), dropped
+   * on open canvas it leaves any group (position stored absolute). The first
+   * drag materializes the automatic grouping into the saved layout.
+   */
+  const onNodeDragStop = useCallback(
+    (_evt: unknown, node: RfNode) => {
+      if (sysGroup === "layers") return;
+      const base = layoutForEdit();
+      const positions = { ...base.positions };
+      if (node.type === "sysCluster") {
+        positions[node.id] = { x: node.position.x, y: node.position.y };
+        persistLayout({ ...base, positions });
+        return;
+      }
+      if (node.type !== "system" && node.type !== "systemGroup") return;
+      const parent = node.parentId ? rfNodes.find((n) => n.id === node.parentId) : undefined;
+      const abs = parent
+        ? { x: parent.position.x + node.position.x, y: parent.position.y + node.position.y }
+        : { ...node.position };
+      const w = node.measured?.width ?? (node.style?.width as number) ?? CARD_W;
+      const h = node.measured?.height ?? (node.style?.height as number) ?? 120;
+      const center = { x: abs.x + w / 2, y: abs.y + h / 2 };
+      // Group containers are top-level — hit-test their rects at the center.
+      let drop: SysClusterRfNode | null = null;
+      for (const n of rfNodes) {
+        if (n.type !== "sysCluster") continue;
+        const gw = (n.style?.width as number) ?? 0;
+        const gh = (n.style?.height as number) ?? 0;
+        if (
+          center.x >= n.position.x &&
+          center.x <= n.position.x + gw &&
+          center.y >= n.position.y &&
+          center.y <= n.position.y + gh
+        ) {
+          drop = n as SysClusterRfNode;
+          break;
+        }
+      }
+      let groups = base.groups;
+      const currentGroup = groups.find((g) => g.members.includes(node.id))?.id ?? null;
+      if ((drop?.id ?? null) !== currentGroup) {
+        groups = groups.map((g) => ({
+          ...g,
+          members: g.members.filter((m) => m !== node.id),
+        }));
+        if (drop)
+          groups = groups.map((g) =>
+            g.id === drop!.id ? { ...g, members: [...g.members, node.id] } : g,
+          );
+      }
+      positions[node.id] = drop
+        ? {
+            x: Math.max(CLUSTER_PAD, abs.x - drop.position.x),
+            y: Math.max(CLUSTER_HEADER, abs.y - drop.position.y),
+          }
+        : abs;
+      persistLayout({ ...base, positions, groups });
+    },
+    [sysGroup, rfNodes, layoutForEdit, persistLayout],
+  );
 
   /** Snapshot the visible systems into a hand-editable diagram. */
   const materialize = useCallback(async () => {
@@ -1111,9 +1703,10 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
     const created = await client.request("arch.create", { name: "Systems overview" });
     const idMap = new Map<string, ArchNode>();
     const archNodes: ArchNode[] = [];
-    // Layer-band children carry band-relative positions — flatten to absolute.
+    // Band/group children carry parent-relative positions — flatten to absolute.
     const bandPos = new Map<string, { x: number; y: number }>();
-    for (const n of nodes) if (n.type === "layerBand") bandPos.set(n.id, n.position);
+    for (const n of nodes)
+      if (n.type === "layerBand" || n.type === "sysCluster") bandPos.set(n.id, n.position);
     for (const n of nodes) {
       if (n.type !== "system" && n.type !== "systemGroup") continue;
       const data = n.data as SystemNodeData | SystemGroupData;
@@ -1170,6 +1763,28 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
           icon: Boxes,
           onSelect: () => nav({ architect: { edge: null, system: sys.id } }),
         },
+        focusSystems.has(sys.id)
+          ? {
+              type: "item",
+              label: "Remove from filter",
+              icon: ListFilter,
+              onSelect: () => toggleFocus(sys.id),
+            }
+          : focusSystems.size > 0
+            ? {
+                type: "item",
+                label: "Add to filter",
+                icon: ListFilter,
+                hint: "⌘/ctrl-click",
+                onSelect: () => toggleFocus(sys.id),
+              }
+            : {
+                type: "item",
+                label: "Filter — show with neighbors",
+                icon: ListFilter,
+                hint: "⌘/ctrl-click",
+                onSelect: () => setFocusSystems(new Set([sys.id])),
+              },
       ];
       if (sys.parts.length > 1)
         entries.push({
@@ -1177,6 +1792,41 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
           label: expandedSystems.has(sys.id) ? "Collapse components" : "Expand components",
           icon: expandedSystems.has(sys.id) ? Shrink : Expand,
           onSelect: () => toggleExpanded(sys.id),
+        });
+      if (sysGroup === "modules") {
+        const inGroup = effectiveGroups.find((g) => g.members.includes(sys.id)) ?? null;
+        entries.push({
+          type: "submenu",
+          label: "Group",
+          icon: Group,
+          entries: [
+            ...effectiveGroups.map((g): MenuEntry => ({
+              type: "item",
+              label: g.name,
+              checked: g.id === inGroup?.id,
+              onSelect: () => moveToGroup(sys.id, g.id),
+            })),
+            ...(effectiveGroups.length > 0 ? [{ type: "separator" } as MenuEntry] : []),
+            { type: "item", label: "New group…", onSelect: () => newGroupWith(sys.id) },
+            ...(inGroup
+              ? [
+                  {
+                    type: "item",
+                    label: "Remove from group",
+                    onSelect: () => moveToGroup(sys.id, null),
+                  } as MenuEntry,
+                ]
+              : []),
+          ],
+        });
+      }
+      if (sys.endpoints.length > 0)
+        entries.push({
+          type: "item",
+          label: "Explore APIs",
+          icon: Webhook,
+          hint: `${sys.endpoints.length}`,
+          onSelect: () => nav({ architect: { view: "apis", system: sys.id, api: null } }),
         });
       if (pkg)
         entries.push({
@@ -1191,7 +1841,12 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
           type: "item",
           label: "Open in code",
           icon: ExternalLink,
-          onSelect: () => onOpenCode(pkg),
+          onSelect: () =>
+            onOpenCode(pkg, {
+              name: sys.name,
+              modules: [...new Set(sys.parts.map((p) => p.pkg))],
+              paths: sys.parts.map((p) => p.path),
+            }),
         });
       entries.push(
         { type: "separator" },
@@ -1221,13 +1876,21 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
           onSelect: () => openCodemapModule(menu.pkg),
         },
       ];
-      if (onOpenCode)
+      if (onOpenCode) {
+        const sysName = rendered.overview.systems.find((s) => s.id === menu.sys)?.name;
+        const partName = menu.path.split("/").at(-1) ?? menu.path;
         entries.push({
           type: "item",
           label: "Open in code",
           icon: ExternalLink,
-          onSelect: () => onOpenCode(menu.pkg),
+          onSelect: () =>
+            onOpenCode(menu.pkg, {
+              name: sysName ? `${sysName} · ${partName}` : partName,
+              modules: [menu.pkg],
+              paths: [menu.path],
+            }),
         });
+      }
       entries.push(
         {
           type: "item",
@@ -1246,15 +1909,60 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
       );
       return entries;
     }
+    if (menu.kind === "group") {
+      const group = effectiveGroups.find((g) => g.id === menu.id);
+      if (!group) return [];
+      return [
+        {
+          type: "item",
+          label: "Rename group",
+          icon: Group,
+          hint: "double-click",
+          onSelect: () => setRenamingGroup(group.id),
+        },
+        {
+          type: "item",
+          label: "Ungroup",
+          icon: Ungroup,
+          onSelect: () => dissolveGroup(group.id),
+        },
+      ];
+    }
     if (menu.kind === "edge") {
       const link = rendered.overview.links.find((l) => `${l.source}->${l.target}` === menu.id);
       if (!link) return [];
+      const firstApi = link.apis?.[0];
       return [
         {
           type: "item",
           label: "Open edge details",
           icon: ArrowUpRight,
           onSelect: () => nav({ architect: { system: null, edge: menu.id } }),
+        },
+        ...(firstApi
+          ? [
+              {
+                type: "item",
+                label: "Open in API explorer",
+                icon: Webhook,
+                hint: `${link.apis!.length} route${link.apis!.length === 1 ? "" : "s"}`,
+                onSelect: () =>
+                  nav({
+                    architect: {
+                      view: "apis",
+                      system: link.target,
+                      api: `${firstApi.method} ${firstApi.path}`,
+                      edge: null,
+                    },
+                  }),
+              } as MenuEntry,
+            ]
+          : []),
+        {
+          type: "item",
+          label: "Filter both systems",
+          icon: ListFilter,
+          onSelect: () => setFocusSystems(new Set([link.source, link.target])),
         },
         {
           type: "item",
@@ -1265,7 +1973,20 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
         },
       ];
     }
+    const paneEntries: MenuEntry[] = [];
+    if (focusSystems.size > 0)
+      paneEntries.push(
+        {
+          type: "item",
+          label: "Clear focus filter",
+          icon: ListFilter,
+          hint: "esc",
+          onSelect: () => setFocusSystems(new Set()),
+        },
+        { type: "separator" },
+      );
     return [
+      ...paneEntries,
       {
         type: "item",
         label: "Group by module",
@@ -1278,6 +1999,30 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
         checked: sysGroup === "layers",
         onSelect: () => setSysGroup("layers"),
       },
+      ...(sysGroup === "modules"
+        ? ([
+            { type: "separator" },
+            {
+              type: "item",
+              label: "Auto-group by layer",
+              icon: Group,
+              onSelect: autoGroupNow,
+            },
+            ...(effectiveGroups.length > 0
+              ? [{ type: "item", label: "Clear groups", icon: Ungroup, onSelect: clearGroups }]
+              : []),
+            ...(Object.keys(manualPositions).length > 0
+              ? [
+                  {
+                    type: "item",
+                    label: "Reset positions",
+                    icon: RefreshCw,
+                    onSelect: resetPositions,
+                  },
+                ]
+              : []),
+          ] as MenuEntry[])
+        : []),
       { type: "separator" },
       {
         type: "submenu",
@@ -1340,6 +2085,17 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
     expandedSystems,
     toggleExpanded,
     collapseSystem,
+    focusSystems,
+    toggleFocus,
+    setFocusSystems,
+    effectiveGroups,
+    manualPositions,
+    moveToGroup,
+    newGroupWith,
+    dissolveGroup,
+    autoGroupNow,
+    clearGroups,
+    resetPositions,
   ]);
 
   const selected = rendered?.overview.systems.find((s) => s.id === selectedId) ?? null;
@@ -1398,17 +2154,25 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
         <div className="flex h-full min-h-0">
       <div className="relative min-w-0 flex-1">
         <ReactFlow
-          nodes={nodes}
+          nodes={rfNodes}
           edges={edges}
           nodeTypes={nodeTypes}
-          onNodeClick={(_, n) => {
-            if (n.type === "systemPart") {
-              const d = n.data as SystemPartData;
-              nav({ architect: { edge: null, system: d.sysId === selectedId ? null : d.sysId } });
+          onNodesChange={onNodesChange}
+          onNodeDragStop={onNodeDragStop}
+          onNodeClick={(evt, n) => {
+            const sysId =
+              n.type === "systemPart"
+                ? (n.data as SystemPartData).sysId
+                : n.type === "system" || n.type === "systemGroup"
+                  ? n.id
+                  : null;
+            if (!sysId) return;
+            // Ctrl/⌘-click builds the focus filter instead of selecting.
+            if (evt.ctrlKey || evt.metaKey) {
+              toggleFocus(sysId);
               return;
             }
-            if (n.type !== "system" && n.type !== "systemGroup") return;
-            nav({ architect: { edge: null, system: n.id === selectedId ? null : n.id } });
+            nav({ architect: { edge: null, system: sysId === selectedId ? null : sysId } });
           }}
           onNodeDoubleClick={(_, n) => {
             if (n.type !== "system" && n.type !== "systemGroup") return;
@@ -1441,6 +2205,10 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
               });
               return;
             }
+            if (n.type === "sysCluster") {
+              setMenu({ kind: "group", x: evt.clientX, y: evt.clientY, id: n.id });
+              return;
+            }
             if (n.type !== "system" && n.type !== "systemGroup") return;
             setMenu({ kind: "node", x: evt.clientX, y: evt.clientY, id: n.id });
           }}
@@ -1454,16 +2222,29 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
             evt.preventDefault();
             setMenu({ kind: "pane", x: evt.clientX, y: evt.clientY });
           }}
-          nodesDraggable={false}
+          nodesDraggable={sysGroup !== "layers"}
           nodesConnectable={false}
           fitView
           minZoom={0.1}
+          panOnScroll
+          zoomOnPinch
           proOptions={{ hideAttribution: true }}
         >
           <Background variant={BackgroundVariant.Dots} gap={22} size={1} />
           <Controls showInteractive={false} />
           <MiniMap pannable zoomable className="!bg-surface-1" />
         </ReactFlow>
+
+        {/* The lens filtered everything out — same dead-end the code map shows. */}
+        {lensVisible && !nodes.some((n) => n.type === "system" || n.type === "systemGroup") ? (
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+            <div className="pointer-events-auto">
+              <EmptyState icon={Sparkles} title="Nothing matches this facet">
+                No systems carry {lensName || "this facet"} — exit the lens or index more files.
+              </EmptyState>
+            </div>
+          </div>
+        ) : null}
 
         {/* Top-left: role legend + search + stats. */}
         <div className="absolute left-3 top-3 flex flex-col gap-1.5">
@@ -1504,20 +2285,6 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
               {rendered.overview.systems.length} systems · {rendered.overview.links.length} links ·{" "}
               {rendered.overview.fileTotal} files
             </span>
-          </div>
-          <div className="flex w-56 items-center gap-1.5 rounded-lg border border-edge bg-surface-1/95 px-2 py-1 shadow-sm">
-            <Search className="h-3 w-3 shrink-0 text-ink-faint" />
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Filter systems…"
-              className="w-full bg-transparent text-[11px] text-ink outline-none placeholder:text-ink-faint"
-            />
-            {search && (
-              <button type="button" onClick={() => setSearch("")}>
-                <X className="h-3 w-3 text-ink-faint hover:text-ink" />
-              </button>
-            )}
           </div>
           <div className="flex w-fit items-center gap-0.5 rounded-lg border border-edge bg-surface-1/95 p-0.5 shadow-sm">
             {(["modules", "layers"] as const).map((g) => (
@@ -1569,6 +2336,38 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
                 type="button"
                 onClick={() => nav({ architect: { lens: null, lensCtx: false } })}
                 aria-label="Clear facet lens"
+              >
+                <X className="h-3 w-3 text-ink-faint hover:text-ink" />
+              </button>
+            </div>
+          )}
+          {focusSystems.size > 0 && (
+            <div className="flex w-fit items-center gap-1.5 rounded-lg border border-edge bg-surface-1/95 px-2 py-1 shadow-sm">
+              <ListFilter className="h-3 w-3 shrink-0 text-accent-cyan" />
+              <span className="max-w-52 truncate text-[10px] font-medium text-ink">
+                {[...focusSystems].map(nameOf).join(" + ")}
+              </span>
+              {focusNeighbors && focusNeighbors.size > 0 ? (
+                <Tooltip content="Also show first-degree neighbor systems — everything the focused systems touch">
+                  <button
+                    type="button"
+                    aria-pressed={!focusSolo}
+                    onClick={() => nav({ architect: { focusSolo: focusSolo ? null : true } })}
+                    className={cn(
+                      "rounded px-1 py-0.5 text-[9px] transition-colors",
+                      !focusSolo
+                        ? "bg-accent-cyan/15 text-accent-cyan"
+                        : "text-ink-faint hover:text-ink-muted",
+                    )}
+                  >
+                    +{focusNeighbors.size} connected
+                  </button>
+                </Tooltip>
+              ) : null}
+              <button
+                type="button"
+                onClick={() => setFocusSystems(new Set())}
+                aria-label="Clear focus filter"
               >
                 <X className="h-3 w-3 text-ink-faint hover:text-ink" />
               </button>
@@ -1915,7 +2714,7 @@ function SystemDetail({
   nameOf: (id: string) => string;
   onClose: () => void;
   onSelect: (id: string | null) => void;
-  onOpenCode?: (module: string) => void;
+  onOpenCode?: (module: string, facet?: OpenCodeFacet) => void;
 }) {
   const meta = ROLE_META[system.role];
   const Icon = meta.icon;
@@ -1968,7 +2767,13 @@ function SystemDetail({
               <Tooltip content="Open in the architecture canvas">
                 <button
                   type="button"
-                  onClick={() => onOpenCode(p.pkg)}
+                  onClick={() =>
+                    onOpenCode(p.pkg, {
+                      name: `${system.name} · ${p.path.split("/").at(-1) ?? p.path}`,
+                      modules: [p.pkg],
+                      paths: [p.path],
+                    })
+                  }
                   className="text-ink-faint hover:text-ink"
                 >
                   <ExternalLink className="h-3 w-3" />
@@ -2047,6 +2852,36 @@ function SystemDetail({
           </button>
         ))}
       </Section>
+
+      {system.componentCount > 0 && (
+        <Section title={`Components · ${system.componentCount}`}>
+          {system.components.map((c) => (
+            <button
+              key={`${c.file}#${c.name}`}
+              type="button"
+              onClick={() => requestOpenFile(c.file)}
+              title={c.file}
+              className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-0.5 text-left hover:bg-surface-2"
+            >
+              <Component className="h-3 w-3 shrink-0 text-accent-violet" />
+              <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-ink">
+                {c.name}
+              </span>
+              {c.consumers > 0 && (
+                <Tooltip content={`${c.consumers} file${c.consumers === 1 ? "" : "s"} outside this system import it`}>
+                  <span className="shrink-0 text-[9px] text-ink-faint">×{c.consumers}</span>
+                </Tooltip>
+              )}
+            </button>
+          ))}
+          {system.componentCount > system.components.length && (
+            <div className="px-1.5 py-0.5 text-[10px] text-ink-faint">
+              +{system.componentCount - system.components.length} more — open the code map for
+              the full inventory
+            </div>
+          )}
+        </Section>
+      )}
 
       {system.endpoints.length > 0 && (
         <Section title={`Serves · ${system.endpoints.length} route${system.endpoints.length === 1 ? "" : "s"}`}>

@@ -7,6 +7,8 @@ import {
   AgentRosterSchema,
   CRYSTAL_DIR,
   PROJECTS_DIR,
+  SYSTEMS_LAYOUT_FILE,
+  SystemsLayoutSchema,
   TODOS_FILE,
   TodoListSchema,
   WORKSPACE_FILE,
@@ -23,6 +25,7 @@ import {
   type ArchDraft,
   type ArchitectureGraph,
   type Project,
+  type SystemsLayout,
   type TodoList,
   type WorkspaceInfo,
   type WorkspaceManifest,
@@ -179,6 +182,22 @@ export class WorkspaceStore {
     const file = resolveInRoot(this.root, TODOS_FILE);
     await fs.mkdir(path.dirname(file), { recursive: true });
     await fs.writeFile(file, serializeCrystalFile("todos", parsed), "utf8");
+  }
+
+  /** Load the systems-overview arrangement (null until the user first edits it). */
+  async loadSystemsLayout(): Promise<SystemsLayout | null> {
+    const file = resolveInRoot(this.root, SYSTEMS_LAYOUT_FILE);
+    if (!(await exists(file))) return null;
+    return parseCrystalFile("syslayout", await fs.readFile(file, "utf8"));
+  }
+
+  async saveSystemsLayout(layout: SystemsLayout): Promise<void> {
+    // Validate before writing — a bad payload must not corrupt the file for
+    // every later read.
+    const parsed = SystemsLayoutSchema.parse(layout);
+    const file = resolveInRoot(this.root, SYSTEMS_LAYOUT_FILE);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, serializeCrystalFile("syslayout", parsed), "utf8");
   }
 
   /** Load the agent roster (seeded defaults when the file doesn't exist yet). */

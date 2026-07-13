@@ -166,6 +166,13 @@ export async function startCrystalServer(opts: {
       broadcast("agents.changed", { ws: rt.id, roster });
       return { ok: true };
     },
+    "syslayout.get": async ({ ws }) => ({
+      layout: await registry.get(ws).store.loadSystemsLayout(),
+    }),
+    "syslayout.save": async ({ ws, layout }) => {
+      await registry.get(ws).store.saveSystemsLayout(layout);
+      return { ok: true };
+    },
     "todos.get": async ({ ws }) => ({ todos: await registry.get(ws).store.loadTodos() }),
     "todos.save": async ({ ws, todos }) => {
       const rt = registry.get(ws);
@@ -253,9 +260,11 @@ export async function startCrystalServer(opts: {
       chunks: registry.get(ws).terminals.buffer(terminalId),
     }),
     "codemap.get": ({ ws }) => registry.get(ws).codemap.summary(),
-    "codemap.module": ({ ws, path: p }) => registry.get(ws).codemap.moduleDetail(p),
+    "codemap.module": ({ ws, path: p, prefer }) =>
+      registry.get(ws).codemap.moduleDetail(p, prefer),
     "codemap.file": ({ ws, path: p }) => registry.get(ws).codemap.fileDetail(p),
-    "codemap.details": ({ ws, modules }) => registry.get(ws).codemap.bulkDetails(modules),
+    "codemap.details": ({ ws, modules, prefer }) =>
+      registry.get(ws).codemap.bulkDetails(modules, prefer),
     "codemap.cross": () => registry.crossMap(),
     "codemap.overview": async ({ ws }) => {
       const rt = registry.get(ws);
@@ -282,6 +291,10 @@ export async function startCrystalServer(opts: {
     },
     "codemap.symbolSource": ({ ws, file, symbol }) =>
       registry.get(ws).codemap.symbolSource(file, symbol),
+    "codemap.symbolSites": ({ ws, file, symbol }) =>
+      registry.get(ws).codemap.symbolSites(file, symbol),
+    "codemap.partCrossings": ({ ws, sourcePart, targetPart, sourceParts, targetParts }) =>
+      registry.get(ws).codemap.partCrossings(sourcePart, targetPart, sourceParts, targetParts),
     "codemap.trace": ({ ws, file, symbol, maxDepth }) =>
       registry.get(ws).codemap.trace(file, symbol, maxDepth),
     "codemap.duplicates": async ({ ws, minTokens }) => ({
@@ -295,6 +308,7 @@ export async function startCrystalServer(opts: {
     "codemap.symbols": async ({ ws, query, limit }) => ({
       symbols: await registry.get(ws).codemap.searchSymbols(query, limit),
     }),
+    "codemap.apiSites": ({ ws, method, path: p }) => registry.get(ws).codemap.apiSites(method, p),
     "codeindex.get": ({ ws }) => registry.get(ws).codeindex.get(),
     "codeindex.enrich": async ({ ws, files, full, agentId }) => {
       const rt = registry.get(ws);

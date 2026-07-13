@@ -92,8 +92,8 @@ const map = new Map();
 map.get("/api/forms", extra);`,
     );
     expect(endpoints).toEqual([
-      { method: "GET", path: "/api/forms" },
-      { method: "POST", path: "/api/forms/:formId/submissions" },
+      { method: "GET", path: "/api/forms", line: 3, handler: "listForms" },
+      { method: "POST", path: "/api/forms/:formId/submissions", line: 4, handler: "submitForm" },
     ]);
     expect(apiCalls).toEqual([]);
   });
@@ -109,9 +109,67 @@ await fetch(relativeUrl);`,
     );
     expect(endpoints).toEqual([]);
     expect(apiCalls).toEqual([
-      { method: "GET", path: "/api/forms" },
-      { method: "DELETE", path: "/api/forms/*" },
-      { method: "POST", path: "/v1/charges" },
+      { method: "GET", path: "/api/forms", line: 2 },
+      { method: "DELETE", path: "/api/forms/*", line: 3 },
+      { method: "POST", path: "/v1/charges", line: 4 },
+    ]);
+  });
+
+  it("reads instance-named clients and suffix-named routers", () => {
+    // Frontend convention: a named axios instance in another file — the
+    // calling file imports the instance, not the HTTP package.
+    const client = parseSource(
+      "features/user/UserService.ts",
+      `import { ApiService } from "../../services/ApiService";
+await ApiService.put("/user/settings", body);
+await ApiService.get(\`/user/\${id}\`);
+rapid.get("/not-an-api");`,
+    );
+    expect(client.endpoints).toEqual([]);
+    expect(client.apiCalls).toEqual([
+      { method: "PUT", path: "/user/settings", line: 2 },
+      { method: "GET", path: "/user/*", line: 3 },
+    ]);
+
+    // Backend convention: nested routers named *Router registering tails.
+    const server = parseSource(
+      "routes/admin-forms.routes.ts",
+      `import { Router } from "express";
+export const AdminFormsRouter = Router();
+AdminFormsRouter.get("/:formId/fields", AdminFormsController.handleGet);`,
+    );
+    expect(server.endpoints).toEqual([
+      {
+        method: "GET",
+        path: "/:formId/fields",
+        line: 3,
+        handler: "AdminFormsController.handleGet",
+      },
+    ]);
+    expect(server.apiCalls).toEqual([]);
+
+    // An api-named receiver registering an inline handler is not a call.
+    const inline = parseSource(
+      "routes/inline.ts",
+      `api.get("/ping", (req, res) => res.send("pong"));`,
+    );
+    expect(inline.apiCalls).toEqual([]);
+  });
+
+  it("resolves same-file endpoint constants in call paths", () => {
+    const { apiCalls } = parseSource(
+      "features/admin-form/AdminViewFormService.ts",
+      `import { ApiService } from "~services/ApiService";
+export const ADMIN_FORM_ENDPOINT = "/admin/forms";
+await ApiService.get(\`\${ADMIN_FORM_ENDPOINT}/\${formId}/fields\`);
+await ApiService.post(ADMIN_FORM_ENDPOINT, body);
+await ApiService.get(\`\${UNKNOWN_BASE}/settings\`);`,
+    );
+    expect(apiCalls).toEqual([
+      { method: "GET", path: "/admin/forms/*/fields", line: 3 },
+      { method: "POST", path: "/admin/forms", line: 4 },
+      // Unresolved prefix drops out; suffix route matching absorbs the mount.
+      { method: "GET", path: "/settings", line: 5 },
     ]);
   });
 
@@ -177,9 +235,9 @@ function run() {
 }`,
     );
     const calls = symbols.find((s) => s.name === "run")!.calls;
-    expect(calls).toContainEqual({ name: "helper", receiver: null });
-    expect(calls).toContainEqual({ name: "deep", receiver: "ns" });
-    expect(calls).toContainEqual({ name: "method", receiver: "obj" });
+    expect(calls).toContainEqual({ name: "helper", receiver: null, line: 3 });
+    expect(calls).toContainEqual({ name: "deep", receiver: "ns", line: 4 });
+    expect(calls).toContainEqual({ name: "method", receiver: "obj", line: 5 });
   });
 
   it("fingerprints ignore whitespace and comments, respect content", () => {
@@ -488,6 +546,23 @@ function dupB(input: string) ${DUP_BODY}
     expect(src.truncated).toBe(false);
   });
 
+  it("locates a symbol's import and call sites with inline source", async () => {
+    const sites = await analyzer.symbolSites("lib.ts", "helper");
+    expect(sites.declaration).toMatchObject({ line: 1, endLine: 3 });
+    expect(sites.imports).toContainEqual({
+      file: "entry.ts",
+      line: 1,
+      text: `import { helper } from "./lib.js";`,
+    });
+    expect(sites.calls).toContainEqual({
+      file: "entry.ts",
+      line: 3,
+      symbol: "main",
+      text: "helper();",
+    });
+    expect(sites.truncated).toBe(false);
+  });
+
   it("searches symbols ranking exported and prefix matches first", async () => {
     const hits = await analyzer.searchSymbols("dup");
     expect(hits.map((h) => h.name)).toEqual(["dupA", "dupB"]);
@@ -505,5 +580,149 @@ function dupB(input: string) ${DUP_BODY}
     const scoped = await analyzer.bulkDetails(["."]);
     expect(scoped.modules).toHaveLength(1);
     await expect(analyzer.bulkDetails(["nope"])).rejects.toThrow(/Unknown module/);
+  });
+});
+
+describe("CodeMapAnalyzer api sites", () => {
+  let root: string;
+  let analyzer: CodeMapAnalyzer;
+
+  beforeAll(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), "crystal-apisites-"));
+    await fs.writeFile(path.join(root, "package.json"), JSON.stringify({ name: "fixture" }));
+    await fs.writeFile(
+      path.join(root, "routes.ts"),
+      `import { Router } from "express";
+export const FormsRouter = Router();
+FormsRouter.get("/:formId/fields", handleGet);
+`,
+    );
+    await fs.writeFile(
+      path.join(root, "client.ts"),
+      `import axios from "axios";
+export const FORMS = "/api/v3/admin/forms";
+await axios.get(\`\${FORMS}/\${id}/fields\`);
+await axios.get(\`\${FORMS}/\${id}/settings\`);
+`,
+    );
+    analyzer = new CodeMapAnalyzer(root);
+  });
+
+  afterAll(async () => {
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it("finds call sites addressing a served route, through router mounts", async () => {
+    const { sites } = await analyzer.apiSites("GET", "/:formId/fields");
+    expect(sites).toEqual([
+      { file: "client.ts", line: 3, method: "GET", path: "/api/v3/admin/forms/*/fields" },
+    ]);
+    // Non-matching tails don't count.
+    const none = await analyzer.apiSites("POST", "/:formId/fields");
+    expect(none.sites).toEqual([]);
+  });
+});
+
+describe("CodeMapAnalyzer part crossings", () => {
+  let root: string;
+  let analyzer: CodeMapAnalyzer;
+
+  beforeAll(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), "crystal-crossings-"));
+    await fs.writeFile(path.join(root, "package.json"), JSON.stringify({ name: "fixture" }));
+    const write = async (rel: string, text: string) => {
+      const abs = path.join(root, rel);
+      await fs.mkdir(path.dirname(abs), { recursive: true });
+      await fs.writeFile(abs, text);
+    };
+    await write(
+      "src/auth/login.ts",
+      `import { query } from "../db/client.js";
+import { users } from "../db/schema/tables.js";
+export function login() {
+  return query(users);
+}
+`,
+    );
+    await write(
+      "src/auth/session.ts",
+      `import { query } from "../db/client.js";
+export function session() {
+  return query("sessions");
+}
+`,
+    );
+    await write("src/db/client.ts", `export function query(x: unknown) {\n  return x;\n}\n`);
+    await write("src/db/schema/tables.ts", `export const users = "users";\n`);
+    await write(
+      "src/other/report.ts",
+      `import { query } from "../db/client.js";
+export const report = query("report");
+`,
+    );
+    analyzer = new CodeMapAnalyzer(root);
+  });
+
+  afterAll(async () => {
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it("lists import statements crossing a part pair with inline source", async () => {
+    const res = await analyzer.partCrossings("src/auth", "src/db");
+    expect(res.sourcePart).toBe("src/auth");
+    expect(res.truncated).toBe(false);
+    // Without part lists, ownership is plain prefix — the nested schema
+    // import counts as src/db traffic too.
+    expect(res.crossings).toEqual([
+      {
+        file: "src/auth/login.ts",
+        line: 1,
+        names: ["query"],
+        targetFile: "src/db/client.ts",
+        text: `import { query } from "../db/client.js";`,
+      },
+      {
+        file: "src/auth/login.ts",
+        line: 2,
+        names: ["users"],
+        targetFile: "src/db/schema/tables.ts",
+        text: `import { users } from "../db/schema/tables.js";`,
+      },
+      {
+        file: "src/auth/session.ts",
+        line: 1,
+        names: ["query"],
+        targetFile: "src/db/client.ts",
+        text: `import { query } from "../db/client.js";`,
+      },
+    ]);
+  });
+
+  it("resolves ownership by longest prefix over the provided part lists", async () => {
+    const targetParts = ["src/db", "src/db/schema"];
+    // Files under the nested schema part no longer count as src/db traffic…
+    const db = await analyzer.partCrossings("src/auth", "src/db", ["src/auth"], targetParts);
+    expect(db.crossings.map((c) => c.targetFile)).toEqual([
+      "src/db/client.ts",
+      "src/db/client.ts",
+    ]);
+    // …they belong to the schema pair instead.
+    const schema = await analyzer.partCrossings(
+      "src/auth",
+      "src/db/schema",
+      ["src/auth"],
+      targetParts,
+    );
+    expect(schema.crossings).toHaveLength(1);
+    expect(schema.crossings[0]).toMatchObject({
+      file: "src/auth/login.ts",
+      targetFile: "src/db/schema/tables.ts",
+      names: ["users"],
+    });
+  });
+
+  it("ignores files outside the source part", async () => {
+    const res = await analyzer.partCrossings("src/other", "src/db");
+    expect(res.crossings.map((c) => c.file)).toEqual(["src/other/report.ts"]);
   });
 });

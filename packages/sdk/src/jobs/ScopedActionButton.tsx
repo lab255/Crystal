@@ -9,8 +9,11 @@ import {
   Spinner,
 } from "@crystal/ui";
 
-/** A job's run scope: a diff ("worktree"/"base") or the whole repo ("full"). */
-export type JobScope = ChangeScope | "full";
+/**
+ * A job's run scope: a diff ("worktree"/"base"), the whole repo ("full"), or
+ * the un-indexed backlog ("stale" — only meaningful for the intent index).
+ */
+export type JobScope = ChangeScope | "full" | "stale";
 
 export const JOB_SCOPES: JobScope[] = ["worktree", "base", "full"];
 
@@ -18,6 +21,14 @@ export const SCOPE_LABELS: Record<JobScope, string> = {
   worktree: "Working tree",
   base: "Vs main",
   full: "Full scan",
+  stale: "Needs indexing",
+};
+
+const COUNT_SUFFIX: Record<JobScope, string> = {
+  worktree: "changed",
+  base: "changed",
+  full: "files",
+  stale: "stale",
 };
 
 /**
@@ -30,6 +41,7 @@ export function ScopedActionButton({
   label,
   icon,
   scope,
+  scopes = JOB_SCOPES,
   counts,
   busy,
   onRun,
@@ -37,6 +49,8 @@ export function ScopedActionButton({
   label: string;
   icon?: React.ReactNode;
   scope: JobScope;
+  /** Which scopes this job offers (defaults to diff scopes + full scan). */
+  scopes?: JobScope[];
   /** File count per scope for the menu ("full" = whole index). */
   counts?: Partial<Record<JobScope, number>>;
   busy?: boolean;
@@ -68,12 +82,12 @@ export function ScopedActionButton({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" side="bottom" className="min-w-52">
-          {JOB_SCOPES.map((s) => (
+          {scopes.map((s) => (
             <DropdownMenuItem key={s} onSelect={() => onRun(s)} className="gap-2">
               <span className="flex-1">{SCOPE_LABELS[s]}</span>
               {counts?.[s] != null ? (
                 <span className="text-[10px] text-ink-faint">
-                  {counts[s]} {s === "full" ? "files" : "changed"}
+                  {counts[s]} {COUNT_SUFFIX[s]}
                 </span>
               ) : null}
             </DropdownMenuItem>

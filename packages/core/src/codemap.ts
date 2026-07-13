@@ -164,6 +164,62 @@ export interface CodeSymbolSource {
   truncated: boolean;
 }
 
+/** One place a symbol is used — an import statement or a call site. */
+export interface SymbolSite {
+  /** Workspace-relative file containing the site. */
+  file: string;
+  /** 1-based line, when the analyzer captured one. */
+  line: number | null;
+  /** The site's source line, trimmed and length-capped. */
+  text?: string;
+  /** Enclosing top-level symbol — the caller, for call sites. */
+  symbol?: string;
+}
+
+/**
+ * Where a symbol is declared and everywhere consumers pick it up: the import
+ * statements bringing it across (barrel re-exports followed) and the call
+ * sites invoking it, per the syntax call graph.
+ */
+export interface CodeSymbolSites {
+  file: string;
+  symbol: string;
+  /** Declaration range in `file` — the export site. */
+  declaration: { line: number; endLine: number };
+  imports: SymbolSite[];
+  calls: SymbolSite[];
+  /** True when either list hit the server's cap. */
+  truncated: boolean;
+}
+
+/** One import statement crossing a part boundary — a concrete integration point. */
+export interface PartCrossing {
+  /** Importing file (inside the source part). */
+  file: string;
+  /** 1-based line of the import statement, when the analyzer captured one. */
+  line: number | null;
+  /** Imported names ("default" / "*" included). */
+  names: string[];
+  /** Imported file (inside the target part). */
+  targetFile: string;
+  /** The import statement's source line, trimmed and length-capped. */
+  text?: string;
+}
+
+/**
+ * Where one part-pair of a system boundary actually connects: every import
+ * statement from files owned by the source part into files owned by the
+ * target part. Ownership is longest-prefix over the provided part lists, the
+ * same attribution the overview's `SystemLink.parts` uses.
+ */
+export interface PartCrossings {
+  sourcePart: string;
+  targetPart: string;
+  crossings: PartCrossing[];
+  /** True when the list hit the server's cap. */
+  truncated: boolean;
+}
+
 export interface CodeTraceStep {
   ref: CodeSymbolRef;
   /** Module path owning the file. */

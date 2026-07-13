@@ -6,14 +6,19 @@ import {
   Code2,
   Folder,
   FolderPlus,
+  Globe2,
   History,
   KanbanSquare,
+  Layers,
   LayoutGrid,
+  PencilRuler,
   Plus,
+  Sparkles,
   TerminalSquare,
+  Webhook,
   type LucideIcon,
 } from "lucide-react";
-import { useWorkspace, useWorkspaces } from "@crystal/client";
+import { useNavUpdate, useWorkspace, useWorkspaces } from "@crystal/client";
 import { Dialog, DialogContent, Kbd, cn } from "@crystal/ui";
 import type { CrystalMode } from "./modes.js";
 
@@ -24,6 +29,10 @@ export interface Command {
   hint?: string;
   run: () => void;
 }
+
+// zustand v5: selectors must return stable references — module-level constants.
+const EMPTY_ARCHITECTURES: never[] = [];
+const EMPTY_PROJECTS: never[] = [];
 
 export function CommandPalette({
   open,
@@ -38,6 +47,9 @@ export function CommandPalette({
 }) {
   const createArchitecture = useWorkspace((s) => s.createArchitecture);
   const createProject = useWorkspace((s) => s.createProject);
+  const architectures = useWorkspace((s) => s.info?.architectures ?? EMPTY_ARCHITECTURES);
+  const projects = useWorkspace((s) => s.info?.projects ?? EMPTY_PROJECTS);
+  const nav = useNavUpdate();
   const workspaces = useWorkspaces((s) => s.workspaces);
   const recents = useWorkspaces((s) => s.recents);
   const activeWsId = useWorkspaces((s) => s.activeId);
@@ -89,7 +101,7 @@ export function CommandPalette({
       },
       {
         id: "mode.architect",
-        title: "Go to Code graph",
+        title: "Go to Architecture",
         icon: Boxes,
         hint: "Ctrl+2",
         run: () => onSwitchMode("architect"),
@@ -115,6 +127,92 @@ export function CommandPalette({
         hint: "Ctrl+5",
         run: () => onSwitchMode("jobs"),
       },
+      // Views inside a mode are jump targets too — a palette hit lands on the
+      // exact screen, not just the mode.
+      {
+        id: "view.architect.workspaces",
+        title: "Architecture: Workspaces map",
+        icon: Layers,
+        run: () => {
+          onSwitchMode("architect");
+          nav({ architect: { view: "codemap", codemap: { kind: "all" } } });
+        },
+      },
+      {
+        id: "view.architect.systems",
+        title: "Architecture: Systems overview",
+        icon: Boxes,
+        run: () => {
+          onSwitchMode("architect");
+          nav({ architect: { view: "systems" } });
+        },
+      },
+      {
+        id: "view.architect.apis",
+        title: "Architecture: API explorer",
+        icon: Webhook,
+        run: () => {
+          onSwitchMode("architect");
+          nav({ architect: { view: "apis" } });
+        },
+      },
+      {
+        id: "view.architect.code",
+        title: "Architecture: Code diagrams",
+        icon: PencilRuler,
+        run: () => {
+          onSwitchMode("architect");
+          nav({ architect: { view: "diagrams" } });
+        },
+      },
+      {
+        id: "view.architect.infra",
+        title: "Architecture: Infrastructure",
+        icon: Globe2,
+        run: () => {
+          onSwitchMode("architect");
+          nav({ architect: { view: "infra" } });
+        },
+      },
+      ...(["board", "runs", "agents"] as const).map((tab) => ({
+        id: `view.orchestrate.${tab}`,
+        title: `Orchestrate: ${tab[0]!.toUpperCase()}${tab.slice(1)}`,
+        icon: tab === "board" ? KanbanSquare : tab === "runs" ? History : Bot,
+        run: () => {
+          onSwitchMode("orchestrate");
+          nav({ orchestrate: { tab } });
+        },
+      })),
+      // Documents in the active workspace: diagrams, their facets, boards.
+      ...architectures.map((a) => ({
+        id: `arch.open.${a.path}`,
+        title: `Open diagram: ${a.graph.name}`,
+        icon: PencilRuler,
+        run: () => {
+          onSwitchMode("architect");
+          nav({ architect: { view: "diagrams", diagram: a.path, facet: null } });
+        },
+      })),
+      ...architectures.flatMap((a) =>
+        a.graph.facets.map((f) => ({
+          id: `facet.${a.path}.${f.id}`,
+          title: `Jump to facet: ${f.name} — ${a.graph.name}`,
+          icon: Sparkles,
+          run: () => {
+            onSwitchMode("architect");
+            nav({ architect: { view: "diagrams", diagram: a.path, facet: f.id } });
+          },
+        })),
+      ),
+      ...projects.map((p) => ({
+        id: `board.open.${p.path}`,
+        title: `Open board: ${p.project.name}`,
+        icon: KanbanSquare,
+        run: () => {
+          onSwitchMode("orchestrate");
+          nav({ orchestrate: { tab: "board" as const, project: p.path } });
+        },
+      })),
       {
         id: "terminal.new",
         title: "New terminal (active workspace)",
@@ -154,6 +252,9 @@ export function CommandPalette({
     onSelectWorkspace,
     createArchitecture,
     createProject,
+    architectures,
+    projects,
+    nav,
     workspaces,
     recents,
     activeWsId,

@@ -59,6 +59,8 @@ export interface OverviewSourceFile {
   endpoints?: HttpEndpoint[];
   /** Outgoing HTTP calls this file makes (`fetch("/x")`, `axios.post`…). */
   apiCalls?: HttpEndpoint[];
+  /** React component names declared in this file (exported or not). */
+  components?: string[];
 }
 
 /** One HTTP surface point — a served route or an outgoing call. */
@@ -67,6 +69,13 @@ export interface HttpEndpoint {
   method: string;
   /** Path as written ("/api/users/:id"); template holes appear as "*". */
   path: string;
+  /** 1-based line of the registration/call in its file, when known. */
+  line?: number;
+  /**
+   * Handler expression at the registration ("listForms",
+   * "FormController.createForm") — the trace root for served routes.
+   */
+  handler?: string;
 }
 
 /* ------------------------------------------------------------------ */
@@ -117,6 +126,15 @@ export interface SystemEndpoint extends HttpEndpoint {
   file: string;
 }
 
+/** A React component a (frontend) system declares. */
+export interface SystemComponent {
+  name: string;
+  /** File declaring the component. */
+  file: string;
+  /** Distinct outside files importing it (0 for system-local components). */
+  consumers: number;
+}
+
 /** An external service the system talks to (see external-services.ts). */
 export interface SystemExternal {
   /** Stable service id ("stripe", "mongodb"…). */
@@ -158,6 +176,10 @@ export interface SystemModule {
   externals: SystemExternal[];
   /** HTTP routes served, heaviest declaring file first (capped). */
   endpoints: SystemEndpoint[];
+  /** React components declared, most-consumed first (capped). */
+  components: SystemComponent[];
+  /** Total React components across the system's files (beyond the cap). */
+  componentCount: number;
   /** Intra-system imports between parts, heaviest first (capped). Absent when nothing crosses. */
   partLinks?: SystemPartLink[];
 }
@@ -258,6 +280,7 @@ const LINK_APIS_CAP = 10;
 const LINK_PARTS_CAP = 16;
 const PART_LINKS_CAP = 40;
 const ENDPOINTS_CAP = 24;
+const COMPONENTS_CAP = 12;
 const INTENTS_CAP = 5;
 /** Names that assert a frontend unit regardless of tag mass. */
 const FRONTEND_NAMES = new Set([
@@ -333,6 +356,20 @@ export function routeSegments(path: string): string[] {
 export function routesMatch(call: string[], served: string[]): boolean {
   if (call.length !== served.length) return false;
   return call.every((seg, i) => seg === "*" || served[i] === "*" || seg === served[i]);
+}
+
+/**
+ * Like `routesMatch`, but the served route may match a *suffix* of the call —
+ * nested routers (`app.use("/api/v3", router)` … `router.get("/forms")`) only
+ * ever register the tail of the mounted path, so the file-level route can't
+ * know the caller's full prefix. Shorter-than-call matches require at least
+ * one literal segment so "/:id"-style catch-alls don't swallow every call.
+ */
+export function routesMatchSuffix(call: string[], served: string[]): boolean {
+  if (served.length === call.length) return routesMatch(call, served);
+  if (served.length === 0 || served.length > call.length) return false;
+  if (!served.some((seg) => seg !== "*")) return false;
+  return routesMatch(call.slice(call.length - served.length), served);
 }
 
 /* ------------------------------------------------------------------ */
@@ -741,6 +778,8 @@ export function buildSystemOverview(
       exportedTotal: memberFiles.reduce((n, f) => n + f.exports.length, 0),
       externals,
       endpoints,
+      components: [], // filled below, once export consumers are counted
+      componentCount: 0,
     });
   }
 
@@ -890,12 +929,23 @@ export function buildSystemOverview(
       for (const call of file.apiCalls ?? []) {
         const segs = routeSegments(call.path);
         if (segs.length === 0) continue;
-        const hit = served.find(
-          (r) =>
-            r.system !== sourceSystem &&
-            (r.ep.method === "ALL" || call.method === "ALL" || r.ep.method === call.method) &&
-            routesMatch(segs, r.segs),
-        );
+        // Best candidate wins: an exact-length match beats a suffix match,
+        // then the longest (and most literal) served route — "/:formId/fields"
+        // over "/:formId" for a call to /api/v3/admin/forms/1/fields.
+        let hit: (typeof served)[number] | null = null;
+        let hitScore = -1;
+        for (const r of served) {
+          if (r.system === sourceSystem) continue;
+          if (!(r.ep.method === "ALL" || call.method === "ALL" || r.ep.method === call.method))
+            continue;
+          if (!routesMatchSuffix(segs, r.segs)) continue;
+          const literals = r.segs.filter((seg) => seg !== "*").length;
+          const score = (r.segs.length === segs.length ? 1000 : 0) + r.segs.length * 10 + literals;
+          if (score > hitScore) {
+            hit = r;
+            hitScore = score;
+          }
+        }
         if (!hit) continue;
         const linkKey = sourceSystem + SEP + hit.system;
         const byRoute = apiAgg.get(linkKey) ?? new Map<string, HttpEndpoint & { weight: number }>();
@@ -919,17 +969,51 @@ export function buildSystemOverview(
 
   // Consumed exports per system.
   const exportsBySystem = new Map<string, SystemExport[]>();
+  // (system, file, name) → outside consumers, for the component inventory
+  // below — uncapped, unlike the EXPORTS_CAP'd list.
+  const componentConsumers = new Map<string, number>();
   for (const [key, consumers] of exportConsumers) {
     const [system, file, name] = key.split("\u0000") as [string, string, string];
     const exp = fileMeta.get(file)?.exports.find((e) => e.name === name);
+    const kind = exp?.kind ?? "const";
+    if (kind === "component") componentConsumers.set(key, consumers.size);
     const list = exportsBySystem.get(system) ?? [];
-    list.push({ name, kind: exp?.kind ?? "const", file, consumers: consumers.size, signature: exp?.signature });
+    list.push({ name, kind, file, consumers: consumers.size, signature: exp?.signature });
     exportsBySystem.set(system, list);
   }
   for (const system of systems) {
     system.exports = (exportsBySystem.get(system.id) ?? [])
       .sort((a, b) => b.consumers - a.consumers || a.name.localeCompare(b.name) || a.file.localeCompare(b.file))
       .slice(0, EXPORTS_CAP);
+  }
+
+  // E. React component inventory per system — local (never-imported)
+  // components count too; the consumed-export aggregation above only sees
+  // what crosses a boundary.
+  const componentsBySystem = new Map<string, SystemComponent[]>();
+  for (const file of sources) {
+    if (file.test || !file.components || file.components.length === 0) continue;
+    const system = systemOfFile.get(file.path);
+    if (!system) continue;
+    const list = componentsBySystem.get(system) ?? [];
+    for (const name of file.components) {
+      list.push({
+        name,
+        file: file.path,
+        consumers: componentConsumers.get(system + SEP + file.path + SEP + name) ?? 0,
+      });
+    }
+    componentsBySystem.set(system, list);
+  }
+  for (const system of systems) {
+    const list = componentsBySystem.get(system.id) ?? [];
+    system.componentCount = list.length;
+    system.components = list
+      .sort(
+        (a, b) =>
+          b.consumers - a.consumers || a.name.localeCompare(b.name) || a.file.localeCompare(b.file),
+      )
+      .slice(0, COMPONENTS_CAP);
   }
 
   // High fan-in without a domain concept reads as platform/shared.

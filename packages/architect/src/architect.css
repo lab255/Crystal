@@ -121,6 +121,12 @@
   animation: arch-flash 1.2s ease-out;
 }
 
+/* Global find: nodes that miss the query recede but stay interactive. */
+.react-flow__node.arch-find-miss {
+  opacity: 0.18;
+  transition: opacity 150ms ease;
+}
+
 @keyframes arch-flash {
   0%,
   60% {

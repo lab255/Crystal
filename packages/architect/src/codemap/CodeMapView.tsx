@@ -250,6 +250,11 @@ function CodeMapInner({
   const [refitNonce, setRefitNonce] = useState(0);
   const lodInit = useRef(false);
   const appliedLens = useRef<string | null>(null);
+  // Active lens membership (dirs + files), mirrored into a ref so the detail
+  // fetches (declared above the lens pipeline) can send it as `prefer` —
+  // without it, module-file truncation can cut every lens member and the
+  // drilled system renders as an empty shell.
+  const lensPreferRef = useRef<string[] | null>(null);
 
   useEffect(() => {
     if (!level && activeWs) {
@@ -329,8 +334,9 @@ function CodeMapInner({
       const key = `${wsKey}|m|${path}|${generation}`;
       if (inflight.current.has(key)) continue;
       inflight.current.add(key);
+      const prefer = lensPreferRef.current ?? undefined;
       client
-        .request("codemap.module", { ws: wsKey, path })
+        .request("codemap.module", { ws: wsKey, path, prefer })
         .then((detail) =>
           setModuleDetails((m) => new Map(m).set(path, { gen: generation, detail })),
         )
@@ -403,7 +409,7 @@ function CodeMapInner({
     if (!wsKey) return null;
     if (bulkData.current?.gen === generation) return bulkData.current;
     bulkInflight.current ??= client
-      .request("codemap.details", { ws: wsKey })
+      .request("codemap.details", { ws: wsKey, prefer: lensPreferRef.current ?? undefined })
       .then((res) => {
         bulkData.current = { gen: generation, ...res };
         setModuleDetails((m) => {
@@ -606,6 +612,28 @@ function CodeMapInner({
         .join(" + "),
     [lensTags, overview],
   );
+
+  // Lens membership → `prefer` on detail fetches (see lensPreferRef). When the
+  // effective membership changes (lens entered/left, overview resolved), the
+  // cached details were fetched with the wrong preference — drop them and
+  // bump the generation so everything refetches lens-aware.
+  const lensPrefer = useMemo(() => {
+    if (!mapLens) return null;
+    const list = [...(mapLens.dirs ?? []), ...mapLens.files.keys()];
+    return list.length > 0 ? list : null;
+  }, [mapLens]);
+  lensPreferRef.current = lensPrefer;
+  const lensSig = lensPrefer ? lensPrefer.join("\n") : "";
+  const lastLensSig = useRef(lensSig);
+  useEffect(() => {
+    if (lastLensSig.current === lensSig) return;
+    lastLensSig.current = lensSig;
+    bulkData.current = null;
+    bulkInflight.current = null;
+    setBulkLoadedGen(-1);
+    setModuleDetails(new Map());
+    setGeneration((g) => g + 1);
+  }, [lensSig]);
 
   // Entering a lens focuses the members that carry it; leaving restores the level.
   useEffect(() => {

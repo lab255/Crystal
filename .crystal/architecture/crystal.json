@@ -232,8 +232,8 @@
         },
         "size": null,
         "tech": [],
-        "placements": {},
-        "codeModule": "examples/driftwood"
+        "codeModule": "examples/driftwood",
+        "placements": {}
       },
       {
         "id": "node_3a75e2a6f318",
@@ -247,8 +247,8 @@
         },
         "size": null,
         "tech": [],
-        "placements": {},
-        "codeModule": "examples/harborview"
+        "codeModule": "examples/harborview",
+        "placements": {}
       },
       {
         "id": "node_ba2fa5af6a39",
@@ -262,8 +262,8 @@
         },
         "size": null,
         "tech": [],
-        "placements": {},
-        "codeModule": "examples/ledgerline/admin"
+        "codeModule": "examples/ledgerline/admin",
+        "placements": {}
       },
       {
         "id": "node_8626c34fa25d",
@@ -277,8 +277,8 @@
         },
         "size": null,
         "tech": [],
-        "placements": {},
-        "codeModule": "examples/ledgerline/server"
+        "codeModule": "examples/ledgerline/server",
+        "placements": {}
       },
       {
         "id": "node_4816fc60acf1",
@@ -292,8 +292,8 @@
         },
         "size": null,
         "tech": [],
-        "placements": {},
-        "codeModule": "examples/ledgerline/shared"
+        "codeModule": "examples/ledgerline/shared",
+        "placements": {}
       },
       {
         "id": "node_b1f081a508a3",
@@ -307,8 +307,8 @@
         },
         "size": null,
         "tech": [],
-        "placements": {},
-        "codeModule": "examples/ledgerline/worker"
+        "codeModule": "examples/ledgerline/worker",
+        "placements": {}
       }
     ],
     "edges": [
@@ -550,9 +550,9 @@
       }
     ],
     "viewport": {
-      "x": 305.59425453443487,
-      "y": -174.9501741862298,
-      "zoom": 0.527750554639863
+      "x": 268.37366456874713,
+      "y": 192.90571900635226,
+      "zoom": 0.8066015565323594
     }
   }
 }

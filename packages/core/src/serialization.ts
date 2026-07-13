@@ -9,6 +9,7 @@ import {
 } from "./code-index.js";
 import { ProjectSchema, type Project } from "./project.js";
 import { ArchSurveySchema, migrateSurveyData, type ArchSurvey } from "./survey.js";
+import { SystemsLayoutSchema, type SystemsLayout } from "./systems-layout.js";
 import { TodoListSchema, type TodoList } from "./todo.js";
 import {
   TraceProfileSchema,
@@ -39,7 +40,8 @@ export type CrystalFileKind =
   | "trace"
   | "todos"
   | "agents"
-  | "enrichment";
+  | "enrichment"
+  | "syslayout";
 
 const EnvelopeSchema = z.object({
   crystal: z.number(),
@@ -53,6 +55,7 @@ const EnvelopeSchema = z.object({
     "todos",
     "agents",
     "enrichment",
+    "syslayout",
   ]),
   data: z.unknown(),
 });
@@ -67,6 +70,7 @@ const DATA_SCHEMAS = {
   todos: TodoListSchema,
   agents: AgentRosterSchema,
   enrichment: CodeEnrichmentSchema,
+  syslayout: SystemsLayoutSchema,
 } as const;
 
 export interface KindDataMap {
@@ -79,6 +83,7 @@ export interface KindDataMap {
   todos: TodoList;
   agents: AgentRoster;
   enrichment: CodeEnrichment;
+  syslayout: SystemsLayout;
 }
 
 /**

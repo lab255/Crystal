@@ -39,6 +39,10 @@ verified so far ride on vitest + the socket surface underneath.
 
 - Kill the tsx server with TaskStop before editing server code — it is NOT
   watch mode when started as above.
+- TaskStop kills only the pnpm wrapper; the tsx child keeps listening and a
+  restart on the same port silently talks to the OLD code. After stopping,
+  find the real listener (`netstat -ano | findstr :<port>` → LISTENING row)
+  and `Stop-Process -Id <pid> -Force`, then re-check `/health`.
 - `getApplicableRefactors`' 5th arg is a refactor *kind* ("refactor.move.file"),
   not a display name — a wrong value silently disables the LS path (bit us once).
 - The code-map summary method is `codemap.get` (there is no `codemap.summary`),

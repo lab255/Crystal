@@ -14,9 +14,11 @@ import {
   History,
   Layers,
   MoreHorizontal,
+  Webhook,
   PencilRuler,
   Plus,
   RefreshCw,
+  Search,
   Sparkles,
   Trash2,
   X,
@@ -82,7 +84,8 @@ import { ReviewDialog } from "./ReviewDialog.js";
 import { ReviewView } from "./ReviewView.js";
 import { canSeedFromCodeMap, seedFromCodeMap } from "./seed.js";
 import { SurveySection } from "./SurveyPanel.js";
-import { SystemsView } from "./systems/SystemsView.js";
+import { ApiExplorer } from "./systems/ApiExplorer.js";
+import { SystemsView, type OpenCodeFacet } from "./systems/SystemsView.js";
 
 const EMPTY_ARCHITECTURES: never[] = [];
 const EMPTY_DRAFTS: never[] = [];
@@ -90,7 +93,7 @@ const EMPTY_REFACTORS: never[] = [];
 const EMPTY_PROJECTS: never[] = [];
 const EMPTY_RUNS: never[] = [];
 
-type ArchitectView = "systems" | "diagrams" | "infra" | "codemap";
+type ArchitectView = "systems" | "diagrams" | "infra" | "codemap" | "apis";
 
 export function ArchitectMode() {
   // View + draft selection live in the deep-linkable nav store.
@@ -107,6 +110,12 @@ export function ArchitectMode() {
     file?: string;
     nonce: number;
   } | null>(null);
+  // "Open in code" from the systems view also carries the slice being looked
+  // at — DiagramsView materializes it as a facet and activates it, so the
+  // destination (view + diagram + facet) is a shareable deep link.
+  const [facetRequest, setFacetRequest] = useState<(OpenCodeFacet & { nonce: number }) | null>(
+    null,
+  );
   // "Start journey here…" on a symbol prefills the journey dialog.
   const [journeySeed, setJourneySeed] = useState<JourneySeed | null>(null);
   // Lifted here so the code map sees the open draft (drag-refactor targets it).
@@ -121,10 +130,14 @@ export function ArchitectMode() {
   const setActiveWs = useWorkspaces((s) => s.setActive);
 
   /** Drilling stays in the unified canvas: expand the node linked to the module. */
-  const expandCode = useCallback((module: string, file?: string) => {
-    setView("diagrams");
-    setExpandRequest({ module, file, nonce: ++expandNonce.current });
-  }, [setView]);
+  const expandCode = useCallback(
+    (module: string, file?: string, facet?: OpenCodeFacet) => {
+      setView("diagrams");
+      setExpandRequest({ module, file, nonce: ++expandNonce.current });
+      if (facet) setFacetRequest({ ...facet, nonce: expandNonce.current });
+    },
+    [setView],
+  );
 
   /** The standalone map: cross-workspace level, plus drilled module/file deep links. */
   const openWorkspacesMap = useCallback(
@@ -148,6 +161,31 @@ export function ArchitectMode() {
     [setView],
   );
 
+  /** Systems-view "Open in code": reveal the module, carrying the facet along. */
+  const openCodeFromSystems = useCallback(
+    (module: string, facet?: OpenCodeFacet) => expandCode(module, undefined, facet),
+    [expandCode],
+  );
+
+  // Global find — one query shared by every subview (each dims its misses);
+  // lives in nav so it survives view switches and deep-links (?find=…).
+  const find = useNav((l) => l.architect?.find) ?? "";
+  const setFind = useCallback((v: string) => nav({ architect: { find: v || null } }), [nav]);
+  const findRef = useRef<HTMLInputElement | null>(null);
+  const activeMode = useNav((l) => l.mode) ?? "architect";
+  useEffect(() => {
+    if (activeMode !== "architect") return;
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        findRef.current?.focus();
+        findRef.current?.select();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [activeMode]);
+
   const tab = (
     v: ArchitectView,
     icon: React.ReactNode,
@@ -169,25 +207,50 @@ export function ArchitectMode() {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <header className="flex items-center gap-2 border-b border-edge bg-surface-1 px-3 py-1.5">
-        <span className="text-[13px] font-semibold text-ink">Code graph</span>
+        <span className="text-[13px] font-semibold text-ink">Architecture</span>
+        <div className="ml-3 flex w-60 items-center gap-1.5 rounded-lg border border-edge bg-surface-2 px-2 py-1">
+          <Search className="h-3 w-3 shrink-0 text-ink-faint" />
+          <input
+            ref={findRef}
+            value={find}
+            onChange={(e) => setFind(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                setFind("");
+                (e.target as HTMLInputElement).blur();
+              }
+            }}
+            placeholder="Find in all views…"
+            aria-label="Find across systems, code and infrastructure"
+            className="w-full bg-transparent text-[11px] text-ink outline-none placeholder:text-ink-faint"
+          />
+          {find ? (
+            <button type="button" onClick={() => setFind("")} aria-label="Clear find">
+              <X className="h-3 w-3 text-ink-faint hover:text-ink" />
+            </button>
+          ) : null}
+        </div>
         <div className="ml-auto flex items-center gap-0.5 rounded-lg bg-surface-2 p-0.5">
+          {/* Cross-workspace map — always one click away when reviewing how the systems relate. */}
+          {tab("codemap", <Layers className="h-3.5 w-3.5" />, "Workspaces", openWorkspacesMap)}
           {tab("systems", <Boxes className="h-3.5 w-3.5" />, "Systems")}
+          {tab("apis", <Webhook className="h-3.5 w-3.5" />, "APIs")}
           {tab(
             "diagrams",
             <PencilRuler className="h-3.5 w-3.5" />,
             <>
-              Diagrams
+              Code
               <span className="rounded-full bg-ok/15 px-1.5 text-[9px] text-ok">live</span>
             </>,
           )}
           {tab("infra", <Globe2 className="h-3.5 w-3.5" />, "Infrastructure")}
-          {/* Cross-workspace map — always one click away when reviewing how the systems relate. */}
-          {tab("codemap", <Layers className="h-3.5 w-3.5" />, "Workspaces", openWorkspacesMap)}
         </div>
       </header>
       <div className="min-h-0 flex-1">
         {view === "systems" ? (
-          <SystemsView onOpenCode={expandCode} />
+          <SystemsView onOpenCode={openCodeFromSystems} />
+        ) : view === "apis" ? (
+          <ApiExplorer />
         ) : view === "codemap" ? (
           <CodeMapView
             origin={{ label: "Architecture", onExit: () => setView("diagrams") }}
@@ -204,6 +267,7 @@ export function ArchitectMode() {
           <DiagramsView
             variant={view}
             expandRequest={expandRequest}
+            facetRequest={facetRequest}
             onExpandCode={expandCode}
             onOpenWorkspacesMap={openWorkspacesMap}
             journeySeed={journeySeed}
@@ -221,6 +285,7 @@ export function ArchitectMode() {
 function DiagramsView({
   variant,
   expandRequest,
+  facetRequest,
   onExpandCode,
   onOpenWorkspacesMap,
   journeySeed,
@@ -231,6 +296,7 @@ function DiagramsView({
 }: {
   variant: "diagrams" | "infra";
   expandRequest: { module: string; file?: string; nonce: number } | null;
+  facetRequest: (OpenCodeFacet & { nonce: number }) | null;
   onExpandCode: (module: string, file?: string) => void;
   onOpenWorkspacesMap: () => void;
   journeySeed: JourneySeed | null;
@@ -352,6 +418,46 @@ function DiagramsView({
       setActiveFacetId(null);
     }
   }, [effectiveGraph, activeFacetId, setActiveFacetId]);
+
+  // A facet handed over by the systems view ("Open in code"): highlight just
+  // the files the user was looking at. Matching nodes are found through their
+  // code links; a same-named facet is refreshed rather than duplicated. The
+  // facet persists on the diagram and activates via nav, so the resulting
+  // screen (?diagram=…&facet=…) is a shareable deep link.
+  const consumedFacetNonce = useRef(0);
+  useEffect(() => {
+    if (!facetRequest || facetRequest.nonce === consumedFacetNonce.current) return;
+    if (!infoLoaded || !effectiveGraph) return;
+    consumedFacetNonce.current = facetRequest.nonce;
+    const modules = new Set(facetRequest.modules);
+    const inPaths = (file: string) =>
+      facetRequest.paths.some((p) => file === p || file.startsWith(`${p}/`));
+    const nodeIds = effectiveGraph.nodes
+      .filter(
+        (n) =>
+          (n.codeModule && modules.has(n.codeModule)) || (n.codeFile && inPaths(n.codeFile)),
+      )
+      .map((n) => n.id);
+    // Nothing mapped on this diagram — the expand request still reveals the module.
+    if (nodeIds.length === 0) return;
+    const existing = effectiveGraph.facets.find(
+      (f) => f.name.trim().toLowerCase() === facetRequest.name.trim().toLowerCase(),
+    );
+    const description = `Files of “${facetRequest.name}” — from the systems overview`;
+    if (existing) {
+      commitGraph({
+        ...effectiveGraph,
+        facets: effectiveGraph.facets.map((f) =>
+          f.id === existing.id ? { ...f, nodeIds, description: f.description || description } : f,
+        ),
+      });
+      setActiveFacetId(existing.id);
+    } else {
+      const facet = { ...createArchFacet(facetRequest.name, nodeIds), description };
+      commitGraph({ ...effectiveGraph, facets: [...effectiveGraph.facets, facet] });
+      setActiveFacetId(facet.id);
+    }
+  }, [facetRequest, infoLoaded, effectiveGraph, commitGraph, setActiveFacetId]);
 
   /* ---- journeys / dataflow lens ---- */
   const activeJourneyId = useNav((l) => l.architect?.journey) ?? null;

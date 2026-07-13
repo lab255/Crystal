@@ -20,6 +20,8 @@ function system(id: string, role: SystemRole = "domain", fileCount = 10): System
     exportedTotal: 0,
     externals: [],
     endpoints: [],
+    components: [],
+    componentCount: 0,
   };
 }
 

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeftRight,
   ArrowUpRight,
@@ -9,19 +9,26 @@ import {
   ExternalLink,
   X,
 } from "lucide-react";
-import type { SystemLink, SystemLinkSymbol, SystemModule } from "@crystal/core";
+import type {
+  CodeSymbolSites,
+  PartCrossings,
+  SymbolSite,
+  SystemLink,
+  SystemLinkSymbol,
+  SystemModule,
+} from "@crystal/core";
 import { useCrystal } from "@crystal/client";
-import { Button, Spinner, Tooltip, cn } from "@crystal/ui";
+import { Button, CodeSnippet, Spinner, Tooltip, cn } from "@crystal/ui";
 import { requestOpenFile } from "../codemap/CodeMapView.js";
 import { ROLE_META } from "./role-meta.js";
 
 /**
  * Contract inspector — the full split-pane opened by clicking a boundary edge
  * on the systems overview. Everything travelling the edge, inspectable in
- * place: each imported symbol expands into its declaration source (fetched
- * on demand), jumps into the editor, and the API/part attribution sections
- * give the boundary its context. ←/→ walk every visible boundary by traffic;
- * ⇄ flips to the reverse edge when one exists.
+ * place: each imported symbol expands into its declaration (the export site),
+ * the import statements bringing it across, and the call sites invoking it —
+ * all with source inline, each jumping into the editor. ←/→ walk every
+ * visible boundary by traffic; ⇄ flips to the reverse edge when one exists.
  */
 
 export const linkKeyOf = (l: Pick<SystemLink, "source" | "target">): string =>
@@ -33,6 +40,21 @@ interface Snippet {
   startLine?: number;
   endLine?: number;
   text?: string;
+  truncated?: boolean;
+}
+
+/** Use-site lookup (import + call sites) state for one expanded symbol. */
+interface SitesState {
+  loading?: boolean;
+  error?: string;
+  data?: CodeSymbolSites;
+}
+
+/** Crossing lookup state for one expanded part pair ("Where it crosses"). */
+interface CrossingState {
+  loading?: boolean;
+  error?: string;
+  data?: PartCrossings;
 }
 
 export function ContractInspector({
@@ -71,14 +93,72 @@ export function ContractInspector({
 
   const [openSymbols, setOpenSymbols] = useState<ReadonlySet<string>>(() => new Set());
   const [snippets, setSnippets] = useState<ReadonlyMap<string, Snippet>>(() => new Map());
+  const [sites, setSites] = useState<ReadonlyMap<string, SitesState>>(() => new Map());
+  // Use-site sections are open by default — collapsing is remembered per key.
+  const [closedSections, setClosedSections] = useState<ReadonlySet<string>>(() => new Set());
+  const [openCrossings, setOpenCrossings] = useState<ReadonlySet<string>>(() => new Set());
+  const [crossings, setCrossings] = useState<ReadonlyMap<string, CrossingState>>(() => new Map());
   const scroller = useRef<HTMLDivElement | null>(null);
 
   // Switching edges resets the inspection state and scroll position.
   useEffect(() => {
     setOpenSymbols(new Set());
     setSnippets(new Map());
+    setSites(new Map());
+    setClosedSections(new Set());
+    setOpenCrossings(new Set());
+    setCrossings(new Map());
     scroller.current?.scrollTo({ top: 0 });
   }, [key]);
+
+  /** Does a use site sit inside the boundary's consuming (source) system? */
+  const inSourceSystem = useCallback(
+    (file: string) =>
+      source?.parts.some((p) => file === p.path || file.startsWith(`${p.path}/`)) ?? false,
+    [source],
+  );
+
+  /**
+   * Open/close one "Where it crosses" pair; first open fetches the concrete
+   * integration points (each import statement crossing the pair). Both
+   * systems' full part lists ride along so the server attributes files to
+   * parts by longest prefix, exactly like the overview did.
+   */
+  const toggleCrossing = (p: { sourcePart: string; targetPart: string }) => {
+    const crossKey = `${p.sourcePart}->${p.targetPart}`;
+    setOpenCrossings((prev) => {
+      const next = new Set(prev);
+      if (next.has(crossKey)) next.delete(crossKey);
+      else next.add(crossKey);
+      return next;
+    });
+    if (!crossings.has(crossKey)) {
+      setCrossings((m) => new Map(m).set(crossKey, { loading: true }));
+      // Every system's parts form the ownership universe — a file inside a
+      // sibling system's nested part must not count as this part's traffic.
+      const allParts = systems.flatMap((s) => s.parts.map((part) => part.path));
+      client
+        .request("codemap.partCrossings", {
+          sourcePart: p.sourcePart,
+          targetPart: p.targetPart,
+          sourceParts: allParts.length > 0 ? allParts : [p.sourcePart],
+          targetParts: allParts.length > 0 ? allParts : [p.targetPart],
+        })
+        .then((data) => setCrossings((m) => new Map(m).set(crossKey, { data })))
+        .catch((err: Error) =>
+          setCrossings((m) => new Map(m).set(crossKey, { error: err.message })),
+        );
+    }
+  };
+
+  const toggleSection = (sectionKey: string) => {
+    setClosedSections((prev) => {
+      const next = new Set(prev);
+      if (next.has(sectionKey)) next.delete(sectionKey);
+      else next.add(sectionKey);
+      return next;
+    });
+  };
 
   const toggleSymbol = (d: SystemLinkSymbol) => {
     if (!d.file) return;
@@ -89,22 +169,33 @@ export function ContractInspector({
       else next.add(snippetKey);
       return next;
     });
-    if (snippets.has(snippetKey)) return;
-    setSnippets((m) => new Map(m).set(snippetKey, { loading: true }));
-    client
-      .request("codemap.symbolSource", { file: d.file, symbol: d.name })
-      .then((src) =>
-        setSnippets((m) =>
-          new Map(m).set(snippetKey, {
-            startLine: src.startLine,
-            endLine: src.endLine,
-            text: src.text,
-          }),
-        ),
-      )
-      .catch((err: Error) =>
-        setSnippets((m) => new Map(m).set(snippetKey, { error: err.message })),
-      );
+    if (!snippets.has(snippetKey)) {
+      setSnippets((m) => new Map(m).set(snippetKey, { loading: true }));
+      client
+        .request("codemap.symbolSource", { file: d.file, symbol: d.name })
+        .then((src) =>
+          setSnippets((m) =>
+            new Map(m).set(snippetKey, {
+              startLine: src.startLine,
+              endLine: src.endLine,
+              text: src.text,
+              truncated: src.truncated,
+            }),
+          ),
+        )
+        .catch((err: Error) =>
+          setSnippets((m) => new Map(m).set(snippetKey, { error: err.message })),
+        );
+    }
+    if (!sites.has(snippetKey)) {
+      setSites((m) => new Map(m).set(snippetKey, { loading: true }));
+      client
+        .request("codemap.symbolSites", { file: d.file, symbol: d.name })
+        .then((data) => setSites((m) => new Map(m).set(snippetKey, { data })))
+        .catch((err: Error) =>
+          setSites((m) => new Map(m).set(snippetKey, { error: err.message })),
+        );
+    }
   };
 
   const systemChip = (sys: SystemModule | null, id: string) => {
@@ -236,6 +327,7 @@ export function ContractInspector({
             const snippetKey = `${d.file}#${d.name}`;
             const open = d.file != null && openSymbols.has(snippetKey);
             const snippet = snippets.get(snippetKey);
+            const siteState = sites.get(snippetKey);
             return (
               <div key={d.name} className="rounded-md hover:bg-surface-2/60">
                 <div
@@ -291,37 +383,70 @@ export function ContractInspector({
                   </div>
                 ) : null}
                 {open ? (
-                  <div className="mx-1.5 mb-1.5 ml-6 overflow-hidden rounded-md border border-edge bg-surface-0">
-                    <div className="flex items-center gap-1.5 border-b border-edge/60 px-2 py-1">
-                      <span className="min-w-0 truncate font-mono text-[9px] text-ink-muted" title={d.file}>
-                        {d.file}
-                        {snippet?.startLine != null ? `:${snippet.startLine}` : ""}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => requestOpenFile(d.file!, snippet?.startLine)}
-                        className="ml-auto flex shrink-0 items-center gap-1 text-[9px] text-ink-faint hover:text-ink"
-                      >
-                        <ExternalLink className="h-3 w-3" /> open
-                      </button>
-                    </div>
-                    {snippet?.loading ? (
-                      <div className="flex items-center gap-2 px-2 py-2 text-[10px] text-ink-faint">
-                        <Spinner className="h-3 w-3" /> reading source…
+                  <div className="mx-1.5 mb-1.5 ml-6 flex flex-col gap-1.5">
+                    {/* Export site: the declaration, source inline. */}
+                    <div className="overflow-hidden rounded-md border border-edge bg-surface-0">
+                      <div className="flex items-center gap-1.5 border-b border-edge/60 px-2 py-1">
+                        <span className="shrink-0 text-[8px] font-medium uppercase tracking-wide text-ink-faint">
+                          Export site
+                        </span>
+                        <span className="min-w-0 truncate font-mono text-[9px] text-ink-muted" title={d.file}>
+                          {d.file}
+                          {snippet?.startLine != null ? `:${snippet.startLine}` : ""}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => requestOpenFile(d.file!, snippet?.startLine)}
+                          className="ml-auto flex shrink-0 items-center gap-1 text-[9px] text-ink-faint hover:text-ink"
+                        >
+                          <ExternalLink className="h-3 w-3" /> open
+                        </button>
                       </div>
-                    ) : snippet?.error ? (
-                      <div className="px-2 py-2 text-[10px] text-danger">{snippet.error}</div>
-                    ) : snippet?.text != null ? (
-                      <pre className="max-h-64 overflow-auto px-2 py-1.5 text-[10px] leading-4 text-ink-muted">
-                        {snippet.text.split("\n").map((line, i) => (
-                          <div key={i} className="flex">
-                            <span className="w-8 shrink-0 select-none pr-2 text-right text-ink-faint/60">
-                              {(snippet.startLine ?? 1) + i}
-                            </span>
-                            <span className="whitespace-pre">{line}</span>
-                          </div>
-                        ))}
-                      </pre>
+                      {snippet?.loading ? (
+                        <div className="flex items-center gap-2 px-2 py-2 text-[10px] text-ink-faint">
+                          <Spinner className="h-3 w-3" /> reading source…
+                        </div>
+                      ) : snippet?.error ? (
+                        <div className="px-2 py-2 text-[10px] text-danger">{snippet.error}</div>
+                      ) : snippet?.text != null ? (
+                        <CodeSnippet
+                          code={snippet.text}
+                          startLine={snippet.startLine}
+                          truncated={snippet.truncated}
+                          className="max-h-64 rounded-none border-0"
+                        />
+                      ) : null}
+                    </div>
+                    {/* Where consumers pick it up and where they invoke it. */}
+                    {siteState?.loading ? (
+                      <div className="flex items-center gap-2 px-1 py-0.5 text-[9px] text-ink-faint">
+                        <Spinner className="h-3 w-3" /> finding use sites…
+                      </div>
+                    ) : siteState?.error ? (
+                      <div className="px-1 py-0.5 text-[9px] text-danger">{siteState.error}</div>
+                    ) : siteState?.data ? (
+                      <>
+                        <SiteSection
+                          title="Import sites"
+                          sites={siteState.data.imports}
+                          truncated={siteState.data.truncated}
+                          emptyNote="No import statements found — namespace or dynamic imports aren't matched by name."
+                          open={!closedSections.has(`${snippetKey}|imports`)}
+                          onToggle={() => toggleSection(`${snippetKey}|imports`)}
+                          inSource={inSourceSystem}
+                          sourceName={nameOf(link.source)}
+                        />
+                        <SiteSection
+                          title="Call sites"
+                          sites={siteState.data.calls}
+                          truncated={siteState.data.truncated}
+                          emptyNote="No call sites resolved — types, constants and dynamic dispatch aren't traced."
+                          open={!closedSections.has(`${snippetKey}|calls`)}
+                          onToggle={() => toggleSection(`${snippetKey}|calls`)}
+                          inSource={inSourceSystem}
+                          sourceName={nameOf(link.source)}
+                        />
+                      </>
                     ) : null}
                   </div>
                 ) : null}
@@ -354,27 +479,18 @@ export function ContractInspector({
             <div className="px-1.5 pb-1 text-[9px] font-medium uppercase tracking-wide text-ink-faint">
               Where it crosses
             </div>
-            {link.parts!.map((p) => (
-              <div
-                key={`${p.sourcePart}->${p.targetPart}`}
-                className="flex items-center gap-1 px-1.5 py-0.5"
-              >
-                <span
-                  className="min-w-0 flex-1 truncate font-mono text-[9px] text-ink-muted"
-                  title={p.sourcePart}
-                >
-                  {p.sourcePart}
-                </span>
-                <ArrowUpRight className="h-3 w-3 shrink-0 text-ink-faint" />
-                <span
-                  className="min-w-0 flex-1 truncate font-mono text-[9px] text-ink-muted"
-                  title={p.targetPart}
-                >
-                  {p.targetPart}
-                </span>
-                <span className="shrink-0 text-[9px] text-ink-faint">×{p.weight}</span>
-              </div>
-            ))}
+            {link.parts!.map((p) => {
+              const crossKey = `${p.sourcePart}->${p.targetPart}`;
+              return (
+                <CrossingPair
+                  key={crossKey}
+                  pair={p}
+                  open={openCrossings.has(crossKey)}
+                  state={crossings.get(crossKey)}
+                  onToggle={() => toggleCrossing(p)}
+                />
+              );
+            })}
           </div>
         )}
 
@@ -388,6 +504,225 @@ export function ContractInspector({
           </div>
         ) : null}
       </div>
+    </div>
+  );
+}
+
+/**
+ * One part-pair of the boundary, expandable into its concrete integration
+ * points: every import statement crossing from the source part into the
+ * target part — file:line, the statement itself, and the names it brings
+ * across — each jumping into the editor.
+ */
+function CrossingPair({
+  pair,
+  open,
+  state,
+  onToggle,
+}: {
+  pair: { sourcePart: string; targetPart: string; weight: number };
+  open: boolean;
+  state: CrossingState | undefined;
+  onToggle: () => void;
+}) {
+  return (
+    <div className="rounded-md">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={open}
+        className="flex w-full items-center gap-1 rounded-md px-1.5 py-0.5 text-left hover:bg-surface-2/60"
+      >
+        <ChevronDown
+          className={cn(
+            "h-3 w-3 shrink-0 text-ink-faint transition-transform",
+            !open && "-rotate-90",
+          )}
+        />
+        <span
+          className="min-w-0 flex-1 truncate font-mono text-[9px] text-ink-muted"
+          title={pair.sourcePart}
+        >
+          {pair.sourcePart}
+        </span>
+        <ArrowUpRight className="h-3 w-3 shrink-0 text-ink-faint" />
+        <span
+          className="min-w-0 flex-1 truncate font-mono text-[9px] text-ink-muted"
+          title={pair.targetPart}
+        >
+          {pair.targetPart}
+        </span>
+        <span className="shrink-0 text-[9px] text-ink-faint">×{pair.weight}</span>
+      </button>
+      {open ? (
+        <div className="mx-1.5 mb-1.5 ml-5 overflow-hidden rounded-md border border-edge bg-surface-0">
+          {state?.loading ? (
+            <div className="flex items-center gap-2 px-2 py-1.5 text-[9px] text-ink-faint">
+              <Spinner className="h-3 w-3" /> finding integration points…
+            </div>
+          ) : state?.error ? (
+            <div className="px-2 py-1.5 text-[9px] text-danger">{state.error}</div>
+          ) : state?.data ? (
+            state.data.crossings.length === 0 ? (
+              <div className="px-2 py-1.5 text-[9px] text-ink-faint">
+                No import statements resolved — the analyzer may have re-attributed these files
+                since the overview was built.
+              </div>
+            ) : (
+              <div className="max-h-56 overflow-y-auto">
+                {state.data.crossings.map((c, i) => (
+                  <div
+                    key={`${c.file}:${c.line ?? "?"}:${i}`}
+                    className="group border-b border-edge/40 px-2 py-1 last:border-b-0 hover:bg-surface-2/60"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => requestOpenFile(c.file, c.line ?? undefined)}
+                      className="flex w-full items-center gap-1.5 text-left"
+                      title={`Open ${c.file} in the editor`}
+                    >
+                      <span className="min-w-0 truncate font-mono text-[9px] text-ink-muted">
+                        {c.file}
+                        {c.line != null ? `:${c.line}` : ""}
+                      </span>
+                      <ExternalLink className="ml-auto h-2.5 w-2.5 shrink-0 text-ink-faint opacity-0 transition-opacity group-hover:opacity-100" />
+                    </button>
+                    {c.text ? (
+                      <div
+                        className="truncate font-mono text-[9px] leading-4 text-ink/80"
+                        title={c.text}
+                      >
+                        {c.text}
+                      </div>
+                    ) : c.names.length > 0 ? (
+                      <div className="truncate font-mono text-[9px] leading-4 text-ink-faint">
+                        {c.names.join(", ")}
+                      </div>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={() => requestOpenFile(c.targetFile)}
+                      className="block max-w-full truncate text-left font-mono text-[8px] leading-4 text-ink-faint hover:text-ink-muted"
+                      title={`Open ${c.targetFile} in the editor`}
+                    >
+                      → {c.targetFile}
+                    </button>
+                  </div>
+                ))}
+                {state.data.truncated ? (
+                  <div className="px-2 py-1 text-[8px] text-ink-faint">
+                    List capped — the heaviest crossings are shown.
+                  </div>
+                ) : null}
+              </div>
+            )
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * One collapsible use-site list (import sites or call sites) inside a
+ * symbol's accordion. Sites inside the boundary's consuming system sort
+ * first and render brighter; the rest are context from elsewhere.
+ */
+function SiteSection({
+  title,
+  sites,
+  truncated,
+  emptyNote,
+  open,
+  onToggle,
+  inSource,
+  sourceName,
+}: {
+  title: string;
+  sites: SymbolSite[];
+  truncated: boolean;
+  emptyNote: string;
+  open: boolean;
+  onToggle: () => void;
+  inSource: (file: string) => boolean;
+  sourceName: string;
+}) {
+  const ordered = useMemo(
+    () => [...sites].sort((a, b) => Number(inSource(b.file)) - Number(inSource(a.file))),
+    [sites, inSource],
+  );
+  const fromSource = useMemo(() => sites.filter((s) => inSource(s.file)).length, [sites, inSource]);
+  return (
+    <div className="overflow-hidden rounded-md border border-edge bg-surface-0">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={open}
+        className="flex w-full items-center gap-1.5 px-2 py-1 text-left hover:bg-surface-2/60"
+      >
+        <ChevronDown
+          className={cn(
+            "h-3 w-3 shrink-0 text-ink-faint transition-transform",
+            !open && "-rotate-90",
+          )}
+        />
+        <span className="text-[8px] font-medium uppercase tracking-wide text-ink-faint">
+          {title}
+        </span>
+        <span className="text-[9px] text-ink-faint">
+          {sites.length}
+          {truncated ? "+" : ""}
+        </span>
+        {fromSource > 0 ? (
+          <span className="ml-auto min-w-0 truncate text-[8px] text-ink-faint">
+            {fromSource} in {sourceName}
+          </span>
+        ) : null}
+      </button>
+      {open ? (
+        sites.length === 0 ? (
+          <div className="border-t border-edge/60 px-2 py-1.5 text-[9px] text-ink-faint">
+            {emptyNote}
+          </div>
+        ) : (
+          <div className="max-h-48 overflow-y-auto border-t border-edge/60">
+            {ordered.map((s, i) => (
+              <div key={`${s.file}:${s.line ?? "?"}:${i}`} className="group px-2 py-1 hover:bg-surface-2/60">
+                <button
+                  type="button"
+                  onClick={() => requestOpenFile(s.file, s.line ?? undefined)}
+                  className="flex w-full items-center gap-1.5 text-left"
+                  title={`Open ${s.file} in the editor`}
+                >
+                  <span
+                    className={cn(
+                      "min-w-0 truncate font-mono text-[9px]",
+                      inSource(s.file) ? "text-ink-muted" : "text-ink-faint",
+                    )}
+                  >
+                    {s.file}
+                    {s.line != null ? `:${s.line}` : ""}
+                  </span>
+                  {s.symbol ? (
+                    <span className="shrink-0 font-mono text-[9px] text-accent-violet/80">
+                      {s.symbol}()
+                    </span>
+                  ) : null}
+                  <ExternalLink className="ml-auto h-2.5 w-2.5 shrink-0 text-ink-faint opacity-0 transition-opacity group-hover:opacity-100" />
+                </button>
+                {s.text ? (
+                  <div
+                    className="truncate font-mono text-[9px] leading-4 text-ink/80"
+                    title={s.text}
+                  >
+                    {s.text}
+                  </div>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        )
+      ) : null}
     </div>
   );
 }

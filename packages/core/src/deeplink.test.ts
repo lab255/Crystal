@@ -110,6 +110,26 @@ describe("round trips", () => {
     expect(roundTrip(link)).toEqual(link);
   });
 
+  it("api explorer selection round-trips", () => {
+    const link: DeepLink = {
+      ws: "abc",
+      mode: "architect",
+      architect: { view: "apis", system: "sys:submission", api: "POST /api/v3/forms/:formId" },
+    };
+    expect(roundTrip(link)).toEqual(link);
+  });
+
+  it("global find travels on every architect subview", () => {
+    for (const view of ["systems", "diagrams", "infra", "codemap", "apis"] as const) {
+      const link: DeepLink = {
+        ws: "abc",
+        mode: "architect",
+        architect: { view, find: "payment api" },
+      };
+      expect(roundTrip(link)).toEqual(link);
+    }
+  });
+
   it("draft review round-trips, and review without a draft is dropped", () => {
     const link: DeepLink = {
       ws: "abc",
@@ -320,6 +340,39 @@ describe("round trips", () => {
       architect: { view: "systems", insights: true, facets: true },
     };
     expect(roundTrip(insights)).toEqual(insights);
+  });
+
+  it("systems focus filter with optional solo flag", () => {
+    const link: DeepLink = {
+      ws: "abc",
+      mode: "architect",
+      architect: {
+        view: "systems",
+        focus: "sys:auth,sys:data",
+        focusSolo: true,
+      },
+    };
+    expect(roundTrip(link)).toEqual(link);
+    expect(formatDeepLink(link)).toBe(
+      "#/architect/systems?ws=abc&focus=sys%3Aauth,sys%3Adata&solo=1",
+    );
+    // neighbors shown by default — solo omitted when off
+    const neighbors: DeepLink = {
+      ws: "abc",
+      mode: "architect",
+      architect: { view: "systems", focus: "sys:auth" },
+    };
+    expect(roundTrip(neighbors)).toEqual(neighbors);
+    expect(formatDeepLink(neighbors)).toBe("#/architect/systems?ws=abc&focus=sys%3Aauth");
+    // solo without a focus set is meaningless — not emitted, not parsed
+    expect(
+      formatDeepLink({
+        ws: "abc",
+        mode: "architect",
+        architect: { view: "systems", focusSolo: true },
+      }),
+    ).toBe("#/architect/systems?ws=abc");
+    expect(parseDeepLink("#/architect/systems?solo=1").architect?.focusSolo).toBeUndefined();
   });
 
   it("code map facets panel and selected file card", () => {

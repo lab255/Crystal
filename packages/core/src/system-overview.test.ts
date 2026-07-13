@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { buildCodeIndex, type IndexSourceFile } from "./code-index.js";
+import type { CodeSymbolKind } from "./codemap.js";
 import {
   buildSystemOverview,
   npmPackageOf,
   routeSegments,
   routesMatch,
+  routesMatchSuffix,
   type HttpEndpoint,
   type OverviewSourceFile,
   type SystemModule,
@@ -15,11 +17,12 @@ function src(
   path: string,
   pkg: string,
   opts: {
-    exports?: (string | { name: string; signature?: string })[];
+    exports?: (string | { name: string; kind?: CodeSymbolKind; signature?: string })[];
     imports?: { from?: string; names?: string[]; external?: string }[];
     test?: boolean;
     endpoints?: HttpEndpoint[];
     apiCalls?: HttpEndpoint[];
+    components?: string[];
   } = {},
 ): OverviewSourceFile {
   return {
@@ -29,7 +32,7 @@ function src(
     exports: (opts.exports ?? []).map((e) =>
       typeof e === "string"
         ? { name: e, kind: "function" as const }
-        : { name: e.name, kind: "function" as const, signature: e.signature },
+        : { name: e.name, kind: e.kind ?? ("function" as const), signature: e.signature },
     ),
     imports: (opts.imports ?? []).map((i) => ({
       specifier: i.external ?? `./${i.from}`,
@@ -38,6 +41,7 @@ function src(
     })),
     endpoints: opts.endpoints,
     apiCalls: opts.apiCalls,
+    components: opts.components,
   };
 }
 
@@ -422,6 +426,79 @@ describe("API links", () => {
     expect(routesMatch(routeSegments("/api/users/42"), routeSegments("/api/users/:id"))).toBe(true);
     expect(routesMatch(routeSegments("/api/users/*"), routeSegments("/api/users/:id"))).toBe(true);
     expect(routesMatch(routeSegments("/api/users"), routeSegments("/api/users/:id"))).toBe(false);
+  });
+
+  it("matches nested-router tails: the served route is a suffix of the call", () => {
+    // A nested express router only registers "/:formId/fields" — the caller
+    // dials the full mounted path.
+    const call = routeSegments("/api/v3/admin/forms/*/fields");
+    expect(routesMatchSuffix(call, routeSegments("/:formId/fields"))).toBe(true);
+    expect(routesMatchSuffix(call, routeSegments("/api/v3/admin/forms/:formId/fields"))).toBe(true);
+    // All-wildcard tails don't count — "/:id" would swallow every call.
+    expect(routesMatchSuffix(call, routeSegments("/:id"))).toBe(false);
+    // Longer than the call never matches.
+    expect(routesMatchSuffix(routeSegments("/fields"), call)).toBe(false);
+  });
+
+  it("links calls through nested router prefixes, preferring the most specific route", () => {
+    const overview = buildSystemOverview([
+      src("apps/api/src/routes/forms.routes.ts", "apps/api", {
+        endpoints: [
+          { method: "GET", path: "/:formId" },
+          { method: "GET", path: "/:formId/fields" },
+        ],
+      }),
+      src("apps/api/src/routes/health.routes.ts", "apps/api", {}),
+      src("apps/web/src/forms/api.ts", "apps/web", {
+        apiCalls: [{ method: "GET", path: "/api/v3/admin/forms/*/fields" }],
+      }),
+      src("apps/web/src/forms/Forms.tsx", "apps/web", {}),
+    ]);
+    const web = overview.systems.find((s) => s.parts.some((p) => p.path.startsWith("apps/web")))!;
+    const api = overview.systems.find((s) => s.parts.some((p) => p.path.startsWith("apps/api")))!;
+    const link = overview.links.find((l) => l.source === web.id && l.target === api.id);
+    expect(link?.apis?.map((a) => a.path)).toEqual(["/:formId/fields"]);
+  });
+});
+
+describe("component inventory", () => {
+  it("counts declared components and ranks cross-system consumed ones first", () => {
+    const overview = buildSystemOverview([
+      // Design-system package: Button is imported by two outside files,
+      // InternalHelper never leaves the system.
+      src("packages/ui/src/Button.tsx", "packages/ui", {
+        exports: [{ name: "Button", kind: "component" }],
+        components: ["Button", "InternalHelper"],
+      }),
+      src("packages/ui/src/Card.tsx", "packages/ui", {
+        exports: [{ name: "Card", kind: "component" }],
+        components: ["Card"],
+      }),
+      // Feature package consuming Button twice, Card never.
+      src("apps/web/src/pages/Home.tsx", "apps/web", {
+        components: ["HomePage"],
+        imports: [{ from: "packages/ui/src/Button.tsx", names: ["Button"] }],
+      }),
+      src("apps/web/src/pages/About.tsx", "apps/web", {
+        components: ["AboutPage"],
+        imports: [{ from: "packages/ui/src/Button.tsx", names: ["Button"] }],
+      }),
+      // Test files never contribute components.
+      src("packages/ui/src/Button.test.tsx", "packages/ui", {
+        test: true,
+        components: ["Fixture"],
+      }),
+    ]);
+    const ui = overview.systems.find((s) => s.parts.some((p) => p.pkg === "packages/ui"))!;
+    expect(ui.componentCount).toBe(3);
+    expect(ui.components.map((c) => `${c.name}×${c.consumers}`)).toEqual([
+      "Button×2",
+      "Card×0",
+      "InternalHelper×0",
+    ]);
+    const web = overview.systems.find((s) => s.parts.some((p) => p.pkg === "apps/web"))!;
+    expect(web.componentCount).toBe(2);
+    expect(web.components.every((c) => c.consumers === 0)).toBe(true);
   });
 });
 

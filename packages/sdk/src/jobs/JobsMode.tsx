@@ -138,9 +138,13 @@ function IndexSection({
 
   async function run(next: JobScope): Promise<void> {
     setScope(next);
-    const files = next === "full" ? undefined : (scoped?.[next] ?? []);
+    // "stale" drains the un-indexed backlog server-side (`full: true` chains
+    // batches until no file is missing a fresh enrichment).
+    const files = next === "worktree" || next === "base" ? (scoped?.[next] ?? []) : undefined;
     if (files && files.length === 0) {
-      setNotice("No changed files for this scope — pick Full scan to reindex everything.");
+      setNotice(
+        "No changed files for this scope — pick Needs indexing to index just the files without fresh tags.",
+      );
       return;
     }
     setNotice(null);
@@ -180,10 +184,11 @@ function IndexSection({
           label="Index intents"
           icon={<Sparkles className="h-3.5 w-3.5" />}
           scope={scope}
+          scopes={["worktree", "base", "stale"]}
           counts={{
             worktree: scoped?.worktree.length,
             base: scoped?.base.length,
-            full: scoped?.indexTotal,
+            stale: scoped?.indexStale,
           }}
           busy={busy}
           onRun={run}
@@ -269,7 +274,7 @@ function SurveySection({ scoped, runs }: { scoped: Scoped | null; runs: AgentRun
     setScope(next);
     setNotice(null);
     setImported(null);
-    const files = next === "full" ? undefined : (scoped?.[next] ?? []);
+    const files = next === "worktree" || next === "base" ? (scoped?.[next] ?? []) : undefined;
     if (files && files.length === 0) {
       setNotice("No changed files for this scope — pick Full scan to survey the whole repo.");
       return;
@@ -345,7 +350,7 @@ function SurveySection({ scoped, runs }: { scoped: Scoped | null; runs: AgentRun
           }
           className="mt-2 flex items-center gap-1 text-[11px] text-crystal-300 hover:text-crystal-200"
         >
-          Imported “{imported.name}” — open in Code graph <ArrowUpRight className="h-3 w-3" />
+          Imported “{imported.name}” — open in Architecture <ArrowUpRight className="h-3 w-3" />
         </button>
       ) : null}
       {notice ? <p className="mt-2 text-[11px] text-warn">{notice}</p> : null}

@@ -26,6 +26,7 @@ import {
   type ArchitectureGraph,
   type CodeMapSummary,
 } from "@crystal/core";
+import { useNav } from "@crystal/client";
 import { Badge, Button, EmptyState, Input, Tooltip, cn } from "@crystal/ui";
 import { CodeNode, type CodeNodeData, type CodeRfNode } from "./codemap/CodeNode.js";
 import { InlineRename } from "./ContextMenu.js";
@@ -548,6 +549,51 @@ function InfraInner({
       }),
     );
   }, [simResult, simKilled, setNodes]);
+
+  // Global find (the Architecture header's box): cells whose component or
+  // detected service misses the query dim. Merged into live node state like
+  // the sim decorations — a scene rebuild would snap a drag back.
+  const findQuery = (useNav((l) => l.architect?.find) ?? "").trim().toLowerCase();
+  const findMatchIds = useMemo(() => {
+    if (!findQuery) return null;
+    const ids = new Set<string>();
+    for (const n of graph.nodes) {
+      const text = [
+        n.label,
+        n.description ?? "",
+        ...n.tech,
+        n.codeModule ?? "",
+        n.codeFile ?? "",
+        ...Object.values(n.placements).map((p) => p?.runtime ?? ""),
+      ]
+        .join("\n")
+        .toLowerCase();
+      if (text.includes(findQuery)) ids.add(n.id);
+    }
+    for (const { dep } of detected.externals) {
+      if (`${dep.name} ${dep.packages.join(" ")}`.toLowerCase().includes(findQuery))
+        ids.add(externalNodeId(dep));
+    }
+    return ids;
+  }, [findQuery, graph, detected]);
+
+  useEffect(() => {
+    setNodes((prev) =>
+      prev.map((n) => {
+        if (n.type !== "code") return n;
+        const miss = findMatchIds != null && !findMatchIds.has(n.id);
+        const marked = n.className?.includes("arch-find-miss") ?? false;
+        if (miss === marked) return n;
+        return {
+          ...n,
+          className: miss
+            ? cn(n.className, "arch-find-miss")
+            : n.className?.replace("arch-find-miss", "").trim(),
+        } as InfraRfNode;
+      }),
+    );
+    // `scene` re-applies the classes after a scene reset wipes them.
+  }, [findMatchIds, setNodes, scene]);
 
   const edges = useMemo(
     () => (simResult ? applyTrafficToEdges(scene.edges, simResult) : scene.edges),

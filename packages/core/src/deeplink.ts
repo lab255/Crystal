@@ -17,7 +17,7 @@
 import { CODE_LOD_LEVELS, type CodeLodLevel } from "./codemap.js";
 
 export type CrystalModeId = "projects" | "architect" | "orchestrate" | "code" | "jobs";
-export type ArchitectViewId = "systems" | "diagrams" | "infra" | "codemap";
+export type ArchitectViewId = "systems" | "diagrams" | "infra" | "codemap" | "apis";
 export type OrchestratorTabId = "board" | "runs" | "agents";
 
 /** Mirrors the code map's drill levels (all workspaces → workspace → module → file). */
@@ -73,6 +73,14 @@ export interface ArchitectLink {
   edge?: string;
   /** Systems expanded in place into their components — comma-separated ids. */
   expanded?: string;
+  /**
+   * Systems-overview focus filter: comma-separated system ids. When set, the
+   * canvas shows only these systems (plus their first-degree neighbors) and
+   * animates the traffic between them.
+   */
+  focus?: string;
+  /** Hide the focus filter's neighbor ring (neighbors show by default). */
+  focusSolo?: boolean;
   /** Selected file card on the code map canvas. */
   file?: string;
   /**
@@ -81,6 +89,16 @@ export interface ArchitectLink {
    * and travels in shared links. All architect subviews honor it.
    */
   sel?: string;
+  /**
+   * Global find query — one search shared by every architect subview
+   * (systems, code diagrams, infrastructure); each view dims what misses.
+   */
+  find?: string;
+  /**
+   * Selected endpoint in the API explorer, "METHOD /path" (the serving
+   * system rides in `system` when it matters).
+   */
+  api?: string;
 }
 
 export interface OrchestrateLink {
@@ -144,9 +162,14 @@ export function formatDeepLink(link: DeepLink): string {
       if (a.lens && a.lensCtx) add("lensctx", "1");
       if (a.edge) add("edge", a.edge);
       if (a.expanded) add("expand", a.expanded);
+      if (a.focus) add("focus", a.focus);
+      if (a.focus && a.focusSolo) add("solo", "1");
       if (a.insights) add("insights", "1");
       if (a.contracts) add("contracts", "1");
       if (a.facets) add("facets", "1");
+    } else if (view === "apis") {
+      if (a.system) add("system", a.system);
+      if (a.api) add("api", a.api);
     } else if (view === "codemap") {
       const cm = a.codemap;
       if (cm) {
@@ -172,6 +195,7 @@ export function formatDeepLink(link: DeepLink): string {
       if (a.overlay) add("overlay", "1");
     }
     if (a.sel) add("sel", a.sel);
+    if (a.find) add("find", a.find);
   } else if (mode === "orchestrate") {
     const o = link.orchestrate ?? {};
     const tab = o.tab ?? "board";
@@ -207,8 +231,16 @@ export function parseDeepLink(hash: string): DeepLink {
     link.mode = "architect";
     const a: ArchitectLink = {};
     const view = segments[1];
-    if (view === "systems" || view === "diagrams" || view === "infra" || view === "codemap")
+    if (
+      view === "systems" ||
+      view === "diagrams" ||
+      view === "infra" ||
+      view === "codemap" ||
+      view === "apis"
+    )
       a.view = view;
+    const api = params.get("api");
+    if (api) a.api = api;
     const system = params.get("system");
     if (system) a.system = system;
     const sysGroup = params.get("group");
@@ -232,10 +264,15 @@ export function parseDeepLink(hash: string): DeepLink {
     if (edge) a.edge = edge;
     const expanded = params.get("expand");
     if (expanded) a.expanded = expanded;
+    const focus = params.get("focus");
+    if (focus) a.focus = focus;
+    if (focus && params.get("solo") === "1") a.focusSolo = true;
     const file = params.get("file");
     if (file) a.file = file;
     const sel = params.get("sel");
     if (sel) a.sel = sel;
+    const find = params.get("find");
+    if (find) a.find = find;
     const at = params.get("at");
     const mws = params.get("mws") ?? ws;
     const path = params.get("path");
@@ -285,10 +322,11 @@ export function parseDeepLink(hash: string): DeepLink {
  * history navigation.
  */
 const ARCHITECT_VIEW_FIELDS: Record<ArchitectViewId, readonly (keyof ArchitectLink)[]> = {
-  systems: ["view", "system", "sysGroup", "lens", "lensCtx", "edge", "expanded", "insights", "contracts", "facets", "sel"],
-  codemap: ["view", "codemap", "lod", "lens", "lensCtx", "duplicates", "findings", "facets", "file", "sel"],
-  diagrams: ["view", "diagram", "facet", "draft", "review", "journey", "overlay", "sel"],
-  infra: ["view", "diagram", "facet", "draft", "review", "journey", "overlay", "sel"],
+  systems: ["view", "system", "sysGroup", "lens", "lensCtx", "edge", "expanded", "focus", "focusSolo", "insights", "contracts", "facets", "sel", "find"],
+  codemap: ["view", "codemap", "lod", "lens", "lensCtx", "duplicates", "findings", "facets", "file", "sel", "find"],
+  diagrams: ["view", "diagram", "facet", "draft", "review", "journey", "overlay", "sel", "find"],
+  infra: ["view", "diagram", "facet", "draft", "review", "journey", "overlay", "sel", "find"],
+  apis: ["view", "system", "api", "sel", "find"],
 };
 
 const ORCHESTRATE_TAB_FIELDS: Record<OrchestratorTabId, readonly (keyof OrchestrateLink)[]> = {
