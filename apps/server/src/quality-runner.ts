@@ -9,6 +9,7 @@ import {
   type CoverageMetric,
   type CoverageReport,
   type FileCoverage,
+  type PackageTestSetup,
   type QualityRun,
   type QualityRunScope,
   type QualityRunSummary,
@@ -34,6 +35,8 @@ const MAX_TAIL_BYTES = 64 * 1024;
 
 const TEST_FILE_RE = /\.(test|spec)\.(ts|tsx|js|jsx|mjs|cjs)$/;
 const NPM_PLACEHOLDER_SCRIPT = 'echo "Error: no test specified" && exit 1';
+/** package.json this deep still declares a testable package (matches the code map). */
+const PACKAGE_MAX_DEPTH = 3;
 
 const VITEST_CONFIGS = [
   "vitest.config.ts",
@@ -121,6 +124,71 @@ export function buildJestArgs(
     args.push("--coverage", "--coverageReporters=json", "--coverageReporters=json-summary");
   }
   return args;
+}
+
+// ---------------------------------------------------------------------------
+// Run planning (pure, exported for tests)
+// ---------------------------------------------------------------------------
+
+/** One package-scoped execution inside a run. */
+export interface RunJobPlan {
+  /** Workspace-relative package dir ("." = root). */
+  dir: string;
+  mode: TestRunnerKind;
+  /** The plan's script text when mode is "script". */
+  script: string | null;
+  coverage: boolean;
+}
+
+/** Deepest package dir owning a workspace-relative file ("." owns everything). */
+export function owningPackageDir(packages: readonly PackageTestSetup[], file: string): string {
+  const rel = normalizeRel(file);
+  let best = ".";
+  for (const pkg of packages) {
+    if (pkg.dir === ".") continue;
+    if ((rel === pkg.dir || rel.startsWith(pkg.dir + "/")) && pkg.dir.length > best.length) {
+      best = pkg.dir;
+    }
+  }
+  return best;
+}
+
+/**
+ * Which package runs execute, in order. A file scope picks the owning
+ * package's runner; an unscoped run executes every vitest/jest package in
+ * discovery order, falling back to the root `test` script when nothing else
+ * exists. Coverage applies per package, only where a provider resolves.
+ */
+export function planRunJobs(
+  packages: readonly PackageTestSetup[],
+  scope: { file?: string; coverage?: boolean },
+): RunJobPlan[] {
+  const wantCoverage = Boolean(scope.coverage);
+  if (scope.file) {
+    const dir = owningPackageDir(packages, scope.file);
+    const pkg =
+      packages.find((p) => p.dir === dir) ?? packages.find((p) => p.dir === ".");
+    if (!pkg) return [];
+    return [
+      {
+        dir: pkg.dir,
+        mode: pkg.runner,
+        script: pkg.script,
+        coverage: wantCoverage && pkg.runner !== "script" && pkg.coverageCapable,
+      },
+    ];
+  }
+  const runnable = packages.filter((p) => p.runner === "vitest" || p.runner === "jest");
+  if (runnable.length > 0) {
+    return runnable.map((pkg) => ({
+      dir: pkg.dir,
+      mode: pkg.runner,
+      script: pkg.script,
+      coverage: wantCoverage && pkg.coverageCapable,
+    }));
+  }
+  const root = packages.find((p) => p.dir === "." && p.runner === "script");
+  return root ? [{ dir: ".", mode: "script", script: root.script, coverage: false }] : [];
 }
 
 // ---------------------------------------------------------------------------
@@ -404,6 +472,11 @@ export function parseIstanbulCoverage(
   }
 
   if (files.length === 0) return null;
+  return summarizeCoverage(files, generatedAt);
+}
+
+/** Sort files and derive the report totals (also merges multi-package output). */
+export function summarizeCoverage(files: FileCoverage[], generatedAt: string): CoverageReport {
   files.sort((a, z) => a.path.localeCompare(z.path));
 
   const sum = (pick: (f: FileCoverage) => CoverageMetric): CoverageMetric => {
@@ -442,16 +515,31 @@ interface DetectedCore {
   coverageCapable: boolean;
 }
 
+/** One spawned package job inside a (possibly multi-package) run. */
+interface ExecJob {
+  plan: RunJobPlan;
+  tmpJson: string | null;
+}
+
 interface LiveRun {
   run: QualityRun;
   child: ChildProcess;
-  mode: TestRunnerKind;
-  tmpJson: string | null;
+  /** Remaining jobs after the current one (executed in order). */
+  queue: ExecJob[];
+  job: ExecJob;
   cancelled: boolean;
   timedOut: boolean;
   timer: NodeJS.Timeout;
   stdoutTail: string;
   stderrTail: string;
+  /** Per-job runner failures collected across the queue. */
+  jobErrors: string[];
+  /** A job produced parseable results (partial results beat none). */
+  gotResults: boolean;
+  /** The current child already settled (error + close both fire). */
+  jobSettled: boolean;
+  /** A script-mode job exited non-zero. */
+  scriptFailed: boolean;
 }
 
 /**
@@ -469,45 +557,114 @@ export class QualityService {
   private history: QualityRun[] = [];
   private live: LiveRun | null = null;
   private counter = 0;
-  private coverageCache: { mtimeMs: number; report: CoverageReport | null } | null = null;
-  private readonly coverageFinalPath: string;
+  private coverageCache: { key: string; report: CoverageReport | null } | null = null;
+  /** Package dirs whose coverage output merges into the report ("." always). */
+  private coverageDirs: string[] = ["."];
+  private readonly coverageWatched = new Set<string>();
   private disposed = false;
 
   constructor(private readonly root: string) {
-    this.coverageFinalPath = path.join(root, "coverage", "coverage-final.json");
-    // Poll-watch coverage output — catches coverage produced outside Crystal
-    // too (fs.watchFile tolerates the file not existing yet).
-    fsSync.watchFile(this.coverageFinalPath, { interval: 2000 }, (curr, prev) => {
-      if (curr.mtimeMs !== prev.mtimeMs) {
-        this.coverageCache = null;
-        this.events.emit("coverageChanged", {});
-      }
-    });
+    this.watchPackageCoverage([]);
+  }
+
+  /**
+   * Poll-watch each package's istanbul output — catches coverage produced
+   * outside Crystal too (fs.watchFile tolerates missing files). Idempotent;
+   * detect() extends the set as packages are discovered.
+   */
+  private watchPackageCoverage(dirs: string[]): void {
+    this.coverageDirs = [...new Set([".", ...this.coverageDirs, ...dirs])];
+    if (this.disposed) return;
+    for (const dir of this.coverageDirs) {
+      const target = path.join(this.absDir(dir), "coverage", "coverage-final.json");
+      if (this.coverageWatched.has(target)) continue;
+      this.coverageWatched.add(target);
+      fsSync.watchFile(target, { interval: 2000 }, (curr, prev) => {
+        if (curr.mtimeMs !== prev.mtimeMs) {
+          this.coverageCache = null;
+          this.events.emit("coverageChanged", {});
+        }
+      });
+    }
   }
 
   // -- detect ---------------------------------------------------------------
 
   async detect(): Promise<TestRunnerInfo> {
-    const core = await this.detectCore();
-    return { ...core, testFiles: await this.collectTestFiles() };
+    const packages = await this.detectPackages();
+    const root = packages.find((p) => p.dir === ".");
+    // The root speaks for the workspace when it has a runner; otherwise the
+    // packages do — surface their most common runner as the headline.
+    const counts = new Map<TestRunnerKind, number>();
+    for (const p of packages) counts.set(p.runner, (counts.get(p.runner) ?? 0) + 1);
+    const majority =
+      [...counts.entries()].sort((a, z) => z[1] - a[1])[0]?.[0] ?? null;
+    return {
+      runner: root?.runner ?? majority,
+      configFile: root?.configFile ?? null,
+      script: root?.script ?? null,
+      coverageCapable: packages.some((p) => p.coverageCapable),
+      packages,
+      testFiles: await this.collectTestFiles(),
+    };
   }
 
-  private async detectCore(): Promise<DetectedCore> {
-    const pkg = await this.readPackageJson();
+  /** Every package.json dir (≤ depth 3) with its own test setup, root first. */
+  async detectPackages(): Promise<PackageTestSetup[]> {
+    const dirs: string[] = [];
+    const walk = async (rel: string, depth: number): Promise<void> => {
+      const abs = rel === "." ? this.root : resolveInRoot(this.root, rel);
+      let entries: fsSync.Dirent[];
+      try {
+        entries = await fs.readdir(abs, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      if (entries.some((e) => e.isFile() && e.name === "package.json")) dirs.push(rel);
+      if (depth >= PACKAGE_MAX_DEPTH) return;
+      for (const entry of entries) {
+        if (entry.isDirectory() && !isIgnoredDir(entry.name) && !entry.name.startsWith(".")) {
+          await walk(rel === "." ? entry.name : `${rel}/${entry.name}`, depth + 1);
+        }
+      }
+    };
+    await walk(".", 0);
+
+    const out: PackageTestSetup[] = [];
+    for (const dir of dirs) {
+      const core = await this.detectCoreAt(dir);
+      if (!core.runner) continue;
+      const pkg = await this.readPackageJson(dir);
+      const name =
+        typeof (pkg as { name?: unknown }).name === "string" && (pkg as { name?: string }).name
+          ? (pkg as { name: string }).name
+          : dir === "."
+            ? path.basename(path.resolve(this.root))
+            : path.posix.basename(dir);
+      out.push({ dir, name, ...core, runner: core.runner });
+    }
+    this.watchPackageCoverage(out.map((p) => p.dir));
+    return out;
+  }
+
+  private async detectCoreAt(dir: string): Promise<DetectedCore> {
+    const pkg = await this.readPackageJson(dir);
     const deps = { ...pkg.dependencies, ...pkg.devDependencies };
     const rawScript = typeof pkg.scripts?.test === "string" ? pkg.scripts.test : null;
     const script = rawScript && rawScript.trim() !== NPM_PLACEHOLDER_SCRIPT ? rawScript : null;
 
-    const vitestConfig = await this.firstExisting(VITEST_CONFIGS);
+    const vitestConfig = await this.firstExisting(VITEST_CONFIGS, dir);
     if (vitestConfig || deps["vitest"]) {
       const coverageCapable =
         Boolean(deps["@vitest/coverage-v8"] || deps["@vitest/coverage-istanbul"]) ||
+        (await this.dirExists(path.join(this.absDir(dir), "node_modules", "@vitest", "coverage-v8"))) ||
+        (await this.dirExists(path.join(this.absDir(dir), "node_modules", "@vitest", "coverage-istanbul"))) ||
         (await this.dirExists(path.join(this.root, "node_modules", "@vitest", "coverage-v8"))) ||
         (await this.dirExists(path.join(this.root, "node_modules", "@vitest", "coverage-istanbul")));
       return { runner: "vitest", configFile: vitestConfig, script, coverageCapable };
     }
 
-    const jestConfig = await this.firstExisting(JEST_CONFIGS);
+    const jestConfig = await this.firstExisting(JEST_CONFIGS, dir);
     if (jestConfig || pkg.jest !== undefined || deps["jest"]) {
       // jest bundles its own coverage collection.
       return { runner: "jest", configFile: jestConfig, script, coverageCapable: true };
@@ -517,17 +674,25 @@ export class QualityService {
     return { runner: null, configFile: null, script, coverageCapable: false };
   }
 
-  private async readPackageJson(): Promise<PackageJson> {
+  private absDir(dir: string): string {
+    return dir === "." ? this.root : resolveInRoot(this.root, dir);
+  }
+
+  private async readPackageJson(dir = "."): Promise<PackageJson> {
     try {
-      return JSON.parse(await fs.readFile(path.join(this.root, "package.json"), "utf8")) as PackageJson;
+      return JSON.parse(
+        await fs.readFile(path.join(this.absDir(dir), "package.json"), "utf8"),
+      ) as PackageJson;
     } catch {
       return {};
     }
   }
 
-  private async firstExisting(names: string[]): Promise<string | null> {
+  private async firstExisting(names: string[], dir = "."): Promise<string | null> {
     for (const name of names) {
-      if (await this.fileExists(path.join(this.root, name))) return name;
+      if (await this.fileExists(path.join(this.absDir(dir), name))) {
+        return dir === "." ? name : `${dir}/${name}`;
+      }
     }
     return null;
   }
@@ -576,7 +741,7 @@ export class QualityService {
     const scopeFile = params.file ? normalizeRel(params.file) : undefined;
     if (scopeFile) resolveInRoot(this.root, scopeFile);
 
-    const core = await this.detectCore();
+    const packages = await this.detectPackages();
     const scope: QualityRunScope = {};
     if (scopeFile) scope.file = scopeFile;
     if (params.testName) scope.testName = params.testName;
@@ -593,35 +758,58 @@ export class QualityService {
     if (this.history.length > MAX_RUN_HISTORY) this.history.length = MAX_RUN_HISTORY;
     this.emitRun(run);
 
-    // Resolve which mode actually executes: vitest/jest need their local
-    // binary; fall back to the package.json test script when it's missing.
-    const win = process.platform === "win32";
-    let mode: TestRunnerKind | null = core.runner;
-    let bin: string | null = null;
-    if (mode === "vitest" || mode === "jest") {
-      const candidate = path.join(this.root, "node_modules", ".bin", mode + (win ? ".cmd" : ""));
-      if (await this.fileExists(candidate)) {
-        bin = candidate;
-      } else if (core.script) {
-        mode = "script";
-      } else {
-        return this.settleEarly(
-          run,
-          "error",
-          `${mode} is configured but its binary is missing (expected ${toRelPath(this.root, candidate)}). Install dependencies first.`,
-        );
-      }
-    }
-    if (mode === null) {
+    const plans = planRunJobs(packages, { file: scopeFile, coverage: params.coverage });
+    if (plans.length === 0) {
       return this.settleEarly(run, "error", "No test runner detected in this workspace.");
     }
+    run.withCoverage = plans.some((p) => p.coverage);
 
-    run.withCoverage = Boolean(params.coverage) && mode !== "script" && core.coverageCapable;
+    const jobs: ExecJob[] = plans.map((plan, i) => ({
+      plan,
+      tmpJson:
+        plan.mode === "script" ? null : path.join(os.tmpdir(), `crystal-quality-${run.id}-${i}.json`),
+    }));
+
+    const live: LiveRun = {
+      run,
+      child: null as unknown as ChildProcess, // set by spawnJob before use
+      queue: jobs.slice(1),
+      job: jobs[0]!,
+      cancelled: false,
+      timedOut: false,
+      timer: setTimeout(() => {}, 0),
+      stdoutTail: "",
+      stderrTail: "",
+      jobErrors: [],
+      gotResults: false,
+      jobSettled: false,
+      scriptFailed: false,
+    };
+    clearTimeout(live.timer);
+    this.live = live;
+
+    const spawned = await this.spawnJob(live);
+    if (!spawned) {
+      // The first job could not start and nothing else recovered the run —
+      // settleJobless already finalized it.
+      return { run: { ...run } };
+    }
+    return { run: { ...run } };
+  }
+
+  /**
+   * Spawn the live run's current job. On unstartable jobs (missing binary),
+   * records the failure and advances the queue; returns false when the run
+   * settled without a process.
+   */
+  private async spawnJob(live: LiveRun): Promise<boolean> {
+    const { plan } = live.job;
+    const win = process.platform === "win32";
+    const cwd = this.absDir(plan.dir);
 
     let cmd: string;
     let args: string[];
-    let tmpJson: string | null = null;
-    if (mode === "script") {
+    if (plan.mode === "script") {
       cmd = (await this.fileExists(path.join(this.root, "pnpm-lock.yaml")))
         ? "pnpm"
         : (await this.fileExists(path.join(this.root, "yarn.lock")))
@@ -629,20 +817,47 @@ export class QualityService {
           : "npm";
       args = ["test"];
     } else {
-      tmpJson = path.join(os.tmpdir(), `crystal-quality-${run.id}.json`);
+      // The runner binary hoists differently per package manager — probe the
+      // package's own node_modules first, then the workspace root's.
+      const binName = plan.mode + (win ? ".cmd" : "");
+      const candidates = [
+        path.join(cwd, "node_modules", ".bin", binName),
+        path.join(this.root, "node_modules", ".bin", binName),
+      ];
+      let bin: string | null = null;
+      for (const candidate of candidates) {
+        if (await this.fileExists(candidate)) {
+          bin = candidate;
+          break;
+        }
+      }
+      if (!bin) {
+        live.jobErrors.push(
+          `${plan.dir === "." ? "workspace root" : plan.dir}: ${plan.mode} is configured but its binary is missing. Install dependencies first.`,
+        );
+        return this.advanceQueue(live);
+      }
+      // Scope files are workspace-relative; the runner resolves them from cwd.
+      const file =
+        live.run.scope.file && plan.dir !== "."
+          ? path.posix.relative(plan.dir, live.run.scope.file)
+          : live.run.scope.file;
       const argScope: RunArgScope = {
-        file: scope.file,
-        testName: scope.testName,
-        coverage: run.withCoverage,
+        file,
+        testName: live.run.scope.testName,
+        coverage: plan.coverage,
       };
-      args = mode === "vitest" ? buildVitestArgs(argScope, tmpJson, win) : buildJestArgs(argScope, tmpJson, win);
-      cmd = win && /\s/.test(bin!) ? `"${bin!}"` : bin!;
+      args =
+        plan.mode === "vitest"
+          ? buildVitestArgs(argScope, live.job.tmpJson!, win)
+          : buildJestArgs(argScope, live.job.tmpJson!, win);
+      cmd = win && /\s/.test(bin) ? `"${bin}"` : bin;
     }
 
     let child: ChildProcess;
     try {
       child = spawn(cmd, args, {
-        cwd: this.root,
+        cwd,
         // vitest/jest/pnpm are .cmd shims on Windows npm installs.
         shell: win,
         windowsHide: true,
@@ -650,24 +865,19 @@ export class QualityService {
         stdio: ["ignore", "pipe", "pipe"],
       });
     } catch (err) {
-      return this.settleEarly(run, "error", `Failed to spawn ${mode}: ${(err as Error).message}`);
+      live.jobErrors.push(`${plan.dir}: failed to spawn ${plan.mode}: ${(err as Error).message}`);
+      return this.advanceQueue(live);
     }
 
-    const live: LiveRun = {
-      run,
-      child,
-      mode,
-      tmpJson,
-      cancelled: false,
-      timedOut: false,
-      timer: setTimeout(() => {
-        live.timedOut = true;
-        this.killTree(child);
-      }, RUN_TIMEOUT_MS),
-      stdoutTail: "",
-      stderrTail: "",
-    };
-    this.live = live;
+    live.child = child;
+    live.jobSettled = false;
+    live.stdoutTail = "";
+    live.stderrTail = "";
+    clearTimeout(live.timer);
+    live.timer = setTimeout(() => {
+      live.timedOut = true;
+      this.killTree(child);
+    }, RUN_TIMEOUT_MS);
 
     child.stdout?.setEncoding("utf8");
     child.stdout?.on("data", (chunk: string) => {
@@ -679,13 +889,23 @@ export class QualityService {
     });
 
     child.on("error", (err) => {
-      void this.settle(live, null, `Failed to spawn ${mode}: ${err.message}`);
+      void this.settle(live, child, null, `Failed to spawn ${plan.mode}: ${err.message}`);
     });
     child.on("close", (code) => {
-      void this.settle(live, code, null);
+      void this.settle(live, child, code, null);
     });
+    return true;
+  }
 
-    return { run: { ...run } };
+  /** Move to the next queued job, or finalize when the queue is drained. */
+  private async advanceQueue(live: LiveRun): Promise<boolean> {
+    const next = live.queue.shift();
+    if (next && !live.cancelled && !live.timedOut) {
+      live.job = next;
+      return this.spawnJob(live);
+    }
+    this.finalize(live);
+    return false;
   }
 
   /** Settle a run that never got a process off the ground. */
@@ -697,53 +917,90 @@ export class QualityService {
     return { run: { ...run } };
   }
 
-  private async settle(live: LiveRun, exitCode: number | null, spawnError: string | null): Promise<void> {
-    const { run } = live;
-    if (run.status !== "running") return; // error + close both fire — first wins
+  /** Settle the current job's child, then advance the queue (or finalize). */
+  private async settle(
+    live: LiveRun,
+    child: ChildProcess,
+    exitCode: number | null,
+    spawnError: string | null,
+  ): Promise<void> {
+    if (live.jobSettled || live.child !== child) return; // error + close both fire — first wins
+    live.jobSettled = true;
     clearTimeout(live.timer);
-    if (this.live === live) this.live = null;
-
+    const { run, job } = live;
+    const label = job.plan.dir === "." ? "workspace root" : job.plan.dir;
     const tail = () => (live.stderrTail + live.stdoutTail).trim().slice(-2000);
 
     if (live.cancelled) {
-      run.status = "cancelled";
+      // finalize() reports the cancellation; nothing to record for this job.
     } else if (spawnError) {
-      run.status = "error";
-      run.error = spawnError;
+      live.jobErrors.push(`${label}: ${spawnError}`);
     } else if (live.timedOut) {
-      run.status = "error";
-      run.error = `Test run timed out after ${RUN_TIMEOUT_MS / 60000} minutes.\n${tail()}`.trim();
-    } else if (live.mode === "script") {
-      run.status = exitCode === 0 ? "passed" : "failed";
-      if (exitCode !== 0) run.error = tail();
+      live.jobErrors.push(
+        `${label}: test run timed out after ${RUN_TIMEOUT_MS / 60000} minutes.\n${tail()}`.trim(),
+      );
+    } else if (job.plan.mode === "script") {
+      live.gotResults = true;
+      if (exitCode !== 0) {
+        live.scriptFailed = true;
+        live.jobErrors.push(`${label}: ${tail()}`);
+      }
     } else {
       // Failing tests exit non-zero but still write valid JSON — always
       // prefer the reporter output over the exit code.
-      const parsed = await this.readRunJson(live.tmpJson);
+      const parsed = await this.readRunJson(job.tmpJson);
       if (parsed) {
-        run.files = parsed.files;
-        run.summary = parsed.summary;
-        run.status = parsed.summary.failed > 0 ? "failed" : "passed";
-      } else if (exitCode !== 0 && this.looksLikeRunnerFailure(live.stderrTail)) {
-        run.status = "error";
-        run.error = tail();
-      } else if (exitCode !== 0) {
-        run.status = "failed";
-        run.error = tail();
+        live.gotResults = true;
+        run.files = [...run.files, ...parsed.files];
+        const prev = run.summary ?? { files: 0, passed: 0, failed: 0, skipped: 0, durationMs: 0 };
+        run.summary = {
+          files: prev.files + parsed.summary.files,
+          passed: prev.passed + parsed.summary.passed,
+          failed: prev.failed + parsed.summary.failed,
+          skipped: prev.skipped + parsed.summary.skipped,
+          durationMs: prev.durationMs + parsed.summary.durationMs,
+        };
       } else {
-        run.status = "error";
-        run.error = `Runner exited 0 but produced no JSON results.\n${tail()}`.trim();
+        live.jobErrors.push(
+          exitCode !== 0
+            ? `${label}: ${tail()}`
+            : `${label}: runner exited 0 but produced no JSON results.\n${tail()}`.trim(),
+        );
       }
     }
 
-    if (live.tmpJson) await fs.unlink(live.tmpJson).catch(() => {});
+    if (job.tmpJson) await fs.unlink(job.tmpJson).catch(() => {});
+    if (live.queue.length > 0 && !live.cancelled && !live.timedOut) {
+      this.emitRun(run); // stream per-package progress across the queue
+    }
+    await this.advanceQueue(live);
+  }
+
+  /** Settle the whole run once the queue is drained (or aborted). */
+  private finalize(live: LiveRun): void {
+    const { run } = live;
+    if (run.status !== "running") return;
+    clearTimeout(live.timer);
+    if (this.live === live) this.live = null;
+
+    if (live.cancelled) {
+      run.status = "cancelled";
+    } else if (!live.gotResults) {
+      run.status = "error";
+      run.error = live.jobErrors.join("\n\n") || "No test results produced.";
+    } else {
+      const failed = (run.summary?.failed ?? 0) > 0 || live.scriptFailed;
+      // Partial runner failures degrade the run to "failed", never silently pass.
+      run.status = failed || live.jobErrors.length > 0 ? "failed" : "passed";
+      if (live.jobErrors.length > 0) run.error = live.jobErrors.join("\n\n");
+    }
+
     run.finishedAt = nowIso();
     this.emitRun(run);
 
     if (run.withCoverage && (run.status === "passed" || run.status === "failed")) {
       this.coverageCache = null;
-      await this.readCoverage();
-      this.events.emit("coverageChanged", {});
+      void this.readCoverage().then(() => this.events.emit("coverageChanged", {}));
     }
   }
 
@@ -755,12 +1012,6 @@ export class QualityService {
     } catch {
       return null;
     }
-  }
-
-  private looksLikeRunnerFailure(stderr: string): boolean {
-    return /(failed to load config|cannot find module|cannot find package|ENOENT|is not recognized|command not found|SyntaxError|Error: Cannot)/i.test(
-      stderr,
-    );
   }
 
   private emitRun(run: QualityRun): void {
@@ -799,24 +1050,50 @@ export class QualityService {
   }
 
   private async readCoverage(): Promise<CoverageReport | null> {
-    let st: fsSync.Stats;
-    try {
-      st = await fs.stat(this.coverageFinalPath);
-    } catch {
+    // Merge every package's istanbul output into one workspace report —
+    // per-package coverage runs each write their own coverage/ dir.
+    const present: { target: string; mtimeMs: number }[] = [];
+    for (const dir of this.coverageDirs) {
+      const target = path.join(this.absDir(dir), "coverage", "coverage-final.json");
+      try {
+        const st = await fs.stat(target);
+        present.push({ target, mtimeMs: st.mtimeMs });
+      } catch {
+        /* no coverage output in this package */
+      }
+    }
+    if (present.length === 0) {
       this.coverageCache = null;
       return null;
     }
-    if (this.coverageCache && this.coverageCache.mtimeMs === st.mtimeMs) {
+    const key = present.map((p) => `${p.target}:${p.mtimeMs}`).join("|");
+    if (this.coverageCache && this.coverageCache.key === key) {
       return this.coverageCache.report;
     }
-    try {
-      const json = JSON.parse(await fs.readFile(this.coverageFinalPath, "utf8")) as unknown;
-      const report = parseIstanbulCoverage(json, this.root, st.mtime.toISOString());
-      this.coverageCache = { mtimeMs: st.mtimeMs, report };
-      return report;
-    } catch {
-      return null;
+
+    const files: FileCoverage[] = [];
+    const seen = new Set<string>();
+    let latest = 0;
+    for (const { target, mtimeMs } of present) {
+      try {
+        const json = JSON.parse(await fs.readFile(target, "utf8")) as unknown;
+        const report = parseIstanbulCoverage(json, this.root, new Date(mtimeMs).toISOString());
+        if (!report) continue;
+        latest = Math.max(latest, mtimeMs);
+        for (const file of report.files) {
+          if (!seen.has(file.path)) {
+            seen.add(file.path);
+            files.push(file);
+          }
+        }
+      } catch {
+        /* unparseable output — skip this package's coverage */
+      }
     }
+    const report =
+      files.length === 0 ? null : summarizeCoverage(files, new Date(latest).toISOString());
+    this.coverageCache = { key, report };
+    return report;
   }
 
   // -- dispose --------------------------------------------------------------
@@ -830,7 +1107,8 @@ export class QualityService {
       this.killTree(this.live.child);
       this.live = null;
     }
-    fsSync.unwatchFile(this.coverageFinalPath);
+    for (const target of this.coverageWatched) fsSync.unwatchFile(target);
+    this.coverageWatched.clear();
     this.events.clear();
   }
 }

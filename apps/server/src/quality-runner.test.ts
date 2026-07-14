@@ -6,12 +6,15 @@ import {
   QualityService,
   buildJestArgs,
   buildVitestArgs,
+  owningPackageDir,
   parseIstanbulCoverage,
   parseJestJson,
   parseJestishJson,
   parseVitestJson,
+  planRunJobs,
   sanitizeTestName,
 } from "./quality-runner.js";
+import type { PackageTestSetup } from "@crystal/core";
 
 /** Platform-appropriate fake workspace root (C:\ws on Windows, /ws on posix). */
 const ROOT = path.resolve(path.sep, "ws");
@@ -449,5 +452,151 @@ describe("QualityService.detect", () => {
     } finally {
       service.dispose();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Monorepo detection + run planning
+// ---------------------------------------------------------------------------
+
+describe("QualityService.detect (monorepo)", () => {
+  const tmpDirs: string[] = [];
+
+  afterAll(async () => {
+    for (const dir of tmpDirs) await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+  });
+
+  async function detectIn(files: Record<string, string>) {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "crystal-quality-mono-"));
+    tmpDirs.push(root);
+    for (const [rel, content] of Object.entries(files)) {
+      const abs = path.join(root, ...rel.split("/"));
+      await fs.mkdir(path.dirname(abs), { recursive: true });
+      await fs.writeFile(abs, content, "utf8");
+    }
+    const service = new QualityService(root);
+    try {
+      return await service.detect();
+    } finally {
+      service.dispose();
+    }
+  }
+
+  it("finds per-package runners when the root has none", async () => {
+    const info = await detectIn({
+      "package.json": JSON.stringify({
+        name: "mono",
+        scripts: { test: 'echo "Error: no test specified" && exit 1' },
+      }),
+      "packages/api/package.json": JSON.stringify({
+        name: "@mono/api",
+        devDependencies: { vitest: "^3.0.0" },
+      }),
+      "packages/api/src/a.spec.ts": "",
+      "packages/web/package.json": JSON.stringify({
+        name: "@mono/web",
+        devDependencies: { vitest: "^3.0.0", "@vitest/coverage-v8": "^3.0.0" },
+      }),
+      "packages/untested/package.json": JSON.stringify({ name: "@mono/untested" }),
+    });
+    expect(info.runner).toBe("vitest");
+    expect(info.packages.map((p) => p.dir)).toEqual(["packages/api", "packages/web"]);
+    expect(info.packages[0]).toMatchObject({ name: "@mono/api", runner: "vitest" });
+    // One package with a provider makes the workspace coverage-capable.
+    expect(info.coverageCapable).toBe(true);
+    expect(info.testFiles).toEqual(["packages/api/src/a.spec.ts"]);
+  });
+
+  it("keeps the root runner as the headline when the root has one", async () => {
+    const info = await detectIn({
+      "package.json": JSON.stringify({ name: "mono", devDependencies: { vitest: "^3.0.0" } }),
+      "vitest.config.ts": "export default {};",
+      "packages/api/package.json": JSON.stringify({
+        name: "@mono/api",
+        jest: { testEnvironment: "node" },
+      }),
+    });
+    expect(info.runner).toBe("vitest");
+    expect(info.configFile).toBe("vitest.config.ts");
+    expect(info.packages.map((p) => p.dir)).toEqual([".", "packages/api"]);
+  });
+
+  it("resolves a package's coverage provider from the hoisted root node_modules", async () => {
+    const info = await detectIn({
+      "package.json": JSON.stringify({ name: "mono" }),
+      "node_modules/@vitest/coverage-v8/package.json": "{}",
+      "packages/api/package.json": JSON.stringify({
+        name: "@mono/api",
+        devDependencies: { vitest: "^3.0.0" },
+      }),
+    });
+    expect(info.packages[0]?.coverageCapable).toBe(true);
+  });
+});
+
+describe("planRunJobs", () => {
+  const pkg = (over: Partial<PackageTestSetup>): PackageTestSetup => ({
+    dir: ".",
+    name: "x",
+    runner: "vitest",
+    configFile: null,
+    script: null,
+    coverageCapable: false,
+    ...over,
+  });
+
+  it("fans an unscoped run out across every vitest/jest package", () => {
+    const plans = planRunJobs(
+      [
+        pkg({ dir: "packages/api", coverageCapable: true }),
+        pkg({ dir: "packages/web", runner: "jest", coverageCapable: true }),
+        pkg({ dir: "packages/scripts-only", runner: "script", script: "node t.js" }),
+      ],
+      { coverage: true },
+    );
+    expect(plans).toEqual([
+      { dir: "packages/api", mode: "vitest", script: null, coverage: true },
+      { dir: "packages/web", mode: "jest", script: null, coverage: true },
+    ]);
+  });
+
+  it("routes a file-scoped run to the owning package only", () => {
+    const plans = planRunJobs(
+      [pkg({ dir: "." }), pkg({ dir: "packages/api", coverageCapable: true })],
+      { file: "packages/api/src/a.spec.ts", coverage: true },
+    );
+    expect(plans).toEqual([
+      { dir: "packages/api", mode: "vitest", script: null, coverage: true },
+    ]);
+  });
+
+  it("falls back to the root for files outside any package", () => {
+    const plans = planRunJobs(
+      [pkg({ dir: "." }), pkg({ dir: "packages/api" })],
+      { file: "tools/x.spec.ts" },
+    );
+    expect(plans).toEqual([{ dir: ".", mode: "vitest", script: null, coverage: false }]);
+  });
+
+  it("uses the root test script only when no real runner exists anywhere", () => {
+    const plans = planRunJobs([pkg({ dir: ".", runner: "script", script: "node t.js" })], {});
+    expect(plans).toEqual([{ dir: ".", mode: "script", script: "node t.js", coverage: false }]);
+    expect(planRunJobs([], {})).toEqual([]);
+  });
+});
+
+describe("owningPackageDir", () => {
+  const packages = [
+    { dir: ".", name: "root" },
+    { dir: "packages/api", name: "api" },
+    { dir: "packages/api/nested", name: "nested" },
+  ] as PackageTestSetup[];
+
+  it("picks the deepest containing package", () => {
+    expect(owningPackageDir(packages, "packages/api/nested/x.test.ts")).toBe(
+      "packages/api/nested",
+    );
+    expect(owningPackageDir(packages, "packages/api/src/x.test.ts")).toBe("packages/api");
+    expect(owningPackageDir(packages, "docs/x.test.ts")).toBe(".");
   });
 });

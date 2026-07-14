@@ -65,7 +65,8 @@ export function TestsView() {
     return (
       <EmptyState icon={FlaskConical} title="No test setup detected">
         Crystal looks for a vitest/jest config (or dependency) and a package.json `test` script
-        at the workspace root. Add one and the runner appears here.
+        at the workspace root and in every workspace package. Add one and the runner appears
+        here.
       </EmptyState>
     );
   }
@@ -158,8 +159,19 @@ export function TestsView() {
           />
         ) : null}
         {info?.runner ? (
-          <Tooltip content={info.configFile ?? info.script ?? "detected from package.json"}>
-            <Badge tone="slate">{info.runner}</Badge>
+          <Tooltip
+            content={
+              info.packages.length > 1
+                ? `${info.packages.length} packages run their own tests: ${info.packages
+                    .map((p) => (p.dir === "." ? "root" : p.dir))
+                    .join(", ")}`
+                : (info.configFile ?? info.script ?? "detected from package.json")
+            }
+          >
+            <Badge tone="slate">
+              {info.runner}
+              {info.packages.length > 1 ? ` · ${info.packages.length} pkgs` : ""}
+            </Badge>
           </Tooltip>
         ) : null}
       </div>

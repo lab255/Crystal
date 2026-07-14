@@ -10,16 +10,41 @@ export type QualityViewId = "tests" | "coverage";
 
 export type TestRunnerKind = "vitest" | "jest" | "script";
 
+/** One package's own test setup — monorepos carry several. */
+export interface PackageTestSetup {
+  /** Workspace-relative package dir ("." is the workspace root). */
+  dir: string;
+  /** package.json name (the dir name when unnamed). */
+  name: string;
+  runner: TestRunnerKind;
+  /** Workspace-relative config file backing the detection, when one exists. */
+  configFile: string | null;
+  /** The package's `test` script text (runner "script", or informational). */
+  script: string | null;
+  /** A coverage provider is resolvable — coverage runs are offered. */
+  coverageCapable: boolean;
+}
+
 /** What `quality.detect` found — how (and whether) this workspace can run tests. */
 export interface TestRunnerInfo {
-  /** null: no test setup detected — the tests view explains instead of running. */
+  /**
+   * null: no test setup detected anywhere — the tests view explains instead
+   * of running. The root's runner when the root has one, else the most
+   * common runner among the workspace packages.
+   */
   runner: TestRunnerKind | null;
   /** Workspace-relative config file backing the detection, when one exists. */
   configFile: string | null;
   /** The package.json `test` script text (runner "script", or informational). */
   script: string | null;
-  /** A coverage provider is resolvable — coverage runs are offered. */
+  /** A coverage provider is resolvable somewhere — coverage runs are offered. */
   coverageCapable: boolean;
+  /**
+   * Every workspace package with its own test setup, discovery order (root
+   * first). An unscoped run executes each in sequence; a file-scoped run
+   * executes in the package owning the file.
+   */
+  packages: PackageTestSetup[];
   /** Workspace-relative test files (capped), for the tree before any run. */
   testFiles: string[];
 }
