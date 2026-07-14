@@ -70,7 +70,7 @@ import {
   updateEdge,
   updateNode,
 } from "./graph-ops.js";
-import { useCrystal, useNav, useNavUpdate, useWorkspaces } from "@crystal/client";
+import { useCrystal, useNav, useNavUpdate, useSymbolMenu, useWorkspaces } from "@crystal/client";
 import { cn } from "@crystal/ui";
 import { ContextMenu, InlineRename, type MenuEntry } from "./ContextMenu.js";
 import { collapseNode, hasGeneratedChildren } from "./expand.js";
@@ -632,6 +632,7 @@ function CanvasInner({
     setHover: publishHover,
     pin,
   } = useViewHighlight("canvas");
+  const symbolMenu = useSymbolMenu();
 
   /** Structured cross-view identity of a diagram node (see use-highlight.ts). */
   const hlRefFor = useCallback(
@@ -2020,26 +2021,18 @@ function CanvasInner({
           disabled: !!d.planned,
           onSelect: () => toggleFile(d.path),
         },
-        {
-          type: "item",
-          label: "Pin highlight",
-          icon: Pin,
-          disabled: !!d.planned,
-          onSelect: () => pin({ file: d.path, module: d.module, label: d.name }),
-        },
-        {
-          type: "item",
-          label: "Open in editor",
-          icon: ExternalLink,
-          onSelect: () => requestOpenFile(d.path),
-        },
-        {
-          type: "item",
-          label: "Copy path",
-          icon: Copy,
-          hint: d.path.split("/").pop(),
-          onSelect: () => void navigator.clipboard?.writeText(d.path),
-        },
+        // Planned (ghost) files exist only in the draft — no cross-view block.
+        ...(d.planned
+          ? [
+              {
+                type: "item" as const,
+                label: "Copy path",
+                icon: Copy,
+                hint: d.path.split("/").pop(),
+                onSelect: () => void navigator.clipboard?.writeText(d.path),
+              },
+            ]
+          : symbolMenu({ file: d.path, module: d.module, label: d.name })),
         { type: "separator" },
         {
           type: "submenu",
@@ -2063,33 +2056,15 @@ function CanvasInner({
           disabled: !!d.planned,
           onSelect: () => toggleCode(d.file, d.name),
         },
-        {
-          type: "item",
-          label: "Start journey here",
-          icon: Route,
-          disabled: !onStartJourney || !journeyable || !!d.planned,
-          onSelect: () => onStartJourney?.({ file: d.file, symbol: d.name }),
-        },
-        {
-          type: "item",
-          label: "Pin highlight",
-          icon: Pin,
-          disabled: !!d.planned,
-          onSelect: () => pin({ file: d.file, symbol: d.name, module: d.module, label: d.name }),
-        },
-        {
-          type: "item",
-          label: "Open file in editor",
-          icon: ExternalLink,
-          onSelect: () => requestOpenFile(d.file),
-        },
-        {
-          type: "item",
-          label: "Copy reference",
-          icon: Copy,
-          hint: `${d.file.split("/").pop()}#${d.name}`,
-          onSelect: () => void navigator.clipboard?.writeText(`${d.file}#${d.name}`),
-        },
+        // Planned (ghost) symbols exist only in the draft — no cross-view block.
+        ...(d.planned
+          ? []
+          : symbolMenu(
+              { file: d.file, symbol: d.name, module: d.module, label: d.name },
+              {
+                startJourney: onStartJourney && journeyable ? onStartJourney : undefined,
+              },
+            )),
         { type: "separator" },
         {
           type: "submenu",
@@ -2193,6 +2168,7 @@ function CanvasInner({
     hlRefFor,
     pin,
     pinned,
+    symbolMenu,
   ]);
 
   const mapActions = useMemo<MapActions>(

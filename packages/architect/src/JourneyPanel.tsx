@@ -19,7 +19,7 @@ import type {
   SymbolSearchHit,
 } from "@crystal/core";
 import { matchHighlight, uid } from "@crystal/core";
-import { useCrystal, useWorkspaces } from "@crystal/client";
+import { useCrystal, useSymbolMenu, useWorkspaces } from "@crystal/client";
 import {
   Badge,
   Button,
@@ -36,10 +36,9 @@ import {
   cn,
 } from "@crystal/ui";
 import { ContextMenu } from "./ContextMenu.js";
-import { requestOpenFile } from "./codemap/CodeMapView.js";
 import type { FlowProjection } from "./dataflow.js";
 import { SymbolSnippet } from "./snippets.js";
-import { crossViewEntries, highlightAttrs, hlClass, useViewHighlight } from "./use-highlight.js";
+import { highlightAttrs, hlClass, useViewHighlight } from "./use-highlight.js";
 
 /** Prefill for the journey dialog ("Start journey here…" from the code map). */
 export interface JourneySeed {
@@ -378,6 +377,7 @@ export function FlowStepsPanel({
 }) {
   const [expanded, setExpanded] = useState<string | null>(null);
   const { hover, hoverSource, pinned, setHover, pin } = useViewHighlight("journey");
+  const symbolMenu = useSymbolMenu();
   // Don't ring our own rows from our own hover — other views handle that.
   const crossHover = hoverSource === "journey" ? null : hover;
   const [menu, setMenu] = useState<{
@@ -497,12 +497,9 @@ export function FlowStepsPanel({
         <ContextMenu
           x={menu.x}
           y={menu.y}
-          entries={crossViewEntries(menu.ref, {
-            pin,
-            pinned,
+          entries={symbolMenu(menu.ref, {
             revealOnDiagram: onSelectStep ? () => onSelectStep(menu.step) : undefined,
             zoomIntoCode: onOpenStep ? () => onOpenStep(menu.step) : undefined,
-            openFile: requestOpenFile,
           })}
           onClose={() => setMenu(null)}
         />

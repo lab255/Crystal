@@ -17,11 +17,10 @@ import {
   type HighlightRef,
   type TraceProfile,
 } from "@crystal/core";
-import { useCrystal } from "@crystal/client";
+import { useCrystal, useSymbolMenu } from "@crystal/client";
 import { Badge, Tooltip, cn, type BadgeTone } from "@crystal/ui";
 import { ContextMenu } from "./ContextMenu.js";
-import { requestOpenFile } from "./codemap/CodeMapView.js";
-import { crossViewEntries, highlightAttrs, hlClass, useViewHighlight } from "./use-highlight.js";
+import { highlightAttrs, hlClass, useViewHighlight } from "./use-highlight.js";
 import { linkNodesToModules } from "./overlay.js";
 
 /**
@@ -287,6 +286,7 @@ function FlameGraph({
   useEffect(() => setFocus(root), [root]);
 
   const { hover, hoverSource, pinned, setHover, pin } = useViewHighlight("profile");
+  const symbolMenu = useSymbolMenu();
   // Don't ring our own frames from our own hover — other views handle that.
   const crossHover = hoverSource === "profile" ? null : hover;
   const [menu, setMenu] = useState<FrameMenuState | null>(null);
@@ -405,13 +405,10 @@ function FlameGraph({
             ...(menu.ref
               ? [
                   { type: "separator" as const },
-                  ...crossViewEntries(menu.ref, {
-                    pin,
-                    pinned,
+                  ...symbolMenu(menu.ref, {
                     revealOnDiagram:
                       menu.step && onSelectFrame ? () => onSelectFrame(menu.step!) : undefined,
                     zoomIntoCode: menu.step && onOpenFrame ? () => onOpenFrame(menu.step!) : undefined,
-                    openFile: (f) => requestOpenFile(f),
                   }),
                 ]
               : []),
@@ -451,6 +448,7 @@ function CallProfile({
   const key = (ref: { file: string; symbol: string }) => `${ref.file}#${ref.symbol}`;
 
   const { hover, hoverSource, pinned, setHover, pin } = useViewHighlight("profile");
+  const symbolMenu = useSymbolMenu();
   // Don't ring our own rows from our own hover — other views handle that.
   const crossHover = hoverSource === "profile" ? null : hover;
   const [menu, setMenu] = useState<HlMenuState | null>(null);
@@ -611,13 +609,10 @@ function CallProfile({
         <ContextMenu
           x={menu.x}
           y={menu.y}
-          entries={crossViewEntries(menu.ref, {
-            pin,
-            pinned,
+          entries={symbolMenu(menu.ref, {
             revealOnDiagram:
               menu.step && onSelectStep ? () => onSelectStep(menu.step!) : undefined,
             zoomIntoCode: menu.step && onOpenStep ? () => onOpenStep(menu.step!) : undefined,
-            openFile: (f) => requestOpenFile(f),
           })}
           onClose={() => setMenu(null)}
         />

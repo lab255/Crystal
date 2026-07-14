@@ -10,16 +10,9 @@ import {
   Umbrella,
 } from "lucide-react";
 import type { QualityRun, TestCaseResult, TestFileResult } from "@crystal/core";
-import { requestOpenFile, useNav, useNavUpdate } from "@crystal/client";
-import { Badge, EmptyState, Pane as SplitPane, Split, Tooltip, cn } from "@crystal/ui";
-import {
-  StatusIcon,
-  copyText,
-  fmtDuration,
-  fmtTime,
-  useMenu,
-  useQuality,
-} from "./common.js";
+import { requestOpenFile, useNav, useNavUpdate, useSymbolMenu } from "@crystal/client";
+import { Badge, EmptyState, Pane as SplitPane, Split, Tooltip, cn, useContextMenu } from "@crystal/ui";
+import { StatusIcon, copyText, fmtDuration, fmtTime, useQuality } from "./common.js";
 
 /**
  * Tests — the workspace's own test suite, run from inside Crystal. The file
@@ -40,7 +33,8 @@ export function TestsView() {
   const selectedTest = useNav((l) => l.quality?.test ?? null);
   const selectedRunId = useNav((l) => l.quality?.run ?? null);
   const find = (useNav((l) => l.quality?.find) ?? "").trim().toLowerCase();
-  const menu = useMenu();
+  const menu = useContextMenu();
+  const symbolMenu = useSymbolMenu();
 
   // The run everything renders against: explicit selection, else live, else latest.
   const shownRun: QualityRun | null =
@@ -95,19 +89,8 @@ export function TestsView() {
       onSelect: () => run({ file: r.file, coverage: true }),
     },
     { type: "separator" },
-    {
-      type: "item",
-      label: "Open in editor",
-      icon: ExternalLink,
-      onSelect: () => requestOpenFile(r.file),
-    },
-    {
-      type: "item",
-      label: "Copy path",
-      icon: Copy,
-      hint: r.file,
-      onSelect: () => copyText(r.file),
-    },
+    // Shared cross-view block; "quality" omitted — this *is* the test runner.
+    ...symbolMenu({ file: r.file }, { omit: ["quality"] }),
   ];
 
   return (
@@ -380,7 +363,8 @@ function FileDetail({
   onSelectTest: (test: string | null) => void;
   onRun: (params: { file?: string; testName?: string; coverage?: boolean }) => void;
 }) {
-  const menu = useMenu();
+  const menu = useContextMenu();
+  const symbolMenu = useSymbolMenu();
   const tests = row.result?.tests ?? [];
 
   const testMenu = (t: TestCaseResult): Parameters<typeof menu.open>[1] => [
@@ -393,12 +377,8 @@ function FileDetail({
       onSelect: () => onRun({ file: row.file, testName: lastSegment(t.name) }),
     },
     { type: "separator" },
-    {
-      type: "item",
-      label: "Open test file",
-      icon: ExternalLink,
-      onSelect: () => requestOpenFile(row.file, t.error?.line),
-    },
+    // Shared cross-view block — "Open in editor" jumps to the failure line.
+    ...symbolMenu({ file: row.file, line: t.error?.line, label: t.name }, { omit: ["quality"] }),
     {
       type: "item",
       label: "Copy test name",

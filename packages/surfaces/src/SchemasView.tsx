@@ -1,9 +1,18 @@
 import { useMemo, useState } from "react";
-import { Copy, Database, ExternalLink } from "lucide-react";
+import { Copy, Database } from "lucide-react";
 import type { SchemaKind, SchemaSurface } from "@crystal/core";
-import { requestOpenFile, useNav, useNavUpdate } from "@crystal/client";
-import { Badge, EmptyState, Pane as SplitPane, Split, Tooltip, cn, type BadgeTone } from "@crystal/ui";
-import { DetailSection, FileLink, GroupHeader, ListHeader, copyText, useMenu, useSurfaces } from "./common.js";
+import { useNav, useNavUpdate, useSymbolMenu } from "@crystal/client";
+import {
+  Badge,
+  EmptyState,
+  Pane as SplitPane,
+  Split,
+  Tooltip,
+  cn,
+  useContextMenu,
+  type BadgeTone,
+} from "@crystal/ui";
+import { DetailSection, FileLink, GroupHeader, ListHeader, copyText, useSurfaces } from "./common.js";
 
 /**
  * Schemas — the shapes data takes at the boundaries: zod objects, model
@@ -42,7 +51,8 @@ export function SchemasView() {
   const nav = useNavUpdate();
   const selectedId = useNav((l) => l.surfaces?.schema ?? null);
   const find = (useNav((l) => l.surfaces?.find) ?? "").trim().toLowerCase();
-  const menu = useMenu();
+  const menu = useContextMenu();
+  const symbolMenu = useSymbolMenu();
   const [collapsed, setCollapsed] = useState<ReadonlySet<SchemaKind>>(new Set());
 
   const schemas = report?.schemas ?? [];
@@ -81,21 +91,8 @@ export function SchemasView() {
 
   const rowMenu = (s: SchemaSurface): Parameters<typeof menu.open>[1] => [
     { type: "heading", label: s.name },
-    {
-      type: "item",
-      label: "Open in editor",
-      icon: ExternalLink,
-      hint: `${s.file.split("/").at(-1)}:${s.line}`,
-      onSelect: () => requestOpenFile(s.file, s.line),
-    },
-    { type: "separator" },
-    {
-      type: "item",
-      label: "Copy name",
-      icon: Copy,
-      hint: s.name,
-      onSelect: () => copyText(s.name),
-    },
+    // The shared cross-view block: pin, editor, code map, coverage, copy.
+    ...symbolMenu({ file: s.file, line: s.line, symbol: s.name, label: s.name }),
     {
       type: "item",
       label: "Copy fields",

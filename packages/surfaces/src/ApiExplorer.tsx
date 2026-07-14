@@ -21,10 +21,17 @@ import {
   type SystemModule,
   type SystemOverview,
 } from "@crystal/core";
-import { requestOpenFile, useCrystal, useNav, useNavUpdate, useWorkspaces } from "@crystal/client";
-import { EmptyState, Pane as SplitPane, Split, Spinner, Tooltip, cn } from "@crystal/ui";
+import {
+  requestOpenFile,
+  useCrystal,
+  useNav,
+  useNavUpdate,
+  useSymbolMenu,
+  useWorkspaces,
+} from "@crystal/client";
+import { EmptyState, Pane as SplitPane, Split, Spinner, Tooltip, cn, useContextMenu } from "@crystal/ui";
 import { JourneyProfilePanel, ROLE_META } from "@crystal/architect";
-import { DetailSection, copyText, useArchHighlight, useMenu, useSurfaces } from "./common.js";
+import { DetailSection, copyText, useArchHighlight, useSurfaces } from "./common.js";
 
 /**
  * API explorer — every served route in the workspace, one selection away from
@@ -87,7 +94,8 @@ export function ApiExplorer({ appUrl }: { appUrl: string | null }) {
   const selectedKey = useNav((l) => l.surfaces?.api ?? null);
   const systemFilter = useNav((l) => l.surfaces?.system ?? null);
   const find = (useNav((l) => l.surfaces?.find) ?? "").trim().toLowerCase();
-  const menu = useMenu();
+  const menu = useContextMenu();
+  const symbolMenu = useSymbolMenu();
 
   const [overview, setOverview] = useState<SystemOverview | null>(null);
   const [loading, setLoading] = useState(true);
@@ -186,13 +194,6 @@ export function ApiExplorer({ appUrl }: { appUrl: string | null }) {
     { type: "heading", label: r.key },
     {
       type: "item",
-      label: "Open registration in editor",
-      icon: ExternalLink,
-      hint: `${r.ep.file.split("/").at(-1)}${r.ep.line != null ? `:${r.ep.line}` : ""}`,
-      onSelect: () => requestOpenFile(r.ep.file, r.ep.line),
-    },
-    {
-      type: "item",
       label: "Highlight serving system",
       icon: Boxes,
       hint: r.system.name,
@@ -205,7 +206,6 @@ export function ApiExplorer({ appUrl }: { appUrl: string | null }) {
       onSelect: () =>
         nav({ mode: "architect", architect: { view: "systems", system: r.system.id } }),
     },
-    { type: "separator" },
     {
       type: "item",
       label: systemFilter === r.system.id ? "Clear system filter" : "Filter to this system",
@@ -213,7 +213,14 @@ export function ApiExplorer({ appUrl }: { appUrl: string | null }) {
       onSelect: () =>
         nav({ surfaces: { system: systemFilter === r.system.id ? null : r.system.id } }),
     },
-    { type: "separator" },
+    // The shared cross-view block for the registration site (its "Open in
+    // editor" jumps to the registration's file:line).
+    ...symbolMenu({
+      file: r.ep.file,
+      line: r.ep.line,
+      symbol: r.ep.handler,
+      label: r.key,
+    }),
     {
       type: "item",
       label: "Copy route",

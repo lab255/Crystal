@@ -52,7 +52,14 @@ import {
   type HighlightRef,
   type RefactorIntent,
 } from "@crystal/core";
-import { requestOpenFile, useCrystal, useNav, useNavUpdate, useWorkspaces } from "@crystal/client";
+import {
+  requestOpenFile,
+  useCrystal,
+  useNav,
+  useNavUpdate,
+  useSymbolMenu,
+  useWorkspaces,
+} from "@crystal/client";
 import {
   Badge,
   Button,
@@ -63,6 +70,7 @@ import {
   Spinner,
   Tooltip,
   cn,
+  useContextMenu,
   type MenuEntry,
 } from "@crystal/ui";
 import { useRefactorIntents } from "../refactor-intents.js";
@@ -678,6 +686,7 @@ function CodeMapInner({
   /* ---- cross-view highlight ---- */
 
   const { hover, hoverSource, pinned, setHover, pin } = useViewHighlight("codemap");
+  const symbolMenu = useSymbolMenu();
   // Hovers this map published echo back through the store — only ring foreign ones.
   const externalHover = hoverSource !== "codemap" ? hover : null;
 
@@ -918,7 +927,11 @@ function CodeMapInner({
     [wsKey, toggleModule, toggleFile, toggleCode, onStartJourney, recordMove],
   );
 
-  /** Right-click menu of a map node — navigation to the other views. */
+  /**
+   * Right-click menu of a map node: view-local drills on top, then the shared
+   * cross-view block (`useSymbolMenu`) — the "codemap" group is omitted since
+   * we *are* the code map.
+   */
   const menuFor = useCallback(
     (data: MapRfNode["data"]): MenuEntry[] => {
       if (data.nodeKind === "module") {
@@ -938,26 +951,13 @@ function CodeMapInner({
             onSelect: () => toggleModule(d.path),
           },
           { type: "separator" },
-          {
-            type: "item",
-            label: "Show on architecture diagram",
-            icon: Boxes,
-            disabled: !onRevealInDiagram,
-            onSelect: () => onRevealInDiagram?.(d.path),
-          },
-          {
-            type: "item",
-            label: "Pin highlight",
-            icon: Pin,
-            onSelect: () => pin({ module: d.path, label: d.name }),
-          },
-          {
-            type: "item",
-            label: "Copy path",
-            icon: CopyIcon,
-            hint: d.path,
-            onSelect: () => void navigator.clipboard?.writeText(d.path),
-          },
+          ...symbolMenu(
+            { module: d.path, label: d.name },
+            {
+              omit: ["codemap"],
+              revealOnDiagram: onRevealInDiagram ? () => onRevealInDiagram(d.path) : undefined,
+            },
+          ),
         ];
       }
       if (data.nodeKind === "file") {
@@ -967,41 +967,27 @@ function CodeMapInner({
           { type: "heading", label: d.name },
           {
             type: "item",
-            label: "Open in editor",
-            icon: ExternalLink,
-            onSelect: () => openInEditor(d.path),
-          },
-          {
-            type: "item",
             label: "Drill into file",
             icon: FolderGit2,
             onSelect: () => wsKey && setLevel({ kind: "file", ws: wsKey, path: d.path }),
           },
           { type: "separator" },
-          {
-            type: "item",
-            label: "Show on architecture diagram",
-            icon: Boxes,
-            disabled: !onRevealInDiagram,
-            onSelect: () => onRevealInDiagram?.(d.module, d.path),
-          },
-          {
-            type: "item",
-            label: "Pin highlight",
-            icon: Pin,
-            onSelect: () => pin({ file: d.path, module: d.module, label: d.name }),
-          },
-          {
-            type: "item",
-            label: "Copy path",
-            icon: CopyIcon,
-            onSelect: () => void navigator.clipboard?.writeText(d.path),
-          },
+          ...symbolMenu(
+            { file: d.path, module: d.module, label: d.name },
+            {
+              omit: ["codemap"],
+              openFile: openInEditor,
+              revealOnDiagram: onRevealInDiagram
+                ? () => onRevealInDiagram(d.module, d.path)
+                : undefined,
+            },
+          ),
         ];
       }
       if (data.nodeKind === "symbol") {
         const d = data as SymbolNodeData;
         if (d.planned) return [];
+        const journeyable = d.kind !== "reexport" && d.kind !== "default";
         return [
           { type: "heading", label: d.name },
           {
@@ -1010,45 +996,23 @@ function CodeMapInner({
             icon: FolderGit2,
             onSelect: () => toggleCode(d.file, d.name),
           },
-          {
-            type: "item",
-            label: "Start journey here",
-            icon: Route,
-            disabled: !onStartJourney || d.kind === "reexport" || d.kind === "default",
-            onSelect: () => onStartJourney?.({ file: d.file, symbol: d.name }),
-          },
-          {
-            type: "item",
-            label: "Open file in editor",
-            icon: ExternalLink,
-            onSelect: () => openInEditor(d.file),
-          },
           { type: "separator" },
-          {
-            type: "item",
-            label: "Show on architecture diagram",
-            icon: Boxes,
-            disabled: !onRevealInDiagram,
-            onSelect: () => onRevealInDiagram?.(d.module, d.file),
-          },
-          {
-            type: "item",
-            label: "Pin highlight",
-            icon: Pin,
-            onSelect: () => pin({ file: d.file, symbol: d.name, module: d.module, label: d.name }),
-          },
-          {
-            type: "item",
-            label: "Copy reference",
-            icon: CopyIcon,
-            hint: d.name,
-            onSelect: () => void navigator.clipboard?.writeText(`${d.file}#${d.name}`),
-          },
+          ...symbolMenu(
+            { file: d.file, symbol: d.name, module: d.module, label: d.name },
+            {
+              omit: ["codemap"],
+              openFile: openInEditor,
+              startJourney: onStartJourney && journeyable ? onStartJourney : undefined,
+              revealOnDiagram: onRevealInDiagram
+                ? () => onRevealInDiagram(d.module, d.file)
+                : undefined,
+            },
+          ),
         ];
       }
       return [];
     },
-    [wsKey, setLevel, toggleModule, toggleCode, openInEditor, onStartJourney, onRevealInDiagram, pin],
+    [wsKey, setLevel, toggleModule, toggleCode, openInEditor, onStartJourney, onRevealInDiagram, symbolMenu],
   );
 
   const onCrossNodeClick = useCallback(
@@ -1758,7 +1722,7 @@ function FilePanel({
   detail: CodeFileDetail;
   ws?: string;
   onNavigate: (path: string) => void;
-  onOpenFile: (path: string) => void;
+  onOpenFile: (path: string, line?: number) => void;
   onStartJourney?: (seed: { file: string; symbol: string }) => void;
   /** A draft plan is open — moves land on it instead of starting a new one. */
   draftActive?: boolean;
@@ -1766,6 +1730,8 @@ function FilePanel({
   const externals = detail.imports.filter((i) => i.external);
   const internals = detail.imports.filter((i) => i.resolved);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const menu = useContextMenu();
+  const symbolMenu = useSymbolMenu();
   // Older servers don't send `symbols`; fall back to the export list.
   const symbols = detail.symbols ?? detail.exports;
 
@@ -1809,6 +1775,35 @@ function FilePanel({
                   );
                   e.dataTransfer.effectAllowed = "move";
                 }}
+                onContextMenu={(e) =>
+                  menu.open(e, [
+                    { type: "heading", label: sym.name },
+                    {
+                      type: "item",
+                      label: expanded === sym.name ? "Hide source" : "Show source",
+                      icon: FolderGit2,
+                      onSelect: () => setExpanded(expanded === sym.name ? null : sym.name),
+                    },
+                    { type: "separator" },
+                    ...symbolMenu(
+                      {
+                        file: detail.path,
+                        symbol: sym.name,
+                        module: detail.module,
+                        line: sym.line,
+                        label: sym.name,
+                      },
+                      {
+                        omit: ["codemap"],
+                        openFile: onOpenFile,
+                        startJourney:
+                          onStartJourney && sym.kind !== "reexport" && sym.kind !== "default"
+                            ? onStartJourney
+                            : undefined,
+                      },
+                    ),
+                  ])
+                }
               >
                 <button
                   type="button"
@@ -1882,6 +1877,7 @@ function FilePanel({
           {detail.importedBy.length === 0 ? <Empty label="Nothing imports this file" /> : null}
         </Section>
       </div>
+      {menu.element}
     </aside>
   );
 }

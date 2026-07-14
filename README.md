@@ -15,11 +15,17 @@ boards and code all live in your repos and version with them.
 | **Architecture** | Four views. *Systems*: the **logical architecture overview** — the codebase clustered into systems (authentication, submission, external integrations…) by directory structure + the semantic code index, each card showing the exports the rest of the code consumes, the systems and external services it leans on, and weighted inter-system links. Built for making calls: **insights** (dependency cycles tinted on the canvas, layering violations, coupling hot-spots, orphans), **ref review** (diff the systems against a branch/commit — what a change adds, drops or reshapes), and one-click **materialize to diagram**. *Diagrams*: hand-authored, with nesting, grouping, drag-in/drag-out containment, typed edges (sync / async / data / dependency), auto-layout, inspector — plus **ref review**: pick a commit or branch (a PR head) and its code architecture is snapshotted into a draft, diffed against the current diagram in a split pane with every change listed. *Infrastructure*: a per-environment service map — components grouped by deployment target, with **dependencies detected from the code** overlaid: module-import edges between placed components and the external services (databases, caches, queues, SaaS APIs) their npm imports imply. *Code map*: architecture **derived from the source itself** — modules and their import edges, drill into a module's files, drill into a file's exports (functions, classes, interfaces, enums, types) and import neighborhood. The code map is live: it re-analyzes and re-renders as the codebase changes on disk. | `@xyflow/react` + dagre; TypeScript compiler API |
 | **Orchestrate** | Project boards + agent orchestration: tasks link to repos and architecture nodes, and can be handed to Claude Code with live streaming output, tool-call traces, cost and history. Runs can be **isolated in disposable git worktrees** — parallel-safe, with a live diff view and one-click discard. | Claude Code CLI (`claude -p --output-format stream-json`) |
 | **Code** | Editor with file tree (git status decorations), tabs, quick-open (`Ctrl+P`) and three keybinding profiles: VS Code, IntelliJ, Vim | Monaco (+ `monaco-vim`) |
-| **Surfaces** | Everything the product presents to the outside world, in five views. *Screens*: routed pages detected from Next conventions / react-router configs, with a **live dev-server preview** embedded per route. *Components*: exported React components ranked by usage, cross-linked to their definition, import sites, stories and screens. *Stories*: CSF stories grouped by title with a **live Storybook render** per story. *APIs*: every served route — definition, an interactive call-graph flamegraph, and every caller attributed to its system. *Schemas*: zod objects, prisma models, mongoose schemas and model interfaces with their fields inline. | TypeScript compiler API; iframes onto your own dev servers |
+| **Surfaces** | Everything the product presents to the outside world, in five views. *Screens*: routed pages detected from Next conventions / react-router configs, with a **live dev-server preview** embedded per route. *Components*: exported React components ranked by usage, cross-linked to their definition, import sites, stories and screens. *Stories*: CSF stories grouped by title with a **live Storybook render** per story. *APIs*: every served route — definition, an interactive call-graph flamegraph, and every caller attributed to its system. *Schemas*: zod objects, prisma models, mongoose schemas and model interfaces with their fields inline. A toggleable **architecture pane** sits side by side with every view — callers and integrations clicked anywhere highlight their system there. | TypeScript compiler API; iframes onto your own dev servers |
 | **Quality** | The workspace's own test suite run from inside Crystal (vitest / jest / `test` script — detected, never assumed), with per-test results streaming live, failures unfolding in place (message, expected/received, jump-to-line), and single-file / single-test re-runs from the context menu. *Coverage* renders whatever istanbul output exists — produced here or by your own `--coverage` run — as a banded directory tree with clickable uncovered-line ranges. | the workspace's own runner, JSON reporters, istanbul output |
 
-Global: `Ctrl+K` command palette, `Ctrl+1…7` mode switching. "Open in editor" from the
-code map, surfaces or quality views jumps straight into the Code mode.
+Global: `Ctrl+K` command palette, `Ctrl+1…7` mode switching. **Right-click means the
+same thing everywhere**: any rendered function, symbol, file or module — a code-map
+chip, a system's exports, a component row, a test case, a coverage path, a flamegraph
+frame — opens the shared context menu: pin the cross-view highlight (shareable, it
+rides the URL), open in the editor at the exact line, drill the code map to it, jump
+to its coverage (or straight to the test runner for test files), and copy a
+`file#symbol` reference. Views stack their own actions on top (run this test, start a
+journey, open live preview…), so the vocabulary never drifts between modes.
 
 ## Everything is a file
 
@@ -43,11 +49,13 @@ apps/
   desktop/     @crystal/desktop   Tauri 2 shell
 packages/
   core/        @crystal/core      domain model, .crystal file format, bridge + agent protocols (zod)
-  client/      @crystal/client    BridgeClient + zustand stores + React hooks
+  client/      @crystal/client    BridgeClient + zustand stores + React hooks + the shared symbol context menu
   ui/          @crystal/ui        design system (Radix + Tailwind theme)
   architect/   @crystal/architect architecture mode
   orchestrator/@crystal/orchestrator orchestrate mode
   editor/      @crystal/editor    code mode
+  surfaces/    @crystal/surfaces  surfaces mode (screens, components, stories, APIs, schemas)
+  quality/     @crystal/quality   quality mode (test runner, coverage)
   sdk/         @crystal/sdk       the embeddable IDE
 ```
 
@@ -114,9 +122,9 @@ const app = mountCrystal(document.getElementById("crystal")!);
 ```
 
 Or compose facets yourself — `CrystalProvider` plus any of the mode components
-(imported from `@crystal/architect`, `@crystal/orchestrator`, `@crystal/editor`
-so bundlers can code-split them), or go headless with `BridgeClient` and the
-`@crystal/core` model. All packages build to publishable ESM + type declarations
+(imported from `@crystal/architect`, `@crystal/orchestrator`, `@crystal/editor`,
+`@crystal/surfaces`, `@crystal/quality` so bundlers can code-split them), or go
+headless with `BridgeClient` and the `@crystal/core` model. All packages build to publishable ESM + type declarations
 (`pnpm -r build`).
 
 ## Agent execution

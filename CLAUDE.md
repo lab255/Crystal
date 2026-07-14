@@ -18,10 +18,13 @@ always run things through pnpm.
 
 ## Architecture rules
 
-- Dependency direction: `core` ← `client` ← modes (`architect`/`orchestrator`/`editor`) ← `sdk` ← apps.
-  `core` is pure TS (no React, no Node APIs) — it defines the domain model, the `.crystal`
-  file envelope, the bridge protocol (`BridgeMethods` in `packages/core/src/bridge.ts` is
-  the single source of truth for both client and server) and the Claude stream-json parser.
+- Dependency direction: `core`, `ui` ← `client` ← modes
+  (`architect`/`orchestrator`/`editor`/`surfaces`/`quality`) ← `sdk` ← apps. `core` is
+  pure TS (no React, no Node APIs) — it defines the domain model, the `.crystal` file
+  envelope, the bridge protocol (`BridgeMethods` in `packages/core/src/bridge.ts` is the
+  single source of truth for both client and server) and the Claude stream-json parser.
+  `ui` has no workspace deps; `client` may use its types/primitives (it hosts the shared
+  symbol menu), never the reverse.
 - The server hosts multiple workspaces (`WorkspaceRegistry`, one runtime per root). Every
   workspace-scoped bridge method takes an optional `ws` id; `BridgeClient.setScope` injects
   the active workspace automatically, so only cross-workspace call sites (e.g. the code
@@ -40,6 +43,12 @@ always run things through pnpm.
   codec is `packages/core/src/deeplink.ts`, view/selection state lives in the client nav
   store (`useNav`/`useNavUpdate`), and the SDK's `useDeepLinks` syncs store ↔ URL. New
   navigational state belongs in the nav store, not component-local `useState`.
+- Context menus: anything rendering a function/symbol/file/module composes
+  `useContextMenu()` (`@crystal/ui` plumbing) with `useSymbolMenu()` (`@crystal/client`,
+  pure builder `symbolMenuEntries` underneath) — view-specific entries on top, the shared
+  block below. Never hand-roll pin/open-in-editor/code-map/coverage/copy entries; pass
+  view capabilities (`startJourney`, `revealOnDiagram`, `openFile` override…) and `omit`
+  groups the view already covers (e.g. `"quality"` inside the quality mode).
 
 ## Gotchas
 

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ChevronRight, type LucideIcon } from "lucide-react";
 import { cn } from "../cn.js";
 
@@ -223,6 +223,28 @@ function MenuPanel({
       ) : null}
     </>
   );
+}
+
+/**
+ * Right-click plumbing shared by every view: `open(event, entries)` renders a
+ * `ContextMenu` at the cursor (no-op on an empty entry list) and `element` is
+ * mounted once at the view root. One open menu per view.
+ */
+export function useContextMenu(): {
+  open: (e: React.MouseEvent, entries: MenuEntry[]) => void;
+  element: React.ReactNode;
+} {
+  const [menu, setMenu] = useState<{ x: number; y: number; entries: MenuEntry[] } | null>(null);
+  const open = useCallback((e: React.MouseEvent, entries: MenuEntry[]) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (entries.length === 0) return;
+    setMenu({ x: e.clientX, y: e.clientY, entries });
+  }, []);
+  const element = menu ? (
+    <ContextMenu x={menu.x} y={menu.y} entries={menu.entries} onClose={() => setMenu(null)} />
+  ) : null;
+  return { open, element };
 }
 
 /** Floating inline input for context-menu "Rename" (and other inline prompts). */

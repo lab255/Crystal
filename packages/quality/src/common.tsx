@@ -9,7 +9,7 @@ import type {
 } from "@crystal/core";
 import { coverageBand } from "@crystal/core";
 import { useCrystal, useNavUpdate, useWorkspaces } from "@crystal/client";
-import { ContextMenu, Spinner, Tooltip, cn, type MenuEntry } from "@crystal/ui";
+import { Spinner, Tooltip, cn } from "@crystal/ui";
 
 /* ------------------------------------------------------------------ */
 /* Data: runner info + runs + coverage, live over the bridge           */
@@ -198,27 +198,6 @@ export function CoverageBar({ metric, className }: { metric: CoverageMetric; cla
       />
     </div>
   );
-}
-
-/* ------------------------------------------------------------------ */
-/* Context-menu plumbing (same shape as the surfaces mode's)           */
-/* ------------------------------------------------------------------ */
-
-export function useMenu(): {
-  open: (e: React.MouseEvent, entries: MenuEntry[]) => void;
-  element: React.ReactNode;
-} {
-  const [menu, setMenu] = useState<{ x: number; y: number; entries: MenuEntry[] } | null>(null);
-  const open = useCallback((e: React.MouseEvent, entries: MenuEntry[]) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (entries.length === 0) return;
-    setMenu({ x: e.clientX, y: e.clientY, entries });
-  }, []);
-  const element = menu ? (
-    <ContextMenu x={menu.x} y={menu.y} entries={menu.entries} onClose={() => setMenu(null)} />
-  ) : null;
-  return { open, element };
 }
 
 export function copyText(text: string): void {

@@ -34,6 +34,14 @@ export {
 export { createNavStore, type NavPatch, type NavState, type NavStore } from "./nav-store.js";
 export { requestOpenFile } from "./open-file.js";
 export {
+  symbolMenuEntries,
+  useSymbolMenu,
+  type SymbolMenuContext,
+  type SymbolMenuGroup,
+  type SymbolMenuOptions,
+  type SymbolTarget,
+} from "./symbol-menu.js";
+export {
   createHighlightStore,
   type HighlightState,
   type HighlightStore,

@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   ChevronRight,
-  Copy,
   ExternalLink,
   FileCode2,
   Folder,
@@ -11,9 +10,9 @@ import {
 } from "lucide-react";
 import type { CoverageMetric, CoverageReport, FileCoverage } from "@crystal/core";
 import { sumCoverage } from "@crystal/core";
-import { requestOpenFile, useNav, useNavUpdate } from "@crystal/client";
-import { EmptyState, Pane as SplitPane, Split, Tooltip, cn } from "@crystal/ui";
-import { CoverageBar, PctLabel, copyText, useMenu, useQuality } from "./common.js";
+import { requestOpenFile, useNav, useNavUpdate, useSymbolMenu } from "@crystal/client";
+import { EmptyState, Pane as SplitPane, Split, Tooltip, cn, useContextMenu } from "@crystal/ui";
+import { CoverageBar, PctLabel, copyText, useQuality } from "./common.js";
 
 /**
  * Coverage — the latest istanbul report rendered as an expandable directory
@@ -112,7 +111,8 @@ export function CoverageView() {
   const nav = useNavUpdate();
   const selectedPath = useNav((l) => l.quality?.covPath ?? null);
   const find = (useNav((l) => l.quality?.find) ?? "").trim().toLowerCase();
-  const menu = useMenu();
+  const menu = useContextMenu();
+  const symbolMenu = useSymbolMenu();
   const [expanded, setExpanded] = useState<ReadonlySet<string> | null>(null);
 
   const filtered = useMemo(() => {
@@ -171,31 +171,22 @@ export function CoverageView() {
 
   const nodeMenu = (node: CovNode): Parameters<typeof menu.open>[1] => [
     { type: "heading", label: node.path || "workspace" },
-    ...(node.file
+    ...(node.file?.uncoveredLines?.length
       ? [
-          {
-            type: "item" as const,
-            label: "Open in editor",
-            icon: ExternalLink,
-            onSelect: () => requestOpenFile(node.path),
-          },
           {
             type: "item" as const,
             label: "Open first uncovered line",
             icon: ExternalLink,
-            disabled: !node.file.uncoveredLines?.length,
-            hint: node.file.uncoveredLines?.length ? `:${node.file.uncoveredLines[0]}` : undefined,
+            hint: `:${node.file.uncoveredLines[0]}`,
             onSelect: () => requestOpenFile(node.path, node.file!.uncoveredLines![0]),
           },
         ]
       : []),
-    {
-      type: "item",
-      label: "Copy path",
-      icon: Copy,
-      hint: node.path,
-      onSelect: () => copyText(node.path),
-    },
+    // Shared cross-view block; "quality" omitted — this *is* the coverage view.
+    // Directories get module semantics (code-map drill + copy path).
+    ...symbolMenu(node.file ? { file: node.path } : { module: node.path }, {
+      omit: ["quality"],
+    }),
   ];
 
   return (

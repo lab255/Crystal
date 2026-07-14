@@ -3,16 +3,15 @@ import {
   BookOpenText,
   Component as ComponentIcon,
   Copy,
-  ExternalLink,
   Globe,
   MonitorPlay,
   MonitorX,
   RefreshCw,
 } from "lucide-react";
 import { storybookStorySlug, type StorySurface } from "@crystal/core";
-import { requestOpenFile, useNav, useNavUpdate } from "@crystal/client";
-import { EmptyState, Pane as SplitPane, Split, Tooltip, cn } from "@crystal/ui";
-import { DetailSection, FileLink, GroupHeader, ListHeader, copyText, useMenu, useSurfaces } from "./common.js";
+import { useNav, useNavUpdate, useSymbolMenu } from "@crystal/client";
+import { EmptyState, Pane as SplitPane, Split, Tooltip, cn, useContextMenu } from "@crystal/ui";
+import { DetailSection, FileLink, GroupHeader, ListHeader, copyText, useSurfaces } from "./common.js";
 
 /**
  * Stories — the workspace's CSF stories, grouped by their meta title, with a
@@ -30,7 +29,8 @@ export function StoriesView() {
   const selectedId = useNav((l) => l.surfaces?.story ?? null);
   const demoOpen = useNav((l) => l.surfaces?.demo ?? false);
   const find = (useNav((l) => l.surfaces?.find) ?? "").trim().toLowerCase();
-  const menu = useMenu();
+  const menu = useContextMenu();
+  const symbolMenu = useSymbolMenu();
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
 
   const stories = report?.stories ?? [];
@@ -73,13 +73,6 @@ export function StoriesView() {
 
   const rowMenu = (s: StorySurface): Parameters<typeof menu.open>[1] => [
     { type: "heading", label: `${s.title} / ${s.name}` },
-    {
-      type: "item",
-      label: "Open in editor",
-      icon: ExternalLink,
-      hint: s.file.split("/").at(-1),
-      onSelect: () => requestOpenFile(s.file, s.line),
-    },
     ...(s.componentFile && s.componentName
       ? [
           {
@@ -94,7 +87,6 @@ export function StoriesView() {
           },
         ]
       : []),
-    { type: "separator" },
     ...(storybookUrl
       ? [
           {
@@ -116,6 +108,13 @@ export function StoriesView() {
           },
         ]
       : []),
+    // Shared cross-view block for the story export (`id` is `${file}#${export}`).
+    ...symbolMenu({
+      file: s.file,
+      line: s.line,
+      symbol: s.id.split("#")[1],
+      label: `${s.title} / ${s.name}`,
+    }),
     {
       type: "item",
       label: "Copy story id",

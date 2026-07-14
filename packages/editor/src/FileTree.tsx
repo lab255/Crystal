@@ -3,15 +3,13 @@ import {
   Boxes,
   ChevronDown,
   ChevronRight,
-  Copy,
   FileText,
   Folder,
-  FolderGit2,
   FolderOpen,
   RefreshCw,
 } from "lucide-react";
 import type { FileEntry } from "@crystal/core";
-import { useCrystal, useNavUpdate, useWorkspace, useWorkspaces } from "@crystal/client";
+import { useCrystal, useNavUpdate, useSymbolMenu, useWorkspace } from "@crystal/client";
 import { Button, ContextMenu, Tooltip, cn, type MenuEntry } from "@crystal/ui";
 
 interface DirState {
@@ -49,7 +47,7 @@ export function FileTree({
 
   // Cross-view jumps: files are addressable in the architect mode's code map.
   const nav = useNavUpdate();
-  const activeWs = useWorkspaces((s) => s.activeId);
+  const symbolMenu = useSymbolMenu();
   const onFileContextMenu = useCallback(
     (evt: React.MouseEvent, path: string) => {
       evt.preventDefault();
@@ -66,33 +64,17 @@ export function FileTree({
           },
           {
             type: "item",
-            label: "Show in code map",
-            icon: FolderGit2,
-            disabled: !activeWs,
-            onSelect: () =>
-              activeWs &&
-              nav({
-                mode: "architect",
-                architect: { view: "codemap", codemap: { kind: "file", ws: activeWs, path } },
-              }),
-          },
-          {
-            type: "item",
             label: "Show architecture diagrams",
             icon: Boxes,
             onSelect: () => nav({ mode: "architect", architect: { view: "diagrams" } }),
           },
-          { type: "separator" },
-          {
-            type: "item",
-            label: "Copy path",
-            icon: Copy,
-            onSelect: () => void navigator.clipboard?.writeText(path),
-          },
+          // Shared cross-view block; the editor's own "Open" replaces its
+          // editor entry.
+          ...symbolMenu({ file: path }, { omit: ["editor"] }),
         ],
       });
     },
-    [nav, activeWs, onOpenFile],
+    [nav, onOpenFile, symbolMenu],
   );
 
   const loadGitStatus = useCallback(async () => {
