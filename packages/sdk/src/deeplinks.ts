@@ -39,12 +39,18 @@ export function useDeepLinks(enabled: boolean, defaultMode: CrystalMode): void {
     };
 
     const applyFromUrl = () => {
-      const parsed = parseDeepLink(window.location.hash);
+      const raw = window.location.hash;
+      const parsed = parseDeepLink(raw);
+      // A non-empty hash that parsed to no mode is a dead link (unknown mode
+      // name) — fall back to the default view and normalize the address bar
+      // so the broken hash doesn't linger as if it meant something.
+      const unknown = raw.length > 2 && !parsed.mode;
       pendingWs =
         parsed.ws && parsed.ws !== workspacesStore.getState().activeId ? parsed.ws : null;
-      if (!parsed.mode) parsed.mode = navStore.getState().link.mode ?? defaultMode;
+      if (!parsed.mode) parsed.mode = unknown ? defaultMode : (navStore.getState().link.mode ?? defaultMode);
       navStore.getState().apply(parsed);
       tryActivateWs();
+      if (unknown) writeUrl(true);
     };
 
     const writeUrl = (replaceOnly = false) => {

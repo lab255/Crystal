@@ -661,3 +661,21 @@ describe("deepLinkNavIdentity", () => {
     ).not.toBe(deepLinkNavIdentity(board));
   });
 });
+
+describe("mode aliases", () => {
+  it("maps guessed names onto real modes (and implied subviews)", () => {
+    expect(parseDeepLink("#/overview").mode).toBe("projects");
+    expect(parseDeepLink("#/editor").mode).toBe("code");
+    expect(parseDeepLink("#/architecture").mode).toBe("architect");
+    const coverage = parseDeepLink("#/coverage");
+    expect(coverage.mode).toBe("quality");
+    expect(coverage.quality?.view).toBe("coverage");
+    const apis = parseDeepLink("#/apis?api=GET%20/api/v1/keys");
+    expect(apis.mode).toBe("surfaces");
+    expect(apis.surfaces?.view).toBe("apis");
+  });
+
+  it("leaves genuinely unknown modes unparsed", () => {
+    expect(parseDeepLink("#/definitely-not-a-mode").mode).toBeUndefined();
+  });
+});

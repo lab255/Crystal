@@ -290,6 +290,23 @@ export function formatDeepLink(link: DeepLink): string {
   return `#${path}${pairs.length ? `?${pairs.join("&")}` : ""}`;
 }
 
+/**
+ * Intuitive names people type or guess map onto the real mode ids (and a
+ * subview when the name implies one), so a hand-edited hash lands somewhere
+ * sensible instead of silently no-opping.
+ */
+const MODE_ALIASES: Record<string, [CrystalModeId, string?]> = {
+  overview: ["projects"],
+  editor: ["code"],
+  arch: ["architect"],
+  architecture: ["architect"],
+  tests: ["quality", "tests"],
+  coverage: ["quality", "coverage"],
+  api: ["surfaces", "apis"],
+  apis: ["surfaces", "apis"],
+  screens: ["surfaces", "screens"],
+};
+
 /** Parse a location hash (with or without leading `#`). Unknown or malformed input yields {}. */
 export function parseDeepLink(hash: string): DeepLink {
   let s = hash.startsWith("#") ? hash.slice(1) : hash;
@@ -302,6 +319,11 @@ export function parseDeepLink(hash: string): DeepLink {
   const ws = params.get("ws");
   if (ws) link.ws = ws;
 
+  const aliased = MODE_ALIASES[segments[0] ?? ""];
+  if (aliased) {
+    segments[0] = aliased[0];
+    if (aliased[1] && !segments[1]) segments[1] = aliased[1];
+  }
   const mode = segments[0];
   // The API explorer moved from architecture to surfaces — old links redirect.
   if (mode === "architect" && segments[1] === "apis") {
