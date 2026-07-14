@@ -308,28 +308,44 @@ export function computeReviewFindings(
     for (const inst of cluster.instances) {
       for (const t of intentTagsOf(index, inst.file)) tags.add(t);
     }
+    // A copy split between test and production code is its own disease: the
+    // test re-implements the function it should exercise, so the two can
+    // drift apart without any test failing.
+    const testInstances = cluster.instances.filter((i) => byPath.get(i.file)?.test);
+    const prodInstances = cluster.instances.filter((i) => !byPath.get(i.file)?.test);
+    const testMirror = testInstances.length > 0 && prodInstances.length > 0;
     findings.push({
       id: `duplicate:${cluster.hash}`,
       kind: "duplicate",
       severity: "warn",
-      title: `${first!.symbol} is implemented ${cluster.instances.length} times`,
-      detail:
-        `Identical bodies (${cluster.tokenCount} tokens) in ${modules.join(", ")}: ` +
-        cluster.instances.map((i) => `${i.file}#${i.symbol}`).join(" · "),
+      title: testMirror
+        ? `a test re-implements ${prodInstances[0]!.symbol} instead of importing it`
+        : `${first!.symbol} is implemented ${cluster.instances.length} times`,
+      detail: testMirror
+        ? `${testInstances.map((i) => `${i.file}#${i.symbol}`).join(", ")} duplicate${
+            testInstances.length === 1 ? "s" : ""
+          } ${prodInstances.map((i) => `${i.file}#${i.symbol}`).join(", ")} token-for-token ` +
+          `(${cluster.tokenCount} tokens) — the copy can drift from the code it stands in for ` +
+          `without any test failing. Import the real implementation instead.`
+        : `Identical bodies (${cluster.tokenCount} tokens) in ${modules.join(", ")}: ` +
+          cluster.instances.map((i) => `${i.file}#${i.symbol}`).join(" · "),
       ref: { file: first!.file, symbol: first!.symbol, line: first!.line },
       module: first!.module,
       related: rest.map((i) => ({ file: i.file, symbol: i.symbol, line: i.line })),
       tags: [...tags].sort(),
-      refactor: hoistTarget
-        ? {
-            id: `refactor_${cluster.hash}`,
-            kind: "hoist",
-            symbols: cluster.instances.map((i) => ({ file: i.file, symbol: i.symbol })),
-            targetModule: hoistTarget,
-            targetFile: null,
-            newName: null,
-          }
-        : null,
+      // Hoisting makes no sense for a test mirror — the fix is importing the
+      // production implementation, not extracting a shared copy.
+      refactor:
+        hoistTarget && !testMirror
+          ? {
+              id: `refactor_${cluster.hash}`,
+              kind: "hoist",
+              symbols: cluster.instances.map((i) => ({ file: i.file, symbol: i.symbol })),
+              targetModule: hoistTarget,
+              targetFile: null,
+              newName: null,
+            }
+          : null,
     });
   }
 

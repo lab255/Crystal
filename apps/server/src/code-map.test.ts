@@ -6,6 +6,7 @@ import {
   buildCallGraph,
   callKey,
   CodeMapAnalyzer,
+  declaredEntryPaths,
   parseSource,
   rankJourneySuggestions,
   type CallGraphRecord,
@@ -724,5 +725,305 @@ export const report = query("report");
   it("ignores files outside the source part", async () => {
     const res = await analyzer.partCrossings("src/other", "src/db");
     expect(res.crossings.map((c) => c.file)).toEqual(["src/other/report.ts"]);
+  });
+});
+
+describe("CodeMapAnalyzer tsconfig paths aliases", () => {
+  let root: string;
+  let analyzer: CodeMapAnalyzer;
+
+  beforeAll(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), "crystal-tspaths-"));
+    const app = path.join(root, "packages", "app");
+    await fs.mkdir(path.join(app, "src", "pages"), { recursive: true });
+    await fs.writeFile(path.join(root, "package.json"), JSON.stringify({ name: "fixture-root" }));
+    await fs.writeFile(
+      path.join(root, "tsconfig.json"),
+      JSON.stringify({ compilerOptions: { strict: true } }),
+    );
+    await fs.writeFile(
+      path.join(app, "package.json"),
+      JSON.stringify({ name: "@fixture/app" }),
+    );
+    await fs.writeFile(
+      path.join(app, "tsconfig.json"),
+      JSON.stringify({
+        extends: "../../tsconfig.json",
+        compilerOptions: { baseUrl: "./src", paths: { "@/*": ["./*"] } },
+      }),
+    );
+    await fs.writeFile(
+      path.join(app, "src", "main.tsx"),
+      `import { HomePage } from "@/pages/home";
+export function App() {
+  return HomePage();
+}
+`,
+    );
+    await fs.writeFile(
+      path.join(app, "src", "pages", "home.tsx"),
+      `export function HomePage() {
+  return null;
+}
+`,
+    );
+    analyzer = new CodeMapAnalyzer(root);
+  });
+
+  afterAll(async () => {
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it("resolves @/ alias imports so aliased files are not orphaned", async () => {
+    const detail = await analyzer.fileDetail("packages/app/src/pages/home.tsx");
+    expect(detail.importedBy).toEqual(["packages/app/src/main.tsx"]);
+  });
+
+  it("threads alias resolution into the call graph", async () => {
+    const trace = await analyzer.trace("packages/app/src/main.tsx", "App");
+    expect(trace.steps.map((s) => s.ref.symbol)).toContain("HomePage");
+  });
+});
+
+describe("declaredEntryPaths", () => {
+  it("collects bin/main/exports targets and script-referenced files", () => {
+    const entries = declaredEntryPaths("packages/cli", {
+      main: "./dist/appliance.js",
+      bin: { appliance: "./bin/appliance.js" },
+      exports: { ".": { import: "./dist/esm/index.js" } },
+      scripts: { postinstall: "node scripts/install-binary.mjs", lint: "eslint ." },
+    });
+    expect(entries).toContain("packages/cli/bin/appliance.js");
+    expect(entries).toContain("packages/cli/scripts/install-binary.mjs");
+    // Built outputs map back to their likely sources.
+    expect(entries).toContain("packages/cli/src/appliance.ts");
+    expect(entries).toContain("packages/cli/src/esm/index.ts");
+  });
+
+  it("handles the workspace root and rejects escapes", () => {
+    const entries = declaredEntryPaths(".", { main: "index.js", bin: "../evil.js" });
+    expect(entries).toContain("index.js");
+    expect(entries).toContain("index.ts");
+    expect(entries.some((e) => e.includes(".."))).toBe(false);
+  });
+});
+
+describe("dead-file entry awareness", () => {
+  let root: string;
+  let analyzer: CodeMapAnalyzer;
+
+  beforeAll(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), "crystal-entries-"));
+    const cli = path.join(root, "packages", "cli");
+    await fs.mkdir(path.join(cli, "bin"), { recursive: true });
+    await fs.mkdir(path.join(cli, "src"), { recursive: true });
+    await fs.writeFile(path.join(root, "package.json"), JSON.stringify({ name: "fixture" }));
+    await fs.writeFile(
+      path.join(root, "vite.config.ts"),
+      "export default { server: { port: 5173 } };",
+    );
+    await fs.writeFile(
+      path.join(cli, "package.json"),
+      JSON.stringify({
+        name: "@fixture/cli",
+        main: "dist/cli.js",
+        bin: { fixture: "./bin/fixture.js" },
+      }),
+    );
+    await fs.writeFile(path.join(cli, "bin", "fixture.js"), "export const run = () => {};");
+    await fs.writeFile(path.join(cli, "src", "cli.ts"), "export function main() {}");
+    await fs.writeFile(path.join(cli, "src", "orphan.ts"), "export function nobody() {}");
+    analyzer = new CodeMapAnalyzer(root);
+  });
+
+  afterAll(async () => {
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it("treats declared and convention entries as alive, real orphans as dead", async () => {
+    const files = await analyzer.reviewSourceFiles();
+    const entryOf = Object.fromEntries(files.map((f) => [f.path, f.entry]));
+    expect(entryOf["vite.config.ts"]).toBe(true); // config convention
+    expect(entryOf["packages/cli/bin/fixture.js"]).toBe(true); // declared bin
+    expect(entryOf["packages/cli/src/cli.ts"]).toBe(true); // dist main → src source
+    expect(entryOf["packages/cli/src/orphan.ts"]).toBe(false); // genuinely dead
+  });
+});
+
+describe("instance-method dispatch", () => {
+  it("records calls through non-null-asserted receivers", () => {
+    const { symbols } = parseSource(
+      "page.tsx",
+      `export function Page() {
+  const r = client!.listDeployments({ limit: 100 });
+  const s = (api as ApiClient).fetchUsers();
+  return r && s;
+}
+`,
+    );
+    const calls = symbols[0]!.calls;
+    expect(calls).toContainEqual({ name: "listDeployments", receiver: "client", line: 2 });
+    expect(calls).toContainEqual({ name: "fetchUsers", receiver: "api", line: 3 });
+  });
+
+  it("records class method names on the class symbol", () => {
+    const { symbols } = parseSource(
+      "client.ts",
+      `export class ApiClient {
+  async listDeployments() { return fetch("/api/v1/deployments"); }
+  async cancelDeployment(id: string) { return fetch("/api/v1/deployments/" + id, { method: "POST" }); }
+}
+`,
+    );
+    expect(symbols[0]!.methods?.map((m) => m.name)).toEqual([
+      "listDeployments",
+      "cancelDeployment",
+    ]);
+    expect(symbols[0]!.methods?.[0]).toMatchObject({ line: 2, endLine: 2 });
+  });
+
+  it("resolves a receiver call to the unique class declaring the method", () => {
+    const records = new Map<string, CallGraphRecord>([
+      [
+        "page.tsx",
+        {
+          path: "page.tsx",
+          symbols: [
+            {
+              name: "Page", kind: "component", line: 1, endLine: 4, start: 0, end: 100,
+              exported: true, fingerprint: null, tokenCount: 0,
+              calls: [{ name: "listDeployments", receiver: "client", line: 2 }],
+            },
+          ],
+          resolvedImports: [],
+        },
+      ],
+      [
+        "client.ts",
+        {
+          path: "client.ts",
+          symbols: [
+            {
+              name: "ApiClient", kind: "class", line: 1, endLine: 8, start: 0, end: 300,
+              exported: true, fingerprint: null, tokenCount: 0,
+              calls: [], methods: [{ name: "listDeployments", line: 2, endLine: 4 }],
+            },
+          ],
+          resolvedImports: [],
+        },
+      ],
+    ]);
+    const graph = buildCallGraph(records);
+    const page = graph.get(callKey({ file: "page.tsx", symbol: "Page" }))!;
+    expect(page.resolved).toEqual([{ file: "client.ts", symbol: "ApiClient" }]);
+  });
+
+  it("keeps ambiguous and generic method names unresolved", () => {
+    const classRec = (file: string, cls: string): [string, CallGraphRecord] => [
+      file,
+      {
+        path: file,
+        symbols: [
+          {
+            name: cls, kind: "class", line: 1, endLine: 5, start: 0, end: 100,
+            exported: true, fingerprint: null, tokenCount: 0,
+            calls: [],
+            methods: [
+              { name: "refreshThings", line: 2, endLine: 2 },
+              { name: "toString", line: 3, endLine: 3 },
+              { name: "get", line: 4, endLine: 4 },
+            ],
+          },
+        ],
+        resolvedImports: [],
+      },
+    ];
+    const records = new Map<string, CallGraphRecord>([
+      classRec("a.ts", "AClient"),
+      classRec("b.ts", "BClient"),
+      [
+        "page.tsx",
+        {
+          path: "page.tsx",
+          symbols: [
+            {
+              name: "Page", kind: "component", line: 1, endLine: 6, start: 0, end: 100,
+              exported: true, fingerprint: null, tokenCount: 0,
+              calls: [
+                { name: "refreshThings", receiver: "client", line: 2 }, // ambiguous: two classes
+                { name: "toString", receiver: "client", line: 3 }, // generic
+                { name: "get", receiver: "client", line: 4 }, // too short
+              ],
+            },
+          ],
+          resolvedImports: [],
+        },
+      ],
+    ]);
+    const page = buildCallGraph(records).get(callKey({ file: "page.tsx", symbol: "Page" }))!;
+    expect(page.resolved).toEqual([]);
+  });
+});
+
+describe("CodeMapAnalyzer apiTrace through a client class", () => {
+  let root: string;
+  let analyzer: CodeMapAnalyzer;
+
+  beforeAll(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), "crystal-apitrace-"));
+    await fs.mkdir(path.join(root, "src"), { recursive: true });
+    await fs.writeFile(path.join(root, "package.json"), JSON.stringify({ name: "fixture" }));
+    await fs.writeFile(
+      path.join(root, "src", "server.ts"),
+      `import express from "express";
+const router = express.Router();
+router.get("/api/v1/deployments", (req, res) => res.json([]));
+export default router;
+`,
+    );
+    await fs.writeFile(
+      path.join(root, "src", "client.ts"),
+      `export class ApiClient {
+  baseUrl = "";
+  async listDeployments() {
+    return this.request("GET", \`/api/v1/deployments\${""}\`);
+  }
+  async deleteEverything() {
+    return this.request("DELETE", "/api/v1/everything");
+  }
+  private async request(method: string, path: string) {
+    return fetch(this.baseUrl + path, { method });
+  }
+}
+`,
+    );
+    await fs.writeFile(
+      path.join(root, "src", "page.tsx"),
+      `import { ApiClient } from "./client";
+const client: ApiClient | null = new ApiClient();
+export function DeploymentsPage() {
+  const data = client!.listDeployments();
+  return data;
+}
+`,
+    );
+    analyzer = new CodeMapAnalyzer(root);
+  });
+
+  afterAll(async () => {
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it("follows component → client method → request helper → served endpoint", async () => {
+    const trace = await analyzer.apiTrace("src/page.tsx", "DeploymentsPage");
+    expect(trace.calls.length).toBeGreaterThan(0);
+    const call = trace.calls.find((c) => c.path === "/api/v1/deployments")!;
+    expect(call.file).toBe("src/client.ts");
+    expect(call.endpoint).toMatchObject({ method: "GET", path: "/api/v1/deployments", file: "src/server.ts" });
+  });
+
+  it("only reports the methods the page actually invokes, not the whole client", async () => {
+    const trace = await analyzer.apiTrace("src/page.tsx", "DeploymentsPage");
+    expect(trace.calls.some((c) => c.path === "/api/v1/everything")).toBe(false);
   });
 });

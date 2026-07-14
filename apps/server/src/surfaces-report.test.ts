@@ -613,3 +613,145 @@ describe("CodeMapAnalyzer.surfaces — convention fallback workspace", () => {
     expect(demo).toEqual({ appUrl: null, storybookUrl: null });
   });
 });
+
+describe("CodeMapAnalyzer.surfaces — express mounts and vite pages", () => {
+  let root: string;
+  let analyzer: CodeMapAnalyzer;
+
+  beforeAll(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), "crystal-surfaces-mounts-"));
+    await write(
+      root,
+      "package.json",
+      JSON.stringify({ name: "mounts-fixture", dependencies: { express: "^5.0.0" } }),
+    );
+    await write(
+      root,
+      "src/app.ts",
+      `import express from "express";
+import deploymentRoutes from "./routes/deployments";
+import v1Routes from "./routes/v1";
+const app = express();
+app.use("/api/v1/deployments", authMiddleware, deploymentRoutes);
+app.use("/api", v1Routes);
+export { app };
+function authMiddleware() {}
+`,
+    );
+    await write(
+      root,
+      "src/routes/deployments.ts",
+      `import express from "express";
+const router = express.Router();
+router.get("/:id", (req, res) => res.json({}));
+router.post("/:id/cancel", (req, res) => res.json({}));
+export default router;
+`,
+    );
+    // Nested mount: /api → v1 → /keys → keys router.
+    await write(
+      root,
+      "src/routes/v1.ts",
+      `import express from "express";
+import keyRoutes from "./keys";
+const router = express.Router();
+router.use("/v1/keys", keyRoutes);
+export default router;
+`,
+    );
+    await write(
+      root,
+      "src/routes/keys.ts",
+      `import express from "express";
+const router = express.Router();
+router.get("/self", (req, res) => res.json({}));
+export default router;
+`,
+    );
+    // Spec files exercise endpoints, they don't serve them.
+    await write(
+      root,
+      "src/routes/deployments.spec.ts",
+      `import express from "express";
+const app = express();
+app.get("/api/v1/test", (req, res) => res.json({}));
+`,
+    );
+    // A Vite+react-router app whose pages/ dir must NOT read as Next.
+    await write(
+      root,
+      "web/package.json",
+      JSON.stringify({
+        name: "web",
+        dependencies: { "react-router": "^7.0.0" },
+        scripts: { dev: "vite" },
+      }),
+    );
+    await write(
+      root,
+      "web/src/router.tsx",
+      `import type { RouteObject } from 'react-router';
+import { DeploymentsPage } from './pages/deployments/list';
+export const routes: RouteObject[] = [
+  { path: '/', element: <DeploymentsPage /> },
+  {
+    path: '/deployments',
+    children: [
+      { index: true, element: <DeploymentsPage /> },
+      { path: ':id', element: <DeploymentsPage /> },
+    ],
+  },
+];
+`,
+    );
+    await write(
+      root,
+      "web/src/pages/deployments/list.tsx",
+      `export function DeploymentsPage() { return null; }`,
+    );
+    analyzer = new CodeMapAnalyzer(root);
+  });
+
+  afterAll(async () => {
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it("composes endpoint paths through transitive router mounts", async () => {
+    const { endpoints } = await analyzer.surfaces();
+    const byPath = endpoints.map((e) => `${e.method} ${e.path}`).sort();
+    expect(byPath).toEqual([
+      "GET /api/v1/deployments/:id",
+      "GET /api/v1/keys/self",
+      "POST /api/v1/deployments/:id/cancel",
+    ]);
+  });
+
+  it("excludes spec-file endpoints from the API surface", async () => {
+    const { endpoints } = await analyzer.surfaces();
+    expect(endpoints.some((e) => e.file.includes(".spec."))).toBe(false);
+  });
+
+  it("reads a Vite pages/ dir as react-router screens, not Next", async () => {
+    const { screens } = await analyzer.surfaces();
+    expect(screens.every((s) => s.source === "react-router")).toBe(true);
+    expect(screens.map((s) => s.route).sort()).toEqual(["/", "/deployments", "/deployments/:id"]);
+  });
+});
+
+describe("extractRouterScreens — typed route tables", () => {
+  it("extracts routes from a const declared as RouteObject[]", () => {
+    const screens = extractRouterScreens(
+      "routes.tsx",
+      `import type { RouteObject } from 'react-router';
+export const routes: RouteObject[] = [
+  { path: '/apps', element: <AppsPage /> },
+  { path: '/settings', Component: SettingsPage },
+];
+`,
+    );
+    expect(screens).toEqual([
+      { route: "/apps", componentName: "AppsPage", line: 3 },
+      { route: "/settings", componentName: "SettingsPage", line: 4 },
+    ]);
+  });
+});

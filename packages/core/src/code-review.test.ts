@@ -169,6 +169,34 @@ describe("duplicates and shared utilities", () => {
     },
   ];
 
+  it("labels a test/production duplicate as a test mirror, without a hoist", () => {
+    const withTestCopy: ReviewSourceFile[] = [
+      ...files,
+      file({
+        path: "worker/src/format.spec.ts",
+        module: "worker",
+        test: true,
+        symbols: [fn("formatMoneyMirror")],
+      }),
+    ];
+    const mirrorClusters: DuplicateCluster[] = [
+      {
+        hash: "mirror1",
+        tokenCount: 40,
+        instances: [
+          { file: "worker/src/format.ts", module: "worker", symbol: "formatMoney", line: 3, endLine: 9, exported: true },
+          { file: "worker/src/format.spec.ts", module: "worker", symbol: "formatMoneyMirror", line: 12, endLine: 18, exported: false },
+        ],
+      },
+    ];
+    const findings = computeReviewFindings(withTestCopy, mirrorClusters, index);
+    const dup = findings.find((f) => f.kind === "duplicate");
+    expect(dup?.title).toBe("a test re-implements formatMoney instead of importing it");
+    expect(dup?.detail).toContain("format.spec.ts#formatMoneyMirror");
+    expect(dup?.detail).toContain("drift");
+    expect(dup?.refactor).toBeNull();
+  });
+
   it("turns duplicate clusters into findings with a deterministic hoist intent", () => {
     const findings = computeReviewFindings(files, clusters, index);
     const dup = findings.find((f) => f.kind === "duplicate");
