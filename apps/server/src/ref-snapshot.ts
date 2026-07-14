@@ -8,6 +8,8 @@ import type {
 import { isCodeFile, isTestFile, parseSource, resolveImportSpecifier } from "./code-map.js";
 import { gitCatFiles, gitLsTree, gitResolveRef } from "./git.js";
 import { isIgnoredDir, resolveInRoot } from "./paths.js";
+import { computeMountPrefixes, joinMountedPath } from "./surfaces-report.js";
+import { loadTsPathsConfig, sortTsPathsConfigs, type TsPathsConfig } from "./ts-paths.js";
 
 /**
  * Code-architecture snapshots at a git ref — the same analyses the live code
@@ -38,6 +40,8 @@ interface RefTree {
   contents: Map<string, string>;
   moduleDirs: { path: string; name: string }[];
   packageNameToModule: Map<string, string>;
+  /** tsconfig `paths` aliases at the ref, deepest config first. */
+  tsPaths: TsPathsConfig[];
   /** Deepest module owning a repo-relative file. */
   ownerOf: (rel: string) => string;
   /** Repo-relative → workspace-relative (prefixes nested repo roots). */
@@ -90,8 +94,22 @@ async function loadRefTree(root: string, repoRel: string, ref: string): Promise<
     !repoRel || repoRel === "." ? "" : repoRel.replace(/\\/g, "/").replace(/\/+$/, "") + "/";
   const rebase = (p: string): string => (prefix ? (p === "." ? prefix.slice(0, -1) : prefix + p) : p);
 
+  // tsconfig `paths` aliases, read from the same tree so ref snapshots
+  // resolve alias imports exactly like the live analyzer.
+  const tsconfigPaths = tree.filter(
+    (p) =>
+      /(^|\/)tsconfig[^/]*\.json$/.test(p) && dirDepth(path.posix.dirname(p)) <= MODULE_MAX_DEPTH,
+  );
+  const tsconfigTexts = await gitCatFiles(cwd, ref, tsconfigPaths);
+  const tsPathsConfigs: TsPathsConfig[] = [];
+  for (const configPath of tsconfigPaths) {
+    const config = await loadTsPathsConfig((rel) => tsconfigTexts.get(rel) ?? null, configPath);
+    if (config) tsPathsConfigs.push(config);
+  }
+  const tsPaths = sortTsPathsConfigs(tsPathsConfigs);
+
   const contents = await gitCatFiles(cwd, ref, codePaths);
-  return { commit, contents, moduleDirs, packageNameToModule, ownerOf, rebase };
+  return { commit, contents, moduleDirs, packageNameToModule, tsPaths, ownerOf, rebase };
 }
 
 export async function snapshotAtRef(
@@ -114,7 +132,7 @@ export async function snapshotAtRef(
       continue;
     }
     for (const { specifier } of imports) {
-      const resolved = resolveImportSpecifier(rel, specifier, fileSet, t.packageNameToModule);
+      const resolved = resolveImportSpecifier(rel, specifier, fileSet, t.packageNameToModule, t.tsPaths);
       if (!resolved) continue;
       const target = t.ownerOf(resolved);
       if (target === module) continue;
@@ -152,26 +170,48 @@ export async function overviewSourcesAtRef(
   const fileSet = new Set(t.contents.keys());
   const nameOfModule = new Map(t.moduleDirs.map((m) => [m.path, m.name]));
 
-  const sources: OverviewSourceFile[] = [];
+  // Parse everything first so router mounts can resolve across files and
+  // endpoint paths compose exactly like the live analyzer's.
+  const parsedByRel = new Map<string, ReturnType<typeof parseSource>>();
   for (const [rel, text] of t.contents) {
-    let parsed: ReturnType<typeof parseSource>;
     try {
-      parsed = parseSource(rel, text);
+      parsedByRel.set(rel, parseSource(rel, text));
     } catch {
-      continue;
+      /* unparseable at the ref — skip */
     }
+  }
+  const resolveImport = (rel: string, specifier: string): string | null =>
+    resolveImportSpecifier(rel, specifier, fileSet, t.packageNameToModule, t.tsPaths);
+  const prefixes = computeMountPrefixes(
+    [...parsedByRel.entries()].map(([rel, parsed]) => ({
+      path: rel,
+      resolvedMounts: parsed.mounts.flatMap(({ prefix, target }) => {
+        const imp = parsed.imports.find(
+          (i) => i.names.includes(target) || i.names.includes(`* as ${target}`),
+        );
+        const resolved = imp ? resolveImport(rel, imp.specifier) : null;
+        return resolved ? [{ prefix, resolved }] : [];
+      }),
+    })),
+  );
+
+  const sources: OverviewSourceFile[] = [];
+  for (const [rel, parsed] of parsedByRel) {
     const owner = t.ownerOf(rel);
+    const prefix = prefixes.get(rel);
     sources.push({
       path: t.rebase(rel),
       pkg: t.rebase(owner),
       pkgName: nameOfModule.get(owner),
       test: isTestFile(rel),
       imports: parsed.imports.map(({ specifier, names }) => {
-        const resolved = resolveImportSpecifier(rel, specifier, fileSet, t.packageNameToModule);
+        const resolved = resolveImport(rel, specifier);
         return { specifier, resolved: resolved ? t.rebase(resolved) : null, names };
       }),
       exports: parsed.exports.map(({ name, kind, signature }) => ({ name, kind, signature })),
-      endpoints: parsed.endpoints,
+      endpoints: prefix
+        ? parsed.endpoints.map((ep) => ({ ...ep, path: joinMountedPath(prefix, ep.path) }))
+        : parsed.endpoints,
       apiCalls: parsed.apiCalls,
     });
   }

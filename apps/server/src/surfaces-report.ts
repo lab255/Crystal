@@ -33,6 +33,8 @@ export interface SurfaceSourceRecord {
   exports: CodeSymbol[];
   symbols: { name: string; kind: CodeSymbolKind; line: number; endLine: number; exported: boolean }[];
   endpoints: HttpEndpoint[];
+  /** Router mounts: this file mounts `resolved`'s routes under `prefix`. */
+  resolvedMounts?: { prefix: string; resolved: string }[];
 }
 
 const STORY_FILE_RE = /\.stories\.[jt]sx?$/;
@@ -292,8 +294,25 @@ function extractRouterScreensUnsafe(fileRel: string, text: string): RouterScreen
     ts.forEachChild(node, visitCalls);
   };
 
+  // Route tables declared as data (`const routes: RouteObject[] = […]`) and
+  // handed to the factory in another file.
+  const visitTypedRouteArrays = (): void => {
+    for (const st of source.statements) {
+      if (!ts.isVariableStatement(st)) continue;
+      for (const decl of st.declarationList.declarations) {
+        if (!decl.type || !decl.initializer) continue;
+        if (!/\bRouteObject\b/.test(decl.type.getText(source))) continue;
+        const init = unwrapExpression(decl.initializer);
+        if (ts.isArrayLiteralExpression(init)) {
+          for (const el of init.elements) visitRouteObject(el, "");
+        }
+      }
+    }
+  };
+
   visitJsx(source, "");
   visitCalls(source);
+  visitTypedRouteArrays();
   return out;
 }
 
@@ -662,6 +681,53 @@ export function demoTargetsFromScripts(scripts: Record<string, unknown>): DemoTa
 }
 
 /* ------------------------------------------------------------------ */
+/* Router mount composition                                             */
+/* ------------------------------------------------------------------ */
+
+/** Join a mount prefix and a route sub-path into one URL path. */
+export function joinMountedPath(prefix: string, sub: string): string {
+  const a = prefix === "/" ? "" : prefix.replace(/\/+$/, "");
+  if (!a) return sub;
+  return sub === "/" ? a : `${a}${sub}`;
+}
+
+/**
+ * Full URL prefix per route file, composed through the (transitive) chain of
+ * `app.use("/prefix", router)` mounts. First mounter wins when a router is
+ * mounted twice; cycles fall back to no prefix. Files that aren't mounted
+ * anywhere are absent from the map.
+ */
+export function computeMountPrefixes(
+  records: Iterable<{ path: string; resolvedMounts?: { prefix: string; resolved: string }[] }>,
+): Map<string, string> {
+  const mountedBy = new Map<string, { prefix: string; mounter: string }>();
+  for (const rec of records) {
+    for (const m of rec.resolvedMounts ?? []) {
+      if (m.resolved !== rec.path && !mountedBy.has(m.resolved)) {
+        mountedBy.set(m.resolved, { prefix: m.prefix, mounter: rec.path });
+      }
+    }
+  }
+  const memo = new Map<string, string>();
+  const prefixOf = (file: string, seen: Set<string>): string => {
+    const hit = memo.get(file);
+    if (hit !== undefined) return hit;
+    if (seen.has(file)) return "";
+    seen.add(file);
+    const mount = mountedBy.get(file);
+    const prefix = mount ? joinMountedPath(prefixOf(mount.mounter, seen), mount.prefix) : "";
+    memo.set(file, prefix === "/" ? "" : prefix);
+    return memo.get(file)!;
+  };
+  const out = new Map<string, string>();
+  for (const file of mountedBy.keys()) {
+    const prefix = prefixOf(file, new Set());
+    if (prefix) out.set(file, prefix);
+  }
+  return out;
+}
+
+/* ------------------------------------------------------------------ */
 /* Report builder                                                       */
 /* ------------------------------------------------------------------ */
 
@@ -711,6 +777,42 @@ export async function buildSurfacesReport(
     screens.push(screen);
   };
 
+  // Next file conventions only mean routes when the owning package actually
+  // uses next (dependency or next scripts) — a Vite app's src/pages/ is just
+  // a directory name.
+  const nextCache = new Map<string, boolean | null>();
+  const dependsOnNext = async (fileRel: string): Promise<boolean> => {
+    let dir = fileRel.includes("/") ? fileRel.slice(0, fileRel.lastIndexOf("/")) : ".";
+    for (;;) {
+      let usesNext = nextCache.get(dir);
+      if (usesNext === undefined) {
+        const text = await readText(dir === "." ? "package.json" : `${dir}/package.json`);
+        usesNext = null;
+        if (text != null) {
+          try {
+            const pkg = JSON.parse(text) as {
+              dependencies?: Record<string, unknown>;
+              devDependencies?: Record<string, unknown>;
+              scripts?: Record<string, unknown>;
+            };
+            usesNext =
+              "next" in (pkg.dependencies ?? {}) ||
+              "next" in (pkg.devDependencies ?? {}) ||
+              Object.values(pkg.scripts ?? {}).some(
+                (s) => typeof s === "string" && /\bnext\s+(dev|build|start)\b/.test(s),
+              );
+          } catch {
+            /* unparseable package.json — keep walking up */
+          }
+        }
+        nextCache.set(dir, usesNext);
+      }
+      if (usesNext !== null) return usesNext; // the nearest package.json decides
+      if (dir === ".") return false;
+      dir = dir.includes("/") ? dir.slice(0, dir.lastIndexOf("/")) : ".";
+    }
+  };
+
   for (const p of paths) {
     if (isTestPath(p) || isStoryPath(p)) continue;
     const rec = records.get(p)!;
@@ -724,11 +826,11 @@ export async function buildSurfacesReport(
     });
     const appRoute = nextAppRoute(p);
     if (appRoute != null) {
-      pushScreen(nextish(appRoute, "next-app"));
+      if (await dependsOnNext(p)) pushScreen(nextish(appRoute, "next-app"));
       continue;
     }
     const pagesRoute = nextPagesRoute(p);
-    if (pagesRoute != null) pushScreen(nextish(pagesRoute, "next-pages"));
+    if (pagesRoute != null && (await dependsOnNext(p))) pushScreen(nextish(pagesRoute, "next-pages"));
   }
 
   for (const p of paths) {
@@ -831,12 +933,17 @@ export async function buildSurfacesReport(
 
   /* ---------------- endpoints ---------------- */
   // Dedup by method+path, first declaring file wins (same convention as the
-  // systems overview's per-system endpoint dedup).
+  // systems overview's per-system endpoint dedup). Test files exercise
+  // endpoints, they don't serve them.
+  const prefixes = computeMountPrefixes(records.values());
   const endpointMap = new Map<string, SystemEndpoint>();
   for (const p of paths) {
+    if (isTestPath(p)) continue;
+    const prefix = prefixes.get(p) ?? "";
     for (const ep of records.get(p)!.endpoints) {
-      const key = `${ep.method} ${ep.path}`;
-      if (!endpointMap.has(key)) endpointMap.set(key, { ...ep, file: p });
+      const full = prefix ? joinMountedPath(prefix, ep.path) : ep.path;
+      const key = `${ep.method} ${full}`;
+      if (!endpointMap.has(key)) endpointMap.set(key, { ...ep, path: full, file: p });
     }
   }
   const endpoints = [...endpointMap.values()].sort(
