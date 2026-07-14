@@ -3,16 +3,23 @@ import {
   AppWindow,
   Component as ComponentIcon,
   Copy,
-  ExternalLink,
   Globe,
   MonitorPlay,
   MonitorX,
   RefreshCw,
 } from "lucide-react";
 import type { ScreenSource, ScreenSurface } from "@crystal/core";
-import { requestOpenFile, useNav, useNavUpdate } from "@crystal/client";
-import { Badge, EmptyState, Pane as SplitPane, Split, Tooltip, cn } from "@crystal/ui";
-import { DetailSection, FileLink, GroupHeader, ListHeader, copyText, useMenu, useSurfaces } from "./common.js";
+import { useNav, useNavUpdate, useSymbolMenu } from "@crystal/client";
+import { Badge, EmptyState, Pane as SplitPane, Split, Tooltip, cn, useContextMenu } from "@crystal/ui";
+import {
+  ApiCallsSection,
+  DetailSection,
+  FileLink,
+  GroupHeader,
+  ListHeader,
+  copyText,
+  useSurfaces,
+} from "./common.js";
 
 /**
  * Screens — every navigable page of the frontend, detected from the router
@@ -36,7 +43,8 @@ export function ScreensView() {
   const selectedId = useNav((l) => l.surfaces?.screen ?? null);
   const demoOpen = useNav((l) => l.surfaces?.demo ?? false);
   const find = (useNav((l) => l.surfaces?.find) ?? "").trim().toLowerCase();
-  const menu = useMenu();
+  const menu = useContextMenu();
+  const symbolMenu = useSymbolMenu();
   const [collapsed, setCollapsed] = useState<ReadonlySet<ScreenSource>>(new Set());
 
   const screens = report?.screens ?? [];
@@ -81,13 +89,6 @@ export function ScreensView() {
 
   const rowMenu = (s: ScreenSurface): Parameters<typeof menu.open>[1] => [
     { type: "heading", label: s.route },
-    {
-      type: "item",
-      label: "Open in editor",
-      icon: ExternalLink,
-      hint: s.file.split("/").at(-1),
-      onSelect: () => requestOpenFile(s.file, s.line),
-    },
     ...(s.component
       ? [
           {
@@ -105,7 +106,6 @@ export function ScreensView() {
           },
         ]
       : []),
-    { type: "separator" },
     ...(appUrl
       ? [
           {
@@ -122,6 +122,9 @@ export function ScreensView() {
           },
         ]
       : []),
+    // The shared cross-view block for the page file (the component may live
+    // elsewhere — its own row in the components view carries the symbol).
+    ...symbolMenu({ file: s.file, line: s.line, label: s.route }),
     {
       type: "item",
       label: "Copy route",
@@ -372,6 +375,12 @@ function ScreenDetail({
           ) : null}
         </div>
       </DetailSection>
+
+      {/* The screen's backend story: API calls its component graph reaches. */}
+      <ApiCallsSection
+        file={screen.componentFile ?? screen.file}
+        symbol={screen.component}
+      />
     </div>
   );
 }

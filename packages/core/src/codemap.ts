@@ -250,6 +250,34 @@ export interface CodeTrace {
   unresolvedCalls: { from: CodeSymbolRef; callee: string }[];
 }
 
+/** One outgoing HTTP call reached on the call-graph walk from an entry symbol. */
+export interface ApiTraceCall {
+  method: string;
+  /** The call path as parsed — unresolved template holes appear as "*". */
+  path: string;
+  /** Call site. */
+  file: string;
+  line?: number;
+  /**
+   * Symbol whose body issues the call, with its BFS depth from the entry
+   * (entry = 0). Absent for module-scope calls in the entry file.
+   */
+  via?: { file: string; symbol: string; depth: number };
+  /** Best-matching served route registration, when one resolves. */
+  endpoint?: { method: string; path: string; file: string; line?: number; handler?: string };
+}
+
+/**
+ * The frontend→backend chain from one component/hook: every HTTP call its
+ * (syntactic) call graph can reach, each matched to the endpoint serving it.
+ */
+export interface ApiTrace {
+  entry: { file: string; symbol?: string };
+  calls: ApiTraceCall[];
+  /** Call-graph depth/node caps hit — deeper calls may exist. */
+  truncated: boolean;
+}
+
 /**
  * A ranked journey suggestion: a code entry point whose call graph fans out
  * across many modules — a good candidate "top user journey" to trace on the

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { buildCodeIndex, type IndexSourceFile } from "./code-index.js";
 import type { CodeSymbolKind } from "./codemap.js";
 import {
+  bestServedRoute,
   buildSystemOverview,
   npmPackageOf,
   routeSegments,
@@ -438,6 +439,24 @@ describe("API links", () => {
     expect(routesMatchSuffix(call, routeSegments("/:id"))).toBe(false);
     // Longer than the call never matches.
     expect(routesMatchSuffix(routeSegments("/fields"), call)).toBe(false);
+  });
+
+  it("bestServedRoute prefers exact-length, then longest and most literal", () => {
+    const served = [
+      { method: "GET", segs: routeSegments("/:formId"), path: "/:formId" },
+      { method: "GET", segs: routeSegments("/:formId/fields"), path: "/:formId/fields" },
+      { method: "GET", segs: routeSegments("/api/v3/admin/forms/:formId/fields"), path: "full" },
+      { method: "POST", segs: routeSegments("/api/v3/admin/forms/:formId/fields"), path: "post" },
+    ];
+    const hit = bestServedRoute({ method: "GET", path: "/api/v3/admin/forms/*/fields" }, served);
+    expect(hit?.path).toBe("full"); // exact-length beats suffix, method must agree
+    const skip = bestServedRoute(
+      { method: "GET", path: "/api/v3/admin/forms/*/fields" },
+      served,
+      (r) => r.path === "full",
+    );
+    expect(skip?.path).toBe("/:formId/fields"); // longest remaining suffix
+    expect(bestServedRoute({ method: "GET", path: "/api/unknown" }, served)).toBeNull();
   });
 
   it("links calls through nested router prefixes, preferring the most specific route", () => {

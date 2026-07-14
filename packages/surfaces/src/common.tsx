@@ -1,8 +1,15 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
-import { ExternalLink } from "lucide-react";
-import type { SurfacesReport, SystemModule, SystemOverview } from "@crystal/core";
+import { ExternalLink, Webhook } from "lucide-react";
+import { formatHighlightSel } from "@crystal/core";
+import type {
+  ApiTrace,
+  ApiTraceCall,
+  SurfacesReport,
+  SystemModule,
+  SystemOverview,
+} from "@crystal/core";
 import { requestOpenFile, useCrystal, useNavUpdate, useWorkspaces } from "@crystal/client";
-import { ContextMenu, Tooltip, cn, type MenuEntry } from "@crystal/ui";
+import { Tooltip, cn } from "@crystal/ui";
 
 /* ------------------------------------------------------------------ */
 /* Data: surfaces report + systems overview, refreshed on code changes */
@@ -103,6 +110,12 @@ export interface ArchHighlight {
   edge: (edgeId: string) => void;
   /** Highlight the system owning a file; falls back to opening the file when unattributed. */
   file: (file: string, line?: number) => void;
+  /**
+   * Highlight one symbol: selects the owning system AND pins the highlight
+   * (`architect.sel`), so the systems view marks the exact component/export —
+   * the surfaces→architecture side of the bidirectional link.
+   */
+  symbol: (file: string, symbol: string, line?: number) => void;
   /** Leave surfaces for the full architecture view, pane selection intact. */
   expand: () => void;
 }
@@ -131,40 +144,24 @@ export function useArchHighlight(): ArchHighlight {
           });
         else requestOpenFile(file, line);
       },
+      symbol: (file, symbol, line) => {
+        const sys = systemOfFile(file);
+        if (!sys) {
+          requestOpenFile(file, line);
+          return;
+        }
+        const sel = formatHighlightSel({ file, symbol, label: symbol });
+        nav({
+          surfaces: { arch: true },
+          architect: { view: "systems", system: sys.id, edge: null, ...(sel ? { sel } : {}) },
+        });
+      },
       // Selection (system/edge) lives in the architect section and merges, so
       // the full view opens exactly where the pane was pointing.
       expand: () => nav({ mode: "architect", architect: { view: "systems" } }),
     }),
     [nav, systemOfFile],
   );
-}
-
-/* ------------------------------------------------------------------ */
-/* Context menus: one open menu per view                               */
-/* ------------------------------------------------------------------ */
-
-export interface MenuState {
-  x: number;
-  y: number;
-  entries: MenuEntry[];
-}
-
-/** Right-click menu plumbing: `open(event, entries)` + a rendered element. */
-export function useMenu(): {
-  open: (e: React.MouseEvent, entries: MenuEntry[]) => void;
-  element: React.ReactNode;
-} {
-  const [menu, setMenu] = useState<MenuState | null>(null);
-  const open = useCallback((e: React.MouseEvent, entries: MenuEntry[]) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (entries.length === 0) return;
-    setMenu({ x: e.clientX, y: e.clientY, entries });
-  }, []);
-  const element = menu ? (
-    <ContextMenu x={menu.x} y={menu.y} entries={menu.entries} onClose={() => setMenu(null)} />
-  ) : null;
-  return { open, element };
 }
 
 /* ------------------------------------------------------------------ */
@@ -298,4 +295,128 @@ export function GroupHeader({
 /** Copy text with a "copied" flash on the trigger's tooltip. */
 export function copyText(text: string): void {
   void navigator.clipboard.writeText(text).catch(() => {});
+}
+
+/**
+ * The frontend→backend chain of one component/hook: every HTTP call its call
+ * graph reaches (`codemap.apiTrace`), matched to the endpoint serving it.
+ * Click a row to highlight the boundary in the architecture pane; the webhook
+ * link continues into the API explorer (handler definition, trace, callers).
+ * Renders nothing when the component makes no API calls.
+ */
+export function ApiCallsSection({ file, symbol }: { file: string; symbol?: string }) {
+  const { client } = useCrystal();
+  const { systemOfFile } = useSurfaces();
+  const arch = useArchHighlight();
+  const nav = useNavUpdate();
+  const [trace, setTrace] = useState<ApiTrace | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setTrace(null);
+    setFailed(false);
+    client
+      .request("codemap.apiTrace", { file, symbol })
+      .then((t) => !cancelled && setTrace(t))
+      .catch(() => !cancelled && setFailed(true));
+    return () => {
+      cancelled = true;
+    };
+  }, [client, file, symbol]);
+
+  // Most components never talk to the network — stay out of the way then.
+  if (failed || (trace != null && trace.calls.length === 0)) return null;
+
+  const highlight = (call: ApiTraceCall) => {
+    const src = systemOfFile(file);
+    const tgt = call.endpoint ? systemOfFile(call.endpoint.file) : null;
+    if (src && tgt && src.id !== tgt.id) arch.edge(`${src.id}->${tgt.id}`);
+    else if (tgt) arch.system(tgt.id);
+    else arch.file(call.file, call.line);
+  };
+
+  return (
+    <DetailSection
+      title={`API calls · ${trace ? trace.calls.length : "…"}`}
+      hint="HTTP calls reachable from here, matched to the endpoints serving them"
+    >
+      {trace == null ? (
+        <div className="text-[11px] text-ink-faint">Tracing the call graph…</div>
+      ) : (
+        <div className="space-y-0.5">
+          {trace.calls.map((call, i) => {
+            const targetSystem = call.endpoint ? systemOfFile(call.endpoint.file) : null;
+            return (
+              <div
+                key={`${call.file}:${call.line ?? 0}:${i}`}
+                role="button"
+                tabIndex={0}
+                onClick={() => highlight(call)}
+                onDoubleClick={() => requestOpenFile(call.file, call.line ?? undefined)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") highlight(call);
+                }}
+                title="Click: highlight the boundary in the architecture pane · double-click: open the call site"
+                className="flex w-full cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1 text-left hover:bg-surface-2"
+              >
+                <span className="shrink-0 rounded bg-accent-amber/15 px-1 font-mono text-[9px] font-semibold uppercase text-accent-amber">
+                  {call.method}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate font-mono text-[10px] text-ink" title={call.path}>
+                    {call.path}
+                  </span>
+                  <span className="block truncate text-[9px] text-ink-faint">
+                    {call.via && call.via.depth > 0 ? `via ${call.via.symbol}() · ` : ""}
+                    {call.endpoint
+                      ? `→ ${call.endpoint.handler ?? call.endpoint.file}${targetSystem ? ` · ${targetSystem.name}` : ""}`
+                      : "no matching endpoint in this workspace"}
+                  </span>
+                </span>
+                {call.endpoint ? (
+                  <Tooltip content="Open in the API explorer — handler, trace and callers">
+                    <button
+                      type="button"
+                      aria-label={`Open ${call.endpoint.method} ${call.endpoint.path} in the API explorer`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        nav({
+                          surfaces: {
+                            view: "apis",
+                            api: `${call.endpoint!.method} ${call.endpoint!.path}`,
+                          },
+                        });
+                      }}
+                      className="shrink-0 rounded p-0.5 text-ink-faint hover:bg-surface-3 hover:text-ink"
+                    >
+                      <Webhook className="h-3 w-3" />
+                    </button>
+                  </Tooltip>
+                ) : null}
+                <Tooltip content="Open the call site in the editor">
+                  <button
+                    type="button"
+                    aria-label={`Open ${call.file} in the editor`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      requestOpenFile(call.file, call.line ?? undefined);
+                    }}
+                    className="shrink-0 rounded p-0.5 text-ink-faint hover:bg-surface-3 hover:text-ink"
+                  >
+                    <ExternalLink className="h-3 w-3" />
+                  </button>
+                </Tooltip>
+              </div>
+            );
+          })}
+          {trace.truncated ? (
+            <div className="px-1.5 pt-1 text-[10px] text-ink-faint">
+              Call graph capped — deeper calls may exist.
+            </div>
+          ) : null}
+        </div>
+      )}
+    </DetailSection>
+  );
 }

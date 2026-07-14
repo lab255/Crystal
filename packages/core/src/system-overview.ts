@@ -372,6 +372,36 @@ export function routesMatchSuffix(call: string[], served: string[]): boolean {
   return routesMatch(call.slice(call.length - served.length), served);
 }
 
+/**
+ * Best served route for one outgoing HTTP call. An exact-length match beats a
+ * suffix match, then the longest (and most literal) served route —
+ * "/:formId/fields" over "/:formId" for a call to /api/v3/admin/forms/1/fields.
+ * Candidates carry pre-split `segs` (via `routeSegments`); `skip` excludes
+ * routes that must not match (e.g. ones served by the calling system).
+ */
+export function bestServedRoute<T extends { method: string; segs: readonly string[] }>(
+  call: { method: string; path: string },
+  served: readonly T[],
+  skip?: (route: T) => boolean,
+): T | null {
+  const segs = routeSegments(call.path);
+  if (segs.length === 0) return null;
+  let hit: T | null = null;
+  let hitScore = -1;
+  for (const r of served) {
+    if (skip?.(r)) continue;
+    if (!(r.method === "ALL" || call.method === "ALL" || r.method === call.method)) continue;
+    if (!routesMatchSuffix(segs, [...r.segs])) continue;
+    const literals = r.segs.filter((seg) => seg !== "*").length;
+    const score = (r.segs.length === segs.length ? 1000 : 0) + r.segs.length * 10 + literals;
+    if (score > hitScore) {
+      hit = r;
+      hitScore = score;
+    }
+  }
+  return hit;
+}
+
 /* ------------------------------------------------------------------ */
 /* Stage A — structural units                                          */
 /* ------------------------------------------------------------------ */
@@ -919,7 +949,7 @@ export function buildSystemOverview(
   // A→B link — created with weight 0 when no import edge exists (services
   // talking over the wire rather than through the module graph).
   const served = systems.flatMap((s) =>
-    s.endpoints.map((ep) => ({ system: s.id, ep, segs: routeSegments(ep.path) })),
+    s.endpoints.map((ep) => ({ system: s.id, ep, method: ep.method, segs: routeSegments(ep.path) })),
   );
   if (served.length > 0) {
     const apiAgg = new Map<string, Map<string, HttpEndpoint & { weight: number }>>();
@@ -927,25 +957,7 @@ export function buildSystemOverview(
       const sourceSystem = systemOfFile.get(file.path);
       if (!sourceSystem) continue;
       for (const call of file.apiCalls ?? []) {
-        const segs = routeSegments(call.path);
-        if (segs.length === 0) continue;
-        // Best candidate wins: an exact-length match beats a suffix match,
-        // then the longest (and most literal) served route — "/:formId/fields"
-        // over "/:formId" for a call to /api/v3/admin/forms/1/fields.
-        let hit: (typeof served)[number] | null = null;
-        let hitScore = -1;
-        for (const r of served) {
-          if (r.system === sourceSystem) continue;
-          if (!(r.ep.method === "ALL" || call.method === "ALL" || r.ep.method === call.method))
-            continue;
-          if (!routesMatchSuffix(segs, r.segs)) continue;
-          const literals = r.segs.filter((seg) => seg !== "*").length;
-          const score = (r.segs.length === segs.length ? 1000 : 0) + r.segs.length * 10 + literals;
-          if (score > hitScore) {
-            hit = r;
-            hitScore = score;
-          }
-        }
+        const hit = bestServedRoute(call, served, (r) => r.system === sourceSystem);
         if (!hit) continue;
         const linkKey = sourceSystem + SEP + hit.system;
         const byRoute = apiAgg.get(linkKey) ?? new Map<string, HttpEndpoint & { weight: number }>();

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   AppWindow,
   BookOpenText,
+  Boxes,
   ChevronDown,
   Component as ComponentIcon,
   Copy,
@@ -9,15 +10,24 @@ import {
   Import,
 } from "lucide-react";
 import type { CodeSymbolSites, CodeSymbolSource, ComponentSurface } from "@crystal/core";
-import { requestOpenFile, useCrystal, useNav, useNavUpdate } from "@crystal/client";
-import { Badge, CodeSnippet, EmptyState, Pane as SplitPane, Split, Tooltip, cn } from "@crystal/ui";
+import { requestOpenFile, useCrystal, useNav, useNavUpdate, useSymbolMenu } from "@crystal/client";
 import {
+  Badge,
+  CodeSnippet,
+  EmptyState,
+  Pane as SplitPane,
+  Split,
+  Tooltip,
+  cn,
+  useContextMenu,
+} from "@crystal/ui";
+import {
+  ApiCallsSection,
   DetailSection,
   FileLink,
   ListHeader,
   copyText,
   useArchHighlight,
-  useMenu,
   useSurfaces,
 } from "./common.js";
 
@@ -40,7 +50,8 @@ export function ComponentsView() {
   const nav = useNavUpdate();
   const selectedId = useNav((l) => l.surfaces?.component ?? null);
   const find = (useNav((l) => l.surfaces?.find) ?? "").trim().toLowerCase();
-  const menu = useMenu();
+  const menu = useContextMenu();
+  const symbolMenu = useSymbolMenu();
 
   const components = report?.components ?? [];
   const visible = useMemo(
@@ -63,13 +74,6 @@ export function ComponentsView() {
 
   const rowMenu = (c: ComponentSurface): Parameters<typeof menu.open>[1] => [
     { type: "heading", label: c.name },
-    {
-      type: "item",
-      label: "Open in editor",
-      icon: ExternalLink,
-      hint: `${c.file.split("/").at(-1)}:${c.line}`,
-      onSelect: () => requestOpenFile(c.file, c.line),
-    },
     ...(c.stories.length > 0
       ? [
           {
@@ -92,14 +96,8 @@ export function ComponentsView() {
           },
         ]
       : []),
-    { type: "separator" },
-    {
-      type: "item",
-      label: "Copy name",
-      icon: Copy,
-      hint: c.name,
-      onSelect: () => copyText(c.name),
-    },
+    // The shared cross-view block: pin, editor, code map, coverage, copy.
+    ...symbolMenu({ file: c.file, line: c.line, symbol: c.name, label: c.name }),
     {
       type: "item",
       label: "Copy import statement",
@@ -223,6 +221,18 @@ function ComponentDetail({ component: c }: { component: ComponentSurface }) {
         </div>
         <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px] text-ink-muted">
           <FileLink file={c.file} line={c.line} />
+          {systemOfFile(c.file) ? (
+            <Tooltip content="Highlight this component in the architecture pane">
+              <button
+                type="button"
+                onClick={() => arch.symbol(c.file, c.name, c.line)}
+                className="flex items-center gap-1 rounded-md border border-edge bg-surface-2 px-1.5 py-0.5 text-[10px] hover:text-ink"
+              >
+                <Boxes className="h-3 w-3 text-crystal-300" />
+                {systemOfFile(c.file)!.name}
+              </button>
+            </Tooltip>
+          ) : null}
         </div>
         {c.signature ? (
           <div className="mt-1.5 truncate font-mono text-[10.5px] text-ink-faint" title={c.signature}>
@@ -297,6 +307,8 @@ function ComponentDetail({ component: c }: { component: ComponentSurface }) {
           <div className="text-[11px] text-ink-faint">Loading…</div>
         )}
       </DetailSection>
+
+      <ApiCallsSection file={c.file} symbol={c.name} />
 
       <DetailSection
         title={`Used by · ${sites ? sites.imports.length : "…"}`}

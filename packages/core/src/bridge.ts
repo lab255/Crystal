@@ -5,6 +5,7 @@ import type { AgentRole, AgentRun, RunEvent, RunPurpose, WorkerSpec } from "./ag
 import type { CodeIndex, FacetSuggestion } from "./code-index.js";
 import type { ReviewFinding } from "./code-review.js";
 import type {
+  ApiTrace,
   CodeFileDetail,
   CodeMapSummary,
   CodeModuleDetail,
@@ -380,6 +381,16 @@ export interface BridgeMethods {
   "codemap.trace": {
     params: WsScope & { file: string; symbol: string; maxDepth?: number };
     result: CodeTrace;
+  };
+  /**
+   * Frontend→backend API trace: every outgoing HTTP call reachable from an
+   * entry component/hook through the call graph (or the whole file when
+   * `symbol` is omitted), matched to the served route registrations — the
+   * component → hook → API call → endpoint chain.
+   */
+  "codemap.apiTrace": {
+    params: WsScope & { file: string; symbol?: string; maxDepth?: number };
+    result: ApiTrace;
   };
   /** Clusters of functions with identical normalized token streams. */
   "codemap.duplicates": {

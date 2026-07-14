@@ -32,8 +32,14 @@ node_modules.
 ## Web UI
 
 `pnpm dev:web` serves http://localhost:5173 (expects the bridge on 4517).
-No browser-automation harness is set up in this environment yet — UI changes
-verified so far ride on vitest + the socket surface underneath.
+Browser automation that works here: `npm i playwright` in the scratchpad, then
+`chromium.launch({ channel: "msedge", headless: true })` — no browser download
+needed. Frontend packages are served as TS source with HMR, so when the user's
+dev stack is already up on 5173/4517 it serves your edited code as-is; a fresh
+Playwright context has clean localStorage (split sizes, nav state), and
+read-only clicking in your own context is safe alongside the user's session.
+Drive selection via deep links (`#/architect/systems?system=…`) instead of
+canvas clicks — react-flow nodes overlap and swallow pointer events.
 
 ## Gotchas
 

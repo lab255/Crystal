@@ -297,6 +297,8 @@ export async function startCrystalServer(opts: {
       registry.get(ws).codemap.partCrossings(sourcePart, targetPart, sourceParts, targetParts),
     "codemap.trace": ({ ws, file, symbol, maxDepth }) =>
       registry.get(ws).codemap.trace(file, symbol, maxDepth),
+    "codemap.apiTrace": ({ ws, file, symbol, maxDepth }) =>
+      registry.get(ws).codemap.apiTrace(file, symbol, maxDepth),
     "codemap.duplicates": async ({ ws, minTokens }) => ({
       clusters: await registry.get(ws).codemap.duplicates(minTokens),
       generatedAt: new Date().toISOString(),

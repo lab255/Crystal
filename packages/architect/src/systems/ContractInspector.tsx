@@ -7,17 +7,19 @@ import {
   ChevronRight,
   Copy,
   ExternalLink,
+  Webhook,
   X,
 } from "lucide-react";
 import type {
   CodeSymbolSites,
+  PartCrossing,
   PartCrossings,
   SymbolSite,
   SystemLink,
   SystemLinkSymbol,
   SystemModule,
 } from "@crystal/core";
-import { useCrystal } from "@crystal/client";
+import { useCrystal, useNavUpdate } from "@crystal/client";
 import { Button, CodeSnippet, Spinner, Tooltip, cn } from "@crystal/ui";
 import { requestOpenFile } from "../codemap/CodeMapView.js";
 import { ROLE_META } from "./role-meta.js";
@@ -76,6 +78,7 @@ export function ContractInspector({
   onClose: () => void;
 }) {
   const { client } = useCrystal();
+  const nav = useNavUpdate();
   const key = linkKeyOf(link);
   const apis = link.apis ?? [];
   const apiOnly = link.weight === 0 && apis.length > 0;
@@ -461,7 +464,10 @@ export function ContractInspector({
               API calls · {apis.length}
             </div>
             {apis.map((a) => (
-              <div key={`${a.method} ${a.path}`} className="flex items-center gap-1.5 px-1.5 py-0.5">
+              <div
+                key={`${a.method} ${a.path}`}
+                className="group flex items-center gap-1.5 rounded-md px-1.5 py-0.5 hover:bg-surface-2/60"
+              >
                 <span className="shrink-0 rounded bg-accent-amber/15 px-1 font-mono text-[9px] font-semibold uppercase text-accent-amber">
                   {a.method}
                 </span>
@@ -469,6 +475,21 @@ export function ContractInspector({
                   {a.path}
                 </span>
                 <span className="shrink-0 text-[9px] text-ink-faint">×{a.weight}</span>
+                <Tooltip content="Open in the API explorer — handler, trace and callers">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      nav({
+                        mode: "surfaces",
+                        surfaces: { view: "apis", api: `${a.method} ${a.path}` },
+                      })
+                    }
+                    aria-label={`Open ${a.method} ${a.path} in the API explorer`}
+                    className="shrink-0 text-ink-faint opacity-0 hover:text-ink focus-visible:opacity-100 group-hover:opacity-100"
+                  >
+                    <Webhook className="h-3 w-3" />
+                  </button>
+                </Tooltip>
               </div>
             ))}
           </div>
@@ -569,45 +590,9 @@ function CrossingPair({
                 since the overview was built.
               </div>
             ) : (
-              <div className="max-h-56 overflow-y-auto">
+              <div className="max-h-80 overflow-y-auto">
                 {state.data.crossings.map((c, i) => (
-                  <div
-                    key={`${c.file}:${c.line ?? "?"}:${i}`}
-                    className="group border-b border-edge/40 px-2 py-1 last:border-b-0 hover:bg-surface-2/60"
-                  >
-                    <button
-                      type="button"
-                      onClick={() => requestOpenFile(c.file, c.line ?? undefined)}
-                      className="flex w-full items-center gap-1.5 text-left"
-                      title={`Open ${c.file} in the editor`}
-                    >
-                      <span className="min-w-0 truncate font-mono text-[9px] text-ink-muted">
-                        {c.file}
-                        {c.line != null ? `:${c.line}` : ""}
-                      </span>
-                      <ExternalLink className="ml-auto h-2.5 w-2.5 shrink-0 text-ink-faint opacity-0 transition-opacity group-hover:opacity-100" />
-                    </button>
-                    {c.text ? (
-                      <div
-                        className="truncate font-mono text-[9px] leading-4 text-ink/80"
-                        title={c.text}
-                      >
-                        {c.text}
-                      </div>
-                    ) : c.names.length > 0 ? (
-                      <div className="truncate font-mono text-[9px] leading-4 text-ink-faint">
-                        {c.names.join(", ")}
-                      </div>
-                    ) : null}
-                    <button
-                      type="button"
-                      onClick={() => requestOpenFile(c.targetFile)}
-                      className="block max-w-full truncate text-left font-mono text-[8px] leading-4 text-ink-faint hover:text-ink-muted"
-                      title={`Open ${c.targetFile} in the editor`}
-                    >
-                      → {c.targetFile}
-                    </button>
-                  </div>
+                  <CrossingEntry key={`${c.file}:${c.line ?? "?"}:${i}`} crossing={c} />
                 ))}
                 {state.data.truncated ? (
                   <div className="px-2 py-1 text-[8px] text-ink-faint">
@@ -617,6 +602,233 @@ function CrossingPair({
               </div>
             )
           ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** In-pane inspection state for one imported name of one crossing. */
+interface NameInspection {
+  def?: Snippet;
+  /** Declaring file the server resolved to (barrels followed) — may differ from the import target. */
+  defFile?: string;
+  sites?: SitesState;
+}
+
+/**
+ * One concrete crossing (an import statement bringing names across the
+ * boundary). Each imported name is a chip that expands in-pane into the
+ * export's definition (from the target file) and its usage sites inside the
+ * importing file — the intersection made concrete, no editor jump needed.
+ * Namespace imports (`* as X`) carry no single symbol, so their chip opens
+ * the target file instead.
+ */
+function CrossingEntry({ crossing: c }: { crossing: PartCrossing }) {
+  const { client } = useCrystal();
+  const [openName, setOpenName] = useState<string | null>(null);
+  const [inspections, setInspections] = useState<ReadonlyMap<string, NameInspection>>(
+    () => new Map(),
+  );
+
+  const toggleName = (name: string) => {
+    const next = openName === name ? null : name;
+    setOpenName(next);
+    if (next == null || inspections.has(name)) return;
+    setInspections((m) => new Map(m).set(name, { def: { loading: true }, sites: { loading: true } }));
+    client
+      .request("codemap.symbolSource", { file: c.targetFile, symbol: name })
+      .then((src) =>
+        setInspections((m) =>
+          new Map(m).set(name, {
+            ...m.get(name),
+            defFile: src.file,
+            def: {
+              startLine: src.startLine,
+              endLine: src.endLine,
+              text: src.text,
+              truncated: src.truncated,
+            },
+          }),
+        ),
+      )
+      .catch((err: Error) =>
+        setInspections((m) => new Map(m).set(name, { ...m.get(name), def: { error: err.message } })),
+      );
+    client
+      .request("codemap.symbolSites", { file: c.targetFile, symbol: name })
+      .then((data) =>
+        setInspections((m) => new Map(m).set(name, { ...m.get(name), sites: { data } })),
+      )
+      .catch((err: Error) =>
+        setInspections((m) =>
+          new Map(m).set(name, { ...m.get(name), sites: { error: err.message } }),
+        ),
+      );
+  };
+
+  const inspection = openName != null ? inspections.get(openName) : undefined;
+  // "What's imported, where it's used": only sites inside this importing file.
+  const usagesHere = useMemo(() => {
+    const data = inspection?.sites?.data;
+    if (!data) return [];
+    return data.calls.filter((s) => s.file === c.file);
+  }, [inspection, c.file]);
+
+  return (
+    <div className="group border-b border-edge/40 px-2 py-1 last:border-b-0 hover:bg-surface-2/40">
+      <button
+        type="button"
+        onClick={() => requestOpenFile(c.file, c.line ?? undefined)}
+        className="flex w-full items-center gap-1.5 text-left"
+        title={`Open ${c.file} in the editor`}
+      >
+        <span className="min-w-0 truncate font-mono text-[9px] text-ink-muted">
+          {c.file}
+          {c.line != null ? `:${c.line}` : ""}
+        </span>
+        <ExternalLink className="ml-auto h-2.5 w-2.5 shrink-0 text-ink-faint opacity-0 transition-opacity group-hover:opacity-100" />
+      </button>
+      {c.text ? (
+        <div className="truncate font-mono text-[9px] leading-4 text-ink/80" title={c.text}>
+          {c.text}
+        </div>
+      ) : null}
+      {c.names.length > 0 ? (
+        <div className="mt-0.5 flex flex-wrap gap-1">
+          {c.names.map((name) => {
+            const namespace = name.startsWith("* as ");
+            return (
+              <Tooltip
+                key={name}
+                content={
+                  namespace
+                    ? "Namespace import — open the exporting file"
+                    : "Inspect the export's definition and where this file uses it"
+                }
+              >
+                <button
+                  type="button"
+                  onClick={() =>
+                    namespace ? requestOpenFile(c.targetFile) : toggleName(name)
+                  }
+                  aria-expanded={namespace ? undefined : openName === name}
+                  className={cn(
+                    "rounded border px-1 py-px font-mono text-[9px]",
+                    openName === name
+                      ? "border-crystal-500/50 bg-crystal-500/15 text-crystal-300"
+                      : "border-edge text-ink-muted hover:bg-surface-2 hover:text-ink",
+                  )}
+                >
+                  {name}
+                </button>
+              </Tooltip>
+            );
+          })}
+        </div>
+      ) : null}
+      <button
+        type="button"
+        onClick={() => requestOpenFile(c.targetFile)}
+        className="block max-w-full truncate text-left font-mono text-[8px] leading-4 text-ink-faint hover:text-ink-muted"
+        title={`Open ${c.targetFile} in the editor`}
+      >
+        → {c.targetFile}
+      </button>
+      {openName != null && inspection ? (
+        <div className="mb-1 mt-1 flex flex-col gap-1.5">
+          <div className="overflow-hidden rounded-md border border-edge bg-surface-0">
+            <div className="flex items-center gap-1.5 border-b border-edge/60 px-2 py-1">
+              <span className="shrink-0 text-[8px] font-medium uppercase tracking-wide text-ink-faint">
+                Definition
+              </span>
+              <span
+                className="min-w-0 truncate font-mono text-[9px] text-ink-muted"
+                title={inspection.defFile ?? c.targetFile}
+              >
+                {inspection.defFile ?? c.targetFile}
+                {inspection.def?.startLine != null ? `:${inspection.def.startLine}` : ""}
+              </span>
+              <button
+                type="button"
+                onClick={() =>
+                  requestOpenFile(inspection.defFile ?? c.targetFile, inspection.def?.startLine)
+                }
+                className="ml-auto flex shrink-0 items-center gap-1 text-[9px] text-ink-faint hover:text-ink"
+              >
+                <ExternalLink className="h-3 w-3" /> open
+              </button>
+            </div>
+            {inspection.def?.loading ? (
+              <div className="flex items-center gap-2 px-2 py-1.5 text-[9px] text-ink-faint">
+                <Spinner className="h-3 w-3" /> reading source…
+              </div>
+            ) : inspection.def?.error ? (
+              <div className="px-2 py-1.5 text-[9px] text-danger">{inspection.def.error}</div>
+            ) : inspection.def?.text != null ? (
+              <CodeSnippet
+                code={inspection.def.text}
+                startLine={inspection.def.startLine}
+                truncated={inspection.def.truncated}
+                className="max-h-48 rounded-none border-0"
+              />
+            ) : null}
+          </div>
+          <div className="overflow-hidden rounded-md border border-edge bg-surface-0">
+            <div className="flex items-center gap-1.5 border-b border-edge/60 px-2 py-1">
+              <span className="shrink-0 text-[8px] font-medium uppercase tracking-wide text-ink-faint">
+                Used in this file
+              </span>
+              {inspection.sites?.data ? (
+                <span className="text-[9px] text-ink-faint">{usagesHere.length}</span>
+              ) : null}
+            </div>
+            {inspection.sites?.loading ? (
+              <div className="flex items-center gap-2 px-2 py-1.5 text-[9px] text-ink-faint">
+                <Spinner className="h-3 w-3" /> finding usages…
+              </div>
+            ) : inspection.sites?.error ? (
+              <div className="px-2 py-1.5 text-[9px] text-danger">{inspection.sites.error}</div>
+            ) : inspection.sites?.data ? (
+              usagesHere.length === 0 ? (
+                <div className="px-2 py-1.5 text-[9px] text-ink-faint">
+                  No call sites resolved in this file — types, constants and dynamic dispatch
+                  aren't traced.
+                </div>
+              ) : (
+                <div className="max-h-40 overflow-y-auto">
+                  {usagesHere.map((s, i) => (
+                    <button
+                      key={`${s.line ?? "?"}:${i}`}
+                      type="button"
+                      onClick={() => requestOpenFile(s.file, s.line ?? undefined)}
+                      className="block w-full px-2 py-1 text-left hover:bg-surface-2/60"
+                      title={`Open ${s.file} in the editor`}
+                    >
+                      <span className="flex items-center gap-1.5">
+                        <span className="shrink-0 font-mono text-[9px] text-ink-faint">
+                          :{s.line ?? "?"}
+                        </span>
+                        {s.symbol ? (
+                          <span className="shrink-0 font-mono text-[9px] text-accent-violet/80">
+                            {s.symbol}()
+                          </span>
+                        ) : null}
+                      </span>
+                      {s.text ? (
+                        <span
+                          className="block truncate font-mono text-[9px] leading-4 text-ink/80"
+                          title={s.text}
+                        >
+                          {s.text}
+                        </span>
+                      ) : null}
+                    </button>
+                  ))}
+                </div>
+              )
+            ) : null}
+          </div>
         </div>
       ) : null}
     </div>

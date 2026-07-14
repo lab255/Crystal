@@ -33,6 +33,8 @@ import {
   Layers,
   ListFilter,
   Maximize,
+  MoveRight,
+  PanelsTopLeft,
   PencilRuler,
   Plug,
   RefreshCw,
@@ -47,6 +49,7 @@ import {
   SYSTEM_LAYERS,
   SYSTEM_LAYER_LABELS,
   autoGroupSystems,
+  formatHighlightSel,
   computeSystemInsights,
   conceptDisplayName,
   createArchNode,
@@ -71,7 +74,7 @@ import {
   type SystemsGroup,
   type SystemsLayout,
 } from "@crystal/core";
-import { useCrystal, useNav, useNavUpdate, useWorkspaces } from "@crystal/client";
+import { useCrystal, useNav, useNavUpdate, useSymbolMenu, useWorkspaces } from "@crystal/client";
 import {
   Badge,
   Button,
@@ -83,6 +86,8 @@ import {
   Spinner,
   Tooltip,
   cn,
+  useContextMenu,
+  useSidePaneLayout,
   type ComboboxOption,
   type MenuEntry,
 } from "@crystal/ui";
@@ -754,6 +759,7 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
   const activeWs = useWorkspaces((s) => s.activeId);
   const nav = useNavUpdate();
   const { fitView } = useReactFlow();
+  const sidePane = useSidePaneLayout();
   const selectedId = useNav((l) => l.architect?.system ?? null);
   const setSelected = useCallback(
     (id: string | null) => nav({ architect: { system: id } }),
@@ -2154,7 +2160,9 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
     <Split storageKey="architect:systems" direction="horizontal">
       <SplitPane minSize="45%">
         <div className="flex h-full min-h-0">
-      <div className="relative min-w-0 flex-1">
+      {/* @container: the overlay toolbars compact by pane width, not viewport —
+          this view embeds in side panes (surfaces arch pane) at ~400-800px. */}
+      <div className="@container relative min-w-0 flex-1">
         <ReactFlow
           nodes={rfNodes}
           edges={edges}
@@ -2282,8 +2290,8 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
                 </button>
               );
             })}
-            <span className="mx-1 h-3 w-px bg-edge" />
-            <span className="px-1 text-[10px] text-ink-faint">
+            <span className="@max-[640px]:hidden mx-1 h-3 w-px bg-edge" />
+            <span className="@max-[640px]:hidden px-1 text-[10px] text-ink-faint">
               {rendered.overview.systems.length} systems · {rendered.overview.links.length} links ·{" "}
               {rendered.overview.fileTotal} files
             </span>
@@ -2404,7 +2412,7 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
             <div
               ref={reviewBoxRef}
               onFocusCapture={loadRefs}
-              className="flex items-center gap-1 rounded-lg border border-edge bg-surface-1/95 px-1.5 py-1 shadow-sm"
+              className="@max-[900px]:hidden flex items-center gap-1 rounded-lg border border-edge bg-surface-1/95 px-1.5 py-1 shadow-sm"
             >
               <GitCompare className="ml-0.5 h-3 w-3 shrink-0 text-ink-faint" />
               <Combobox
@@ -2427,59 +2435,65 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
               </Button>
             </div>
           )}
-          <button
-            type="button"
-            aria-pressed={contractsOpen}
-            onClick={() => {
-              nav({ architect: { contracts: !contractsOpen, insights: null, facets: null } });
-              setDiffOpen(false);
-            }}
-            className={cn(
-              "flex items-center gap-1.5 rounded-lg border border-edge bg-surface-1/95 px-2 py-1.5 text-[11px] shadow-sm transition-colors",
-              contractsOpen ? "text-ink" : "text-ink-muted hover:text-ink",
-            )}
-          >
-            <ArrowRightLeft className="h-3 w-3 text-ink-faint" />
-            Contracts
-          </button>
-          <button
-            type="button"
-            aria-pressed={facetsOpen}
-            onClick={() => {
-              nav({ architect: { facets: !facetsOpen, insights: null, contracts: null } });
-              setDiffOpen(false);
-            }}
-            className={cn(
-              "flex items-center gap-1.5 rounded-lg border border-edge bg-surface-1/95 px-2 py-1.5 text-[11px] shadow-sm transition-colors",
-              facetsOpen ? "text-ink" : "text-ink-muted hover:text-ink",
-            )}
-          >
-            <Sparkles
-              className={cn("h-3 w-3", lensTags.length > 0 ? "text-crystal-300" : "text-ink-faint")}
-            />
-            Facets
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              nav({ architect: { insights: !insightsOpen, contracts: null, system: null, edge: null } });
-              setDiffOpen(false);
-            }}
-            className={cn(
-              "flex items-center gap-1.5 rounded-lg border border-edge bg-surface-1/95 px-2 py-1.5 text-[11px] shadow-sm transition-colors",
-              insightsOpen ? "text-ink" : "text-ink-muted hover:text-ink",
-            )}
-          >
-            <AlertTriangle
-              className={cn("h-3 w-3", (insights?.total ?? 0) > 0 ? "text-warn" : "text-ink-faint")}
-            />
-            Insights
-            {(insights?.total ?? 0) > 0 && (
-              <span className="rounded-full bg-warn/15 px-1.5 text-[9px] text-warn">
-                {insights?.total}
-              </span>
-            )}
-          </button>
+          <Tooltip content="Boundary contracts">
+            <button
+              type="button"
+              aria-pressed={contractsOpen}
+              onClick={() => {
+                nav({ architect: { contracts: !contractsOpen, insights: null, facets: null } });
+                setDiffOpen(false);
+              }}
+              className={cn(
+                "flex items-center gap-1.5 rounded-lg border border-edge bg-surface-1/95 px-2 py-1.5 text-[11px] shadow-sm transition-colors",
+                contractsOpen ? "text-ink" : "text-ink-muted hover:text-ink",
+              )}
+            >
+              <ArrowRightLeft className="h-3 w-3 text-ink-faint" />
+              <span className="@max-[900px]:hidden">Contracts</span>
+            </button>
+          </Tooltip>
+          <Tooltip content="Facet lenses">
+            <button
+              type="button"
+              aria-pressed={facetsOpen}
+              onClick={() => {
+                nav({ architect: { facets: !facetsOpen, insights: null, contracts: null } });
+                setDiffOpen(false);
+              }}
+              className={cn(
+                "flex items-center gap-1.5 rounded-lg border border-edge bg-surface-1/95 px-2 py-1.5 text-[11px] shadow-sm transition-colors",
+                facetsOpen ? "text-ink" : "text-ink-muted hover:text-ink",
+              )}
+            >
+              <Sparkles
+                className={cn("h-3 w-3", lensTags.length > 0 ? "text-crystal-300" : "text-ink-faint")}
+              />
+              <span className="@max-[900px]:hidden">Facets</span>
+            </button>
+          </Tooltip>
+          <Tooltip content="Architecture insights">
+            <button
+              type="button"
+              onClick={() => {
+                nav({ architect: { insights: !insightsOpen, contracts: null, system: null, edge: null } });
+                setDiffOpen(false);
+              }}
+              className={cn(
+                "flex items-center gap-1.5 rounded-lg border border-edge bg-surface-1/95 px-2 py-1.5 text-[11px] shadow-sm transition-colors",
+                insightsOpen ? "text-ink" : "text-ink-muted hover:text-ink",
+              )}
+            >
+              <AlertTriangle
+                className={cn("h-3 w-3", (insights?.total ?? 0) > 0 ? "text-warn" : "text-ink-faint")}
+              />
+              <span className="@max-[900px]:hidden">Insights</span>
+              {(insights?.total ?? 0) > 0 && (
+                <span className="rounded-full bg-warn/15 px-1.5 text-[9px] text-warn">
+                  {insights?.total}
+                </span>
+              )}
+            </button>
+          </Tooltip>
           <Tooltip content="Snapshot the visible systems into an editable diagram">
             <button
               type="button"
@@ -2487,7 +2501,7 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
               className="flex items-center gap-1.5 rounded-lg border border-edge bg-surface-1/95 px-2 py-1.5 text-[11px] text-ink-muted shadow-sm transition-colors hover:text-ink"
             >
               <PencilRuler className="h-3 w-3" />
-              To diagram
+              <span className="@max-[900px]:hidden">To diagram</span>
             </button>
           </Tooltip>
         </div>
@@ -2508,6 +2522,7 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
           nameOf={nameOf}
           onClose={() => setSelected(null)}
           onSelect={setSelected}
+          onSelectEdge={(key) => nav({ architect: { system: null, edge: key } })}
           onOpenCode={onOpenCode}
         />
       )}
@@ -2548,7 +2563,7 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
 
       {/* The contract inspector rides a real split — resizable, code inline. */}
       {panel === "edge" && selectedLink ? (
-        <SplitPane defaultSize={440} minSize={320} maxSize={760}>
+        <SplitPane defaultSize={sidePane.defaultSize} minSize={320} maxSize="70%">
           <ContractInspector
             link={selectedLink}
             links={boundaryLinks}
@@ -2709,6 +2724,7 @@ function SystemDetail({
   nameOf,
   onClose,
   onSelect,
+  onSelectEdge,
   onOpenCode,
 }: {
   system: SystemModule;
@@ -2716,35 +2732,66 @@ function SystemDetail({
   nameOf: (id: string) => string;
   onClose: () => void;
   onSelect: (id: string | null) => void;
+  /** Open the contract inspector on a boundary (`source->target`). */
+  onSelectEdge: (key: string) => void;
   onOpenCode?: (module: string, facet?: OpenCodeFacet) => void;
 }) {
   const meta = ROLE_META[system.role];
   const Icon = meta.icon;
   const outbound = links.filter((l) => l.source === system.id);
   const inbound = links.filter((l) => l.target === system.id);
+  const apiOutbound = outbound.filter((l) => (l.apis?.length ?? 0) > 0);
+  // Right-click on exports/components/endpoints: the shared symbol menu.
+  const menu = useContextMenu();
+  const symbolMenu = useSymbolMenu();
+  const nav = useNavUpdate();
+  // A highlight pinned from elsewhere (e.g. a surfaces component) marks its
+  // row here — the surfaces→architecture side of the bidirectional link.
+  const pinnedSel = useNav((l) => l.architect?.sel ?? null);
+  const isPinned = (file: string, symbol: string) =>
+    pinnedSel != null && pinnedSel === formatHighlightSel({ file, symbol });
 
+  // Clicking a boundary row inspects the contract — the intersection of what
+  // this system consumes and the other exports — in place; the explicit
+  // arrow link is the only way the row leaves for the other system's detail.
   const linkRow = (link: SystemLink, other: string, dir: "out" | "in") => (
-    <button
+    <div
       key={`${dir}:${other}`}
-      type="button"
-      onClick={() => onSelect(other)}
-      className="flex w-full items-start gap-1.5 rounded-md px-1.5 py-1 text-left hover:bg-surface-2"
+      className="group flex w-full items-start gap-1.5 rounded-md px-1.5 py-1 hover:bg-surface-2"
     >
-      {dir === "out" ? (
-        <ArrowUpRight className="mt-0.5 h-3 w-3 shrink-0 text-ink-faint" />
-      ) : (
-        <ArrowDownRight className="mt-0.5 h-3 w-3 shrink-0 text-ink-faint" />
-      )}
-      <span className="min-w-0 flex-1">
-        <span className="block truncate text-[11px] text-ink">{nameOf(other)}</span>
-        {link.symbols.length > 0 && (
-          <span className="block truncate font-mono text-[9px] text-ink-faint">
-            {link.symbols.join(", ")}
+      <Tooltip content="Inspect the boundary contract">
+        <button
+          type="button"
+          onClick={() => onSelectEdge(linkKeyOf(link))}
+          className="flex min-w-0 flex-1 items-start gap-1.5 text-left"
+        >
+          {dir === "out" ? (
+            <ArrowUpRight className="mt-0.5 h-3 w-3 shrink-0 text-ink-faint" />
+          ) : (
+            <ArrowDownRight className="mt-0.5 h-3 w-3 shrink-0 text-ink-faint" />
+          )}
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-[11px] text-ink">{nameOf(other)}</span>
+            {link.symbols.length > 0 && (
+              <span className="block truncate font-mono text-[9px] text-ink-faint">
+                {link.symbols.join(", ")}
+              </span>
+            )}
           </span>
-        )}
-      </span>
-      <span className="shrink-0 text-[10px] text-ink-faint">×{link.weight}</span>
-    </button>
+          <span className="shrink-0 text-[10px] text-ink-faint">×{link.weight}</span>
+        </button>
+      </Tooltip>
+      <Tooltip content={`Go to ${nameOf(other)}`}>
+        <button
+          type="button"
+          onClick={() => onSelect(other)}
+          aria-label={`Go to ${nameOf(other)}`}
+          className="mt-0.5 shrink-0 rounded text-ink-faint opacity-0 hover:text-ink focus-visible:opacity-100 group-hover:opacity-100"
+        >
+          <MoveRight className="h-3 w-3" />
+        </button>
+      </Tooltip>
+    </div>
   );
 
   return (
@@ -2835,7 +2882,16 @@ function SystemDetail({
             key={`${e.file}#${e.name}`}
             type="button"
             onClick={() => requestOpenFile(e.file)}
-            className="w-full rounded-md px-1.5 py-0.5 text-left hover:bg-surface-2"
+            onContextMenu={(evt) =>
+              menu.open(evt, [
+                { type: "heading", label: e.name },
+                ...symbolMenu({ file: e.file, symbol: e.name, label: e.name }),
+              ])
+            }
+            className={cn(
+              "w-full rounded-md px-1.5 py-0.5 text-left hover:bg-surface-2",
+              isPinned(e.file, e.name) && "bg-crystal-500/15 ring-1 ring-crystal-500/40",
+            )}
             title={e.file}
           >
             <span className="flex items-baseline gap-1.5">
@@ -2858,23 +2914,51 @@ function SystemDetail({
       {system.componentCount > 0 && (
         <Section title={`Components · ${system.componentCount}`}>
           {system.components.map((c) => (
-            <button
+            <div
               key={`${c.file}#${c.name}`}
-              type="button"
-              onClick={() => requestOpenFile(c.file)}
-              title={c.file}
-              className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-0.5 text-left hover:bg-surface-2"
-            >
-              <Component className="h-3 w-3 shrink-0 text-accent-violet" />
-              <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-ink">
-                {c.name}
-              </span>
-              {c.consumers > 0 && (
-                <Tooltip content={`${c.consumers} file${c.consumers === 1 ? "" : "s"} outside this system import it`}>
-                  <span className="shrink-0 text-[9px] text-ink-faint">×{c.consumers}</span>
-                </Tooltip>
+              onContextMenu={(evt) =>
+                menu.open(evt, [
+                  { type: "heading", label: c.name },
+                  ...symbolMenu({ file: c.file, symbol: c.name, label: c.name }),
+                ])
+              }
+              className={cn(
+                "group flex w-full items-center gap-1.5 rounded-md px-1.5 py-0.5 hover:bg-surface-2",
+                isPinned(c.file, c.name) && "bg-crystal-500/15 ring-1 ring-crystal-500/40",
               )}
-            </button>
+            >
+              <button
+                type="button"
+                onClick={() => requestOpenFile(c.file)}
+                title={c.file}
+                className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+              >
+                <Component className="h-3 w-3 shrink-0 text-accent-violet" />
+                <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-ink">
+                  {c.name}
+                </span>
+                {c.consumers > 0 && (
+                  <Tooltip content={`${c.consumers} file${c.consumers === 1 ? "" : "s"} outside this system import it`}>
+                    <span className="shrink-0 text-[9px] text-ink-faint">×{c.consumers}</span>
+                  </Tooltip>
+                )}
+              </button>
+              <Tooltip content="Open in the surfaces view — definition, usages and API calls">
+                <button
+                  type="button"
+                  onClick={() =>
+                    nav({
+                      mode: "surfaces",
+                      surfaces: { view: "components", component: `${c.file}#${c.name}` },
+                    })
+                  }
+                  aria-label={`Open ${c.name} in the surfaces view`}
+                  className="shrink-0 text-ink-faint opacity-0 hover:text-ink focus-visible:opacity-100 group-hover:opacity-100"
+                >
+                  <PanelsTopLeft className="h-3 w-3" />
+                </button>
+              </Tooltip>
+            </div>
           ))}
           {system.componentCount > system.components.length && (
             <div className="px-1.5 py-0.5 text-[10px] text-ink-faint">
@@ -2888,21 +2972,115 @@ function SystemDetail({
       {system.endpoints.length > 0 && (
         <Section title={`Serves · ${system.endpoints.length} route${system.endpoints.length === 1 ? "" : "s"}`}>
           {system.endpoints.map((ep) => (
-            <button
+            <div
               key={`${ep.method} ${ep.path}@${ep.file}`}
-              type="button"
-              onClick={() => requestOpenFile(ep.file)}
-              title={ep.file}
-              className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-0.5 text-left hover:bg-surface-2"
+              onContextMenu={(evt) =>
+                menu.open(evt, [
+                  { type: "heading", label: `${ep.method} ${ep.path}` },
+                  {
+                    type: "item",
+                    label: "Open in API explorer",
+                    icon: Webhook,
+                    onSelect: () =>
+                      nav({
+                        mode: "surfaces",
+                        surfaces: { view: "apis", api: `${ep.method} ${ep.path}` },
+                      }),
+                  },
+                  ...symbolMenu({
+                    file: ep.file,
+                    line: ep.line,
+                    symbol: ep.handler,
+                    label: `${ep.method} ${ep.path}`,
+                  }),
+                  {
+                    type: "item",
+                    label: "Copy route",
+                    icon: Copy,
+                    onSelect: () =>
+                      void navigator.clipboard?.writeText(`${ep.method} ${ep.path}`),
+                  },
+                ])
+              }
+              className="group flex w-full items-center gap-1.5 rounded-md px-1.5 py-0.5 hover:bg-surface-2"
             >
-              <span className="shrink-0 rounded bg-accent-amber/15 px-1 font-mono text-[9px] font-semibold uppercase text-accent-amber">
-                {ep.method}
-              </span>
-              <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-ink">
-                {ep.path}
-              </span>
-            </button>
+              <button
+                type="button"
+                onClick={() => requestOpenFile(ep.file)}
+                title={ep.file}
+                className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+              >
+                <span className="shrink-0 rounded bg-accent-amber/15 px-1 font-mono text-[9px] font-semibold uppercase text-accent-amber">
+                  {ep.method}
+                </span>
+                <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-ink">
+                  {ep.path}
+                </span>
+              </button>
+              <Tooltip content="Open in the API explorer — handler, trace and callers">
+                <button
+                  type="button"
+                  onClick={() =>
+                    nav({
+                      mode: "surfaces",
+                      surfaces: { view: "apis", api: `${ep.method} ${ep.path}` },
+                    })
+                  }
+                  aria-label={`Open ${ep.method} ${ep.path} in the API explorer`}
+                  className="shrink-0 text-ink-faint opacity-0 hover:text-ink focus-visible:opacity-100 group-hover:opacity-100"
+                >
+                  <Webhook className="h-3 w-3" />
+                </button>
+              </Tooltip>
+            </div>
           ))}
+        </Section>
+      )}
+
+      {apiOutbound.length > 0 && (
+        <Section title="Calls APIs">
+          {apiOutbound.flatMap((l) =>
+            (l.apis ?? []).map((a) => (
+              <div
+                key={`${l.target}:${a.method} ${a.path}`}
+                className="group flex w-full items-center gap-1.5 rounded-md px-1.5 py-0.5 hover:bg-surface-2"
+              >
+                <Tooltip content="Inspect the boundary contract">
+                  <button
+                    type="button"
+                    onClick={() => onSelectEdge(linkKeyOf(l))}
+                    className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+                  >
+                    <span className="shrink-0 rounded bg-accent-amber/15 px-1 font-mono text-[9px] font-semibold uppercase text-accent-amber">
+                      {a.method}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-ink">
+                      {a.path}
+                    </span>
+                    <span className="max-w-24 shrink-0 truncate text-[9px] text-ink-faint">
+                      {nameOf(l.target)}
+                    </span>
+                    <span className="shrink-0 text-[9px] text-ink-faint">×{a.weight}</span>
+                  </button>
+                </Tooltip>
+                <Tooltip content="Open in the API explorer — handler, trace and callers">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      nav({
+                        mode: "surfaces",
+                        surfaces: { view: "apis", api: `${a.method} ${a.path}` },
+                      })
+                    }
+                    aria-label={`Open ${a.method} ${a.path} in the API explorer`}
+                    className="shrink-0 text-ink-faint opacity-0 hover:text-ink focus-visible:opacity-100 group-hover:opacity-100"
+                  >
+                    <Webhook className="h-3 w-3" />
+                  </button>
+                </Tooltip>
+              </div>
+            )),
+          )}
         </Section>
       )}
 
@@ -2922,6 +3100,7 @@ function SystemDetail({
       {inbound.length > 0 && (
         <Section title="Consumed by">{inbound.map((l) => linkRow(l, l.source, "in"))}</Section>
       )}
+      {menu.element}
     </Pane>
   );
 }
