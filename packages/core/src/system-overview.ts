@@ -609,6 +609,27 @@ interface Cluster {
   profiles: UnitProfile[];
 }
 
+/**
+ * Directory names that describe structure, not product: a "utils" in the CLI
+ * and a "utils" in the web app share nothing but a naming habit. They never
+ * merge across packages, and their system name carries the owning package so
+ * the overview doesn't fill up with anonymous "Utils" boxes.
+ */
+const GENERIC_UNIT_NAMES = new Set([
+  "utils",
+  "util",
+  "helpers",
+  "helper",
+  "lib",
+  "libs",
+  "common",
+  "shared",
+  "misc",
+  "internal",
+  "support",
+  "tools",
+]);
+
 function clusterUnits(profiles: UnitProfile[], lexicon: readonly ConceptDef[]): Cluster[] {
   const clusters = new Map<string, Cluster>();
   for (const profile of profiles) {
@@ -617,15 +638,23 @@ function clusterUnits(profiles: UnitProfile[], lexicon: readonly ConceptDef[]): 
     // Fixture scopes partition both kinds of merge — and mark the name, so
     // a host repo's Core and an example's Core stay tell-apart-able.
     const byConcept = profile.concept != null && (profile.nameAsserted || profile.intents.size > 0);
+    const generic = !byConcept && GENERIC_UNIT_NAMES.has(nameKeyOf(profile.unit.name));
     const scope = fixtureScopeOf(profile.unit.path);
     const key =
       `${scope}::` +
-      (byConcept ? `concept:${profile.concept}` : `name:${nameKeyOf(profile.unit.name)}`);
+      (byConcept
+        ? `concept:${profile.concept}`
+        : generic
+          ? `name:${profile.unit.pkg}${SEP}${nameKeyOf(profile.unit.name)}`
+          : `name:${nameKeyOf(profile.unit.name)}`);
     let cluster = clusters.get(key);
     if (!cluster) {
+      const pkgTag = lastSegment(profile.unit.pkg) || "root";
       const base = byConcept
         ? conceptDisplayName(profile.concept!, lexicon)
-        : titleCase(profile.unit.name);
+        : generic && nameKeyOf(pkgTag) !== nameKeyOf(profile.unit.name)
+          ? titleCase(`${pkgTag} ${profile.unit.name}`)
+          : titleCase(profile.unit.name);
       const scopeTag = lastSegment(scope);
       const name = scope && slug(base) !== slug(scopeTag) ? `${base} (${scopeTag})` : base;
       clusters.set(
