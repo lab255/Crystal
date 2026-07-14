@@ -3,6 +3,7 @@ import { Children, isValidElement, cloneElement, type ReactElement } from "react
 import { Pane, SplitPane, type PaneProps, type SplitPaneProps } from "react-split-pane";
 import { usePersistence } from "react-split-pane/persistence";
 import { cn } from "../cn.js";
+import { useMediaQuery } from "../use-media-query.js";
 
 /**
  * Resizable split layout — react-split-pane v3 with Crystal divider styling
@@ -26,6 +27,26 @@ export interface SplitProps extends Omit<SplitPaneProps, "onResize"> {
 }
 
 export { Pane, type PaneProps };
+
+export interface SidePaneLayout {
+  /** Below the wide breakpoint — render the expand-to-full-view affordance prominently. */
+  compact: boolean;
+  /** Opening size for the side pane's `defaultSize` (a user-dragged size still wins via persistence). */
+  defaultSize: string | number;
+}
+
+/**
+ * Layout defaults for embedded side panes (another view docked beside the
+ * current one, expandable to its full mode). On wide screens the pane opens at
+ * half width so the embedded view is immediately usable; below the breakpoint
+ * half would cramp both sides, so the pane opens at a fixed comfortable width
+ * and the view should make its expand button prominent (`compact`) so choosing
+ * the full view is the obvious escape hatch.
+ */
+export function useSidePaneLayout(): SidePaneLayout {
+  const wide = useMediaQuery("(min-width: 1200px)");
+  return { compact: !wide, defaultSize: wide ? "50%" : 400 };
+}
 
 export function Split({ storageKey, children, ...rest }: SplitProps) {
   const panes = Children.toArray(children);

@@ -17,3 +17,4 @@ export * from "./components/EmptyState.js";
 export * from "./components/Split.js";
 export * from "./components/CodeSnippet.js";
 export * from "./highlight.js";
+export * from "./use-media-query.js";
