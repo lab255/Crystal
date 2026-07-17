@@ -21,7 +21,7 @@ import type {
 import type { Project } from "./project.js";
 import type { CoverageReport, QualityRun, TestRunnerInfo } from "./quality.js";
 import type { RefactorApplyResult, RefactorIntent, RefactorPlan } from "./refactor.js";
-import type { SurfacesReport } from "./surfaces.js";
+import type { SurfaceMapReport, SurfacesReport } from "./surfaces.js";
 import type { SystemOverview } from "./system-overview.js";
 import type { SystemOverviewDiff } from "./system-insights.js";
 import type { SystemsLayout } from "./systems-layout.js";
@@ -456,6 +456,12 @@ export interface BridgeMethods {
    * surfaces.ts). Recomputed lazily; `codemap.changed` signals staleness.
    */
   "surfaces.get": { params: WsScope; result: SurfacesReport };
+  /**
+   * Per-screen API reachability for the system map — every screen's outgoing
+   * HTTP calls matched to served routes (batched `codemap.apiTrace` over the
+   * surfaces report's screens). Recomputed lazily with the code map.
+   */
+  "surfaces.map": { params: WsScope; result: SurfaceMapReport };
   /** How (and whether) this workspace can run tests — see quality.ts. */
   "quality.detect": { params: WsScope; result: TestRunnerInfo };
   /**

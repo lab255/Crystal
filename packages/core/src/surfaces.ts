@@ -8,7 +8,7 @@ import type { SystemEndpoint } from "./system-overview.js";
  * map and invalidated by the same watcher (`codemap.changed`).
  */
 
-export type SurfaceViewId = "screens" | "components" | "stories" | "apis" | "schemas";
+export type SurfaceViewId = "map" | "screens" | "components" | "stories" | "apis" | "schemas";
 
 /** How a screen was detected — drives the badge and the route semantics. */
 export type ScreenSource = "next-app" | "next-pages" | "react-router" | "convention";
@@ -95,6 +95,38 @@ export interface DemoTargets {
   appUrl: string | null;
   /** Storybook base URL ("http://localhost:6006"). */
   storybookUrl: string | null;
+}
+
+/**
+ * One outgoing HTTP call reachable from a screen's component tree, matched to
+ * the served endpoint when route registration analysis finds one. The system
+ * map draws these as screen → backend edges; unmatched calls (external APIs,
+ * unseen routers) still render, pointed at the called path.
+ */
+export interface ScreenApiCall {
+  /** The screen this call is reachable from (`ScreenSurface.id`). */
+  screen: string;
+  method: string;
+  /** The path as called ("/api/bookings"). */
+  path: string;
+  /** Workspace-relative file of the call site. */
+  file: string;
+  line?: number;
+  /** The served route the call matches, when one exists in this workspace. */
+  endpoint?: { method: string; path: string; file: string; line?: number };
+}
+
+/**
+ * The system map's join data: per-screen API reachability, computed by walking
+ * each screen's import/call graph to its outgoing HTTP calls (the same
+ * machinery as `codemap.apiTrace`, batched over every screen). Served by
+ * `surfaces.map`; invalidated with the code map like the surfaces report.
+ */
+export interface SurfaceMapReport {
+  calls: ScreenApiCall[];
+  /** Some traces hit the traversal cap — the map may be missing edges. */
+  truncated: boolean;
+  generatedAt: string;
 }
 
 export interface SurfacesReport {

@@ -126,6 +126,11 @@ export interface CodeLink {
 
 export interface SurfacesLink {
   view?: SurfaceViewId;
+  /**
+   * Selected system-map node (map view) — `screen:<ScreenSurface.id>`,
+   * `sys:<SystemModule.id>` or `ep:<METHOD> <path>`.
+   */
+  node?: string;
   /** Selected screen id (`ScreenSurface.id`). */
   screen?: string;
   /** Selected component, `${file}#${name}`. */
@@ -255,7 +260,9 @@ export function formatDeepLink(link: DeepLink): string {
     const s = link.surfaces ?? {};
     const view = s.view ?? "screens";
     path += `/${view}`;
-    if (view === "screens") {
+    if (view === "map") {
+      if (s.node) add("node", s.node);
+    } else if (view === "screens") {
       if (s.screen) add("screen", s.screen);
       if (s.demo) add("demo", "1");
     } else if (view === "components") {
@@ -414,6 +421,7 @@ export function parseDeepLink(hash: string): DeepLink {
     const s: SurfacesLink = {};
     const view = segments[1];
     if (
+      view === "map" ||
       view === "screens" ||
       view === "components" ||
       view === "stories" ||
@@ -421,6 +429,8 @@ export function parseDeepLink(hash: string): DeepLink {
       view === "schemas"
     )
       s.view = view;
+    const node = params.get("node");
+    if (node) s.node = node;
     const screen = params.get("screen");
     if (screen) s.screen = screen;
     const component = params.get("component");
@@ -483,6 +493,7 @@ const ORCHESTRATE_TAB_FIELDS: Record<OrchestratorTabId, readonly (keyof Orchestr
 };
 
 const SURFACES_VIEW_FIELDS: Record<SurfaceViewId, readonly (keyof SurfacesLink)[]> = {
+  map: ["view", "node", "find"],
   screens: ["view", "screen", "demo", "arch", "find"],
   components: ["view", "component", "arch", "find"],
   stories: ["view", "story", "demo", "arch", "find"],
