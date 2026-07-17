@@ -16,6 +16,18 @@ function argValues(flag: string): string[] {
   return out;
 }
 
+// Last-resort guards: the bridge hosts every workspace, terminal and live
+// agent run in one process — a stray async error (e.g. an unhandled stream
+// 'error' from a child process) must be logged, not allowed to take it all
+// down. Specific call sites still handle their own errors; this only catches
+// what slipped through.
+process.on("uncaughtException", (err) => {
+  console.error("[crystal] uncaught exception (server kept alive):", err);
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("[crystal] unhandled rejection (server kept alive):", reason);
+});
+
 const roots = argValues("--root").map(canonicalRoot);
 if (roots.length === 0) roots.push(canonicalRoot(process.cwd()));
 const port = Number(argValue("--port") ?? process.env.CRYSTAL_PORT ?? DEFAULT_BRIDGE_PORT);

@@ -1033,7 +1033,12 @@ export class QualityService {
     if (!child.pid) return;
     if (process.platform === "win32") {
       // Kill the whole tree — the .cmd shim spawns node underneath.
-      spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { shell: false });
+      const killer = spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
+        shell: false,
+        windowsHide: true,
+      });
+      // taskkill unavailable must not crash the server — fall back to a plain kill.
+      killer.on("error", () => child.kill());
     } else {
       child.kill("SIGTERM");
     }

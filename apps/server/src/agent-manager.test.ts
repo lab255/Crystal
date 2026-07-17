@@ -1,0 +1,80 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { AgentManager, planClaudeSpawn } from "./agent-manager.js";
+
+describe("planClaudeSpawn", () => {
+  const ARGS = ["-p", "--mcp-config", "C:\\Users\\Eliot Lim\\.crystal\\mcp\\run_1.json"];
+
+  it("spawns a Windows .exe directly, argv untouched", () => {
+    const plan = planClaudeSpawn("C:\\Users\\Eliot Lim\\.local\\bin\\claude.exe", ARGS, true);
+    expect(plan.shell).toBe(false);
+    expect(plan.file).toBe("C:\\Users\\Eliot Lim\\.local\\bin\\claude.exe");
+    expect(plan.args).toEqual(ARGS);
+  });
+
+  it("quotes space-carrying args on the Windows shell (.cmd shim) path", () => {
+    const plan = planClaudeSpawn("claude", ARGS, true);
+    expect(plan.shell).toBe(true);
+    // The path with a space MUST be quoted — cmd.exe receives one
+    // concatenated command line (this is the bug that broke every
+    // manager dispatch: --mcp-config split at "Eliot Lim").
+    expect(plan.args).toEqual(["-p", "--mcp-config", '"C:\\Users\\Eliot Lim\\.crystal\\mcp\\run_1.json"']);
+  });
+
+  it("quotes a shim path that itself contains spaces", () => {
+    const plan = planClaudeSpawn("C:\\Program Files\\nodejs\\claude.cmd", ["-p"], true);
+    expect(plan.shell).toBe(true);
+    expect(plan.file).toBe('"C:\\Program Files\\nodejs\\claude.cmd"');
+  });
+
+  it("strips embedded quotes instead of letting them break the command line", () => {
+    const plan = planClaudeSpawn("claude", ['a"b c'], true);
+    expect(plan.args).toEqual(['"ab c"']);
+  });
+
+  it("never shells on POSIX", () => {
+    const plan = planClaudeSpawn("claude", ARGS, false);
+    expect(plan).toEqual({ file: "claude", args: ARGS, shell: false });
+  });
+});
+
+describe("AgentManager spawn failure resilience", () => {
+  let tmp: string | null = null;
+
+  afterEach(async () => {
+    if (tmp) await fs.rm(tmp, { recursive: true, force: true });
+    tmp = null;
+  });
+
+  async function makeManager(claudeBin?: string): Promise<AgentManager> {
+    tmp = await fs.mkdtemp(path.join(os.tmpdir(), "crystal-agent-test-"));
+    const root = path.join(tmp, "root");
+    await fs.mkdir(root, { recursive: true });
+    return new AgentManager(root, path.join(tmp, "data"), claudeBin);
+  }
+
+  it("settles a run with a nonexistent cwd as failed instead of crashing the process", async () => {
+    // Regression: the spawn 'error' fires on the tick after spawn(); handlers
+    // attached after an await miss it and the unhandled event killed the
+    // whole bridge server (desktop sidecar crash, 2026-07-17).
+    const mgr = await makeManager();
+    const run = await mgr.start({ prompt: "noop", cwd: "does-not-exist-dir" });
+    const settled = await mgr.waitForSettled(run.id);
+    expect(settled.status).toBe("failed");
+    // Exactly one terminal status event — 'error' and 'close' both fire on a
+    // failed spawn, but finish() must only settle once.
+    const events = await mgr.eventsFor(run.id);
+    const terminal = events.filter((e) => e.event.type === "status" && e.event.status !== "queued");
+    expect(terminal).toHaveLength(1);
+  });
+
+  it("settles a run whose binary does not exist as failed (stdin write must not throw)", async () => {
+    const missing = path.join(os.tmpdir(), "definitely-missing-crystal-claude.exe");
+    const mgr = await makeManager(missing);
+    const run = await mgr.start({ prompt: "noop" });
+    const settled = await mgr.waitForSettled(run.id);
+    expect(settled.status).toBe("failed");
+  });
+});

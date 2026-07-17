@@ -230,6 +230,10 @@ export function gitCatFiles(
       chunks.push(chunk);
     });
     child.on("error", reject);
+    // git dying mid-batch EPIPEs pending stdin writes; without a listener the
+    // stream's 'error' event is an uncaught exception that kills the server.
+    // 'error'/'close' above already settle the promise.
+    child.stdin.on("error", () => {});
     child.on("close", () => {
       const buf = Buffer.concat(chunks);
       const out = new Map<string, string>();
@@ -251,7 +255,11 @@ export function gitCatFiles(
       }
       resolve(out);
     });
-    for (const path of paths) child.stdin.write(`${ref}:${path}\n`);
-    child.stdin.end();
+    try {
+      for (const path of paths) child.stdin.write(`${ref}:${path}\n`);
+      child.stdin.end();
+    } catch {
+      /* stream torn down by a failed spawn — 'error'/'close' settle */
+    }
   });
 }

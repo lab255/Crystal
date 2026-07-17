@@ -19,6 +19,32 @@ fn workspace_root() -> std::path::PathBuf {
     root
 }
 
+/// Append-mode log file for the sidecar's stdout/stderr. The desktop app has
+/// no console (windows_subsystem = "windows"), so without this a sidecar
+/// crash leaves no trace anywhere.
+fn sidecar_log() -> Option<std::fs::File> {
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .ok()?;
+    let dir = std::path::Path::new(&home).join(".crystal").join("logs");
+    std::fs::create_dir_all(&dir).ok()?;
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("desktop-sidecar.log"))
+        .ok()
+}
+
+/// Route the sidecar's output to the log file (falls back to inherit).
+fn attach_log(cmd: &mut Command) {
+    if let Some(out) = sidecar_log() {
+        if let Ok(err) = out.try_clone() {
+            cmd.stdout(out);
+            cmd.stderr(err);
+        }
+    }
+}
+
 /// Spawn the Crystal bridge server.
 ///
 /// Production: the server ships as a sidecar executable next to the app
@@ -39,6 +65,7 @@ fn spawn_bridge(module_base: Option<&std::path::Path>) -> Option<Child> {
         if let Some(base) = module_base {
             cmd.env("CRYSTAL_SIDECAR_MODULE_BASE", base);
         }
+        attach_log(&mut cmd);
         return match cmd.spawn() {
             Ok(child) => Some(child),
             Err(err) => {
@@ -60,6 +87,7 @@ fn spawn_bridge(module_base: Option<&std::path::Path>) -> Option<Child> {
     if let Some(base) = module_base {
         cmd.env("CRYSTAL_SIDECAR_MODULE_BASE", base);
     }
+    attach_log(&mut cmd);
     match cmd.spawn() {
         Ok(child) => Some(child),
         Err(err) => {

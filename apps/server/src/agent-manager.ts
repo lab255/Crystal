@@ -1,6 +1,7 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { promisify } from "node:util";
 import {
   Emitter,
   LineBuffer,
@@ -46,6 +47,42 @@ const MAX_DIFF_BYTES = 1024 * 1024;
 /** Fan-out cap: how many workers a single manager run may dispatch. */
 const MAX_WORKERS_PER_MANAGER = 12;
 
+const execFileAsync = promisify(execFile);
+
+/** How to invoke the Claude CLI: a direct executable, or through cmd.exe. */
+export interface ClaudeSpawnPlan {
+  file: string;
+  args: string[];
+  shell: boolean;
+}
+
+/**
+ * Quote one arg for a `shell: true` Windows spawn, which CONCATENATES argv
+ * into a single cmd.exe command line without any escaping (DEP0190) — an
+ * unquoted path like `C:\Users\Eliot Lim\...` splits at the space. Values
+ * here are internal (paths, session ids, model ids), so embedded quotes are
+ * stripped rather than escaped.
+ */
+function winShellQuote(arg: string): string {
+  const clean = arg.replace(/"/g, "");
+  return /\s/.test(clean) ? `"${clean}"` : clean;
+}
+
+/**
+ * Plan the Claude CLI spawn. A real executable (POSIX binary, or the native
+ * installer's claude.exe on Windows) is spawned directly — argv passes
+ * through untouched. Only .cmd/.bat npm shims need cmd.exe (`shell: true`),
+ * and on that path every arg must be hand-quoted (see winShellQuote).
+ */
+export function planClaudeSpawn(
+  bin: string,
+  args: string[],
+  win: boolean = process.platform === "win32",
+): ClaudeSpawnPlan {
+  if (!win || /\.exe$/i.test(bin)) return { file: bin, args, shell: false };
+  return { file: winShellQuote(bin), args: args.map(winShellQuote), shell: true };
+}
+
 interface ActiveProcess {
   child: ChildProcessWithoutNullStreams;
   cancelled: boolean;
@@ -66,6 +103,7 @@ export class AgentManager {
   private runEvents = new Map<string, RunEvent[]>();
   private procs = new Map<string, ActiveProcess>();
   private loaded = false;
+  private resolvedBin: string | null = null;
 
   constructor(
     private readonly root: string,
@@ -82,6 +120,26 @@ export class AgentManager {
 
   private runsDir(): string {
     return path.join(this.dataDir, "runs");
+  }
+
+  /**
+   * Resolve a bare CLI name to its on-PATH file once (Windows only). Knowing
+   * the real extension lets `planClaudeSpawn` bypass cmd.exe for native .exe
+   * installs; when resolution fails the bare name survives, and the shell
+   * spawn surfaces "not recognized" as a failed run instead of a crash.
+   */
+  private async claudePath(): Promise<string> {
+    if (this.resolvedBin) return this.resolvedBin;
+    let bin = this.claudeBin;
+    if (process.platform === "win32" && !/[\\/.]/.test(bin)) {
+      try {
+        const { stdout } = await execFileAsync("where.exe", [bin], { windowsHide: true });
+        bin = stdout.split(/\r?\n/).map((l) => l.trim()).find(Boolean) ?? bin;
+      } catch {
+        /* not on PATH — leave the bare name */
+      }
+    }
+    return (this.resolvedBin = bin);
   }
 
   /**
@@ -189,12 +247,15 @@ export class AgentManager {
     const mcpConfig = run.role === "manager" ? await this.writeMcpConfig(run.id) : null;
     if (mcpConfig) args.push("--mcp-config", mcpConfig);
 
+    const plan = planClaudeSpawn(await this.claudePath(), args);
     let child: ChildProcessWithoutNullStreams;
     try {
-      child = spawn(this.claudeBin, args, {
+      child = spawn(plan.file, plan.args, {
         cwd: cwdAbs,
-        // The Claude Code CLI is a .cmd shim on Windows npm installs.
-        shell: process.platform === "win32",
+        shell: plan.shell,
+        // Under the desktop app the server has no console — an unhidden
+        // cmd.exe would open a visible window per run.
+        windowsHide: true,
         env: { ...process.env, FORCE_COLOR: "0" },
         stdio: ["pipe", "pipe", "pipe"],
       });
@@ -203,22 +264,19 @@ export class AgentManager {
     }
 
     this.procs.set(run.id, { child, cancelled: false });
-    run.status = "running";
-    run.startedAt = nowIso();
-    this.emitRunChanged(run);
-    // Persist the live run now: if the server dies mid-run, ensureLoaded()
-    // still finds the record and settles it as failed instead of the run
-    // (and any chained work watching it) vanishing without a trace.
-    await this.persist(run);
 
-    // Prompt goes over stdin — no shell quoting of user text, ever. Specialist
-    // skills ride along as a trailing directive.
-    let prompt = params.prompt;
-    if (params.skills?.length) {
-      prompt += `\n\nUse these skills where relevant: ${params.skills.map((s) => `/${s}`).join(", ")}.`;
-    }
-    child.stdin.write(prompt);
-    child.stdin.end();
+    // Wire every handler synchronously, before any await: a failed spawn
+    // (nonexistent cwd, missing binary) emits 'error' on the NEXT TICK, and
+    // an unhandled 'error' event kills the whole server — this is exactly
+    // how the desktop bridge used to die on agent.start.
+    child.on("error", (err) => {
+      void this.finish(run, "failed", `Failed to spawn ${this.claudeBin}: ${err.message}`);
+    });
+    // Claude exiting before the prompt flushes (instant CLI startup errors)
+    // EPIPEs stdin; without a listener that is fatal too. 'close' settles.
+    child.stdin.on("error", (err) => {
+      this.record(run, { type: "stderr", text: `stdin: ${err.message}` });
+    });
 
     const stdout = new LineBuffer();
     const stderr = new LineBuffer();
@@ -237,10 +295,6 @@ export class AgentManager {
       }
     });
 
-    child.on("error", (err) => {
-      void this.finish(run, "failed", `Failed to spawn ${this.claudeBin}: ${err.message}`);
-    });
-
     child.on("close", (code) => {
       for (const line of stdout.flush()) {
         for (const event of parseClaudeStreamLine(line)) this.record(run, event);
@@ -256,6 +310,28 @@ export class AgentManager {
           : "failed";
       void this.finish(run, fallback, run.resultText ?? `claude exited with code ${code}`);
     });
+
+    // Prompt goes over stdin — no shell quoting of user text, ever. Specialist
+    // skills ride along as a trailing directive.
+    let prompt = params.prompt;
+    if (params.skills?.length) {
+      prompt += `\n\nUse these skills where relevant: ${params.skills.map((s) => `/${s}`).join(", ")}.`;
+    }
+    try {
+      child.stdin.write(prompt);
+      child.stdin.end();
+    } catch (err) {
+      // Stream already torn down by a failed spawn — 'error'/'close' settle.
+      this.record(run, { type: "stderr", text: `stdin: ${(err as Error).message}` });
+    }
+
+    run.status = "running";
+    run.startedAt = nowIso();
+    this.emitRunChanged(run);
+    // Persist the live run now: if the server dies mid-run, ensureLoaded()
+    // still finds the record and settles it as failed instead of the run
+    // (and any chained work watching it) vanishing without a trace.
+    await this.persist(run);
 
     return run;
   }
@@ -331,9 +407,14 @@ export class AgentManager {
     const run = this.runs.get(runId);
     if (!proc || !run) throw new Error(`No active run ${runId}`);
     proc.cancelled = true;
-    // On Windows kill the whole tree (the .cmd shim spawns node underneath).
+    // On Windows kill the whole tree (a shell spawn puts claude under cmd.exe).
     if (process.platform === "win32" && proc.child.pid) {
-      spawn("taskkill", ["/pid", String(proc.child.pid), "/T", "/F"], { shell: false });
+      const killer = spawn("taskkill", ["/pid", String(proc.child.pid), "/T", "/F"], {
+        shell: false,
+        windowsHide: true,
+      });
+      // taskkill unavailable must not crash the server — fall back to a plain kill.
+      killer.on("error", () => proc.child.kill());
     } else {
       proc.child.kill("SIGTERM");
     }
@@ -384,8 +465,11 @@ export class AgentManager {
       this.emitRunChanged(run);
     } else if (event.type === "dispatch") {
       // A manager delegated a unit of work — spawn it as a tracked worker run
-      // parented to this run. Fire-and-forget: the worker streams on its own.
-      void this.dispatchWorker(run.id, event.spec);
+      // parented to this run. The worker streams on its own; a dispatch that
+      // cannot start must surface on the manager, not as an unhandled rejection.
+      this.dispatchWorker(run.id, event.spec).catch((err) => {
+        this.record(run, { type: "stderr", text: `dispatch failed: ${(err as Error).message}` });
+      });
     }
 
     const buffer = this.runEvents.get(run.id);
@@ -401,6 +485,9 @@ export class AgentManager {
   }
 
   private async finish(run: AgentRun, status: AgentRun["status"], message: string): Promise<AgentRun> {
+    // A failed spawn fires both 'error' and 'close' — the first settles, the
+    // second must not append a duplicate terminal event or move endedAt.
+    if (run.endedAt) return run;
     this.procs.delete(run.id);
     if (run.status === "running" || run.status === "queued") {
       run.status = status;

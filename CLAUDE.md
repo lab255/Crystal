@@ -53,10 +53,16 @@ always run things through pnpm.
 ## Gotchas
 
 - Agent prompts are piped to the Claude CLI over **stdin**; never pass user text as a
-  shell argument (Windows spawns use `shell: true` for the `.cmd` shim).
+  shell argument. On Windows the CLI is resolved via `where.exe` and a native `.exe` is
+  spawned with no shell; only `.cmd` shims go through `shell: true`, where cmd.exe
+  CONCATENATES argv unquoted — every arg must pass `planClaudeSpawn`'s quoting.
+- Child-process `error` handlers (and one on `stdin`) must be attached **synchronously
+  after `spawn()`** — the failure event fires next tick, and with an `await` in between
+  it becomes an uncaught exception that kills the whole bridge server.
 - The server canonicalizes its root with `fs.realpathSync.native` — Windows 8.3 short
   paths crash libuv's recursive watcher if you skip this.
 - react-flow requires parents before children in the node array (`topoOrderNodes`), and
   child positions are parent-relative — same convention as the core model.
 - `finish()` in `agent-manager.ts` must run on process close even when a `result` event
   already settled the run status — it persists the run and emits the terminal event.
+  It is also idempotent via `endedAt` (a failed spawn fires both `error` and `close`).
