@@ -174,6 +174,54 @@ await ApiService.get(\`\${UNKNOWN_BASE}/settings\`);`,
     ]);
   });
 
+  it("propagates paths through a same-file fetch wrapper (template + const base)", () => {
+    const { apiCalls } = parseSource(
+      "admin/src/api.ts",
+      `const BASE = "/api";
+async function get<T>(path: string): Promise<T> {
+  const res = await fetch(\`\${BASE}\${path}\`, { headers: { "x-session-id": sid() } });
+  return res.json();
+}
+export function fetchInvoices() {
+  return get("/invoices");
+}
+export function fetchAging() {
+  return get("/reports/aging");
+}`,
+    );
+    expect(apiCalls).toEqual([
+      // The wrapper's own degenerate "GET /api" is dropped; call sites carry
+      // the real routes, joined to the helper's resolved prefix.
+      { method: "GET", path: "/api/invoices", line: 7 },
+      { method: "GET", path: "/api/reports/aging", line: 10 },
+    ]);
+  });
+
+  it("propagates paths through a class request helper with call-site methods", () => {
+    const { apiCalls } = parseSource(
+      "apps/web/src/api/client.ts",
+      `export class ApiClient {
+  constructor(private config: { baseUrl: string }) {}
+  private async request<T>(path: string, init?: RequestInit): Promise<T> {
+    const response = await fetch(this.config.baseUrl + path, { ...init });
+    return response.json();
+  }
+  async createBooking(body: unknown) {
+    return this.request("/api/bookings", { method: "POST", body: JSON.stringify(body) });
+  }
+  async searchAvailability(qs: string) {
+    return this.request("/api/availability?" + qs);
+  }
+}`,
+    );
+    expect(apiCalls).toEqual([
+      // Unseen base URL drops out (suffix matching absorbs it); the method
+      // comes from the call site's init when the helper spreads it through.
+      { method: "POST", path: "/api/bookings", line: 8 },
+      { method: "GET", path: "/api/availability", line: 11 },
+    ]);
+  });
+
   it("derives routes from Next-style file conventions", () => {
     const appRoute = parseSource(
       "apps/web/app/api/forms/[formId]/route.ts",
@@ -1079,7 +1127,21 @@ export default function Dashboard() {
     );
     await fs.writeFile(
       path.join(root, "src", "views", "Settings.tsx"),
-      `export const Settings = () => <div>settings</div>;
+      `import { AuditLog } from "../widgets/AuditLog.js";
+export const Settings = () => (
+  <div>
+    <AuditLog />
+  </div>
+);
+`,
+    );
+    await fs.mkdir(path.join(root, "src", "widgets"), { recursive: true });
+    await fs.writeFile(
+      path.join(root, "src", "widgets", "AuditLog.tsx"),
+      `export function AuditLog() {
+  const load = () => fetch("/api/audit");
+  return <ul onClick={load} />;
+}
 `,
     );
     await fs.writeFile(
@@ -1114,14 +1176,21 @@ app.get("/api/reports", listReports);
     expect(report.truncated).toBe(false);
   });
 
-  it("screens sharing an entry file report the same calls; quiet screens none", async () => {
+  it("screens sharing an entry file report the same calls", async () => {
     const report = await analyzer.surfaceMap();
     const alt = report.calls.filter((c) => c.screen === "react-router:/alt");
     expect(alt.map((c) => `${c.method} ${c.path}`).sort()).toEqual([
       "GET /api/items",
       "POST /v1/charges",
     ]);
-    expect(report.calls.some((c) => c.screen === "react-router:/settings")).toBe(false);
+  });
+
+  it("walks JSX renders — a screen reaches the fetches of components it renders", async () => {
+    const report = await analyzer.surfaceMap();
+    const settings = report.calls.filter((c) => c.screen === "react-router:/settings");
+    expect(settings.map((c) => `${c.method} ${c.path} @${c.file}`)).toEqual([
+      "GET /api/audit @src/widgets/AuditLog.tsx",
+    ]);
   });
 
   it("walks the call graph into API-client modules the component delegates to", async () => {

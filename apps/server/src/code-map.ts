@@ -264,7 +264,13 @@ function unwrapReceiver(expr: ts.Expression): ts.Expression {
   return e;
 }
 
-/** Callee identifiers inside a node: `foo()` and `ns.foo()` (identifier receiver only). */
+/**
+ * Callee identifiers inside a node: `foo()` and `ns.foo()` (identifier
+ * receiver only). JSX component elements count as calls — `<BookingForm/>`
+ * is how a screen invokes a component, and the API trace has to walk that
+ * edge to reach the fetches the rendered tree makes. Lowercase (intrinsic)
+ * tags are skipped.
+ */
 function collectCalls(root: ts.Node, out: SymbolCall[], lineOf?: (node: ts.Node) => number): void {
   const visit = (node: ts.Node): void => {
     if (ts.isCallExpression(node) && node.expression.kind !== ts.SyntaxKind.ImportKeyword) {
@@ -276,6 +282,17 @@ function collectCalls(root: ts.Node, out: SymbolCall[], lineOf?: (node: ts.Node)
         if (ts.isIdentifier(recv)) {
           out.push({ name: callee.name.text, receiver: recv.text, line: lineOf?.(node) });
         }
+      }
+    } else if (ts.isJsxSelfClosingElement(node) || ts.isJsxOpeningElement(node)) {
+      const tag = node.tagName;
+      if (ts.isIdentifier(tag) && /^[A-Z]/.test(tag.text)) {
+        out.push({ name: tag.text, receiver: null, line: lineOf?.(node) });
+      } else if (
+        ts.isPropertyAccessExpression(tag) &&
+        ts.isIdentifier(tag.name) &&
+        ts.isIdentifier(tag.expression)
+      ) {
+        out.push({ name: tag.name.text, receiver: tag.expression.text, line: lineOf?.(node) });
       }
     }
     ts.forEachChild(node, visit);
@@ -318,19 +335,42 @@ function httpPathOf(
   arg: ts.Expression | undefined,
   consts?: ReadonlyMap<string, string>,
 ): string | null {
+  const text = urlTextOf(arg, consts);
+  return text ? normalizeHttpPath(text) : null;
+}
+
+/**
+ * URL-ish expression → text with unresolved holes as "*", or null when the
+ * expression carries no literal at all. Handles literals, templates,
+ * same-file const identifiers and `+` concatenation.
+ */
+function urlTextOf(
+  arg: ts.Expression | undefined,
+  consts?: ReadonlyMap<string, string>,
+): string | null {
   if (!arg) return null;
   const resolve = (expr: ts.Expression): string | null =>
     ts.isIdentifier(expr) ? (consts?.get(expr.text) ?? null) : null;
-  let text: string | null = null;
-  if (ts.isStringLiteral(arg) || ts.isNoSubstitutionTemplateLiteral(arg)) text = arg.text;
-  else if (ts.isTemplateExpression(arg)) {
-    text =
+  if (ts.isStringLiteral(arg) || ts.isNoSubstitutionTemplateLiteral(arg)) return arg.text;
+  if (ts.isTemplateExpression(arg)) {
+    return (
       arg.head.text +
-      arg.templateSpans.map((s) => `${resolve(s.expression) ?? "*"}${s.literal.text}`).join("");
-  } else if (ts.isIdentifier(arg)) {
-    text = resolve(arg);
+      arg.templateSpans.map((s) => `${resolve(s.expression) ?? "*"}${s.literal.text}`).join("")
+    );
   }
-  if (!text) return null;
+  if (ts.isIdentifier(arg)) return resolve(arg);
+  if (ts.isBinaryExpression(arg) && arg.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+    const left = urlTextOf(arg.left, consts);
+    const right = urlTextOf(arg.right, consts);
+    if (left == null && right == null) return null;
+    return `${left ?? "*"}${right ?? "*"}`;
+  }
+  return null;
+}
+
+/** Normalize resolved URL text into a route path (see httpPathOf). */
+function normalizeHttpPath(rawText: string): string | null {
+  let text = rawText;
   if (/^https?:\/\//i.test(text)) {
     const m = /^https?:\/\/[^/]*(\/[^?#]*)?/i.exec(text);
     text = m?.[1] ?? "/";
@@ -715,6 +755,182 @@ export function parseSource(fileRel: string, text: string): Omit<ParsedFile, "mt
     ts.forEachChild(node, visit);
   };
   ts.forEachChild(source, visit);
+
+  // --- same-file API-wrapper propagation ---
+  // The dominant client convention hides `fetch` behind a tiny helper —
+  // `get(path)` / `this.request(path, init)` — so the fetch site only sees a
+  // parameter hole while the real routes sit at the helper's call sites.
+  // Detect function-like declarations whose HTTP path flows from a parameter,
+  // emit one call per call site (helper's static prefix + the site's literal),
+  // and drop the helper's own degenerate call (a bare prefix at best).
+  interface ApiWrapper {
+    /** Const-resolved static text before the path parameter's hole. */
+    prefix: string;
+    /** Which argument carries the path. */
+    pathIndex: number;
+    /** Method fixed by the helper body; null = read it off the call site. */
+    fixedMethod: string | null;
+    /** Line of the helper's own fetch — its degenerate apiCall is removed. */
+    fetchLine: number;
+  }
+
+  /**
+   * Split a URL expression into resolved text and the position of the path
+   * parameter. Unknown holes before the parameter drop out (same philosophy
+   * as httpPathOf's wildcard prefix — suffix route matching absorbs a base
+   * URL we can't see).
+   */
+  const wrapperUrlOf = (
+    expr: ts.Expression,
+    params: ReadonlyMap<string, number>,
+  ): { prefix: string; pathIndex: number } | null => {
+    let prefix = "";
+    let pathIndex: number | null = null;
+    const flatten = (e: ts.Expression): void => {
+      if (pathIndex != null) return; // text after the param hole is dropped
+      if (ts.isStringLiteral(e) || ts.isNoSubstitutionTemplateLiteral(e)) prefix += e.text;
+      else if (ts.isTemplateExpression(e)) {
+        prefix += e.head.text;
+        for (const s of e.templateSpans) {
+          flatten(s.expression);
+          if (pathIndex == null) prefix += s.literal.text;
+        }
+      } else if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+        flatten(e.left);
+        flatten(e.right);
+      } else if (ts.isIdentifier(e)) {
+        const param = params.get(e.text);
+        if (param != null) pathIndex = param;
+        else prefix += stringConsts.get(e.text) ?? "";
+      }
+      // Anything else (config lookups, function calls) is an unseen base URL.
+    };
+    flatten(expr);
+    return pathIndex == null ? null : { prefix, pathIndex };
+  };
+
+  /** Helper-body init → fixed method, or null when the call site decides. */
+  const fixedMethodOf = (init: ts.Expression | undefined): string | null => {
+    if (!init) return "GET";
+    if (!ts.isObjectLiteralExpression(init)) return null; // init flows from a param
+    let sawSpread = false;
+    for (const prop of init.properties) {
+      if (ts.isSpreadAssignment(prop)) sawSpread = true;
+      else if (
+        ts.isPropertyAssignment(prop) &&
+        ts.isIdentifier(prop.name) &&
+        prop.name.text === "method"
+      ) {
+        return ts.isStringLiteral(prop.initializer) ||
+          ts.isNoSubstitutionTemplateLiteral(prop.initializer)
+          ? prop.initializer.text.toUpperCase()
+          : null;
+      }
+    }
+    return sawSpread ? null : "GET";
+  };
+
+  const wrappers = new Map<string, ApiWrapper>();
+  const detectWrapper = (name: string, fn: ts.SignatureDeclaration & { body?: ts.Node }): void => {
+    if (wrappers.has(name) || !fn.body) return;
+    const params = new Map<string, number>();
+    fn.parameters.forEach((p, i) => {
+      if (ts.isIdentifier(p.name)) params.set(p.name.text, i);
+    });
+    if (params.size === 0) return;
+    let found: ApiWrapper | null = null;
+    const scan = (node: ts.Node): void => {
+      if (found) return;
+      if (ts.isCallExpression(node)) {
+        const callee = node.expression;
+        const isFetch = ts.isIdentifier(callee) && callee.text === "fetch";
+        const clientVerb =
+          ts.isPropertyAccessExpression(callee) &&
+          ts.isIdentifier(callee.name) &&
+          ts.isIdentifier(callee.expression) &&
+          HTTP_VERBS.has(callee.name.text) &&
+          ALWAYS_CLIENT_RECEIVERS.has(callee.expression.text.toLowerCase());
+        if ((isFetch || clientVerb) && node.arguments[0]) {
+          const url = wrapperUrlOf(node.arguments[0], params);
+          if (url) {
+            found = {
+              ...url,
+              fixedMethod: isFetch
+                ? fixedMethodOf(node.arguments[1])
+                : (callee as ts.PropertyAccessExpression & { name: ts.Identifier }).name.text.toUpperCase(),
+              fetchLine: lineOf(node),
+            };
+            return;
+          }
+        }
+      }
+      ts.forEachChild(node, scan);
+    };
+    scan(fn.body);
+    if (found) wrappers.set(name, found);
+  };
+
+  for (const statement of source.statements) {
+    if (ts.isFunctionDeclaration(statement) && statement.name) {
+      detectWrapper(statement.name.text, statement);
+    } else if (ts.isVariableStatement(statement)) {
+      for (const decl of statement.declarationList.declarations) {
+        if (
+          ts.isIdentifier(decl.name) &&
+          decl.initializer &&
+          (ts.isArrowFunction(decl.initializer) || ts.isFunctionExpression(decl.initializer))
+        )
+          detectWrapper(decl.name.text, decl.initializer);
+      }
+    } else if (ts.isClassDeclaration(statement)) {
+      for (const member of statement.members) {
+        if (ts.isMethodDeclaration(member) && ts.isIdentifier(member.name))
+          detectWrapper(member.name.text, member);
+      }
+    }
+  }
+
+  if (wrappers.size > 0) {
+    // The helper's own fetch contributed at most a bare prefix — noise.
+    const degenerate = new Set([...wrappers.values()].map((w) => w.fetchLine));
+    const kept = apiCalls.filter((c) => !degenerate.has(c.line ?? -1));
+    apiCalls.length = 0;
+    apiCalls.push(...kept);
+    const seen = new Set(apiCalls.map((c) => `${c.method} ${c.path} @${c.line ?? "?"}`));
+    const clientishReceiver = (recv: ts.Expression): boolean =>
+      recv.kind === ts.SyntaxKind.ThisKeyword ||
+      (ts.isIdentifier(recv) &&
+        (CLIENT_RECEIVERS.has(recv.text.toLowerCase()) ||
+          /(client|api|http)$/i.test(recv.text)));
+    const visitCallSites = (node: ts.Node): void => {
+      if (ts.isCallExpression(node)) {
+        const callee = node.expression;
+        const name = ts.isIdentifier(callee)
+          ? callee.text
+          : ts.isPropertyAccessExpression(callee) &&
+              ts.isIdentifier(callee.name) &&
+              clientishReceiver(callee.expression)
+            ? callee.name.text
+            : null;
+        const wrapper = name ? wrappers.get(name) : undefined;
+        if (wrapper) {
+          const raw = urlTextOf(node.arguments[wrapper.pathIndex], stringConsts);
+          const path = raw != null ? normalizeHttpPath(wrapper.prefix + raw) : null;
+          if (path) {
+            const method =
+              wrapper.fixedMethod ?? fetchMethodOf(node.arguments[wrapper.pathIndex + 1]);
+            const key = `${method} ${path} @${lineOf(node)}`;
+            if (!seen.has(key)) {
+              seen.add(key);
+              apiCalls.push({ method, path, line: lineOf(node) });
+            }
+          }
+        }
+      }
+      ts.forEachChild(node, visitCallSites);
+    };
+    ts.forEachChild(source, visitCallSites);
+  }
 
   // Routes declared by file convention rather than registrar calls.
   endpoints.push(...fileConventionRoutes(fileRel, exports.map((e) => e.name)));
