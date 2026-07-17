@@ -28,6 +28,8 @@ import type {
   PartCrossing,
   PartCrossings,
   ReviewSourceFile,
+  ScreenApiCall,
+  SurfaceMapReport,
   SurfacesReport,
   SymbolSearchHit,
   SymbolSite,
@@ -1068,6 +1070,16 @@ export function rankJourneySuggestions(
   return out;
 }
 
+/** A served route registration, mount-composed, ready for suffix matching. */
+interface ServedRoute {
+  method: string;
+  segs: string[];
+  path: string;
+  file: string;
+  line?: number;
+  handler?: string;
+}
+
 /**
  * Analyzes the workspace into the three-level code map. Results are cached by
  * file mtime; call `analyze()` again after changes — unchanged files are not
@@ -1086,6 +1098,7 @@ export class CodeMapAnalyzer {
   private dirty = true;
   private callGraphMemo: CallGraph | null = null;
   private surfacesMemo: Promise<SurfacesReport> | null = null;
+  private surfaceMapMemo: Promise<SurfaceMapReport> | null = null;
 
   constructor(private readonly root: string) {}
 
@@ -1165,6 +1178,7 @@ export class CodeMapAnalyzer {
     this.importedBy = importedBy;
     this.callGraphMemo = null;
     this.surfacesMemo = null;
+    this.surfaceMapMemo = null;
     this.modules = moduleDirs.map((m) => ({
       ...m,
       fileCount: [...records.values()].filter((r) => r.module === m.path).length,
@@ -1795,8 +1809,15 @@ export class CodeMapAnalyzer {
    */
   async apiTrace(file: string, symbol?: string, maxDepth?: number): Promise<ApiTrace> {
     await this.ensureFresh();
+    const { calls, truncated } = await this.traceApiCalls(file, symbol, maxDepth);
+    this.matchServedRoutes(calls, this.servedRoutes());
+    return { entry: { file, symbol }, calls, truncated };
+  }
+
+  /** Every served route registration, mount-composed for suffix matching. */
+  private servedRoutes(): ServedRoute[] {
     const prefixes = computeMountPrefixes(this.records.values());
-    const served: { method: string; segs: string[]; path: string; file: string; line?: number; handler?: string }[] = [];
+    const served: ServedRoute[] = [];
     for (const record of this.records.values()) {
       if (isTestFile(record.path)) continue;
       const prefix = prefixes.get(record.path);
@@ -1812,7 +1833,30 @@ export class CodeMapAnalyzer {
         });
       }
     }
+    return served;
+  }
 
+  /** Resolve each call's `endpoint` to the best-matching served route. */
+  private matchServedRoutes(calls: ApiTraceCall[], served: ServedRoute[]): void {
+    for (const call of calls) {
+      const hit = bestServedRoute(call, served);
+      if (hit)
+        call.endpoint = {
+          method: hit.method,
+          path: hit.path,
+          file: hit.file,
+          line: hit.line,
+          handler: hit.handler,
+        };
+    }
+  }
+
+  /** apiTrace's traversal core: the outgoing calls, sorted, not yet matched. */
+  private async traceApiCalls(
+    file: string,
+    symbol?: string,
+    maxDepth?: number,
+  ): Promise<{ calls: ApiTraceCall[]; truncated: boolean }> {
     const calls: ApiTraceCall[] = [];
     let truncated = false;
     const collect = (rec: FileRecord, within: { line: number; endLine: number } | null, via: ApiTraceCall["via"]) => {
@@ -1869,18 +1913,7 @@ export class CodeMapAnalyzer {
     }
 
     calls.sort((a, b) => (a.via?.depth ?? 0) - (b.via?.depth ?? 0) || (a.line ?? 0) - (b.line ?? 0));
-    for (const call of calls) {
-      const hit = bestServedRoute(call, served);
-      if (hit)
-        call.endpoint = {
-          method: hit.method,
-          path: hit.path,
-          file: hit.file,
-          line: hit.line,
-          handler: hit.handler,
-        };
-    }
-    return { entry: { file, symbol }, calls, truncated };
+    return { calls, truncated };
   }
 
   /** Per-file inputs for the review sweep (see core's code-review.ts). */
@@ -1966,6 +1999,63 @@ export class CodeMapAnalyzer {
     await this.ensureFresh();
     this.surfacesMemo ??= buildSurfacesReport(this.root, this.records, this.importedBy);
     return this.surfacesMemo;
+  }
+
+  /**
+   * Per-screen API reachability for the system map: every screen in the
+   * surfaces report traced to its outgoing HTTP calls (whole-file `apiTrace`
+   * from the screen's entry file), matched to served routes. Cached like the
+   * surfaces report — the analyzer rebuild clears both memos together.
+   */
+  async surfaceMap(): Promise<SurfaceMapReport> {
+    await this.ensureFresh();
+    this.surfaceMapMemo ??= this.buildSurfaceMap();
+    return this.surfaceMapMemo;
+  }
+
+  private async buildSurfaceMap(): Promise<SurfaceMapReport> {
+    const { screens } = await this.surfaces();
+    const served = this.servedRoutes();
+    // Screens sharing an entry file (layouts, aliased routes) share one trace.
+    const traceByEntry = new Map<string, { calls: ApiTraceCall[]; truncated: boolean }>();
+    const calls: ScreenApiCall[] = [];
+    let truncated = false;
+    for (const screen of screens) {
+      const entry = screen.componentFile ?? screen.file;
+      let trace = traceByEntry.get(entry);
+      if (!trace) {
+        trace = this.records.has(entry)
+          ? await this.traceApiCalls(entry)
+          : { calls: [], truncated: false }; // entry outside the analyzed map
+        this.matchServedRoutes(trace.calls, served);
+        traceByEntry.set(entry, trace);
+      }
+      if (trace.truncated) truncated = true;
+      // One edge per method+path; a call matched to a served route wins over
+      // an unmatched duplicate, otherwise the first call site is kept.
+      const byRoute = new Map<string, ApiTraceCall>();
+      for (const call of trace.calls) {
+        const key = `${call.method} ${call.path}`;
+        const prev = byRoute.get(key);
+        if (!prev || (!prev.endpoint && call.endpoint)) byRoute.set(key, call);
+      }
+      for (const call of byRoute.values()) {
+        calls.push({
+          screen: screen.id,
+          method: call.method,
+          path: call.path,
+          file: call.file,
+          line: call.line,
+          endpoint: call.endpoint && {
+            method: call.endpoint.method,
+            path: call.endpoint.path,
+            file: call.endpoint.file,
+            line: call.endpoint.line,
+          },
+        });
+      }
+    }
+    return { calls, truncated, generatedAt: new Date().toISOString() };
   }
 
   async suggestJourneys(limit = JOURNEY_DEFAULT_LIMIT): Promise<JourneySuggestion[]> {

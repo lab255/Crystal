@@ -362,6 +362,7 @@ export async function startCrystalServer(opts: {
       return { suggestions: suggestFacets(arch.graph, index) };
     },
     "surfaces.get": ({ ws }) => registry.get(ws).codemap.surfaces(),
+    "surfaces.map": ({ ws }) => registry.get(ws).codemap.surfaceMap(),
     "quality.detect": ({ ws }) => registry.get(ws).quality.detect(),
     "quality.run": ({ ws, ...params }) => registry.get(ws).quality.run(params),
     "quality.cancel": ({ ws, runId }) => registry.get(ws).quality.cancel(runId),

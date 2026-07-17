@@ -1027,3 +1027,90 @@ export function DeploymentsPage() {
     expect(trace.calls.some((c) => c.path === "/api/v1/everything")).toBe(false);
   });
 });
+
+describe("CodeMapAnalyzer surfaceMap over react-router screens", () => {
+  let root: string;
+  let analyzer: CodeMapAnalyzer;
+
+  beforeAll(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), "crystal-surfacemap-"));
+    await fs.mkdir(path.join(root, "src", "views"), { recursive: true });
+    await fs.mkdir(path.join(root, "src", "api"), { recursive: true });
+    await fs.writeFile(path.join(root, "package.json"), JSON.stringify({ name: "fixture" }));
+    await fs.writeFile(
+      path.join(root, "src", "router.tsx"),
+      `import { createBrowserRouter } from "react-router-dom";
+import Home from "./views/Home.js";
+import { Settings } from "./views/Settings.js";
+export const router = createBrowserRouter([
+  { path: "/", element: <Home /> },
+  { path: "/alt", element: <Home /> },
+  { path: "/settings", Component: Settings },
+]);
+`,
+    );
+    await fs.writeFile(
+      path.join(root, "src", "views", "Home.tsx"),
+      `export default function Home() {
+  const load = () => fetch("/api/items");
+  const reload = () => fetch("/api/items");
+  const pay = () => fetch("https://api.stripe.com/v1/charges", { method: "POST" });
+  return <div>{String([load, reload, pay])}</div>;
+}
+`,
+    );
+    await fs.writeFile(
+      path.join(root, "src", "views", "Settings.tsx"),
+      `export const Settings = () => <div>settings</div>;
+`,
+    );
+    await fs.writeFile(
+      path.join(root, "src", "api", "routes.ts"),
+      `import express from "express";
+const app = express();
+app.get("/api/items", listItems);
+`,
+    );
+    analyzer = new CodeMapAnalyzer(root);
+  });
+
+  afterAll(async () => {
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it("joins each screen's calls to served routes and dedupes repeat call sites", async () => {
+    const report = await analyzer.surfaceMap();
+    const home = report.calls.filter((c) => c.screen === "react-router:/");
+    expect(home).toHaveLength(2); // two /api/items sites collapse to one edge
+    const items = home.find((c) => c.path === "/api/items")!;
+    expect(items).toMatchObject({ method: "GET", file: "src/views/Home.tsx", line: 2 });
+    expect(items.endpoint).toMatchObject({
+      method: "GET",
+      path: "/api/items",
+      file: "src/api/routes.ts",
+    });
+    const external = home.find((c) => c.path === "/v1/charges")!;
+    expect(external.method).toBe("POST");
+    expect(external.endpoint).toBeUndefined();
+    expect(report.truncated).toBe(false);
+  });
+
+  it("screens sharing an entry file report the same calls; quiet screens none", async () => {
+    const report = await analyzer.surfaceMap();
+    const alt = report.calls.filter((c) => c.screen === "react-router:/alt");
+    expect(alt.map((c) => `${c.method} ${c.path}`).sort()).toEqual([
+      "GET /api/items",
+      "POST /v1/charges",
+    ]);
+    expect(report.calls.some((c) => c.screen === "react-router:/settings")).toBe(false);
+  });
+
+  it("memoizes until the analyzer is invalidated", async () => {
+    const first = await analyzer.surfaceMap();
+    expect(await analyzer.surfaceMap()).toBe(first);
+    analyzer.invalidate();
+    const second = await analyzer.surfaceMap();
+    expect(second).not.toBe(first);
+    expect(second.calls).toEqual(first.calls);
+  });
+});
