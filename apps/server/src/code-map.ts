@@ -2003,14 +2003,30 @@ export class CodeMapAnalyzer {
 
   /**
    * Per-screen API reachability for the system map: every screen in the
-   * surfaces report traced to its outgoing HTTP calls (whole-file `apiTrace`
-   * from the screen's entry file), matched to served routes. Cached like the
-   * surfaces report — the analyzer rebuild clears both memos together.
+   * surfaces report traced to its outgoing HTTP calls (call-graph walk from
+   * the screen's component symbol, falling back to the file's exported
+   * components, then to whole-file collection), matched to served routes.
+   * Cached like the surfaces report — the analyzer rebuild clears both memos
+   * together.
    */
   async surfaceMap(): Promise<SurfaceMapReport> {
     await this.ensureFresh();
     this.surfaceMapMemo ??= this.buildSurfaceMap();
     return this.surfaceMapMemo;
+  }
+
+  /**
+   * Symbols worth tracing for a screen's entry file. The component symbol
+   * walks the call graph into hooks and API-client modules — the common
+   * delegation pattern; whole-file collection (the empty list) only sees the
+   * entry file's own call sites.
+   */
+  private screenTraceSymbols(rec: FileRecord, component: string | undefined): string[] {
+    if (component && rec.symbols.some((s) => s.name === component)) return [component];
+    return rec.symbols
+      .filter((s) => s.exported && s.kind === "component")
+      .slice(0, 3)
+      .map((s) => s.name);
   }
 
   private async buildSurfaceMap(): Promise<SurfaceMapReport> {
@@ -2022,13 +2038,34 @@ export class CodeMapAnalyzer {
     let truncated = false;
     for (const screen of screens) {
       const entry = screen.componentFile ?? screen.file;
-      let trace = traceByEntry.get(entry);
+      const rec = this.records.get(entry);
+      const symbols = rec ? this.screenTraceSymbols(rec, screen.component) : [];
+      const traceKey = `${entry}|${symbols.join(",")}`;
+      let trace = traceByEntry.get(traceKey);
       if (!trace) {
-        trace = this.records.has(entry)
-          ? await this.traceApiCalls(entry)
-          : { calls: [], truncated: false }; // entry outside the analyzed map
+        if (!rec) {
+          trace = { calls: [], truncated: false }; // entry outside the analyzed map
+        } else if (symbols.length === 0) {
+          trace = await this.traceApiCalls(entry);
+        } else {
+          // Merge the per-symbol call-graph walks (dedupe by call site).
+          const merged: ApiTraceCall[] = [];
+          const seen = new Set<string>();
+          let anyTruncated = false;
+          for (const symbol of symbols) {
+            const t = await this.traceApiCalls(entry, symbol);
+            anyTruncated ||= t.truncated;
+            for (const call of t.calls) {
+              const key = `${call.file}:${call.line ?? "?"}:${call.method} ${call.path}`;
+              if (seen.has(key)) continue;
+              seen.add(key);
+              merged.push(call);
+            }
+          }
+          trace = { calls: merged, truncated: anyTruncated };
+        }
         this.matchServedRoutes(trace.calls, served);
-        traceByEntry.set(entry, trace);
+        traceByEntry.set(traceKey, trace);
       }
       if (trace.truncated) truncated = true;
       // One edge per method+path; a call matched to a served route wins over

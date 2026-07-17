@@ -1042,11 +1042,29 @@ describe("CodeMapAnalyzer surfaceMap over react-router screens", () => {
       `import { createBrowserRouter } from "react-router-dom";
 import Home from "./views/Home.js";
 import { Settings } from "./views/Settings.js";
+import Dashboard from "./views/Dashboard.js";
 export const router = createBrowserRouter([
   { path: "/", element: <Home /> },
   { path: "/alt", element: <Home /> },
   { path: "/settings", Component: Settings },
+  { path: "/dash", element: <Dashboard /> },
 ]);
+`,
+    );
+    await fs.writeFile(
+      path.join(root, "src", "views", "Dashboard.tsx"),
+      `import { fetchReports } from "../api/client.js";
+export default function Dashboard() {
+  const load = () => fetchReports();
+  return <div>{String(load)}</div>;
+}
+`,
+    );
+    await fs.writeFile(
+      path.join(root, "src", "api", "client.ts"),
+      `export function fetchReports() {
+  return fetch("/api/reports");
+}
 `,
     );
     await fs.writeFile(
@@ -1069,6 +1087,7 @@ export const router = createBrowserRouter([
       `import express from "express";
 const app = express();
 app.get("/api/items", listItems);
+app.get("/api/reports", listReports);
 `,
     );
     analyzer = new CodeMapAnalyzer(root);
@@ -1103,6 +1122,19 @@ app.get("/api/items", listItems);
       "POST /v1/charges",
     ]);
     expect(report.calls.some((c) => c.screen === "react-router:/settings")).toBe(false);
+  });
+
+  it("walks the call graph into API-client modules the component delegates to", async () => {
+    const report = await analyzer.surfaceMap();
+    const dash = report.calls.filter((c) => c.screen === "react-router:/dash");
+    expect(dash).toHaveLength(1);
+    const call = dash[0]!;
+    expect(call).toMatchObject({
+      method: "GET",
+      path: "/api/reports",
+      file: "src/api/client.ts",
+    });
+    expect(call.endpoint).toMatchObject({ path: "/api/reports", file: "src/api/routes.ts" });
   });
 
   it("memoizes until the analyzer is invalidated", async () => {
