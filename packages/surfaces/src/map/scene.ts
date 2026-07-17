@@ -257,11 +257,15 @@ const trunc = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n 
 /* Builder                                                             */
 /* ------------------------------------------------------------------ */
 
-export interface SystemMapSceneInput {
+/** Data inputs — everything the expensive layout phase depends on. */
+export interface SystemMapLayoutInput {
   report: SurfacesReport;
   overview: SystemOverview;
   /** Screen→endpoint reachability (`surfaces.map`); empty until it lands. */
   calls: readonly ScreenApiCall[];
+}
+
+export interface SystemMapSceneInput extends SystemMapLayoutInput {
   /** Selected node id (`SurfacesLink.node`) — see the id scheme above. */
   selected: string | null;
   /** Case-insensitive substring filter; misses dim. */
@@ -291,8 +295,53 @@ export interface SystemMapScene {
 /** Roles the map trims by default — platform noise, same set the systems view hides. */
 const QUIET_ROLES: readonly SystemRole[] = ["shared", "entry"];
 
+/** One laid-out edge at rest, plus what decoration needs to re-style it. */
+interface MapEdgeBase {
+  edge: RfEdge;
+  kind: MapEdgeKind;
+  source: string;
+  target: string;
+  epKeys: string[];
+  apiOnly: boolean;
+  restingOpacity: number;
+}
+
+/**
+ * The expensive, selection-independent phase: filtering, attribution, dagre,
+ * geometry, resting edge styles. The view memoizes this on the data inputs
+ * alone — clicking a node or typing in find only re-runs the cheap
+ * `decorateSystemMapScene` pass.
+ */
+export interface SystemMapLayout {
+  nodes: SystemMapNode[];
+  bases: MapEdgeBase[];
+  empty: boolean;
+  fixturesHidden: number;
+  quietHidden: number;
+  stats: { screens: number; systems: number };
+  /** Decoration context — resolved once here, reused per selection change. */
+  ctx: {
+    screens: ScreenSurface[];
+    systems: SystemModule[];
+    screenIds: Set<string>;
+    screensBySystem: Map<string, ScreenSurface[]>;
+    screenOwner: Map<string, string>;
+    feNodeIds: Set<string>;
+    adjacency: Map<string, Set<string>>;
+    calls: readonly ScreenApiCall[];
+    externalsAll: SystemExternal[];
+  };
+}
+
 export function buildSystemMapScene(input: SystemMapSceneInput): SystemMapScene {
-  const { report, overview, calls, selected, find } = input;
+  return decorateSystemMapScene(buildSystemMapLayout(input), input);
+}
+
+export function buildSystemMapLayout(input: SystemMapLayoutInput): SystemMapLayout {
+  const { report, overview, calls } = input;
+  // Node construction below is selection-blind — every card comes out at
+  // rest (selected/dimmed false) and `decorateSystemMapScene` patches the
+  // flags per selection/find change.
   // Fixture codebases are someone else's product — their screens and systems
   // would drown the host repo's map (the overview alone keeps them, scoped).
   const unscoped = overview.systems.filter(
@@ -318,6 +367,13 @@ export function buildSystemMapScene(input: SystemMapSceneInput): SystemMapScene 
     const target = c.endpoint ? preAttributor(c.endpoint.file) : null;
     if (target) involved.add(target.id);
   }
+  // Schema owners stay too — a shared "core" holding the domain's zod/prisma
+  // shapes is part of the product story, not platform noise.
+  for (const schema of report.schemas) {
+    if (isFixtureScopedPath(schema.file)) continue;
+    const owner = preAttributor(schema.file);
+    if (owner) involved.add(owner.id);
+  }
   const quiet = (s: SystemModule): boolean =>
     QUIET_ROLES.includes(s.role) &&
     s.layer === "backend" &&
@@ -330,7 +386,25 @@ export function buildSystemMapScene(input: SystemMapSceneInput): SystemMapScene 
 
   const stats = { screens: screens.length, systems: systems.length };
   if (systems.length === 0 && screens.length === 0) {
-    return { nodes: [], edges: [], empty: true, fixturesHidden, quietHidden, stats, selection: null };
+    return {
+      nodes: [],
+      bases: [],
+      empty: true,
+      fixturesHidden,
+      quietHidden,
+      stats,
+      ctx: {
+        screens: [],
+        systems: [],
+        screenIds: new Set(),
+        screensBySystem: new Map(),
+        screenOwner: new Map(),
+        feNodeIds: new Set(),
+        adjacency: new Map(),
+        calls,
+        externalsAll: [],
+      },
+    };
   }
 
   /* ---- file → system attribution (longest part-path prefix wins) ---- */
@@ -504,73 +578,13 @@ export function buildSystemMapScene(input: SystemMapSceneInput): SystemMapScene 
     });
   }
 
-  /* ---- selection: bright set + edge fading ---- */
-  const sel = selected && selected.trim().length > 0 ? selected : null;
-  const selEp = sel?.startsWith("ep:") ? sel.slice(3) : null;
-  // A stale deep link (renamed system, removed screen) must not dim the world.
-  const knownIds = new Set<string>([
-    ...screens.map((s) => screenNodeId(s.id)),
-    ...systems.map((s) => s.id),
-  ]);
-  const selNodeId = !selEp && sel && knownIds.has(sel) ? sel : null;
-  const epOwner = selEp
-    ? (systems.find((s) => s.endpoints.some((e) => epKeyOf(e) === selEp)) ?? null)
-    : null;
-  const selection: SystemMapSelection | null = selNodeId?.startsWith("screen:")
-    ? { kind: "screen", screen: screens.find((s) => screenNodeId(s.id) === selNodeId)! }
-    : selNodeId
-      ? { kind: "system", system: systems.find((s) => s.id === selNodeId)! }
-      : selEp && epOwner
-        ? { kind: "endpoint", epKey: selEp, owner: epOwner }
-        : null;
-
+  // Adjacency (for decoration's bright-set walk) — selection-independent.
   const adjacency = new Map<string, Set<string>>();
   const addAdj = (a: string, b: string) => {
     (adjacency.get(a) ?? adjacency.set(a, new Set()).get(a)!).add(b);
     (adjacency.get(b) ?? adjacency.set(b, new Set()).get(b)!).add(a);
   };
   for (const e of skeletons) addAdj(e.source, e.target);
-
-  const bright = new Set<string>();
-  if (selNodeId) {
-    bright.add(selNodeId);
-    for (const n of adjacency.get(selNodeId) ?? []) bright.add(n);
-    // A selected frontend group keeps its screens bright (and vice versa).
-    if (feNodeIds.has(selNodeId)) {
-      for (const s of screensBySystem.get(selNodeId) ?? []) bright.add(screenNodeId(s.id));
-    }
-  } else if (selEp && epOwner) {
-    bright.add(epOwner.id);
-    for (const c of calls) {
-      if (c.endpoint && epKeyOf(c.endpoint) === selEp && screenIds.has(c.screen)) {
-        bright.add(screenNodeId(c.screen));
-      }
-    }
-  }
-  // A bright screen keeps its containing group readable.
-  for (const [screenId, sysId] of screenOwner) {
-    if (bright.has(screenNodeId(screenId))) bright.add(sysId);
-  }
-  const selectionActive = bright.size > 0;
-
-  /* ---- find matching ---- */
-  const q = find.trim().toLowerCase();
-  const screenMatches = (s: ScreenSurface): boolean =>
-    !q ||
-    s.route.toLowerCase().includes(q) ||
-    s.file.toLowerCase().includes(q) ||
-    (s.component ?? "").toLowerCase().includes(q);
-  const sysMatches = (s: SystemModule): boolean =>
-    !q ||
-    s.name.toLowerCase().includes(q) ||
-    s.parts.some((p) => p.path.toLowerCase().includes(q)) ||
-    s.endpoints.some((e) => epKeyOf(e).toLowerCase().includes(q)) ||
-    s.externals.some((x) => x.name.toLowerCase().includes(q));
-  const externalsMatch = (): boolean =>
-    !q || externalsAll.some((x) => x.name.toLowerCase().includes(q));
-
-  const dimmedOf = (id: string, matches: boolean): boolean =>
-    (q.length > 0 && !matches) || (selectionActive && !bright.has(id));
 
   /* ---- node construction (unpositioned) ---- */
   const makeScreenNode = (s: ScreenSurface): MapScreenRfNode => {
@@ -583,8 +597,8 @@ export function buildSystemMapScene(input: SystemMapSceneInput): SystemMapScene 
         screen: s,
         callCount: callCountOf.get(s.id) ?? 0,
         unmatchedCount: unmatchedCountOf.get(s.id) ?? 0,
-        selected: id === selNodeId,
-        dimmed: dimmedOf(id, screenMatches(s)),
+        selected: false,
+        dimmed: false,
       },
       // Explicit dimension props (never `style`) — the nodes are a controlled
       // prop, so react-flow can't write `measured` back onto them, and the
@@ -605,9 +619,9 @@ export function buildSystemMapScene(input: SystemMapSceneInput): SystemMapScene 
       schemaCount: schemaCountOf.get(s.id) ?? 0,
       externals: compact ? [] : s.externals,
       compact,
-      selected: s.id === selNodeId || (selEp != null && epOwner?.id === s.id),
-      dimmed: dimmedOf(s.id, sysMatches(s)),
-      selectedEndpoint: selEp != null && epOwner?.id === s.id ? selEp : null,
+      selected: false,
+      dimmed: false,
+      selectedEndpoint: null,
     };
     return {
       id: s.id,
@@ -714,7 +728,6 @@ export function buildSystemMapScene(input: SystemMapSceneInput): SystemMapScene 
           const groupId = block.system.id;
           bandOfNode.set(groupId, "screens");
           for (const s of block.screens) bandOfNode.set(screenNodeId(s.id), "screens");
-          const dim = dimmedOf(groupId, sysMatches(block.system));
           nodes.push({
             id: groupId,
             type: "mapFeGroup",
@@ -723,8 +736,8 @@ export function buildSystemMapScene(input: SystemMapSceneInput): SystemMapScene 
             data: {
               system: block.system,
               screenCount: block.screens.length,
-              selected: groupId === selNodeId,
-              dimmed: dim,
+              selected: false,
+              dimmed: false,
             },
             width: m.w,
             height: m.h,
@@ -787,7 +800,7 @@ export function buildSystemMapScene(input: SystemMapSceneInput): SystemMapScene 
             data: {
               externals: externalsShown,
               more: externalsAll.length - externalsShown.length,
-              dimmed: dimmedOf("externals", externalsMatch()),
+              dimmed: false,
             },
             width: SYS_CARD_W,
             height: externalsH,
@@ -828,7 +841,7 @@ export function buildSystemMapScene(input: SystemMapSceneInput): SystemMapScene 
   const nodeIds = new Set(nodes.map((n) => n.id));
   const maxLinkWeight = skeletons.reduce((m, e) => (e.kind === "link" ? Math.max(m, e.weight) : m), 1);
   const maxCallCount = skeletons.reduce((m, e) => (e.kind === "call" ? Math.max(m, e.weight) : m), 1);
-  const edges: RfEdge[] = [];
+  const bases: MapEdgeBase[] = [];
   for (const e of skeletons) {
     if (!nodeIds.has(e.source) || !nodeIds.has(e.target)) continue;
     // Screen/frontend API traffic and downward cross-band links flow
@@ -836,51 +849,219 @@ export function buildSystemMapScene(input: SystemMapSceneInput): SystemMapScene 
     const sourceBand = MAP_BANDS.indexOf(bandOfNode.get(e.source) ?? "backend");
     const targetBand = MAP_BANDS.indexOf(bandOfNode.get(e.target) ?? "backend");
     const vertical = e.kind !== "link" || targetBand > sourceBand;
-    const active = selNodeId
-      ? e.source === selNodeId || e.target === selNodeId
-      : selEp
-        ? e.kind === "call" && e.epKeys.includes(selEp)
-        : false;
-    const faded = selectionActive && !active;
-    const stroke = e.apiOnly
-      ? "var(--color-accent-amber)"
-      : active
-        ? "var(--color-accent-violet)"
-        : "var(--color-edge-strong)";
     const width =
       e.kind === "link" && !e.apiOnly
         ? 1 + 2 * Math.sqrt(e.weight / maxLinkWeight)
         : 1 + Math.min(1.5, Math.sqrt(e.weight / maxCallCount));
-    edges.push({
-      id: e.id,
+    // Plain import links recede with their weight so API traffic and the
+    // heavy structural spines carry the eye on busy workspaces.
+    const restingOpacity =
+      e.kind === "link" && !e.apiOnly
+        ? 0.35 + 0.65 * Math.sqrt(e.weight / maxLinkWeight)
+        : 1;
+    bases.push({
+      kind: e.kind,
       source: e.source,
       target: e.target,
-      sourceHandle: vertical ? "b" : "r",
-      targetHandle: vertical ? "t" : "l",
-      label: e.label,
-      data: { kind: e.kind } satisfies MapEdgeData,
-      animated: e.apiOnly && e.kind !== "call" && !faded,
-      zIndex: 1,
-      labelStyle: {
-        fontSize: 9,
-        fill: e.apiOnly ? "var(--color-accent-amber)" : "var(--color-ink-faint)",
-      },
-      labelBgStyle: { fill: "var(--color-surface-0)", fillOpacity: 0.8 },
-      markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14 },
-      style: {
-        stroke,
-        strokeWidth: width,
-        strokeDasharray: e.apiOnly ? "4 3" : undefined,
-        // Plain import links recede with their weight so API traffic and the
-        // heavy structural spines carry the eye on busy workspaces.
-        opacity: faded
-          ? 0.08
-          : e.kind === "link" && !e.apiOnly
-            ? 0.35 + 0.65 * Math.sqrt(e.weight / maxLinkWeight)
-            : 1,
+      epKeys: e.epKeys,
+      apiOnly: e.apiOnly,
+      restingOpacity,
+      edge: {
+        id: e.id,
+        source: e.source,
+        target: e.target,
+        sourceHandle: vertical ? "b" : "r",
+        targetHandle: vertical ? "t" : "l",
+        label: e.label,
+        data: { kind: e.kind } satisfies MapEdgeData,
+        animated: e.apiOnly && e.kind !== "call",
+        zIndex: 1,
+        labelStyle: {
+          fontSize: 9,
+          fill: e.apiOnly ? "var(--color-accent-amber)" : "var(--color-ink-faint)",
+        },
+        labelBgStyle: { fill: "var(--color-surface-0)", fillOpacity: 0.8 },
+        markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14 },
+        style: {
+          stroke: e.apiOnly ? "var(--color-accent-amber)" : "var(--color-edge-strong)",
+          strokeWidth: width,
+          strokeDasharray: e.apiOnly ? "4 3" : undefined,
+          opacity: restingOpacity,
+        },
       },
     });
   }
 
-  return { nodes, edges, empty: false, fixturesHidden, quietHidden, stats, selection };
+  return {
+    nodes,
+    bases,
+    empty: false,
+    fixturesHidden,
+    quietHidden,
+    stats,
+    ctx: {
+      screens,
+      systems,
+      screenIds,
+      screensBySystem,
+      screenOwner,
+      feNodeIds,
+      adjacency,
+      calls,
+      externalsAll,
+    },
+  };
+}
+
+/**
+ * The cheap per-interaction phase: resolve the deep-linked selection, walk the
+ * bright set, apply find matching, and patch node/edge flags onto the laid-out
+ * scene. Untouched nodes and edges keep their object identity so react-flow
+ * reconciles only what actually changed.
+ */
+export function decorateSystemMapScene(
+  layout: SystemMapLayout,
+  opts: { selected: string | null; find: string },
+): SystemMapScene {
+  const { nodes, bases, empty, fixturesHidden, quietHidden, stats, ctx } = layout;
+  const { screens, systems, screenIds, screensBySystem, screenOwner, feNodeIds, adjacency, calls } =
+    ctx;
+
+  /* ---- selection resolution (stale ids resolve to nothing) ---- */
+  const sel = opts.selected && opts.selected.trim().length > 0 ? opts.selected : null;
+  const selEp = sel?.startsWith("ep:") ? sel.slice(3) : null;
+  const knownIds = new Set<string>([
+    ...screens.map((s) => screenNodeId(s.id)),
+    ...systems.map((s) => s.id),
+  ]);
+  const selNodeId = !selEp && sel && knownIds.has(sel) ? sel : null;
+  const epOwner = selEp
+    ? (systems.find((s) => s.endpoints.some((e) => epKeyOf(e) === selEp)) ?? null)
+    : null;
+  const selection: SystemMapSelection | null = selNodeId?.startsWith("screen:")
+    ? { kind: "screen", screen: screens.find((s) => screenNodeId(s.id) === selNodeId)! }
+    : selNodeId
+      ? { kind: "system", system: systems.find((s) => s.id === selNodeId)! }
+      : selEp && epOwner
+        ? { kind: "endpoint", epKey: selEp, owner: epOwner }
+        : null;
+
+  const bright = new Set<string>();
+  if (selNodeId) {
+    bright.add(selNodeId);
+    for (const n of adjacency.get(selNodeId) ?? []) bright.add(n);
+    // A selected frontend group keeps its screens bright (and vice versa).
+    if (feNodeIds.has(selNodeId)) {
+      for (const s of screensBySystem.get(selNodeId) ?? []) bright.add(screenNodeId(s.id));
+    }
+  } else if (selEp && epOwner) {
+    bright.add(epOwner.id);
+    for (const c of calls) {
+      if (c.endpoint && epKeyOf(c.endpoint) === selEp && screenIds.has(c.screen)) {
+        bright.add(screenNodeId(c.screen));
+      }
+    }
+  }
+  // A bright screen keeps its containing group readable.
+  for (const [screenId, sysId] of screenOwner) {
+    if (bright.has(screenNodeId(screenId))) bright.add(sysId);
+  }
+  const selectionActive = bright.size > 0;
+
+  /* ---- find matching ---- */
+  const q = opts.find.trim().toLowerCase();
+  const screenMatches = (s: ScreenSurface): boolean =>
+    !q ||
+    s.route.toLowerCase().includes(q) ||
+    s.file.toLowerCase().includes(q) ||
+    (s.component ?? "").toLowerCase().includes(q);
+  const sysMatches = (s: SystemModule): boolean =>
+    !q ||
+    s.name.toLowerCase().includes(q) ||
+    s.parts.some((p) => p.path.toLowerCase().includes(q)) ||
+    s.endpoints.some((e) => epKeyOf(e).toLowerCase().includes(q)) ||
+    s.externals.some((x) => x.name.toLowerCase().includes(q));
+  const externalsMatch = (): boolean =>
+    !q || ctx.externalsAll.some((x) => x.name.toLowerCase().includes(q));
+  const dimmedOf = (id: string, matches: boolean): boolean =>
+    (q.length > 0 && !matches) || (selectionActive && !bright.has(id));
+
+  // At rest the laid-out scene is already correct — reuse it wholesale.
+  if (!selectionActive && q.length === 0) {
+    return { nodes, edges: bases.map((b) => b.edge), empty, fixturesHidden, quietHidden, stats, selection };
+  }
+
+  const decorated = nodes.map((n): SystemMapNode => {
+    switch (n.type) {
+      case "mapScreen": {
+        const d = (n as MapScreenRfNode).data;
+        return {
+          ...(n as MapScreenRfNode),
+          data: {
+            ...d,
+            selected: n.id === selNodeId,
+            dimmed: dimmedOf(n.id, screenMatches(d.screen)),
+          },
+        };
+      }
+      case "mapFeGroup": {
+        const d = (n as MapFeGroupRfNode).data;
+        return {
+          ...(n as MapFeGroupRfNode),
+          data: {
+            ...d,
+            selected: n.id === selNodeId,
+            dimmed: dimmedOf(n.id, sysMatches(d.system)),
+          },
+        };
+      }
+      case "mapSystem": {
+        const d = (n as MapSystemRfNode).data;
+        const epHere = selEp != null && epOwner?.id === n.id;
+        return {
+          ...(n as MapSystemRfNode),
+          data: {
+            ...d,
+            selected: n.id === selNodeId || epHere,
+            dimmed: dimmedOf(n.id, sysMatches(d.system)),
+            selectedEndpoint: epHere ? selEp : null,
+          },
+        };
+      }
+      case "mapExternals": {
+        const d = (n as MapExternalsRfNode).data;
+        return {
+          ...(n as MapExternalsRfNode),
+          data: { ...d, dimmed: dimmedOf("externals", externalsMatch()) },
+        };
+      }
+      default:
+        return n;
+    }
+  });
+
+  const edges = bases.map((b): RfEdge => {
+    const active = selNodeId
+      ? b.source === selNodeId || b.target === selNodeId
+      : selEp
+        ? b.kind === "call" && b.epKeys.includes(selEp)
+        : false;
+    const faded = selectionActive && !active;
+    if (!active && !faded) return b.edge;
+    return {
+      ...b.edge,
+      animated: b.apiOnly && b.kind !== "call" && !faded,
+      style: {
+        ...b.edge.style,
+        stroke: b.apiOnly
+          ? "var(--color-accent-amber)"
+          : active
+            ? "var(--color-accent-violet)"
+            : "var(--color-edge-strong)",
+        opacity: faded ? 0.08 : b.restingOpacity,
+      },
+    };
+  });
+
+  return { nodes: decorated, edges, empty, fixturesHidden, quietHidden, stats, selection };
 }

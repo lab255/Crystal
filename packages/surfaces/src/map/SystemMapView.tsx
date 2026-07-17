@@ -46,7 +46,8 @@ import { ROLE_META } from "@crystal/architect";
 import { MethodChip } from "../ApiExplorer.js";
 import { DetailSection, FileLink, copyText, useSurfaces } from "../common.js";
 import {
-  buildSystemMapScene,
+  buildSystemMapLayout,
+  decorateSystemMapScene,
   epKeyOf,
   epNodeId,
   screenNodeId,
@@ -361,12 +362,15 @@ function SystemMapInner() {
     [nav],
   );
 
+  // Two-phase build: dagre + attribution re-run only when the data moves;
+  // clicking a node or typing in find just re-decorates the laid-out scene.
+  const layout = useMemo(
+    () => (report && overview ? buildSystemMapLayout({ report, overview, calls }) : null),
+    [report, overview, calls],
+  );
   const scene = useMemo(
-    () =>
-      report && overview
-        ? buildSystemMapScene({ report, overview, calls, selected, find })
-        : null,
-    [report, overview, calls, selected, find],
+    () => (layout ? decorateSystemMapScene(layout, { selected, find }) : null),
+    [layout, selected, find],
   );
 
   /* endpoint-row interactions, injected into system-card node data */
@@ -592,8 +596,10 @@ function SystemMapInner() {
               </Tooltip>
             ) : null}
             {scene.quietHidden > 0 ? (
-              <Tooltip content="Shared/platform systems with no endpoints, screens or traced calls are trimmed — the architecture view shows everything">
-                <span>· {scene.quietHidden} platform systems trimmed</span>
+              <Tooltip content="Shared/platform systems with no endpoints, screens, schemas or traced calls are trimmed — the architecture view shows everything">
+                <span>
+                  · {scene.quietHidden} platform system{scene.quietHidden === 1 ? "" : "s"} trimmed
+                </span>
               </Tooltip>
             ) : null}
             {map?.truncated ? (
