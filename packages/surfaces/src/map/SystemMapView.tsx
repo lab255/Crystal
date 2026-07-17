@@ -608,6 +608,40 @@ function SystemMapInner() {
               </Tooltip>
             ) : null}
           </div>
+          {/* Legend — the map's visual language at a glance. */}
+          <div className="absolute left-3 top-11 flex items-center gap-3 rounded-lg border border-edge bg-surface-1/95 px-2 py-1 text-[9px] text-ink-faint shadow-sm">
+            <span className="flex items-center gap-1">
+              <svg width="18" height="6" aria-hidden>
+                <line
+                  x1="0"
+                  y1="3"
+                  x2="18"
+                  y2="3"
+                  stroke="var(--color-accent-amber)"
+                  strokeWidth="1.5"
+                  strokeDasharray="4 3"
+                />
+              </svg>
+              API traffic
+            </span>
+            <span className="flex items-center gap-1">
+              <svg width="18" height="6" aria-hidden>
+                <line
+                  x1="0"
+                  y1="3"
+                  x2="18"
+                  y2="3"
+                  stroke="var(--color-edge-strong)"
+                  strokeWidth="2"
+                />
+              </svg>
+              imports ×N
+            </span>
+            <span className="flex items-center gap-1">
+              <AlertTriangle className="h-2.5 w-2.5 text-warn" />
+              call with no serving route
+            </span>
+          </div>
         </div>
       </SplitPane>
       {inspectorOpen ? (
