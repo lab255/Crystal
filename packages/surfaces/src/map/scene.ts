@@ -1,13 +1,14 @@
 import dagre from "@dagrejs/dagre";
 import { MarkerType, type Edge as RfEdge, type Node as RfNode } from "@xyflow/react";
-import type {
-  ScreenApiCall,
-  ScreenSurface,
-  SurfacesReport,
-  SystemEndpoint,
-  SystemExternal,
-  SystemModule,
-  SystemOverview,
+import {
+  isFixtureScopedPath,
+  type ScreenApiCall,
+  type ScreenSurface,
+  type SurfacesReport,
+  type SystemEndpoint,
+  type SystemExternal,
+  type SystemModule,
+  type SystemOverview,
 } from "@crystal/core";
 
 /**
@@ -35,7 +36,10 @@ export const MAP_BANDS = ["screens", "backend", "data", "integrations"] as const
 export type MapBandId = (typeof MAP_BANDS)[number];
 
 export const MAP_BAND_LABELS: Record<MapBandId, string> = {
-  screens: "Screens",
+  // "Frontend", not "Screens" — the band holds frontend *systems* (with their
+  // screens inside) and stays honest when a workspace has modules but no
+  // routed screens.
+  screens: "Frontend",
   backend: "Backend",
   data: "Data",
   integrations: "Integrations",
@@ -54,6 +58,8 @@ export interface MapScreenData extends Record<string, unknown> {
   screen: ScreenSurface;
   /** Outgoing HTTP calls reachable from this screen (matched or not). */
   callCount: number;
+  /** Calls with no serving route in the workspace — drift worth surfacing. */
+  unmatchedCount: number;
   selected: boolean;
   dimmed: boolean;
 }
@@ -136,6 +142,8 @@ const BAND_HEADER = 34;
 const BAND_PAD = 20;
 const BAND_GAP = 56;
 const BLOCK_GAP = 32;
+/** Screens-band blocks wrap into rows past this width. */
+const MAX_BAND_ROW_W = 1080;
 /** Endpoint rows shown on a system card before "+N more". */
 export const ENDPOINT_ROWS_SHOWN = 6;
 const EXTERNALS_SHOWN = 6;
@@ -187,7 +195,7 @@ function dagreBand(
   pairs: readonly { source: string; target: string }[],
 ): { w: number; h: number; pos: Map<string, { x: number; y: number }> } {
   const g = new dagre.graphlib.Graph();
-  g.setGraph({ rankdir: "LR", nodesep: 28, ranksep: 90, marginx: 0, marginy: 0 });
+  g.setGraph({ rankdir: "LR", nodesep: 36, ranksep: 96, marginx: 0, marginy: 0 });
   g.setDefaultEdgeLabel(() => ({}));
   const ids = new Set(items.map((i) => i.id));
   for (const item of items) g.setNode(item.id, { width: item.w, height: item.h });
@@ -236,16 +244,27 @@ export interface SystemMapScene {
   edges: RfEdge[];
   /** Nothing analyzable — the view shows an empty state. */
   empty: boolean;
+  /** Fixture-scoped systems + screens excluded from the map (`examples/…`). */
+  fixturesHidden: number;
+  /** What the map actually shows (post fixture filtering) — the stats chip. */
+  stats: { screens: number; systems: number };
 }
 
 export function buildSystemMapScene(input: SystemMapSceneInput): SystemMapScene {
   const { report, overview, calls, selected, find } = input;
-  const systems = overview.systems;
-  const screens = [...report.screens].sort(
-    (a, b) => a.route.localeCompare(b.route) || a.id.localeCompare(b.id),
+  // Fixture codebases are someone else's product — their screens and systems
+  // would drown the host repo's map (the overview alone keeps them, scoped).
+  const systems = overview.systems.filter(
+    (s) => !s.parts.every((p) => isFixtureScopedPath(p.path)),
   );
+  const screens = report.screens
+    .filter((s) => !isFixtureScopedPath(s.file))
+    .sort((a, b) => a.route.localeCompare(b.route) || a.id.localeCompare(b.id));
+  const fixturesHidden =
+    overview.systems.length - systems.length + (report.screens.length - screens.length);
+  const stats = { screens: screens.length, systems: systems.length };
   if (systems.length === 0 && screens.length === 0) {
-    return { nodes: [], edges: [], empty: true };
+    return { nodes: [], edges: [], empty: true, fixturesHidden, stats };
   }
 
   /* ---- file → system attribution (longest part-path prefix wins) ---- */
@@ -261,7 +280,10 @@ export function buildSystemMapScene(input: SystemMapSceneInput): SystemMapScene 
   const integrationSystems = systems.filter((s) => s.layer === "integrations");
 
   /* ---- screens: attribution + grouping decision ---- */
-  const grouping = feSystems.length > 1;
+  // Frontend systems are first-class on the map: whenever the overview knows
+  // one, its screens ride inside a labelled container (the module identity the
+  // architecture overview shows) instead of floating loose in the band.
+  const grouping = feSystems.length > 0;
   const screenIds = new Set(screens.map((s) => s.id));
   const screensBySystem = new Map<string, ScreenSurface[]>();
   const looseScreens: ScreenSurface[] = [];
@@ -280,7 +302,11 @@ export function buildSystemMapScene(input: SystemMapSceneInput): SystemMapScene 
 
   /* ---- per-screen call counts + call aggregation into edges ---- */
   const callCountOf = new Map<string, number>();
-  for (const c of calls) callCountOf.set(c.screen, (callCountOf.get(c.screen) ?? 0) + 1);
+  const unmatchedCountOf = new Map<string, number>();
+  for (const c of calls) {
+    callCountOf.set(c.screen, (callCountOf.get(c.screen) ?? 0) + 1);
+    if (!c.endpoint) unmatchedCountOf.set(c.screen, (unmatchedCountOf.get(c.screen) ?? 0) + 1);
+  }
 
   interface CallAgg {
     screenId: string;
@@ -483,9 +509,15 @@ export function buildSystemMapScene(input: SystemMapSceneInput): SystemMapScene 
       data: {
         screen: s,
         callCount: callCountOf.get(s.id) ?? 0,
+        unmatchedCount: unmatchedCountOf.get(s.id) ?? 0,
         selected: id === selNodeId,
         dimmed: dimmedOf(id, screenMatches(s)),
       },
+      // Explicit dimensions (not just style) — the nodes are a controlled
+      // prop, so react-flow never writes `measured` back onto them, and the
+      // minimap only draws nodes whose dimensions it can read.
+      width: SCREEN_W,
+      height: SCREEN_H,
       style: { width: SCREEN_W, height: SCREEN_H },
       draggable: false,
     };
@@ -504,18 +536,25 @@ export function buildSystemMapScene(input: SystemMapSceneInput): SystemMapScene 
       dimmed: dimmedOf(s.id, sysMatches(s)),
       selectedEndpoint: selEp != null && epOwner?.id === s.id ? selEp : null,
     };
+    const height = sysCardHeight(data);
     return {
       id: s.id,
       type: "mapSystem",
       position: { x: 0, y: 0 },
       data,
-      style: { width: SYS_CARD_W, height: sysCardHeight(data) },
+      width: SYS_CARD_W,
+      height,
+      style: { width: SYS_CARD_W, height },
       draggable: false,
     };
   };
 
   /* ---- assembly: bands stacked vertically, parents before children ---- */
   const nodes: SystemMapNode[] = [];
+  // Which band a node landed in — cross-band edges leave the source's bottom
+  // and enter the target's top so traffic reads as a vertical flow instead of
+  // looping around to the side handles.
+  const bandOfNode = new Map<string, MapBandId>();
   let bandY = 0;
 
   const pushBand = (
@@ -529,6 +568,8 @@ export function buildSystemMapScene(input: SystemMapSceneInput): SystemMapScene 
       type: "mapBand",
       position: { x: 0, y: bandY },
       data: { band, label: MAP_BAND_LABELS[band] },
+      width,
+      height,
       style: { width, height },
       draggable: false,
       selectable: false,
@@ -572,56 +613,86 @@ export function buildSystemMapScene(input: SystemMapSceneInput): SystemMapScene 
       const grid = screenGrid(block.screens);
       return { block, grid, w: grid.w, h: grid.h };
     });
-    const bandW =
-      measured.reduce((n, m) => n + m.w, 0) + (measured.length - 1) * BLOCK_GAP + BAND_PAD * 2;
-    const bandH = BAND_HEADER + Math.max(...measured.map((m) => m.h)) + BAND_PAD;
+    // Wrap blocks into rows — a workspace with many frontend systems must not
+    // stretch the band into one endless strip.
+    type Measured = (typeof measured)[number];
+    const rows: { members: { m: Measured; x: number }[]; w: number; h: number }[] = [];
+    {
+      let row: { m: Measured; x: number }[] = [];
+      let x = 0;
+      const flush = () => {
+        if (row.length === 0) return;
+        rows.push({ members: row, w: x, h: Math.max(...row.map((r) => r.m.h)) });
+        row = [];
+        x = 0;
+      };
+      for (const m of measured) {
+        if (row.length > 0 && x + BLOCK_GAP + m.w > MAX_BAND_ROW_W) flush();
+        if (row.length > 0) x += BLOCK_GAP;
+        row.push({ m, x });
+        x += m.w;
+      }
+      flush();
+    }
+    const bandW = Math.max(...rows.map((r) => r.w)) + BAND_PAD * 2;
+    const bandH =
+      BAND_HEADER + rows.reduce((n, r) => n + r.h, 0) + (rows.length - 1) * BLOCK_GAP + BAND_PAD;
     const bandId = pushBand("screens", bandW, bandH);
 
-    let x = BAND_PAD;
-    for (const m of measured) {
-      const { block } = m;
-      if (block.kind === "group") {
-        const groupId = block.system.id;
-        const dim = dimmedOf(groupId, sysMatches(block.system));
-        nodes.push({
-          id: groupId,
-          type: "mapFeGroup",
-          parentId: bandId,
-          position: { x, y: BAND_HEADER },
-          data: {
-            system: block.system,
-            screenCount: block.screens.length,
-            selected: groupId === selNodeId,
-            dimmed: dim,
-          },
-          style: { width: m.w, height: m.h },
-          draggable: false,
-        });
-        for (const s of block.screens) {
-          const p = m.grid!.pos.get(s.id)!;
+    let rowY = BAND_HEADER;
+    for (const row of rows) {
+      for (const { m, x: rowX } of row.members) {
+        const { block } = m;
+        const x = BAND_PAD + rowX;
+        if (block.kind === "group") {
+          const groupId = block.system.id;
+          bandOfNode.set(groupId, "screens");
+          for (const s of block.screens) bandOfNode.set(screenNodeId(s.id), "screens");
+          const dim = dimmedOf(groupId, sysMatches(block.system));
           nodes.push({
-            ...makeScreenNode(s),
-            parentId: groupId,
-            position: { x: p.x + FE_PAD, y: p.y + FE_HEADER_H },
-          });
-        }
-      } else if (block.kind === "card") {
-        nodes.push({
-          ...makeSystemNode(block.system, true),
-          parentId: bandId,
-          position: { x, y: BAND_HEADER },
-        });
-      } else {
-        for (const s of block.screens) {
-          const p = m.grid!.pos.get(s.id)!;
-          nodes.push({
-            ...makeScreenNode(s),
+            id: groupId,
+            type: "mapFeGroup",
             parentId: bandId,
-            position: { x: x + p.x, y: BAND_HEADER + p.y },
+            position: { x, y: rowY },
+            data: {
+              system: block.system,
+              screenCount: block.screens.length,
+              selected: groupId === selNodeId,
+              dimmed: dim,
+            },
+            width: m.w,
+            height: m.h,
+            style: { width: m.w, height: m.h },
+            draggable: false,
           });
+          for (const s of block.screens) {
+            const p = m.grid!.pos.get(s.id)!;
+            nodes.push({
+              ...makeScreenNode(s),
+              parentId: groupId,
+              position: { x: p.x + FE_PAD, y: p.y + FE_HEADER_H },
+            });
+          }
+        } else if (block.kind === "card") {
+          bandOfNode.set(block.system.id, "screens");
+          nodes.push({
+            ...makeSystemNode(block.system, true),
+            parentId: bandId,
+            position: { x, y: rowY },
+          });
+        } else {
+          for (const s of block.screens) {
+            bandOfNode.set(screenNodeId(s.id), "screens");
+            const p = m.grid!.pos.get(s.id)!;
+            nodes.push({
+              ...makeScreenNode(s),
+              parentId: bandId,
+              position: { x: x + p.x, y: rowY + p.y },
+            });
+          }
         }
       }
-      x += m.w + BLOCK_GAP;
+      rowY += row.h + BLOCK_GAP;
     }
   }
 
@@ -638,6 +709,10 @@ export function buildSystemMapScene(input: SystemMapSceneInput): SystemMapScene 
       h: (c.style?.height as number) ?? COMPACT_H,
     }));
     const externalsShown = externalsAll.slice(0, EXTERNALS_SHOWN);
+    const externalsH = externalsCardHeight(
+      externalsShown.length,
+      externalsAll.length - externalsShown.length,
+    );
     const externalsNode: MapExternalsRfNode | null =
       withExternals && externalsAll.length > 0
         ? {
@@ -649,13 +724,9 @@ export function buildSystemMapScene(input: SystemMapSceneInput): SystemMapScene 
               more: externalsAll.length - externalsShown.length,
               dimmed: dimmedOf("externals", externalsMatch()),
             },
-            style: {
-              width: SYS_CARD_W,
-              height: externalsCardHeight(
-                externalsShown.length,
-                externalsAll.length - externalsShown.length,
-              ),
-            },
+            width: SYS_CARD_W,
+            height: externalsH,
+            style: { width: SYS_CARD_W, height: externalsH },
             draggable: false,
             selectable: false,
           }
@@ -675,6 +746,7 @@ export function buildSystemMapScene(input: SystemMapSceneInput): SystemMapScene 
       BAND_HEADER + laid.h + BAND_PAD,
     );
     for (const card of externalsNode ? [...cards, externalsNode] : cards) {
+      bandOfNode.set(card.id, band);
       const p = laid.pos.get(card.id)!;
       nodes.push({
         ...card,
@@ -695,6 +767,11 @@ export function buildSystemMapScene(input: SystemMapSceneInput): SystemMapScene 
   const edges: RfEdge[] = [];
   for (const e of skeletons) {
     if (!nodeIds.has(e.source) || !nodeIds.has(e.target)) continue;
+    // Downward cross-band traffic flows bottom → top; everything else keeps
+    // the side handles (same-band ranks, and the rare upward link).
+    const sourceBand = MAP_BANDS.indexOf(bandOfNode.get(e.source) ?? "backend");
+    const targetBand = MAP_BANDS.indexOf(bandOfNode.get(e.target) ?? "backend");
+    const vertical = targetBand > sourceBand;
     const active = selNodeId
       ? e.source === selNodeId || e.target === selNodeId
       : selEp
@@ -714,6 +791,8 @@ export function buildSystemMapScene(input: SystemMapSceneInput): SystemMapScene 
       id: e.id,
       source: e.source,
       target: e.target,
+      sourceHandle: vertical ? "b" : "r",
+      targetHandle: vertical ? "t" : "l",
       label: e.label,
       data: { kind: e.kind, epKeys: e.epKeys } satisfies MapEdgeData,
       animated: e.apiOnly && e.kind !== "call" && !faded,
@@ -733,5 +812,5 @@ export function buildSystemMapScene(input: SystemMapSceneInput): SystemMapScene 
     });
   }
 
-  return { nodes, edges, empty: false };
+  return { nodes, edges, empty: false, fixturesHidden, stats };
 }

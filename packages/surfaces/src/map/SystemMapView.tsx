@@ -12,6 +12,7 @@ import {
 } from "@xyflow/react";
 import { useCallback, useEffect, useMemo } from "react";
 import {
+  AlertTriangle,
   AppWindow,
   ArrowUpRight,
   Boxes,
@@ -91,7 +92,7 @@ function MapBandNode({ data }: NodeProps<MapBandRfNode>) {
 }
 
 function MapScreenNode({ data }: NodeProps<MapScreenRfNode>) {
-  const { screen, callCount, selected, dimmed } = data;
+  const { screen, callCount, unmatchedCount, selected, dimmed } = data;
   return (
     <div
       className={cn(
@@ -101,8 +102,7 @@ function MapScreenNode({ data }: NodeProps<MapScreenRfNode>) {
       )}
       style={{ borderTopColor: "var(--color-accent-cyan)", borderTopWidth: 2 }}
     >
-      <Handle type="target" position={Position.Left} className="!bg-edge" />
-      <Handle type="source" position={Position.Right} className="!bg-edge" />
+      <Handle id="b" type="source" position={Position.Bottom} className="!bg-edge" />
       <div className="flex items-center gap-1.5">
         <AppWindow className="h-3 w-3 shrink-0 text-accent-cyan" />
         <span className="min-w-0 truncate font-mono text-[11px] font-medium text-ink">
@@ -115,8 +115,19 @@ function MapScreenNode({ data }: NodeProps<MapScreenRfNode>) {
       <div className="flex items-center gap-1 pl-[18px] text-[9px] text-ink-faint">
         <span className="min-w-0 truncate">{screen.component ?? screen.file}</span>
         {callCount > 0 ? (
-          <span className="ml-auto shrink-0 text-accent-amber">
-            {callCount} call{callCount === 1 ? "" : "s"}
+          <span className="ml-auto flex shrink-0 items-center gap-1">
+            <span>
+              {callCount} call{callCount === 1 ? "" : "s"}
+            </span>
+            {unmatchedCount > 0 ? (
+              <span
+                title={`${unmatchedCount} call${unmatchedCount === 1 ? "" : "s"} with no serving route in this workspace`}
+                className="flex items-center gap-0.5 text-warn"
+              >
+                <AlertTriangle className="h-2.5 w-2.5" />
+                {unmatchedCount}
+              </span>
+            ) : null}
           </span>
         ) : null}
       </div>
@@ -135,8 +146,7 @@ function MapFeGroupNode({ data }: NodeProps<MapFeGroupRfNode>) {
       )}
       style={{ borderTopColor: "var(--color-accent-cyan)", borderTopWidth: 2 }}
     >
-      <Handle type="target" position={Position.Left} className="!bg-edge" />
-      <Handle type="source" position={Position.Right} className="!bg-edge" />
+      <Handle id="b" type="source" position={Position.Bottom} className="!bg-edge" />
       <div className="flex items-center gap-2 px-3 pt-2">
         <AppWindow className="h-3.5 w-3.5 shrink-0 text-accent-cyan" />
         <span className="truncate text-[12px] font-semibold text-ink">{system.name}</span>
@@ -179,8 +189,10 @@ function MapSystemNode({ data }: NodeProps<MapSystemRfNode>) {
       )}
       style={{ borderTopColor: accent, borderTopWidth: 2 }}
     >
-      <Handle type="target" position={Position.Left} className="!bg-edge" />
-      <Handle type="source" position={Position.Right} className="!bg-edge" />
+      <Handle id="t" type="target" position={Position.Top} className="!bg-edge" />
+      <Handle id="l" type="target" position={Position.Left} className="!bg-edge" />
+      <Handle id="r" type="source" position={Position.Right} className="!bg-edge" />
+      <Handle id="b" type="source" position={Position.Bottom} className="!bg-edge" />
       <div className="flex items-start gap-2 px-3 pt-2">
         <Icon className="mt-0.5 h-3.5 w-3.5 shrink-0" style={{ color: accent }} />
         <div className="min-w-0 flex-1">
@@ -266,7 +278,8 @@ function MapExternalsNode({ data }: NodeProps<MapExternalsRfNode>) {
       )}
       style={{ borderTopColor: "var(--color-accent-amber)", borderTopWidth: 2 }}
     >
-      <Handle type="target" position={Position.Left} className="!bg-edge" />
+      <Handle id="t" type="target" position={Position.Top} className="!bg-edge" />
+      <Handle id="l" type="target" position={Position.Left} className="!bg-edge" />
       <div className="flex items-start gap-2 px-3 pt-2">
         <Plug className="mt-0.5 h-3.5 w-3.5 shrink-0 text-accent-amber" />
         <div className="min-w-0 flex-1">
@@ -298,6 +311,26 @@ const nodeTypes = {
   mapSystem: MapSystemNode,
   mapExternals: MapExternalsNode,
 };
+
+/** Minimap swatch per node — the same accents the cards carry. */
+function minimapColor(n: SystemMapNode): string {
+  switch (n.type) {
+    case "mapScreen":
+      return "var(--color-accent-cyan)";
+    case "mapFeGroup":
+      return "var(--color-surface-3)";
+    case "mapExternals":
+      return "var(--color-accent-amber)";
+    case "mapSystem": {
+      const sys = (n.data as MapSystemRfNode["data"]).system;
+      if (sys.layer === "database") return "var(--color-accent-emerald)";
+      if (sys.layer === "frontend") return "var(--color-accent-cyan)";
+      return ROLE_META[sys.role].accent;
+    }
+    default:
+      return "var(--color-surface-2)";
+  }
+}
 
 /* ------------------------------------------------------------------ */
 /* View                                                                */
@@ -527,16 +560,32 @@ function SystemMapInner() {
             proOptions={{ hideAttribution: true }}
           >
             <Background variant={BackgroundVariant.Dots} gap={22} size={1} />
-            <Controls showInteractive={false} />
-            <MiniMap pannable zoomable className="!bg-surface-1" />
+            <Controls
+              position="bottom-left"
+              showInteractive={false}
+              className="!rounded-lg !border !border-edge !bg-surface-2 !shadow-lg overflow-hidden"
+            />
+            <MiniMap
+              pannable
+              zoomable
+              className="!bottom-3 !right-3 !h-32 !w-44 rounded-lg border border-edge !bg-surface-1"
+              maskColor="rgba(6, 8, 12, 0.72)"
+              nodeStrokeWidth={0}
+              nodeColor={minimapColor}
+            />
           </ReactFlow>
           {/* Top-left: what the map is made of. */}
           <div className="absolute left-3 top-3 flex items-center gap-1.5 rounded-lg border border-edge bg-surface-1/95 px-2 py-1 text-[10px] text-ink-faint shadow-sm">
             <Waypoints className="h-3 w-3 text-crystal-300" />
             <span>
-              {screens.length} screen{screens.length === 1 ? "" : "s"} ·{" "}
-              {overview?.systems.length ?? 0} systems · {scene.edges.length} edges
+              {scene.stats.screens} screen{scene.stats.screens === 1 ? "" : "s"} ·{" "}
+              {scene.stats.systems} systems · {scene.edges.length} edges
             </span>
+            {scene.fixturesHidden > 0 ? (
+              <Tooltip content="Sample codebases (examples/, fixtures/…) stay off the map — open one as its own workspace to chart it">
+                <span>· {scene.fixturesHidden} fixture units hidden</span>
+              </Tooltip>
+            ) : null}
             {map?.truncated ? (
               <Tooltip content="Some call traces hit the traversal cap — screen edges may be missing">
                 <span className="text-warn">capped</span>

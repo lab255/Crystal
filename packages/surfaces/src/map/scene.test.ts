@@ -150,6 +150,25 @@ describe("buildSystemMapScene — bands", () => {
     expect(scene.edges.filter((e) => (e.data as { kind?: string }).kind === "call")).toHaveLength(0);
   });
 
+  it("hides fixture-scoped systems and screens, reporting the count", () => {
+    const scene = build({
+      report: report({
+        screens: [
+          screen("s1", "/a", "examples/demo/web/pages/Home.tsx"),
+          screen("s2", "/b", "web/pages/Home.tsx"),
+        ],
+      }),
+      overview: overview([
+        sys("sys:web", "frontend", "web"),
+        sys("sys:demo-api", "backend", "examples/demo/server"),
+      ]),
+    });
+    expect(nodeById(scene, "sys:demo-api")).toBeUndefined();
+    expect(nodeById(scene, screenNodeId("s1"))).toBeUndefined();
+    expect(nodeById(scene, screenNodeId("s2"))).toBeTruthy();
+    expect(scene.fixturesHidden).toBe(2);
+  });
+
   it("returns an empty scene for empty input", () => {
     const scene = build();
     expect(scene.empty).toBe(true);
@@ -177,13 +196,21 @@ describe("buildSystemMapScene — screens grouping", () => {
     expect(nodeById(scene, screenNodeId("s2"))?.parentId).toBe("sys:web-b");
   });
 
-  it("lays screens directly in the band for a single frontend system", () => {
+  it("groups a single frontend system's screens under its labelled container", () => {
     const scene = build({
       report: report({ screens: [screen("s1", "/a", "web/pages/Home.tsx")] }),
       overview: overview([sys("sys:web", "frontend", "web")]),
     });
+    expect(nodeById(scene, "sys:web")?.type).toBe("mapFeGroup");
+    expect(nodeById(scene, screenNodeId("s1"))?.parentId).toBe("sys:web");
+  });
+
+  it("lays unattributed screens directly in the band", () => {
+    const scene = build({
+      report: report({ screens: [screen("s1", "/a", "elsewhere/pages/Home.tsx")] }),
+      overview: overview([sys("sys:web", "frontend", "web")]),
+    });
     expect(nodeById(scene, screenNodeId("s1"))?.parentId).toBe("band:screens");
-    expect(nodeById(scene, "sys:web")).toBeUndefined();
   });
 
   it("gives a screen-less frontend system a compact card", () => {
@@ -238,9 +265,10 @@ describe("buildSystemMapScene — edges", () => {
       calls: [call("s1", "GET", "/external"), call("ghost", "GET", "/x", "server/api/r.ts")],
     });
     expect(scene.edges.filter((e) => (e.data as { kind?: string }).kind === "call")).toHaveLength(0);
-    // The unmatched call still counts on the screen card.
+    // The unmatched call still counts on the screen card — flagged as drift.
     const data = nodeById(scene, screenNodeId("s1"))?.data as MapScreenData;
     expect(data.callCount).toBe(1);
+    expect(data.unmatchedCount).toBe(1);
   });
 
   it("falls back to SystemLink.apis edges for frontend systems without screen edges", () => {
@@ -290,10 +318,27 @@ describe("buildSystemMapScene — edges", () => {
     const imports = scene.edges.find((e) => e.id === "link:sys:api->sys:store");
     expect(imports?.label).toBe("×3");
     expect(imports?.style?.strokeDasharray).toBeUndefined();
+    // Downward cross-band traffic flows bottom → top…
+    expect(imports?.sourceHandle).toBe("b");
+    expect(imports?.targetHandle).toBe("t");
     const apiOnly = scene.edges.find((e) => e.id === "link:sys:hooks->sys:api");
     expect(apiOnly?.label).toBe("POST /y");
     expect(apiOnly?.style?.strokeDasharray).toBe("4 3");
     expect(apiOnly?.animated).toBe(true);
+    // …while upward links keep the side handles.
+    expect(apiOnly?.sourceHandle).toBe("r");
+    expect(apiOnly?.targetHandle).toBe("l");
+  });
+
+  it("routes screen call edges bottom → top into the serving system", () => {
+    const scene = build({
+      report: report({ screens: [screen("s1", "/a", "web/pages/Home.tsx")] }),
+      overview: overview([sys("sys:web", "frontend", "web"), backend]),
+      calls: [call("s1", "GET", "/x", "server/api/r.ts")],
+    });
+    const edge = scene.edges.find((e) => e.id === "call:screen:s1->sys:api");
+    expect(edge?.sourceHandle).toBe("b");
+    expect(edge?.targetHandle).toBe("t");
   });
 });
 

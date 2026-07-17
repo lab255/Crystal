@@ -334,6 +334,16 @@ function fixtureScopeOf(unitPath: string): string {
 }
 
 /**
+ * Whether a workspace-relative path lives inside a self-contained sample
+ * codebase (`examples/…`, `fixtures/…`). The overview keeps fixture units
+ * scope-partitioned; product-level views (the system map) hide them outright —
+ * a fixture's screens and systems are someone else's product.
+ */
+export function isFixtureScopedPath(path: string): boolean {
+  return fixtureScopeOf(path) !== "";
+}
+
+/**
  * Route path → matchable segments. Parameter segments in any convention
  * (`:id`, `{id}`, `[id]`, `*`, template holes) normalize to "*"; full URLs
  * are reduced to their pathname so `fetch("https://api.x.com/v1/users")`
