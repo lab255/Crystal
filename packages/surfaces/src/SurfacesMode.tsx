@@ -9,6 +9,7 @@ import {
   PanelsTopLeft,
   RefreshCw,
   Search,
+  Waypoints,
   Webhook,
   X,
 } from "lucide-react";
@@ -21,6 +22,7 @@ import { ComponentsView } from "./ComponentsView.js";
 import { SchemasView } from "./SchemasView.js";
 import { ScreensView } from "./ScreensView.js";
 import { StoriesView } from "./StoriesView.js";
+import { SystemMapView } from "./map/SystemMapView.js";
 import { SurfacesProvider, useArchHighlight, useSurfaces } from "./common.js";
 
 /**
@@ -31,6 +33,7 @@ import { SurfacesProvider, useArchHighlight, useSurfaces } from "./common.js";
  */
 
 const VIEW_META: { id: SurfaceViewId; label: string; icon: typeof AppWindow }[] = [
+  { id: "map", label: "System Map", icon: Waypoints },
   { id: "screens", label: "Screens", icon: AppWindow },
   { id: "components", label: "Components", icon: ComponentIcon },
   { id: "stories", label: "Stories", icon: BookOpenText },
@@ -72,7 +75,8 @@ function SurfacesShell() {
     return () => window.removeEventListener("keydown", onKey);
   }, [activeMode]);
 
-  const counts: Record<SurfaceViewId, number> = {
+  // The map tab carries no count badge — it composes several surfaces at once.
+  const counts: Partial<Record<SurfaceViewId, number>> = {
     screens: report?.screens.length ?? 0,
     components: report?.components.length ?? 0,
     stories: report?.stories.length ?? 0,
@@ -153,7 +157,7 @@ function SurfacesShell() {
                 >
                   <Icon className="h-3.5 w-3.5" />
                   {label}
-                  {counts[id] > 0 ? (
+                  {(counts[id] ?? 0) > 0 ? (
                     <span
                       className={cn(
                         "rounded-full px-1 font-mono text-[9px]",
@@ -184,6 +188,8 @@ function SurfacesShell() {
                   Retry
                 </button>
               </div>
+            ) : view === "map" ? (
+              <SystemMapView />
             ) : view === "screens" ? (
               <ScreensView />
             ) : view === "components" ? (

@@ -4,6 +4,7 @@ import { formatHighlightSel } from "@crystal/core";
 import type {
   ApiTrace,
   ApiTraceCall,
+  SurfaceMapReport,
   SurfacesReport,
   SystemModule,
   SystemOverview,
@@ -19,6 +20,12 @@ export interface SurfacesData {
   report: SurfacesReport | null;
   /** The logical systems overview — powers the architecture side pane and file→system attribution. */
   overview: SystemOverview | null;
+  /**
+   * Screen→endpoint reachability for the system map (`surfaces.map`). Null
+   * until it resolves — or when the method fails; the map renders systems
+   * and screens without call edges then.
+   */
+  map: SurfaceMapReport | null;
   /** file → owning system, longest part-path prefix wins (null outside any system). */
   systemOfFile: (file: string) => SystemModule | null;
   loading: boolean;
@@ -33,6 +40,7 @@ export function SurfacesProvider({ children }: { children: React.ReactNode }) {
   const activeWs = useWorkspaces((s) => s.activeId);
   const [report, setReport] = useState<SurfacesReport | null>(null);
   const [overview, setOverview] = useState<SystemOverview | null>(null);
+  const [map, setMap] = useState<SurfaceMapReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [generation, setGeneration] = useState(0);
@@ -53,6 +61,25 @@ export function SurfacesProvider({ children }: { children: React.ReactNode }) {
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [client, activeWs, generation]);
+
+  // The map join rides the same generation, but failures stay non-fatal: the
+  // system map must render systems/screens without call edges until the
+  // server grows `surfaces.map` (or when a trace errors out).
+  useEffect(() => {
+    if (!activeWs) return;
+    let cancelled = false;
+    client
+      .request("surfaces.map", {})
+      .then((res) => {
+        if (!cancelled) setMap(res);
+      })
+      .catch(() => {
+        if (!cancelled) setMap(null);
       });
     return () => {
       cancelled = true;
@@ -84,7 +111,7 @@ export function SurfacesProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <SurfacesCtx.Provider
-      value={{ report, overview, systemOfFile, loading, error, refresh }}
+      value={{ report, overview, map, systemOfFile, loading, error, refresh }}
     >
       {children}
     </SurfacesCtx.Provider>

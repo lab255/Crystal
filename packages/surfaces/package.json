@@ -17,6 +17,8 @@
     "@crystal/client": "workspace:*",
     "@crystal/core": "workspace:*",
     "@crystal/ui": "workspace:*",
+    "@dagrejs/dagre": "^1.1.4",
+    "@xyflow/react": "^12.8.0",
     "lucide-react": "^0.469.0"
   },
   "peerDependencies": {

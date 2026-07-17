@@ -1,0 +1,365 @@
+import { describe, expect, it } from "vitest";
+import type {
+  ScreenApiCall,
+  ScreenSurface,
+  SurfacesReport,
+  SystemLayer,
+  SystemModule,
+  SystemOverview,
+  SystemRole,
+} from "@crystal/core";
+import {
+  buildSystemMapScene,
+  screenNodeId,
+  type MapScreenData,
+  type MapSystemData,
+  type SystemMapScene,
+} from "./scene.js";
+
+/* ---- fixtures ---- */
+
+const ROLE_OF_LAYER: Record<SystemLayer, SystemRole> = {
+  frontend: "domain",
+  backend: "domain",
+  database: "data",
+  integrations: "integration",
+};
+
+function sys(
+  id: string,
+  layer: SystemLayer,
+  partPath: string,
+  patch: Partial<SystemModule> = {},
+): SystemModule {
+  return {
+    id,
+    name: id.replace(/^sys:/, ""),
+    concept: null,
+    role: ROLE_OF_LAYER[layer],
+    layer,
+    parts: [{ path: partPath, pkg: ".", fileCount: 4 }],
+    fileCount: 4,
+    intents: [],
+    exports: [],
+    exportedTotal: 0,
+    externals: [],
+    endpoints: [],
+    components: [],
+    componentCount: 0,
+    ...patch,
+  };
+}
+
+function screen(id: string, route: string, file: string): ScreenSurface {
+  return { id, route, file, source: "react-router" };
+}
+
+function report(patch: Partial<SurfacesReport> = {}): SurfacesReport {
+  return {
+    screens: [],
+    components: [],
+    stories: [],
+    endpoints: [],
+    schemas: [],
+    demo: { appUrl: null, storybookUrl: null },
+    generatedAt: "",
+    ...patch,
+  };
+}
+
+function overview(
+  systems: SystemModule[],
+  links: SystemOverview["links"] = [],
+): SystemOverview {
+  return { systems, links, fileTotal: systems.length * 4, generatedAt: "" };
+}
+
+function call(
+  screenId: string,
+  method: string,
+  path: string,
+  endpointFile?: string,
+): ScreenApiCall {
+  return {
+    screen: screenId,
+    method,
+    path,
+    file: "web/src/api.ts",
+    ...(endpointFile ? { endpoint: { method, path, file: endpointFile } } : {}),
+  };
+}
+
+function build(
+  input: Partial<Parameters<typeof buildSystemMapScene>[0]> = {},
+): SystemMapScene {
+  return buildSystemMapScene({
+    report: report(),
+    overview: overview([]),
+    calls: [],
+    selected: null,
+    find: "",
+    ...input,
+  });
+}
+
+const nodeById = (scene: SystemMapScene, id: string) =>
+  scene.nodes.find((n) => n.id === id);
+
+/* ---- tests ---- */
+
+describe("buildSystemMapScene — bands", () => {
+  it("assigns systems to layer bands and skips empty bands", () => {
+    const scene = build({
+      overview: overview([
+        sys("sys:api", "backend", "server/api"),
+        sys("sys:store", "database", "server/db"),
+      ]),
+    });
+    expect(nodeById(scene, "band:backend")).toBeTruthy();
+    expect(nodeById(scene, "band:data")).toBeTruthy();
+    expect(nodeById(scene, "band:screens")).toBeUndefined();
+    expect(nodeById(scene, "band:integrations")).toBeUndefined();
+    expect(nodeById(scene, "sys:api")?.parentId).toBe("band:backend");
+    expect(nodeById(scene, "sys:store")?.parentId).toBe("band:data");
+  });
+
+  it("orders parents before children (react-flow requirement)", () => {
+    const scene = build({
+      report: report({ screens: [screen("s1", "/a", "web/a/page.tsx")] }),
+      overview: overview([
+        sys("sys:web-a", "frontend", "web/a"),
+        sys("sys:web-b", "frontend", "web/b"),
+        sys("sys:api", "backend", "server/api"),
+      ]),
+    });
+    const indexOf = new Map(scene.nodes.map((n, i) => [n.id, i]));
+    for (const n of scene.nodes) {
+      if (n.parentId) {
+        expect(indexOf.get(n.parentId)).toBeLessThan(indexOf.get(n.id)!);
+      }
+    }
+  });
+
+  it("builds a backend-only map when there are no screens", () => {
+    const scene = build({
+      overview: overview([sys("sys:api", "backend", "server/api")]),
+      calls: [call("ghost", "GET", "/x", "server/api/r.ts")],
+    });
+    expect(scene.empty).toBe(false);
+    expect(nodeById(scene, "sys:api")).toBeTruthy();
+    expect(scene.edges.filter((e) => (e.data as { kind?: string }).kind === "call")).toHaveLength(0);
+  });
+
+  it("returns an empty scene for empty input", () => {
+    const scene = build();
+    expect(scene.empty).toBe(true);
+    expect(scene.nodes).toHaveLength(0);
+    expect(scene.edges).toHaveLength(0);
+  });
+});
+
+describe("buildSystemMapScene — screens grouping", () => {
+  it("groups screens under their owning frontend system when several exist", () => {
+    const scene = build({
+      report: report({
+        screens: [
+          screen("s1", "/a", "web/a/pages/Home.tsx"),
+          screen("s2", "/b", "web/b/pages/Home.tsx"),
+        ],
+      }),
+      overview: overview([
+        sys("sys:web-a", "frontend", "web/a"),
+        sys("sys:web-b", "frontend", "web/b"),
+      ]),
+    });
+    expect(nodeById(scene, "sys:web-a")?.type).toBe("mapFeGroup");
+    expect(nodeById(scene, screenNodeId("s1"))?.parentId).toBe("sys:web-a");
+    expect(nodeById(scene, screenNodeId("s2"))?.parentId).toBe("sys:web-b");
+  });
+
+  it("lays screens directly in the band for a single frontend system", () => {
+    const scene = build({
+      report: report({ screens: [screen("s1", "/a", "web/pages/Home.tsx")] }),
+      overview: overview([sys("sys:web", "frontend", "web")]),
+    });
+    expect(nodeById(scene, screenNodeId("s1"))?.parentId).toBe("band:screens");
+    expect(nodeById(scene, "sys:web")).toBeUndefined();
+  });
+
+  it("gives a screen-less frontend system a compact card", () => {
+    const scene = build({
+      report: report({
+        screens: [screen("s1", "/a", "web/a/pages/Home.tsx")],
+      }),
+      overview: overview([
+        sys("sys:web-a", "frontend", "web/a"),
+        sys("sys:admin", "frontend", "web/admin"),
+      ]),
+    });
+    const card = nodeById(scene, "sys:admin");
+    expect(card?.type).toBe("mapSystem");
+    expect((card?.data as MapSystemData).compact).toBe(true);
+  });
+});
+
+describe("buildSystemMapScene — edges", () => {
+  const backend = sys("sys:api", "backend", "server/api", {
+    endpoints: [
+      { method: "GET", path: "/x", file: "server/api/r.ts" },
+      { method: "POST", path: "/y", file: "server/api/r.ts" },
+    ],
+  });
+
+  it("aggregates screen calls per (screen, system) with a call-count label", () => {
+    const scene = build({
+      report: report({ screens: [screen("s1", "/a", "web/pages/Home.tsx")] }),
+      overview: overview([sys("sys:web", "frontend", "web"), backend]),
+      calls: [
+        call("s1", "GET", "/x", "server/api/r.ts"),
+        call("s1", "POST", "/y", "server/api/r.ts"),
+      ],
+    });
+    const edge = scene.edges.find((e) => e.id === "call:screen:s1->sys:api");
+    expect(edge).toBeTruthy();
+    expect(edge?.label).toBe("2 calls");
+    // A single call labels with its route instead.
+    const single = build({
+      report: report({ screens: [screen("s1", "/a", "web/pages/Home.tsx")] }),
+      overview: overview([sys("sys:web", "frontend", "web"), backend]),
+      calls: [call("s1", "GET", "/x", "server/api/r.ts")],
+    });
+    expect(single.edges.find((e) => e.id === "call:screen:s1->sys:api")?.label).toBe("GET /x");
+  });
+
+  it("ignores unmatched calls and calls from unknown screens", () => {
+    const scene = build({
+      report: report({ screens: [screen("s1", "/a", "web/pages/Home.tsx")] }),
+      overview: overview([sys("sys:web", "frontend", "web"), backend]),
+      calls: [call("s1", "GET", "/external"), call("ghost", "GET", "/x", "server/api/r.ts")],
+    });
+    expect(scene.edges.filter((e) => (e.data as { kind?: string }).kind === "call")).toHaveLength(0);
+    // The unmatched call still counts on the screen card.
+    const data = nodeById(scene, screenNodeId("s1"))?.data as MapScreenData;
+    expect(data.callCount).toBe(1);
+  });
+
+  it("falls back to SystemLink.apis edges for frontend systems without screen edges", () => {
+    const overviewData = overview(
+      [sys("sys:web-a", "frontend", "web/a"), sys("sys:web-b", "frontend", "web/b"), backend],
+      [
+        {
+          source: "sys:web-a",
+          target: "sys:api",
+          weight: 0,
+          symbols: [],
+          apis: [{ method: "GET", path: "/x", weight: 2 }],
+        },
+      ],
+    );
+    const noScreens = build({
+      report: report({ screens: [screen("s1", "/a", "web/a/pages/Home.tsx")] }),
+      overview: overviewData,
+    });
+    expect(noScreens.edges.find((e) => e.id === "feapi:sys:web-a->sys:api")).toBeTruthy();
+    // …but not when a screen-level edge already covers the pair.
+    const covered = build({
+      report: report({ screens: [screen("s1", "/a", "web/a/pages/Home.tsx")] }),
+      overview: overviewData,
+      calls: [call("s1", "GET", "/x", "server/api/r.ts")],
+    });
+    expect(covered.edges.find((e) => e.id === "feapi:sys:web-a->sys:api")).toBeUndefined();
+    expect(covered.edges.find((e) => e.id === "call:screen:s1->sys:api")).toBeTruthy();
+  });
+
+  it("draws system→system links between non-frontend systems, api-only ones dashed", () => {
+    const scene = build({
+      overview: overview(
+        [backend, sys("sys:store", "database", "server/db"), sys("sys:hooks", "integrations", "server/hooks")],
+        [
+          { source: "sys:api", target: "sys:store", weight: 3, symbols: [] },
+          {
+            source: "sys:hooks",
+            target: "sys:api",
+            weight: 0,
+            symbols: [],
+            apis: [{ method: "POST", path: "/y", weight: 1 }],
+          },
+        ],
+      ),
+    });
+    const imports = scene.edges.find((e) => e.id === "link:sys:api->sys:store");
+    expect(imports?.label).toBe("×3");
+    expect(imports?.style?.strokeDasharray).toBeUndefined();
+    const apiOnly = scene.edges.find((e) => e.id === "link:sys:hooks->sys:api");
+    expect(apiOnly?.label).toBe("POST /y");
+    expect(apiOnly?.style?.strokeDasharray).toBe("4 3");
+    expect(apiOnly?.animated).toBe(true);
+  });
+});
+
+describe("buildSystemMapScene — selection and find", () => {
+  const backend = sys("sys:api", "backend", "server/api", {
+    endpoints: [{ method: "GET", path: "/x", file: "server/api/r.ts" }],
+  });
+  const screens = [
+    screen("s1", "/caller", "web/pages/Caller.tsx"),
+    screen("s2", "/idle", "web/pages/Idle.tsx"),
+  ];
+
+  it("selecting a node dims non-neighbors and fades non-incident edges", () => {
+    const scene = build({
+      report: report({ screens }),
+      overview: overview([sys("sys:web", "frontend", "web"), backend, sys("sys:store", "database", "server/db")]),
+      calls: [call("s1", "GET", "/x", "server/api/r.ts")],
+      selected: screenNodeId("s1"),
+    });
+    expect((nodeById(scene, screenNodeId("s1"))?.data as MapScreenData).dimmed).toBe(false);
+    expect((nodeById(scene, "sys:api")?.data as MapSystemData).dimmed).toBe(false);
+    expect((nodeById(scene, screenNodeId("s2"))?.data as MapScreenData).dimmed).toBe(true);
+    expect((nodeById(scene, "sys:store")?.data as MapSystemData).dimmed).toBe(true);
+    const edge = scene.edges.find((e) => e.id === "call:screen:s1->sys:api");
+    expect(edge?.style?.opacity).toBe(1);
+  });
+
+  it("selecting an endpoint keeps its owner and callers bright", () => {
+    const scene = build({
+      report: report({ screens }),
+      overview: overview([sys("sys:web", "frontend", "web"), backend]),
+      calls: [call("s1", "GET", "/x", "server/api/r.ts")],
+      selected: "ep:GET /x",
+    });
+    const owner = nodeById(scene, "sys:api")?.data as MapSystemData;
+    expect(owner.dimmed).toBe(false);
+    expect(owner.selected).toBe(true);
+    expect(owner.selectedEndpoint).toBe("GET /x");
+    expect((nodeById(scene, screenNodeId("s1"))?.data as MapScreenData).dimmed).toBe(false);
+    expect((nodeById(scene, screenNodeId("s2"))?.data as MapScreenData).dimmed).toBe(true);
+  });
+
+  it("a stale selected id dims nothing", () => {
+    const scene = build({
+      report: report({ screens }),
+      overview: overview([backend]),
+      selected: "sys:renamed-away",
+    });
+    expect(scene.nodes.some((n) => (n.data as { dimmed?: boolean }).dimmed)).toBe(false);
+  });
+
+  it("find dims misses across screens and systems", () => {
+    const scene = build({
+      report: report({ screens }),
+      overview: overview([backend]),
+      find: "caller",
+    });
+    expect((nodeById(scene, screenNodeId("s1"))?.data as MapScreenData).dimmed).toBe(false);
+    expect((nodeById(scene, screenNodeId("s2"))?.data as MapScreenData).dimmed).toBe(true);
+    expect((nodeById(scene, "sys:api")?.data as MapSystemData).dimmed).toBe(true);
+    // Endpoint text matches count for the serving system.
+    const byRoute = build({
+      report: report({ screens }),
+      overview: overview([backend]),
+      find: "get /x",
+    });
+    expect((nodeById(byRoute, "sys:api")?.data as MapSystemData).dimmed).toBe(false);
+  });
+});
