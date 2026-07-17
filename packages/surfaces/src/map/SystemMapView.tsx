@@ -591,6 +591,11 @@ function SystemMapInner() {
                 <span>· {scene.fixturesHidden} fixture units hidden</span>
               </Tooltip>
             ) : null}
+            {scene.quietHidden > 0 ? (
+              <Tooltip content="Shared/platform systems with no endpoints, screens or traced calls are trimmed — the architecture view shows everything">
+                <span>· {scene.quietHidden} platform systems trimmed</span>
+              </Tooltip>
+            ) : null}
             {map?.truncated ? (
               <Tooltip content="Some call traces hit the traversal cap — screen edges may be missing">
                 <span className="text-warn">capped</span>

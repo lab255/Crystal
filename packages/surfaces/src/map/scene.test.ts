@@ -169,6 +169,32 @@ describe("buildSystemMapScene — bands", () => {
     expect(scene.fixturesHidden).toBe(2);
   });
 
+  it("trims quiet-role backend systems unless the product story involves them", () => {
+    const scene = build({
+      report: report({ screens: [screen("s1", "/a", "web/pages/Home.tsx")] }),
+      overview: overview([
+        sys("sys:web", "frontend", "web"),
+        sys("sys:api", "backend", "server/api", {
+          endpoints: [{ method: "GET", path: "/x", file: "server/api/r.ts" }],
+        }),
+        // Pure platform noise: shared role, no endpoints, nothing calls it.
+        sys("sys:utils", "backend", "server/utils", { role: "shared" }),
+        // Shared role but it serves a traced call — stays.
+        sys("sys:kernel", "backend", "server/kernel", { role: "shared" }),
+      ]),
+      calls: [call("s1", "GET", "/k", "server/kernel/k.ts")],
+    });
+    expect(nodeById(scene, "sys:utils")).toBeUndefined();
+    expect(nodeById(scene, "sys:kernel")).toBeTruthy();
+    expect(scene.quietHidden).toBe(1);
+    // A workspace made only of quiet systems still maps everything.
+    const allQuiet = build({
+      overview: overview([sys("sys:utils", "backend", "src/utils", { role: "shared" })]),
+    });
+    expect(nodeById(allQuiet, "sys:utils")).toBeTruthy();
+    expect(allQuiet.quietHidden).toBe(0);
+  });
+
   it("returns an empty scene for empty input", () => {
     const scene = build();
     expect(scene.empty).toBe(true);

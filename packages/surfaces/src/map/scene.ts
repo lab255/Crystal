@@ -10,6 +10,7 @@ import {
   type SystemExternal,
   type SystemModule,
   type SystemOverview,
+  type SystemRole,
 } from "@crystal/core";
 
 /**
@@ -274,7 +275,9 @@ export interface SystemMapScene {
   empty: boolean;
   /** Fixture-scoped systems + screens excluded from the map (`examples/…`). */
   fixturesHidden: number;
-  /** What the map actually shows (post fixture filtering) — the stats chip. */
+  /** Quiet-role platform systems trimmed from the backend band. */
+  quietHidden: number;
+  /** What the map actually shows (post filtering) — the stats chip. */
   stats: { screens: number; systems: number };
   /**
    * The resolved selection — null for stale ids (renamed system, removed
@@ -285,21 +288,49 @@ export interface SystemMapScene {
   selection: SystemMapSelection | null;
 }
 
+/** Roles the map trims by default — platform noise, same set the systems view hides. */
+const QUIET_ROLES: readonly SystemRole[] = ["shared", "entry"];
+
 export function buildSystemMapScene(input: SystemMapSceneInput): SystemMapScene {
   const { report, overview, calls, selected, find } = input;
   // Fixture codebases are someone else's product — their screens and systems
   // would drown the host repo's map (the overview alone keeps them, scoped).
-  const systems = overview.systems.filter(
+  const unscoped = overview.systems.filter(
     (s) => !s.parts.every((p) => isFixtureScopedPath(p.path)),
   );
   const screens = report.screens
     .filter((s) => !isFixtureScopedPath(s.file))
     .sort((a, b) => a.route.localeCompare(b.route) || a.id.localeCompare(b.id));
   const fixturesHidden =
-    overview.systems.length - systems.length + (report.screens.length - screens.length);
+    overview.systems.length - unscoped.length + (report.screens.length - screens.length);
+
+  // Quiet-role backend systems (shared utils, entry shells) are the overview's
+  // platform noise — at FormSG scale they turn the backend band into a
+  // hairball. A quiet system stays whenever it participates in the product
+  // story: it serves endpoints, owns screens, or receives a traced call.
+  const preAttributor = makeSystemAttributor(unscoped);
+  const involved = new Set<string>();
+  for (const s of screens) {
+    const owner = preAttributor(s.file);
+    if (owner) involved.add(owner.id);
+  }
+  for (const c of calls) {
+    const target = c.endpoint ? preAttributor(c.endpoint.file) : null;
+    if (target) involved.add(target.id);
+  }
+  const quiet = (s: SystemModule): boolean =>
+    QUIET_ROLES.includes(s.role) &&
+    s.layer === "backend" &&
+    s.endpoints.length === 0 &&
+    !involved.has(s.id);
+  let systems = unscoped.filter((s) => !quiet(s));
+  // A workspace made only of quiet systems still deserves a map.
+  if (systems.length === 0) systems = unscoped;
+  const quietHidden = unscoped.length - systems.length;
+
   const stats = { screens: screens.length, systems: systems.length };
   if (systems.length === 0 && screens.length === 0) {
-    return { nodes: [], edges: [], empty: true, fixturesHidden, stats, selection: null };
+    return { nodes: [], edges: [], empty: true, fixturesHidden, quietHidden, stats, selection: null };
   }
 
   /* ---- file → system attribution (longest part-path prefix wins) ---- */
@@ -840,10 +871,16 @@ export function buildSystemMapScene(input: SystemMapSceneInput): SystemMapScene 
         stroke,
         strokeWidth: width,
         strokeDasharray: e.apiOnly ? "4 3" : undefined,
-        opacity: faded ? 0.08 : 1,
+        // Plain import links recede with their weight so API traffic and the
+        // heavy structural spines carry the eye on busy workspaces.
+        opacity: faded
+          ? 0.08
+          : e.kind === "link" && !e.apiOnly
+            ? 0.35 + 0.65 * Math.sqrt(e.weight / maxLinkWeight)
+            : 1,
       },
     });
   }
 
-  return { nodes, edges, empty: false, fixturesHidden, stats, selection };
+  return { nodes, edges, empty: false, fixturesHidden, quietHidden, stats, selection };
 }
