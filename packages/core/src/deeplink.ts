@@ -258,7 +258,7 @@ export function formatDeepLink(link: DeepLink): string {
     if (link.code?.file) add("file", link.code.file);
   } else if (mode === "surfaces") {
     const s = link.surfaces ?? {};
-    const view = s.view ?? "screens";
+    const view = s.view ?? "map";
     path += `/${view}`;
     if (view === "map") {
       if (s.node) add("node", s.node);
@@ -545,7 +545,7 @@ export function applyDeepLink(current: DeepLink, next: DeepLink): DeepLink {
     if (next.code) link.code = next.code;
     else delete link.code;
   } else if (next.mode === "surfaces") {
-    const view = next.surfaces?.view ?? "screens";
+    const view = next.surfaces?.view ?? "map";
     const merged = replaceOwned(current.surfaces, next.surfaces, SURFACES_VIEW_FIELDS[view]);
     if (merged) link.surfaces = merged;
     else delete link.surfaces;
@@ -591,7 +591,7 @@ export function deepLinkNavIdentity(link: DeepLink): string {
     return `orchestrate/${o.tab ?? "board"}/${o.project ?? ""}`;
   }
   if (mode === "code") return `code/${link.code?.file ?? ""}`;
-  if (mode === "surfaces") return `surfaces/${link.surfaces?.view ?? "screens"}`;
+  if (mode === "surfaces") return `surfaces/${link.surfaces?.view ?? "map"}`;
   if (mode === "quality") return `quality/${link.quality?.view ?? "tests"}`;
   return mode;
 }

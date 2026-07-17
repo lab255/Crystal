@@ -355,8 +355,15 @@ describe("round trips", () => {
     expect(parseDeepLink("#/surfaces/apis").surfaces?.arch).toBeUndefined();
   });
 
-  it("surfaces defaults to the screens view and scopes params per subview", () => {
-    expect(formatDeepLink({ mode: "surfaces" })).toBe("#/surfaces/screens");
+  it("surfaces defaults to the system map and scopes params per subview", () => {
+    expect(formatDeepLink({ mode: "surfaces" })).toBe("#/surfaces/map");
+    // The map's node selection round-trips.
+    const map: DeepLink = {
+      ws: "abc",
+      mode: "surfaces",
+      surfaces: { view: "map", node: "ep:GET /availability", find: "book" },
+    };
+    expect(roundTrip(map)).toEqual(map);
     // A components URL cannot carry a screen selection.
     expect(
       formatDeepLink({
@@ -635,7 +642,10 @@ describe("deepLinkNavIdentity", () => {
         surfaces: { view: "screens", screen: "next-app:/", demo: true },
       }),
     ).toBe(deepLinkNavIdentity(screens));
-    expect(deepLinkNavIdentity({ mode: "surfaces" })).toBe(deepLinkNavIdentity(screens));
+    // The bare mode is the system map — the mode's default view.
+    expect(deepLinkNavIdentity({ mode: "surfaces" })).toBe(
+      deepLinkNavIdentity({ mode: "surfaces", surfaces: { view: "map" } }),
+    );
     expect(deepLinkNavIdentity({ mode: "surfaces", surfaces: { view: "apis" } })).not.toBe(
       deepLinkNavIdentity(screens),
     );

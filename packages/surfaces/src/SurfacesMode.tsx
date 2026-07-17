@@ -51,7 +51,10 @@ export function SurfacesMode() {
 
 function SurfacesShell() {
   const nav = useNavUpdate();
-  const view = useNav((l) => l.surfaces?.view) ?? "screens";
+  // The system map is the mode's front door — the full-stack overview greets
+  // first, the focused lists are one tab away (must match the deep-link
+  // codec's default or refreshing the bare URL would switch views).
+  const view = useNav((l) => l.surfaces?.view) ?? "map";
   const find = useNav((l) => l.surfaces?.find) ?? "";
   const archOpen = useNav((l) => l.surfaces?.arch ?? false);
   const archPane = useSidePaneLayout();
@@ -127,20 +130,24 @@ function SurfacesShell() {
                 <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
               </button>
             </Tooltip>
-            <Tooltip content="Toggle the architecture side pane — callers and integrations highlight there">
-              <button
-                type="button"
-                onClick={() => nav({ surfaces: { arch: archOpen ? null : true } })}
-                aria-label="Toggle architecture pane"
-                aria-pressed={archOpen}
-                className={cn(
-                  "rounded-md p-1 hover:bg-surface-3",
-                  archOpen ? "text-crystal-300" : "text-ink-faint hover:text-ink",
-                )}
-              >
-                <Boxes className="h-3.5 w-3.5" />
-              </button>
-            </Tooltip>
+            {view !== "map" ? (
+              // The map IS the architecture — the side pane only assists the
+              // focused list views.
+              <Tooltip content="Toggle the architecture side pane — callers and integrations highlight there">
+                <button
+                  type="button"
+                  onClick={() => nav({ surfaces: { arch: archOpen ? null : true } })}
+                  aria-label="Toggle architecture pane"
+                  aria-pressed={archOpen}
+                  className={cn(
+                    "rounded-md p-1 hover:bg-surface-3",
+                    archOpen ? "text-crystal-300" : "text-ink-faint hover:text-ink",
+                  )}
+                >
+                  <Boxes className="h-3.5 w-3.5" />
+                </button>
+              </Tooltip>
+            ) : null}
             <div className="ml-auto flex items-center gap-0.5 rounded-lg bg-surface-2 p-0.5">
               {VIEW_META.map(({ id, label, icon: Icon }) => (
                 <button
@@ -204,7 +211,7 @@ function SurfacesShell() {
           </div>
         </div>
       </SplitPane>
-      {archOpen ? (
+      {archOpen && view !== "map" ? (
         <SplitPane defaultSize={archPane.defaultSize} minSize={340} maxSize="70%">
           <ArchSidePane />
         </SplitPane>
