@@ -11,6 +11,9 @@ import type {
 } from "@crystal/core";
 import { requestOpenFile, useCrystal, useNavUpdate, useWorkspaces } from "@crystal/client";
 import { Tooltip, cn } from "@crystal/ui";
+import { makeSystemAttributor } from "./map/scene.js";
+
+const EMPTY_SYSTEMS: SystemModule[] = [];
 
 /* ------------------------------------------------------------------ */
 /* Data: surfaces report + systems overview, refreshed on code changes */
@@ -86,6 +89,18 @@ export function SurfacesProvider({ children }: { children: React.ReactNode }) {
     };
   }, [client, activeWs, generation]);
 
+  // Workspace switch drops the previous workspace's data outright — screen
+  // ids and workspace-relative files collide across workspaces, so a stale
+  // report (or the slow `surfaces.map` join) rendered against the new
+  // workspace's screens would show another codebase's traffic as this one's.
+  useEffect(() => {
+    setReport(null);
+    setOverview(null);
+    setMap(null);
+    setError(null);
+    setLoading(true);
+  }, [activeWs]);
+
   useEffect(() => {
     const bump = ({ ws }: { ws: string }) => {
       if (ws === activeWs) setGeneration((g) => g + 1);
@@ -100,14 +115,12 @@ export function SurfacesProvider({ children }: { children: React.ReactNode }) {
 
   const refresh = useCallback(() => setGeneration((g) => g + 1), []);
 
-  const systemOfFile = useMemo(() => {
-    const parts: { path: string; system: SystemModule }[] = [];
-    for (const s of overview?.systems ?? [])
-      for (const p of s.parts) parts.push({ path: p.path, system: s });
-    parts.sort((a, b) => b.path.length - a.path.length);
-    return (file: string): SystemModule | null =>
-      parts.find((p) => file === p.path || file.startsWith(`${p.path}/`))?.system ?? null;
-  }, [overview]);
+  // One attribution rule for the whole mode — the map's edge targeting uses
+  // the same helper, so the canvas and the panes can't disagree on ownership.
+  const systemOfFile = useMemo(
+    () => makeSystemAttributor(overview?.systems ?? EMPTY_SYSTEMS),
+    [overview],
+  );
 
   return (
     <SurfacesCtx.Provider

@@ -62,6 +62,9 @@ const MAX_MODULE_FILES_SHOWN = 150;
 const MIN_FINGERPRINT_TOKENS = 25;
 const TRACE_MAX_DEPTH = 12;
 const TRACE_MAX_NODES = 300;
+/** Exported components traced per screen entry file (fallback when the
+ *  routed component is unknown); dropping more sets the report's `truncated`. */
+const SCREEN_TRACE_SYMBOL_CAP = 3;
 const MAX_DUPLICATE_CLUSTERS = 100;
 const SNIPPET_MAX_LINES = 200;
 const SNIPPET_MAX_BYTES = 16 * 1024;
@@ -89,6 +92,14 @@ export interface SymbolCall {
   receiver: string | null;
   /** 1-based line of the call expression. */
   line?: number;
+  /**
+   * A JSX render (`<Foo/>`) rather than a genuine call expression. Render
+   * edges let the API trace walk into a screen's component tree, but ranking
+   * heuristics (journeys) and unresolved-dependency listings ignore them —
+   * a presentational component is not an entry point, and a third-party
+   * `<Dialog/>` is not a missing local callee.
+   */
+  render?: boolean;
 }
 
 /** Every top-level declaration, exported or not, with its source range. */
@@ -286,13 +297,16 @@ function collectCalls(root: ts.Node, out: SymbolCall[], lineOf?: (node: ts.Node)
     } else if (ts.isJsxSelfClosingElement(node) || ts.isJsxOpeningElement(node)) {
       const tag = node.tagName;
       if (ts.isIdentifier(tag) && /^[A-Z]/.test(tag.text)) {
-        out.push({ name: tag.text, receiver: null, line: lineOf?.(node) });
+        out.push({ name: tag.text, receiver: null, line: lineOf?.(node), render: true });
       } else if (
         ts.isPropertyAccessExpression(tag) &&
         ts.isIdentifier(tag.name) &&
         ts.isIdentifier(tag.expression)
       ) {
-        out.push({ name: tag.name.text, receiver: tag.expression.text, line: lineOf?.(node) });
+        // `<Tabs.Item/>` renders the compound component `Tabs` — resolving
+        // the member name through instance dispatch would bind the render to
+        // whatever class happens to declare a same-named method.
+        out.push({ name: tag.expression.text, receiver: null, line: lineOf?.(node), render: true });
       }
     }
     ts.forEachChild(node, visit);
@@ -650,12 +664,16 @@ export function parseSource(fileRel: string, text: string): Omit<ParsedFile, "mt
   }
 
   // Dynamic import("...") and HTTP surface calls anywhere in the file.
+  // `sawFetchish` gates the wrapper-propagation pass below — most files have
+  // no fetch at all and skip its extra AST walks entirely.
+  let sawFetchish = false;
   const visit = (node: ts.Node): void => {
     if (ts.isCallExpression(node)) {
       const callee = node.expression;
       if (callee.kind === ts.SyntaxKind.ImportKeyword && node.arguments[0] && ts.isStringLiteral(node.arguments[0])) {
         imports.push({ specifier: node.arguments[0].text, names: ["(dynamic)"], line: lineOf(node) });
       } else if (ts.isIdentifier(callee) && callee.text === "fetch") {
+        sawFetchish = true;
         const p = httpPathOf(node.arguments[0], stringConsts);
         if (p)
           apiCalls.push({ method: fetchMethodOf(node.arguments[1]), path: p, line: lineOf(node) });
@@ -672,7 +690,11 @@ export function parseSource(fileRel: string, text: string): Omit<ParsedFile, "mt
         const recv = callee.expression.text.toLowerCase();
         const serverishRecv =
           SERVER_RECEIVERS.has(recv) || recv.endsWith("router") || recv.endsWith("routes");
-        const prefix = httpPathOf(node.arguments[0], stringConsts);
+        // Concatenated prefixes (`app.use(BASE + "/x", …)`) are loop/config
+        // driven — registering a truncated guess poisons route matching.
+        const prefix = ts.isBinaryExpression(node.arguments[0]!)
+          ? null
+          : httpPathOf(node.arguments[0], stringConsts);
         if (serverishRecv && prefix) {
           const target = [...node.arguments].reverse().find(ts.isIdentifier);
           if (target) mounts.push({ prefix, target: target.text, line: lineOf(node) });
@@ -703,6 +725,7 @@ export function parseSource(fileRel: string, text: string): Omit<ParsedFile, "mt
       ) {
         const verb = callee.name.text;
         const recv = callee.expression.text;
+        if (ALWAYS_CLIENT_RECEIVERS.has(recv.toLowerCase())) sawFetchish = true;
         const p = httpPathOf(node.arguments[0], stringConsts);
         if (p) {
           const method = verb === "all" ? "ALL" : verb.toUpperCase();
@@ -731,7 +754,14 @@ export function parseSource(fileRel: string, text: string): Omit<ParsedFile, "mt
               (words.includes("api") || lower.endsWith("client") || lower.endsWith("http")));
           if (clientish && verb !== "all") {
             apiCalls.push({ method, path: p, line: lineOf(node) });
-          } else if (serverish && node.arguments.length >= 2) {
+          } else if (
+            serverish &&
+            node.arguments.length >= 2 &&
+            // Served routes must be literal-derived: a concatenated path
+            // (`app.get("/admin" + sub.path, h)` in a loop) would register a
+            // bogus truncated route that suffix-matching then hits.
+            !ts.isBinaryExpression(node.arguments[0]!)
+          ) {
             // A route registration takes a handler; `map.get("/x")` does not.
             // The (last) handler reference is the natural trace root.
             const last = node.arguments[node.arguments.length - 1]!;
@@ -772,13 +802,18 @@ export function parseSource(fileRel: string, text: string): Omit<ParsedFile, "mt
     fixedMethod: string | null;
     /** Line of the helper's own fetch — its degenerate apiCall is removed. */
     fetchLine: number;
+    /** Free function (`get("/x")`) or class method (`this.request("/x")`). */
+    kind: "fn" | "method";
   }
 
   /**
    * Split a URL expression into resolved text and the position of the path
    * parameter. Unknown holes before the parameter drop out (same philosophy
    * as httpPathOf's wildcard prefix — suffix route matching absorbs a base
-   * URL we can't see).
+   * URL we can't see). The parameter must be the FINAL piece: a URL with
+   * anything after the hole (`/users/${id}/profile`, `${ver}${path}` at the
+   * ver hole) is parameterized by an id or a base, not by a route path — for
+   * those the classic wildcard call the main visitor emitted stays right.
    */
   const wrapperUrlOf = (
     expr: ts.Expression,
@@ -786,27 +821,40 @@ export function parseSource(fileRel: string, text: string): Omit<ParsedFile, "mt
   ): { prefix: string; pathIndex: number } | null => {
     let prefix = "";
     let pathIndex: number | null = null;
+    let trailing = false; // anything at all after the param hole
     const flatten = (e: ts.Expression): void => {
-      if (pathIndex != null) return; // text after the param hole is dropped
-      if (ts.isStringLiteral(e) || ts.isNoSubstitutionTemplateLiteral(e)) prefix += e.text;
-      else if (ts.isTemplateExpression(e)) {
+      if (trailing) return;
+      if (ts.isStringLiteral(e) || ts.isNoSubstitutionTemplateLiteral(e)) {
+        if (pathIndex != null) trailing = e.text.length > 0;
+        else prefix += e.text;
+      } else if (ts.isTemplateExpression(e)) {
+        if (pathIndex != null) {
+          trailing = true;
+          return;
+        }
         prefix += e.head.text;
         for (const s of e.templateSpans) {
           flatten(s.expression);
-          if (pathIndex == null) prefix += s.literal.text;
+          if (trailing) return;
+          if (pathIndex != null) {
+            if (s.literal.text.length > 0) trailing = true;
+          } else prefix += s.literal.text;
         }
       } else if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.PlusToken) {
         flatten(e.left);
         flatten(e.right);
       } else if (ts.isIdentifier(e)) {
         const param = params.get(e.text);
-        if (param != null) pathIndex = param;
+        if (pathIndex != null) trailing = true;
+        else if (param != null) pathIndex = param;
         else prefix += stringConsts.get(e.text) ?? "";
+      } else if (pathIndex != null) {
+        trailing = true;
       }
-      // Anything else (config lookups, function calls) is an unseen base URL.
+      // Pre-hole non-identifiers (config lookups, calls) are an unseen base URL.
     };
     flatten(expr);
-    return pathIndex == null ? null : { prefix, pathIndex };
+    return pathIndex == null || trailing ? null : { prefix, pathIndex };
   };
 
   /** Helper-body init → fixed method, or null when the call site decides. */
@@ -816,7 +864,9 @@ export function parseSource(fileRel: string, text: string): Omit<ParsedFile, "mt
     let sawSpread = false;
     for (const prop of init.properties) {
       if (ts.isSpreadAssignment(prop)) sawSpread = true;
-      else if (
+      else if (ts.isShorthandPropertyAssignment(prop) && prop.name.text === "method") {
+        return null; // `{ method }` — the method is a helper parameter
+      } else if (
         ts.isPropertyAssignment(prop) &&
         ts.isIdentifier(prop.name) &&
         prop.name.text === "method"
@@ -831,7 +881,11 @@ export function parseSource(fileRel: string, text: string): Omit<ParsedFile, "mt
   };
 
   const wrappers = new Map<string, ApiWrapper>();
-  const detectWrapper = (name: string, fn: ts.SignatureDeclaration & { body?: ts.Node }): void => {
+  const detectWrapper = (
+    name: string,
+    fn: ts.SignatureDeclaration & { body?: ts.Node },
+    kind: ApiWrapper["kind"],
+  ): void => {
     if (wrappers.has(name) || !fn.body) return;
     const params = new Map<string, number>();
     fn.parameters.forEach((p, i) => {
@@ -859,6 +913,7 @@ export function parseSource(fileRel: string, text: string): Omit<ParsedFile, "mt
                 ? fixedMethodOf(node.arguments[1])
                 : (callee as ts.PropertyAccessExpression & { name: ts.Identifier }).name.text.toUpperCase(),
               fetchLine: lineOf(node),
+              kind,
             };
             return;
           }
@@ -870,9 +925,9 @@ export function parseSource(fileRel: string, text: string): Omit<ParsedFile, "mt
     if (found) wrappers.set(name, found);
   };
 
-  for (const statement of source.statements) {
+  for (const statement of sawFetchish ? source.statements : []) {
     if (ts.isFunctionDeclaration(statement) && statement.name) {
-      detectWrapper(statement.name.text, statement);
+      detectWrapper(statement.name.text, statement, "fn");
     } else if (ts.isVariableStatement(statement)) {
       for (const decl of statement.declarationList.declarations) {
         if (
@@ -880,49 +935,66 @@ export function parseSource(fileRel: string, text: string): Omit<ParsedFile, "mt
           decl.initializer &&
           (ts.isArrowFunction(decl.initializer) || ts.isFunctionExpression(decl.initializer))
         )
-          detectWrapper(decl.name.text, decl.initializer);
+          detectWrapper(decl.name.text, decl.initializer, "fn");
       }
     } else if (ts.isClassDeclaration(statement)) {
       for (const member of statement.members) {
         if (ts.isMethodDeclaration(member) && ts.isIdentifier(member.name))
-          detectWrapper(member.name.text, member);
+          detectWrapper(member.name.text, member, "method");
       }
     }
   }
 
   if (wrappers.size > 0) {
-    // The helper's own fetch contributed at most a bare prefix — noise.
-    const degenerate = new Set([...wrappers.values()].map((w) => w.fetchLine));
-    const kept = apiCalls.filter((c) => !degenerate.has(c.line ?? -1));
-    apiCalls.length = 0;
-    apiCalls.push(...kept);
     const seen = new Set(apiCalls.map((c) => `${c.method} ${c.path} @${c.line ?? "?"}`));
-    const clientishReceiver = (recv: ts.Expression): boolean =>
-      recv.kind === ts.SyntaxKind.ThisKeyword ||
-      (ts.isIdentifier(recv) &&
-        (CLIENT_RECEIVERS.has(recv.text.toLowerCase()) ||
-          /(client|api|http)$/i.test(recv.text)));
+    const emitted: HttpEndpoint[] = [];
+    const emittedBy = new Set<string>();
+    /** A string-literal HTTP verb among the args (`request("POST", …)` style). */
+    const verbArgOf = (args: readonly ts.Expression[], skip: number): string | null => {
+      for (let i = 0; i < args.length; i++) {
+        if (i === skip) continue;
+        const a = args[i]!;
+        if (
+          (ts.isStringLiteral(a) || ts.isNoSubstitutionTemplateLiteral(a)) &&
+          HTTP_METHOD_ARGS.has(a.text.toUpperCase())
+        )
+          return a.text.toUpperCase();
+      }
+      return null;
+    };
     const visitCallSites = (node: ts.Node): void => {
       if (ts.isCallExpression(node)) {
         const callee = node.expression;
+        // Free-function wrappers match bare calls; method wrappers match
+        // `this.x(...)` only. Instance receivers (`httpClient.get(...)`) are
+        // NOT matched — an imported client object's method is not this file's
+        // helper, and the clientish-receiver convention already covers it.
         const name = ts.isIdentifier(callee)
           ? callee.text
           : ts.isPropertyAccessExpression(callee) &&
               ts.isIdentifier(callee.name) &&
-              clientishReceiver(callee.expression)
+              callee.expression.kind === ts.SyntaxKind.ThisKeyword
             ? callee.name.text
             : null;
         const wrapper = name ? wrappers.get(name) : undefined;
-        if (wrapper) {
+        const expectedKind = ts.isIdentifier(callee) ? "fn" : "method";
+        // Registration-shaped calls (`get("/x", handler)`) are route setups
+        // or callback APIs, not path requests.
+        const last = node.arguments[node.arguments.length - 1];
+        const handlerish = last != null && (ts.isArrowFunction(last) || ts.isFunctionExpression(last));
+        if (wrapper && wrapper.kind === expectedKind && !handlerish) {
           const raw = urlTextOf(node.arguments[wrapper.pathIndex], stringConsts);
           const path = raw != null ? normalizeHttpPath(wrapper.prefix + raw) : null;
           if (path) {
             const method =
-              wrapper.fixedMethod ?? fetchMethodOf(node.arguments[wrapper.pathIndex + 1]);
+              wrapper.fixedMethod ??
+              verbArgOf(node.arguments, wrapper.pathIndex) ??
+              fetchMethodOf(node.arguments[wrapper.pathIndex + 1]);
             const key = `${method} ${path} @${lineOf(node)}`;
             if (!seen.has(key)) {
               seen.add(key);
-              apiCalls.push({ method, path, line: lineOf(node) });
+              emitted.push({ method, path, line: lineOf(node) });
+              emittedBy.add(name!);
             }
           }
         }
@@ -930,6 +1002,19 @@ export function parseSource(fileRel: string, text: string): Omit<ParsedFile, "mt
       ts.forEachChild(node, visitCallSites);
     };
     ts.forEachChild(source, visitCallSites);
+
+    // Drop a helper's own degenerate call (a bare prefix) only when its call
+    // sites produced something better — a helper invoked purely with computed
+    // arguments keeps its wildcard call so the route stays visible at all.
+    const degenerate = new Set(
+      [...wrappers.entries()].filter(([n]) => emittedBy.has(n)).map(([, w]) => w.fetchLine),
+    );
+    if (degenerate.size > 0) {
+      const kept = apiCalls.filter((c) => !degenerate.has(c.line ?? -1));
+      apiCalls.length = 0;
+      apiCalls.push(...kept);
+    }
+    apiCalls.push(...emitted);
   }
 
   // Routes declared by file convention rather than registrar calls.
@@ -1069,6 +1154,9 @@ export function buildCallGraph(records: Map<string, CallGraphRecord>): CallGraph
             resolved.push(hit);
           }
         } else {
+          // Unresolved renders are third-party components (<Dialog/> from a
+          // UI library), not missing local callees — pure noise in the list.
+          if (call.render) continue;
           const ambient = call.receiver
             ? GLOBAL_RECEIVERS.has(call.receiver)
             : GLOBAL_CALLEES.has(call.name);
@@ -1227,7 +1315,9 @@ export function rankJourneySuggestions(
     const priority = root ? 0 : entry ? 1 : 2;
     for (const sym of rec.symbols) {
       if (sym.kind !== "function" && sym.kind !== "component" && sym.kind !== "const") continue;
-      if (sym.calls.length === 0) continue;
+      // Render-only symbols are presentational components, not entry points —
+      // a widget tree is not a user journey.
+      if (!sym.calls.some((c) => !c.render)) continue;
       if (!sym.exported && !root) continue;
       candidates.push({ rec, sym, priority });
     }
@@ -1973,6 +2063,16 @@ export class CodeMapAnalyzer {
 
   async trace(file: string, symbol: string, maxDepth = TRACE_MAX_DEPTH): Promise<CodeTrace> {
     await this.ensureFresh();
+    return this.traceSync(file, symbol, maxDepth);
+  }
+
+  /**
+   * `trace` on the current snapshot, no freshness check — batch callers
+   * (`buildSurfaceMap`) run entirely behind one `ensureFresh`, so every trace
+   * in the batch sees the same records/served routes even if the watcher
+   * invalidates mid-build.
+   */
+  private traceSync(file: string, symbol: string, maxDepth = TRACE_MAX_DEPTH): CodeTrace {
     // Resolve through barrels — the call graph keys on the declaring file.
     const { record } = this.symbolIn(file, symbol);
     const graph = this.callGraph();
@@ -2025,7 +2125,7 @@ export class CodeMapAnalyzer {
    */
   async apiTrace(file: string, symbol?: string, maxDepth?: number): Promise<ApiTrace> {
     await this.ensureFresh();
-    const { calls, truncated } = await this.traceApiCalls(file, symbol, maxDepth);
+    const { calls, truncated } = this.traceApiCalls(file, symbol, maxDepth);
     this.matchServedRoutes(calls, this.servedRoutes());
     return { entry: { file, symbol }, calls, truncated };
   }
@@ -2068,11 +2168,11 @@ export class CodeMapAnalyzer {
   }
 
   /** apiTrace's traversal core: the outgoing calls, sorted, not yet matched. */
-  private async traceApiCalls(
+  private traceApiCalls(
     file: string,
     symbol?: string,
     maxDepth?: number,
-  ): Promise<{ calls: ApiTraceCall[]; truncated: boolean }> {
+  ): { calls: ApiTraceCall[]; truncated: boolean } {
     const calls: ApiTraceCall[] = [];
     let truncated = false;
     const collect = (rec: FileRecord, within: { line: number; endLine: number } | null, via: ApiTraceCall["via"]) => {
@@ -2084,20 +2184,20 @@ export class CodeMapAnalyzer {
     };
 
     if (symbol) {
-      const trace = await this.trace(file, symbol, maxDepth);
+      const trace = this.traceSync(file, symbol, maxDepth);
       truncated = trace.truncated;
+      // Resolve each step's record/symbol once — both passes below reuse it.
+      const steps = trace.steps.map((step) => {
+        const rec = this.records.get(step.ref.file);
+        return { step, rec, sym: rec?.symbols.find((s) => s.name === step.ref.symbol) };
+      });
       // Which method names the path actually invoked — a class step then only
       // contributes the methods that were called, not its whole API surface.
       const calledMethods = new Set<string>();
-      for (const step of trace.steps) {
-        const sym = this.records
-          .get(step.ref.file)
-          ?.symbols.find((s) => s.name === step.ref.symbol);
+      for (const { sym } of steps) {
         for (const call of sym?.calls ?? []) if (call.receiver) calledMethods.add(call.name);
       }
-      for (const step of trace.steps) {
-        const rec = this.records.get(step.ref.file);
-        const sym = rec?.symbols.find((s) => s.name === step.ref.symbol);
+      for (const { step, rec, sym } of steps) {
         if (!rec || !sym) continue;
         const invoked = (sym.methods ?? []).filter((m) => calledMethods.has(m.name));
         if (sym.kind === "class" && invoked.length > 0) {
@@ -2237,14 +2337,27 @@ export class CodeMapAnalyzer {
    * delegation pattern; whole-file collection (the empty list) only sees the
    * entry file's own call sites.
    */
-  private screenTraceSymbols(rec: FileRecord, component: string | undefined): string[] {
-    if (component && rec.symbols.some((s) => s.name === component)) return [component];
-    return rec.symbols
-      .filter((s) => s.exported && s.kind === "component")
-      .slice(0, 3)
-      .map((s) => s.name);
+  private screenTraceSymbols(
+    rec: FileRecord,
+    component: string | undefined,
+  ): { symbols: string[]; dropped: boolean } {
+    if (component && rec.symbols.some((s) => s.name === component)) {
+      return { symbols: [component], dropped: false };
+    }
+    const exported = rec.symbols.filter((s) => s.exported && s.kind === "component");
+    return {
+      symbols: exported.slice(0, SCREEN_TRACE_SYMBOL_CAP).map((s) => s.name),
+      // Dropped exports mean dropped edges — the report's `truncated` says so.
+      dropped: exported.length > SCREEN_TRACE_SYMBOL_CAP,
+    };
   }
 
+  /**
+   * The whole build runs synchronously behind `surfaceMap()`'s single
+   * `ensureFresh` — no per-screen awaits, so a watcher invalidation mid-build
+   * can't swap `records` under the iteration and mix two analysis
+   * generations in one report.
+   */
   private async buildSurfaceMap(): Promise<SurfaceMapReport> {
     const { screens } = await this.surfaces();
     const served = this.servedRoutes();
@@ -2255,21 +2368,25 @@ export class CodeMapAnalyzer {
     for (const screen of screens) {
       const entry = screen.componentFile ?? screen.file;
       const rec = this.records.get(entry);
-      const symbols = rec ? this.screenTraceSymbols(rec, screen.component) : [];
+      const traceSymbols = rec
+        ? this.screenTraceSymbols(rec, screen.component)
+        : { symbols: [], dropped: false };
+      const { symbols } = traceSymbols;
+      if (traceSymbols.dropped) truncated = true;
       const traceKey = `${entry}|${symbols.join(",")}`;
       let trace = traceByEntry.get(traceKey);
       if (!trace) {
         if (!rec) {
           trace = { calls: [], truncated: false }; // entry outside the analyzed map
         } else if (symbols.length === 0) {
-          trace = await this.traceApiCalls(entry);
+          trace = this.traceApiCalls(entry);
         } else {
           // Merge the per-symbol call-graph walks (dedupe by call site).
           const merged: ApiTraceCall[] = [];
           const seen = new Set<string>();
           let anyTruncated = false;
           for (const symbol of symbols) {
-            const t = await this.traceApiCalls(entry, symbol);
+            const t = this.traceApiCalls(entry, symbol);
             anyTruncated ||= t.truncated;
             for (const call of t.calls) {
               const key = `${call.file}:${call.line ?? "?"}:${call.method} ${call.path}`;

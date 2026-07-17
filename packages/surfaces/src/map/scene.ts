@@ -1,6 +1,7 @@
 import dagre from "@dagrejs/dagre";
 import { MarkerType, type Edge as RfEdge, type Node as RfNode } from "@xyflow/react";
 import {
+  endpointKey,
   isFixtureScopedPath,
   type ScreenApiCall,
   type ScreenSurface,
@@ -119,9 +120,13 @@ export type MapEdgeKind = "call" | "feapi" | "link";
 
 export interface MapEdgeData extends Record<string, unknown> {
   kind: MapEdgeKind;
-  /** Endpoint keys ("METHOD path") the edge carries (call edges). */
-  epKeys?: string[];
 }
+
+/** What the deep-linked `node` id resolved to — the inspector renders this. */
+export type SystemMapSelection =
+  | { kind: "screen"; screen: ScreenSurface }
+  | { kind: "system"; system: SystemModule }
+  | { kind: "endpoint"; epKey: string; owner: SystemModule };
 
 /* ------------------------------------------------------------------ */
 /* Geometry                                                            */
@@ -149,9 +154,32 @@ export const ENDPOINT_ROWS_SHOWN = 6;
 const EXTERNALS_SHOWN = 6;
 
 export const screenNodeId = (screenId: string): string => `screen:${screenId}`;
-export const epKeyOf = (ep: { method: string; path: string }): string =>
-  `${ep.method} ${ep.path}`;
+/** Canonical "METHOD path" — the shared core helper, re-exported for the map. */
+export const epKeyOf = endpointKey;
 export const epNodeId = (ep: { method: string; path: string }): string => `ep:${epKeyOf(ep)}`;
+
+/**
+ * file → owning system by longest part-path prefix (ties broken
+ * lexicographically), memoized per file. The single attribution rule for the
+ * whole surfaces mode — the provider's `systemOfFile` and the map's edge
+ * targeting must agree or the canvas and the panes tell different stories.
+ */
+export function makeSystemAttributor(
+  systems: readonly SystemModule[],
+): (file: string) => SystemModule | null {
+  const partIndex: { path: string; system: SystemModule }[] = [];
+  for (const s of systems) for (const p of s.parts) partIndex.push({ path: p.path, system: s });
+  partIndex.sort((a, b) => b.path.length - a.path.length || a.path.localeCompare(b.path));
+  const memo = new Map<string, SystemModule | null>();
+  return (file: string): SystemModule | null => {
+    const hit = memo.get(file);
+    if (hit !== undefined) return hit;
+    const found =
+      partIndex.find((p) => file === p.path || file.startsWith(`${p.path}/`))?.system ?? null;
+    memo.set(file, found);
+    return found;
+  };
+}
 
 function sysCardHeight(data: Pick<MapSystemData, "endpointsShown" | "moreEndpoints" | "externals" | "compact">): number {
   if (data.compact) return COMPACT_H;
@@ -248,6 +276,13 @@ export interface SystemMapScene {
   fixturesHidden: number;
   /** What the map actually shows (post fixture filtering) — the stats chip. */
   stats: { screens: number; systems: number };
+  /**
+   * The resolved selection — null for stale ids (renamed system, removed
+   * screen, fixture-hidden unit). The view's inspector must key off this, not
+   * re-derive from the raw deep link, so canvas dimming and the inspector
+   * can never disagree.
+   */
+  selection: SystemMapSelection | null;
 }
 
 export function buildSystemMapScene(input: SystemMapSceneInput): SystemMapScene {
@@ -264,32 +299,27 @@ export function buildSystemMapScene(input: SystemMapSceneInput): SystemMapScene 
     overview.systems.length - systems.length + (report.screens.length - screens.length);
   const stats = { screens: screens.length, systems: systems.length };
   if (systems.length === 0 && screens.length === 0) {
-    return { nodes: [], edges: [], empty: true, fixturesHidden, stats };
+    return { nodes: [], edges: [], empty: true, fixturesHidden, stats, selection: null };
   }
 
   /* ---- file → system attribution (longest part-path prefix wins) ---- */
-  const partIndex: { path: string; system: SystemModule }[] = [];
-  for (const s of systems) for (const p of s.parts) partIndex.push({ path: p.path, system: s });
-  partIndex.sort((a, b) => b.path.length - a.path.length || a.path.localeCompare(b.path));
-  const sysOfFile = (file: string): SystemModule | null =>
-    partIndex.find((p) => file === p.path || file.startsWith(`${p.path}/`))?.system ?? null;
+  const sysOfFile = makeSystemAttributor(systems);
 
   const feSystems = systems.filter((s) => s.layer === "frontend");
   const backendSystems = systems.filter((s) => s.layer === "backend");
   const dataSystems = systems.filter((s) => s.layer === "database");
   const integrationSystems = systems.filter((s) => s.layer === "integrations");
 
-  /* ---- screens: attribution + grouping decision ---- */
+  /* ---- screens: attribution + grouping ---- */
   // Frontend systems are first-class on the map: whenever the overview knows
   // one, its screens ride inside a labelled container (the module identity the
   // architecture overview shows) instead of floating loose in the band.
-  const grouping = feSystems.length > 0;
   const screenIds = new Set(screens.map((s) => s.id));
   const screensBySystem = new Map<string, ScreenSurface[]>();
   const looseScreens: ScreenSurface[] = [];
   for (const s of screens) {
     const owner = sysOfFile(s.file);
-    if (grouping && owner && owner.layer === "frontend") {
+    if (owner && owner.layer === "frontend") {
       const list = screensBySystem.get(owner.id) ?? [];
       list.push(s);
       screensBySystem.set(owner.id, list);
@@ -319,7 +349,11 @@ export function buildSystemMapScene(input: SystemMapSceneInput): SystemMapScene 
   for (const c of calls) {
     if (!c.endpoint || !screenIds.has(c.screen)) continue;
     const target = sysOfFile(c.endpoint.file);
-    if (!target || target.layer === "frontend") continue;
+    // Frontend-served routes (Next `app/api`, BFFs) draw like any other
+    // target — except the screen's own container, where a screen→its-own-
+    // system edge would just be a loop on the card it sits in. (Those calls
+    // still count on the screen card and list in the inspector.)
+    if (!target || screenOwner.get(c.screen) === target.id) continue;
     const key = `${screenNodeId(c.screen)}->${target.id}`;
     const agg = callAgg.get(key) ?? {
       screenId: c.screen,
@@ -383,12 +417,16 @@ export function buildSystemMapScene(input: SystemMapSceneInput): SystemMapScene 
     });
   }
 
-  // Frontend systems represented by their own node (group or compact card).
-  const feNodeIds = new Set<string>();
-  if (grouping) for (const s of feSystems) feNodeIds.add(s.id);
-  else for (const s of feSystems) if (screens.length === 0) feNodeIds.add(s.id);
-
+  // Every frontend system gets its own node (group or compact card).
+  const feNodeIds = new Set(feSystems.map((s) => s.id));
   const nonFeIds = new Set(systems.filter((s) => s.layer !== "frontend").map((s) => s.id));
+
+  // (frontend system, target) pairs a screen-level edge already covers.
+  const coveredPairs = new Set<string>();
+  for (const agg of callAgg.values()) {
+    const owner = screenOwner.get(agg.screenId);
+    if (owner) coveredPairs.add(`${owner}->${agg.sysId}`);
+  }
 
   // (b) frontend-system → backend-system fallback from `SystemLink.apis`
   // for pairs with no screen-level edge (only when the frontend system has
@@ -397,10 +435,7 @@ export function buildSystemMapScene(input: SystemMapSceneInput): SystemMapScene 
     if (!feNodeIds.has(l.source) || !nonFeIds.has(l.target)) continue;
     const apis = l.apis ?? [];
     if (apis.length === 0) continue;
-    const covered = [...callAgg.values()].some(
-      (agg) => agg.sysId === l.target && screenOwner.get(agg.screenId) === l.source,
-    );
-    if (covered) continue;
+    if (coveredPairs.has(`${l.source}->${l.target}`)) continue;
     const first = apis[0]!;
     skeletons.push({
       id: `feapi:${l.source}->${l.target}`,
@@ -450,6 +485,13 @@ export function buildSystemMapScene(input: SystemMapSceneInput): SystemMapScene 
   const epOwner = selEp
     ? (systems.find((s) => s.endpoints.some((e) => epKeyOf(e) === selEp)) ?? null)
     : null;
+  const selection: SystemMapSelection | null = selNodeId?.startsWith("screen:")
+    ? { kind: "screen", screen: screens.find((s) => screenNodeId(s.id) === selNodeId)! }
+    : selNodeId
+      ? { kind: "system", system: systems.find((s) => s.id === selNodeId)! }
+      : selEp && epOwner
+        ? { kind: "endpoint", epKey: selEp, owner: epOwner }
+        : null;
 
   const adjacency = new Map<string, Set<string>>();
   const addAdj = (a: string, b: string) => {
@@ -513,12 +555,12 @@ export function buildSystemMapScene(input: SystemMapSceneInput): SystemMapScene 
         selected: id === selNodeId,
         dimmed: dimmedOf(id, screenMatches(s)),
       },
-      // Explicit dimensions (not just style) — the nodes are a controlled
-      // prop, so react-flow never writes `measured` back onto them, and the
-      // minimap only draws nodes whose dimensions it can read.
+      // Explicit dimension props (never `style`) — the nodes are a controlled
+      // prop, so react-flow can't write `measured` back onto them, and the
+      // minimap only draws nodes whose dimensions it can read. react-flow
+      // applies width/height as inline styles itself.
       width: SCREEN_W,
       height: SCREEN_H,
-      style: { width: SCREEN_W, height: SCREEN_H },
       draggable: false,
     };
   };
@@ -536,15 +578,13 @@ export function buildSystemMapScene(input: SystemMapSceneInput): SystemMapScene 
       dimmed: dimmedOf(s.id, sysMatches(s)),
       selectedEndpoint: selEp != null && epOwner?.id === s.id ? selEp : null,
     };
-    const height = sysCardHeight(data);
     return {
       id: s.id,
       type: "mapSystem",
       position: { x: 0, y: 0 },
       data,
       width: SYS_CARD_W,
-      height,
-      style: { width: SYS_CARD_W, height },
+      height: sysCardHeight(data),
       draggable: false,
     };
   };
@@ -570,7 +610,6 @@ export function buildSystemMapScene(input: SystemMapSceneInput): SystemMapScene 
       data: { band, label: MAP_BAND_LABELS[band] },
       width,
       height,
-      style: { width, height },
       draggable: false,
       selectable: false,
       focusable: false,
@@ -586,17 +625,13 @@ export function buildSystemMapScene(input: SystemMapSceneInput): SystemMapScene 
     | { kind: "card"; system: SystemModule }
     | { kind: "loose"; screens: ScreenSurface[] };
   const screenBlocks: ScreensBlock[] = [];
-  if (grouping) {
-    for (const s of feSystems) {
-      const members = screensBySystem.get(s.id);
-      if (members && members.length > 0) screenBlocks.push({ kind: "group", system: s, screens: members });
-      else screenBlocks.push({ kind: "card", system: s });
-    }
-    if (looseScreens.length > 0) screenBlocks.push({ kind: "loose", screens: looseScreens });
-  } else {
-    if (looseScreens.length > 0) screenBlocks.push({ kind: "loose", screens: looseScreens });
-    if (screens.length === 0) for (const s of feSystems) screenBlocks.push({ kind: "card", system: s });
+  for (const s of feSystems) {
+    const members = screensBySystem.get(s.id);
+    if (members && members.length > 0)
+      screenBlocks.push({ kind: "group", system: s, screens: members });
+    else screenBlocks.push({ kind: "card", system: s });
   }
+  if (looseScreens.length > 0) screenBlocks.push({ kind: "loose", screens: looseScreens });
 
   if (screenBlocks.length > 0) {
     const measured = screenBlocks.map((block) => {
@@ -662,7 +697,6 @@ export function buildSystemMapScene(input: SystemMapSceneInput): SystemMapScene 
             },
             width: m.w,
             height: m.h,
-            style: { width: m.w, height: m.h },
             draggable: false,
           });
           for (const s of block.screens) {
@@ -706,7 +740,7 @@ export function buildSystemMapScene(input: SystemMapSceneInput): SystemMapScene 
     const items = cards.map((c) => ({
       id: c.id,
       w: SYS_CARD_W,
-      h: (c.style?.height as number) ?? COMPACT_H,
+      h: c.height ?? COMPACT_H,
     }));
     const externalsShown = externalsAll.slice(0, EXTERNALS_SHOWN);
     const externalsH = externalsCardHeight(
@@ -726,7 +760,6 @@ export function buildSystemMapScene(input: SystemMapSceneInput): SystemMapScene 
             },
             width: SYS_CARD_W,
             height: externalsH,
-            style: { width: SYS_CARD_W, height: externalsH },
             draggable: false,
             selectable: false,
           }
@@ -735,7 +768,7 @@ export function buildSystemMapScene(input: SystemMapSceneInput): SystemMapScene 
       items.push({
         id: externalsNode.id,
         w: SYS_CARD_W,
-        h: (externalsNode.style?.height as number) ?? COMPACT_H,
+        h: externalsNode.height ?? COMPACT_H,
       });
     }
     if (items.length === 0) return;
@@ -767,11 +800,11 @@ export function buildSystemMapScene(input: SystemMapSceneInput): SystemMapScene 
   const edges: RfEdge[] = [];
   for (const e of skeletons) {
     if (!nodeIds.has(e.source) || !nodeIds.has(e.target)) continue;
-    // Downward cross-band traffic flows bottom → top; everything else keeps
-    // the side handles (same-band ranks, and the rare upward link).
+    // Screen/frontend API traffic and downward cross-band links flow
+    // bottom → top; same-band and upward links keep the side handles.
     const sourceBand = MAP_BANDS.indexOf(bandOfNode.get(e.source) ?? "backend");
     const targetBand = MAP_BANDS.indexOf(bandOfNode.get(e.target) ?? "backend");
-    const vertical = targetBand > sourceBand;
+    const vertical = e.kind !== "link" || targetBand > sourceBand;
     const active = selNodeId
       ? e.source === selNodeId || e.target === selNodeId
       : selEp
@@ -794,7 +827,7 @@ export function buildSystemMapScene(input: SystemMapSceneInput): SystemMapScene 
       sourceHandle: vertical ? "b" : "r",
       targetHandle: vertical ? "t" : "l",
       label: e.label,
-      data: { kind: e.kind, epKeys: e.epKeys } satisfies MapEdgeData,
+      data: { kind: e.kind } satisfies MapEdgeData,
       animated: e.apiOnly && e.kind !== "call" && !faded,
       zIndex: 1,
       labelStyle: {
@@ -812,5 +845,5 @@ export function buildSystemMapScene(input: SystemMapSceneInput): SystemMapScene 
     });
   }
 
-  return { nodes, edges, empty: false, fixturesHidden, stats };
+  return { nodes, edges, empty: false, fixturesHidden, stats, selection };
 }

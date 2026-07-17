@@ -222,6 +222,120 @@ export function fetchAging() {
     ]);
   });
 
+  it("verb-first request helpers take the method from the call site, once", () => {
+    const { apiCalls } = parseSource(
+      "src/client.ts",
+      `export class Api {
+  async send<T>(path: string, method: string, body?: unknown): Promise<T> {
+    const res = await fetch(path, { method, body: JSON.stringify(body) });
+    return res.json();
+  }
+  createOrder(body: unknown) {
+    return this.send("/api/orders", "POST", body);
+  }
+  listOrders() {
+    return this.send("/api/orders", "GET");
+  }
+}`,
+    );
+    expect(apiCalls).toEqual([
+      { method: "POST", path: "/api/orders", line: 7 },
+      { method: "GET", path: "/api/orders", line: 10 },
+    ]);
+  });
+
+  it("id-parameterized URLs are not wrappers — the wildcard call survives", () => {
+    const { apiCalls } = parseSource(
+      "src/users.ts",
+      `export function fetchProfile(id: string) {
+  return fetch(\`/api/users/\${id}/profile\`);
+}
+export function loadCurrent() {
+  return fetchProfile("me");
+}`,
+    );
+    // The path parameter isn't final — classic hole-as-segment behavior wins,
+    // and the call site emits nothing extra.
+    expect(apiCalls).toEqual([{ method: "GET", path: "/api/users/*/profile", line: 2 }]);
+  });
+
+  it("wrappers invoked only with computed arguments keep their wildcard call", () => {
+    const { apiCalls } = parseSource(
+      "src/api.ts",
+      `function get(path: string) {
+  return fetch(\`/api/\${path}\`);
+}
+export function load(route: { url: string }) {
+  return get(route.url);
+}`,
+    );
+    expect(apiCalls).toEqual([{ method: "GET", path: "/api/*", line: 2 }]);
+  });
+
+  it("does not match wrappers through instance receivers or registration shapes", () => {
+    const { apiCalls, endpoints } = parseSource(
+      "src/mixed.ts",
+      `import axios from "axios";
+function get(path: string) {
+  return fetch("/internal" + path);
+}
+export function loadUsers() {
+  return axios.get("/users");
+}
+export function setup(app: unknown) {
+  get("/probe", () => {});
+}
+export function warm() {
+  return get("/warmup");
+}`,
+    );
+    // axios.get stays the clientish branch's own call — no /internal prefix
+    // gluing; the handler-shaped call emits nothing; the plain call resolves.
+    expect(apiCalls).toEqual([
+      { method: "GET", path: "/users", line: 6 },
+      { method: "GET", path: "/internal/warmup", line: 12 },
+    ]);
+    expect(endpoints).toEqual([]);
+  });
+
+  it("rejects concatenated paths for server registrations and mounts", () => {
+    const { endpoints, mounts, apiCalls } = parseSource(
+      "src/routes.ts",
+      `import express from "express";
+const app = express();
+const BASE = "/admin";
+app.get(BASE + "/users", listUsers);
+app.use(BASE + "/sub", subRouter);
+app.get("/plain", listPlain);
+`,
+    );
+    expect(endpoints).toEqual([{ method: "GET", path: "/plain", line: 6, handler: "listPlain" }]);
+    expect(mounts).toEqual([]);
+    expect(apiCalls).toEqual([]);
+  });
+
+  it("marks JSX elements as render calls and namespaced tags as the compound root", () => {
+    const { symbols } = parseSource(
+      "src/Screen.tsx",
+      `import { Tabs } from "./tabs.js";
+import { Header } from "./header.js";
+export function Screen() {
+  const load = () => refresh();
+  return (
+    <div>
+      <Header />
+      <Tabs.Item />
+    </div>
+  );
+}`,
+    );
+    const screen = symbols.find((s) => s.name === "Screen")!;
+    const renders = screen.calls.filter((c) => c.render);
+    expect(renders.map((c) => c.name).sort()).toEqual(["Header", "Tabs"]);
+    expect(renders.every((c) => c.receiver === null)).toBe(true);
+    expect(screen.calls.some((c) => c.name === "refresh" && !c.render)).toBe(true);
+  });
+
   it("derives routes from Next-style file conventions", () => {
     const appRoute = parseSource(
       "apps/web/app/api/forms/[formId]/route.ts",

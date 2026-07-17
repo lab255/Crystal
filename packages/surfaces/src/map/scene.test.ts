@@ -330,6 +330,46 @@ describe("buildSystemMapScene — edges", () => {
     expect(apiOnly?.targetHandle).toBe("l");
   });
 
+  it("draws edges to frontend-served systems, but never to the screen's own container", () => {
+    const scene = build({
+      report: report({
+        screens: [screen("s1", "/a", "web/a/pages/Home.tsx")],
+      }),
+      overview: overview([
+        sys("sys:web-a", "frontend", "web/a"),
+        sys("sys:web-b", "frontend", "web/b"),
+      ]),
+      calls: [
+        // Served by the *other* frontend system (a BFF / Next app/api) — draws.
+        call("s1", "GET", "/api/x", "web/b/api/routes.ts"),
+        // Served by the screen's own system — a loop on its own card; skipped.
+        call("s1", "GET", "/api/self", "web/a/api/self.ts"),
+      ],
+    });
+    expect(scene.edges.find((e) => e.id === "call:screen:s1->sys:web-b")).toBeTruthy();
+    expect(scene.edges.find((e) => e.id === "call:screen:s1->sys:web-a")).toBeUndefined();
+  });
+
+  it("resolves the selection object the inspector consumes; stale ids resolve null", () => {
+    const screens = [screen("s1", "/a", "web/pages/Home.tsx")];
+    const base = {
+      report: report({ screens }),
+      overview: overview([sys("sys:web", "frontend", "web"), backend]),
+    };
+    const onScreen = build({ ...base, selected: screenNodeId("s1") });
+    expect(onScreen.selection).toMatchObject({ kind: "screen", screen: { id: "s1" } });
+    const onEp = build({ ...base, selected: "ep:GET /x" });
+    expect(onEp.selection).toMatchObject({ kind: "endpoint", epKey: "GET /x" });
+    const stale = build({ ...base, selected: "sys:renamed-away" });
+    expect(stale.selection).toBeNull();
+    const fixtureHidden = build({
+      ...base,
+      overview: overview([sys("sys:demo", "backend", "examples/demo/server")]),
+      selected: "sys:demo",
+    });
+    expect(fixtureHidden.selection).toBeNull();
+  });
+
   it("routes screen call edges bottom → top into the serving system", () => {
     const scene = build({
       report: report({ screens: [screen("s1", "/a", "web/pages/Home.tsx")] }),

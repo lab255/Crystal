@@ -63,6 +63,16 @@ export interface OverviewSourceFile {
   components?: string[];
 }
 
+/**
+ * Canonical endpoint identity: `"METHOD path"`. Every producer and consumer
+ * of endpoint keys — system cards, map edges, `ep:` deep links, the API
+ * explorer's selection — must build the key through here so the projections
+ * can't drift apart on normalization.
+ */
+export function endpointKey(ep: { method: string; path: string }): string {
+  return `${ep.method} ${ep.path}`;
+}
+
 /** One HTTP surface point — a served route or an outgoing call. */
 export interface HttpEndpoint {
   /** Upper-case verb; "ALL" when the handler catches every method. */

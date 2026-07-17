@@ -48,6 +48,7 @@ import { DetailSection, FileLink, copyText, useSurfaces } from "../common.js";
 import {
   buildSystemMapScene,
   epKeyOf,
+  epNodeId,
   screenNodeId,
   type MapBandRfNode,
   type MapExternalsRfNode,
@@ -146,6 +147,7 @@ function MapFeGroupNode({ data }: NodeProps<MapFeGroupRfNode>) {
       )}
       style={{ borderTopColor: "var(--color-accent-cyan)", borderTopWidth: 2 }}
     >
+      <Handle id="t" type="target" position={Position.Top} className="!bg-edge" />
       <Handle id="b" type="source" position={Position.Bottom} className="!bg-edge" />
       <div className="flex items-center gap-2 px-3 pt-2">
         <AppWindow className="h-3.5 w-3.5 shrink-0 text-accent-cyan" />
@@ -278,8 +280,7 @@ function MapExternalsNode({ data }: NodeProps<MapExternalsRfNode>) {
       )}
       style={{ borderTopColor: "var(--color-accent-amber)", borderTopWidth: 2 }}
     >
-      <Handle id="t" type="target" position={Position.Top} className="!bg-edge" />
-      <Handle id="l" type="target" position={Position.Left} className="!bg-edge" />
+      {/* No handles: nothing draws edges to the aggregated externals card. */}
       <div className="flex items-start gap-2 px-3 pt-2">
         <Plug className="mt-0.5 h-3.5 w-3.5 shrink-0 text-accent-amber" />
         <div className="min-w-0 flex-1">
@@ -370,7 +371,7 @@ function SystemMapInner() {
 
   /* endpoint-row interactions, injected into system-card node data */
   const onEndpointClick = useCallback(
-    (_sysId: string, ep: SystemEndpoint) => setSelected(`ep:${epKeyOf(ep)}`),
+    (_sysId: string, ep: SystemEndpoint) => setSelected(epNodeId(ep)),
     [setSelected],
   );
   const onEndpointDoubleClick = useCallback(
@@ -392,13 +393,21 @@ function SystemMapInner() {
   );
 
   // Esc clears the selection (the context menu consumes its own Escape).
+  // Gated on the active mode — hidden-but-mounted modes must not swallow the
+  // key (same pattern as the find shortcut) — and text inputs keep their own
+  // Escape semantics.
+  const activeMode = useNav((l) => l.mode) ?? "surfaces";
   useEffect(() => {
+    if (activeMode !== "surfaces") return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && selected) setSelected(null);
+      if (e.key !== "Escape" || e.defaultPrevented || !selected) return;
+      const target = e.target as HTMLElement | null;
+      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) return;
+      setSelected(null);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [selected, setSelected]);
+  }, [activeMode, selected, setSelected]);
 
   // Refit when the data or the filter reshape the canvas (not on selection).
   useEffect(() => {
@@ -510,18 +519,14 @@ function SystemMapInner() {
   }
 
   const screens = report?.screens ?? [];
-  const selectedScreen = selected?.startsWith("screen:")
-    ? (screens.find((s) => screenNodeId(s.id) === selected) ?? null)
-    : null;
-  const selectedEp = selected?.startsWith("ep:") ? selected.slice(3) : null;
-  const selectedSystem =
-    !selectedScreen && selected && !selectedEp
-      ? (overview?.systems.find((s) => s.id === selected) ?? null)
-      : null;
-  const epOwner = selectedEp
-    ? (overview?.systems.find((s) => s.endpoints.some((e) => epKeyOf(e) === selectedEp)) ?? null)
-    : null;
-  const inspectorOpen = Boolean(selectedScreen || selectedSystem || (selectedEp && epOwner));
+  // The builder resolved the deep link already (staleness- and fixture-aware);
+  // re-deriving here would let the inspector and the canvas disagree.
+  const selection = scene.selection;
+  const selectedScreen = selection?.kind === "screen" ? selection.screen : null;
+  const selectedSystem = selection?.kind === "system" ? selection.system : null;
+  const selectedEp = selection?.kind === "endpoint" ? selection.epKey : null;
+  const epOwner = selection?.kind === "endpoint" ? selection.owner : null;
+  const inspectorOpen = selection != null;
 
   return (
     <Split storageKey="surfaces:map" direction="horizontal">
@@ -569,7 +574,7 @@ function SystemMapInner() {
               pannable
               zoomable
               className="!bottom-3 !right-3 !h-32 !w-44 rounded-lg border border-edge !bg-surface-1"
-              maskColor="rgba(6, 8, 12, 0.72)"
+              maskColor="color-mix(in srgb, var(--color-surface-0) 72%, transparent)"
               nodeStrokeWidth={0}
               nodeColor={minimapColor}
             />
@@ -615,7 +620,7 @@ function SystemMapInner() {
             ) : selectedSystem ? (
               <SystemInspector
                 system={selectedSystem}
-                onSelectEndpoint={(ep) => setSelected(`ep:${epKeyOf(ep)}`)}
+                onSelectEndpoint={(ep) => setSelected(epNodeId(ep))}
                 onOpenApi={openApi}
                 onOpenArchitect={openSystemInArchitect}
               />

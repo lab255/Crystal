@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import {
   createArchitectureGraph,
+  endpointKey,
   type CodeFileDetail,
   type CodeSymbolSource,
   type CodeTrace,
@@ -71,7 +72,7 @@ export function MethodChip({ method, className }: { method: string; className?: 
   );
 }
 
-const apiKeyOf = (ep: { method: string; path: string }): string => `${ep.method} ${ep.path}`;
+const apiKeyOf = endpointKey;
 
 /** `curl -X POST 'http://localhost:3000/api/x'` for the copy menu. */
 function curlOf(ep: { method: string; path: string }, baseUrl: string | null): string {
