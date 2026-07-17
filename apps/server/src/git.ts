@@ -13,10 +13,21 @@ export async function runGit(cwd: string, args: string[], maxBuffer = 8 * 1024 *
 
 export async function gitStatus(root: string, repoRel: string): Promise<GitStatusResult> {
   const cwd = resolveInRoot(root, repoRel);
-  const { stdout } = await exec("git", ["status", "--porcelain=v1", "-b"], {
-    cwd,
-    windowsHide: true,
-  });
+  let stdout: string;
+  try {
+    ({ stdout } = await exec("git", ["status", "--porcelain=v1", "-b"], {
+      cwd,
+      windowsHide: true,
+    }));
+  } catch (err) {
+    // Not being a repo is a state, not a failure — workspaces without version
+    // control (or before the first `git init`) must not error the UI.
+    const text = `${(err as { stderr?: string }).stderr ?? ""}${(err as Error).message ?? ""}`;
+    if (text.includes("not a git repository")) {
+      return { repoPath: repoRel, branch: null, files: [], isRepo: false };
+    }
+    throw err;
+  }
   const lines = stdout.split("\n").filter(Boolean);
   let branch: string | null = null;
   const files: GitStatusResult["files"] = [];
@@ -27,7 +38,7 @@ export async function gitStatus(root: string, repoRel: string): Promise<GitStatu
       files.push({ code: line.slice(0, 2), path: line.slice(3).trim() });
     }
   }
-  return { repoPath: repoRel, branch, files };
+  return { repoPath: repoRel, branch, files, isRepo: true };
 }
 
 /** Candidate main-branch names, tried in order, for the "base" diff scope. */

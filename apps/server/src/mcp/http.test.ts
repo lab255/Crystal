@@ -34,10 +34,17 @@ function fakeRegistry(over: { dispatchWorker?: (runId: string, spec: WorkerSpec)
     over.dispatchWorker ??
       (async (_runId: string, spec: WorkerSpec) => createAgentRun({ prompt: spec.prompt, parentRunId: "m1" })),
   );
+  const manager = { ...createAgentRun({ prompt: "manage", role: "manager" }), id: "m1" };
   const runtime = {
     agents: {
       dispatchWorker,
-      list: async () => [{ ...createAgentRun({ prompt: "child" }), id: "w1", parentRunId: "m1" }],
+      get: async (id: string) => (id === "m1" ? manager : null),
+      listWorkersFor: async () => [{ ...createAgentRun({ prompt: "child" }), id: "w1", parentRunId: "m1" }],
+    },
+    orchestration: {
+      projectPathForRun: async () => {
+        throw new Error("no board in this fixture");
+      },
     },
   };
   const registry = {

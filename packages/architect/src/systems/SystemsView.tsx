@@ -34,6 +34,7 @@ import {
   ListFilter,
   Maximize,
   MoveRight,
+  Package,
   PanelsTopLeft,
   PencilRuler,
   Plug,
@@ -219,7 +220,7 @@ function SystemNode({ data }: NodeProps<SystemRfNode>) {
           ))}
         </div>
       )}
-      {(consumes.length > 0 || system.externals.length > 0) && (
+      {(consumes.length > 0 || system.externals.length > 0 || system.libraries.length > 0) && (
         <div className="mt-auto border-t border-edge/60 px-3 pb-2 pt-1">
           <div className="text-[9px] font-medium uppercase tracking-wide text-ink-faint">
             Consumes
@@ -235,6 +236,16 @@ function SystemNode({ data }: NodeProps<SystemRfNode>) {
                   .map((x) => x.name)
                   .join(", ")}
                 {system.externals.length > 2 ? ` +${system.externals.length - 2}` : ""}
+              </span>
+            )}
+            {system.libraries.length > 0 && (
+              <span className="text-ink-faint">
+                {consumes.length > 0 || system.externals.length > 0 ? " · " : ""}
+                {system.libraries
+                  .slice(0, 2)
+                  .map((l) => l.pkg)
+                  .join(", ")}
+                {system.libraries.length > 2 ? ` +${system.libraries.length - 2}` : ""}
               </span>
             )}
           </div>
@@ -1413,6 +1424,7 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
         (e) => e.name.toLowerCase().includes(query) || e.file.toLowerCase().includes(query),
       ) ||
       s.externals.some((x) => x.name.toLowerCase().includes(query)) ||
+      s.libraries.some((l) => l.pkg.toLowerCase().includes(query)) ||
       s.components.some((c) => c.name.toLowerCase().includes(query)) ||
       (consumesOf.get(s.id) ?? []).some((n) => n.toLowerCase().includes(query)) ||
       (boundaryText.get(s.id) ?? []).some((t) => t.includes(query));
@@ -3142,7 +3154,7 @@ function SystemDetail({
         </Section>
       )}
 
-      {(outbound.length > 0 || system.externals.length > 0) && (
+      {(outbound.length > 0 || system.externals.length > 0 || system.libraries.length > 0) && (
         <Section title="Consumes">
           {outbound.map((l) => linkRow(l, l.target, "out"))}
           {system.externals.map((x) => (
@@ -3150,6 +3162,13 @@ function SystemDetail({
               <Plug className="h-3 w-3 shrink-0 text-accent-amber" />
               <span className="min-w-0 flex-1 truncate text-[11px] text-ink">{x.name}</span>
               <span className="shrink-0 text-[10px] text-ink-faint">×{x.weight}</span>
+            </div>
+          ))}
+          {system.libraries.map((l) => (
+            <div key={l.pkg} className="flex items-center gap-1.5 px-1.5 py-1">
+              <Package className="h-3 w-3 shrink-0 text-ink-faint" />
+              <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-muted">{l.pkg}</span>
+              <span className="shrink-0 text-[10px] text-ink-faint">×{l.weight}</span>
             </div>
           ))}
         </Section>

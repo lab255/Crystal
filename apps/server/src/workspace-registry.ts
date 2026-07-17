@@ -15,6 +15,7 @@ import type {
 import { AgentManager } from "./agent-manager.js";
 import { CodeIndexService } from "./code-index.js";
 import { CodeMapAnalyzer, type CrossSurface } from "./code-map.js";
+import { OrchestrationService } from "./orchestration.js";
 import { appDataDir, isIgnoredDir, workspaceIdFor } from "./paths.js";
 import { QualityService } from "./quality-runner.js";
 import { RefactorEngine } from "./refactor.js";
@@ -53,6 +54,7 @@ export class WorkspaceRuntime {
   readonly codemap: CodeMapAnalyzer;
   readonly codeindex: CodeIndexService;
   readonly quality: QualityService;
+  readonly orchestration: OrchestrationService;
   /** Manifest name, kept fresh by workspace.get / saveManifest handlers. */
   name: string;
 
@@ -80,6 +82,31 @@ export class WorkspaceRuntime {
     this.codemap = new CodeMapAnalyzer(root);
     this.codeindex = new CodeIndexService(root, this.codemap);
     this.quality = new QualityService(root);
+    this.orchestration = new OrchestrationService(this.store, this.agents, () =>
+      this.notifyWorkspaceChanged?.(),
+    );
+    // A worker dispatched against a claimed task inherits the lease, so it is
+    // released when the work settles rather than when the manager's turn ends.
+    this.agents.onWorkerDispatched = (worker) => {
+      void this.orchestration.transferLeaseToRun(worker);
+    };
+  }
+
+  /** Set by start(): board writes announce themselves like manifest edits do. */
+  private notifyWorkspaceChanged: (() => void) | null = null;
+  /** Runs already billed to their task (settlement fires once per run). */
+  private settledRuns = new Set<string>();
+
+  /** Attach a run's CRYSTAL_QUESTION to its board task. */
+  private async fileQuestion(runId: string, text: string): Promise<void> {
+    try {
+      const run = await this.agents.get(runId);
+      if (!run?.taskId) return;
+      const projectPath = await this.orchestration.projectPathForRun(run);
+      await this.orchestration.addQuestion(projectPath, run.taskId, text, runId);
+    } catch {
+      // A question that can't be filed must not take down the event stream.
+    }
   }
 
   descriptor(): WorkspaceDescriptor {
@@ -92,11 +119,27 @@ export class WorkspaceRuntime {
   }
 
   start(broadcast: Broadcast): void {
+    this.notifyWorkspaceChanged = () => broadcast("workspace.changed", { ws: this.id });
     this.disposeAgentListeners = [
-      this.agents.events.on("event", (payload) => broadcast("agent.event", payload)),
-      this.agents.events.on("runChanged", ({ run }) =>
-        broadcast("agent.runChanged", { ws: this.id, run }),
-      ),
+      this.agents.events.on("event", (payload) => {
+        broadcast("agent.event", payload);
+        // File CRYSTAL_QUESTION lines on the run's task server-side — a
+        // question must land on the board even when no browser is open.
+        if (payload.event.type === "question") {
+          void this.fileQuestion(payload.runId, payload.event.text);
+        }
+      }),
+      this.agents.events.on("runChanged", ({ run }) => {
+        broadcast("agent.runChanged", { ws: this.id, run });
+        // Terminal states bill the run's task and heal its lease. A run emits
+        // several terminal runChanged events (result, then finish) — settle once.
+        const terminal =
+          run.status === "completed" || run.status === "failed" || run.status === "cancelled";
+        if (terminal && !this.settledRuns.has(run.id)) {
+          this.settledRuns.add(run.id);
+          void this.orchestration.settleRun(run);
+        }
+      }),
       this.terminals.events.on("data", ({ chunk }) =>
         broadcast("terminal.data", { ws: this.id, chunk }),
       ),

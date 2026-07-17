@@ -3,6 +3,7 @@ import {
   ARCH_KIND_OF_CATEGORY,
   EXTERNAL_SERVICE_CATEGORIES,
   aggregateExternalDeps,
+  aggregateExternalLibraries,
   classifyExternalPackage,
 } from "./external-services.js";
 
@@ -63,5 +64,42 @@ describe("aggregateExternalDeps", () => {
 
   it("returns [] when nothing classifies", () => {
     expect(aggregateExternalDeps([{ module: "a", pkg: "react" }])).toEqual([]);
+  });
+});
+
+describe("aggregateExternalLibraries", () => {
+  it("aggregates plain libraries, excluding services, builtins and @types", () => {
+    const libs = aggregateExternalLibraries([
+      { module: "src/geometry", pkg: "manifold-3d" },
+      { module: "src/components", pkg: "three" },
+      { module: "src/components", pkg: "three" },
+      { module: "src/geometry", pkg: "three" },
+      { module: "src/api", pkg: "pg" }, // service — excluded here
+      { module: "src/api", pkg: "node:fs" },
+      { module: "src/api", pkg: "path" },
+      { module: "src/api", pkg: "@types/three" },
+    ]);
+    expect(libs.map((l) => l.pkg)).toEqual(["three", "manifold-3d"]);
+    expect(libs[0]).toEqual({
+      pkg: "three",
+      weight: 3,
+      clients: [
+        { module: "src/components", weight: 2 },
+        { module: "src/geometry", weight: 1 },
+      ],
+    });
+  });
+
+  it("caps the list by total weight", () => {
+    const libs = aggregateExternalLibraries(
+      [
+        { module: "a", pkg: "one" },
+        { module: "a", pkg: "two" },
+        { module: "a", pkg: "two" },
+        { module: "a", pkg: "three-lib" },
+      ],
+      2,
+    );
+    expect(libs.map((l) => l.pkg)).toEqual(["two", "one"]);
   });
 });

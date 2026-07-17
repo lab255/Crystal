@@ -1,7 +1,13 @@
 import type { CodeIndex } from "./code-index.js";
-import { CONCEPT_LEXICON, conceptDisplayName, identifierWords, type ConceptDef } from "./code-index.js";
+import {
+  CONCEPT_LEXICON,
+  conceptDisplayName,
+  evidenceStem,
+  identifierWords,
+  type ConceptDef,
+} from "./code-index.js";
 import type { CodeSymbolKind } from "./codemap.js";
-import { classifyExternalPackage } from "./external-services.js";
+import { classifyExternalPackage, isPlatformImport } from "./external-services.js";
 import { tagDimension, tagValue } from "./tags.js";
 
 /**
@@ -184,6 +190,8 @@ export interface SystemModule {
   exportedTotal: number;
   /** External services consumed, heaviest first (capped). */
   externals: SystemExternal[];
+  /** Plain libraries leaned on (not services), heaviest first (capped). */
+  libraries: { pkg: string; weight: number }[];
   /** HTTP routes served, heaviest declaring file first (capped). */
   endpoints: SystemEndpoint[];
   /** React components declared, most-consumed first (capped). */
@@ -285,6 +293,7 @@ const DATA_FILE_SHARE = 0.5;
 const SHARED_FAN_IN_SHARE = 0.6;
 const EXPORTS_CAP = 40;
 const EXTERNALS_CAP = 12;
+const LIBRARIES_CAP = 6;
 const LINK_SYMBOLS_CAP = 12;
 const LINK_APIS_CAP = 10;
 const LINK_PARTS_CAP = 16;
@@ -299,6 +308,14 @@ const FRONTEND_NAMES = new Set([
 ]);
 /** Files whose extension marks UI code. */
 const UI_FILE_RE = /\.(tsx|jsx|vue|svelte|astro|css|scss|less)$/;
+
+/** Packages whose import marks a workspace as serving HTTP (has a backend). */
+const SERVER_FRAMEWORK_PKGS = new Set([
+  "express", "fastify", "koa", "@koa/router", "hono", "restify", "@hapi/hapi",
+  "polka", "itty-router", "next", "@nestjs/core", "@nestjs/common",
+]);
+/** Path segments that claim server-side code even without framework imports. */
+const SERVERISH_PATH_RE = /(^|\/)(api|server|backend|functions|lambda|worker)s?(\/|$)/i;
 /** Share of UI-extension files that classifies a system as frontend. */
 const FRONTEND_FILE_SHARE = 0.3;
 
@@ -544,6 +561,10 @@ function profileUnit(
   lexicon: readonly ConceptDef[],
 ): UnitProfile {
   const intents = new Map<string, number>();
+  /** intent value → distinct lexicon-word stems seen in heuristic evidence. */
+  const intentStems = new Map<string, Set<string>>();
+  /** intents also carried by symbolic/agent tags — corroborated by definition. */
+  const intentSupported = new Set<string>();
   let roleTags = 0;
   let sharedTags = 0;
 
@@ -552,18 +573,25 @@ function profileUnit(
     for (const file of unit.files) {
       const indexed = byPath.get(file.path);
       if (!indexed) continue;
-      const addTag = (tag: string, confidence: number): void => {
-        const dimension = tagDimension(tag);
+      const addTag = (t: { tag: string; confidence: number; source: string; evidence?: string[] }): void => {
+        const dimension = tagDimension(t.tag);
         if (dimension === "intent") {
-          const value = tagValue(tag);
-          intents.set(value, (intents.get(value) ?? 0) + confidence);
+          const value = tagValue(t.tag);
+          intents.set(value, (intents.get(value) ?? 0) + t.confidence);
+          if (t.source === "heuristic") {
+            let stems = intentStems.get(value);
+            if (!stems) intentStems.set(value, (stems = new Set()));
+            for (const ev of t.evidence ?? []) stems.add(evidenceStem(ev));
+          } else {
+            intentSupported.add(value);
+          }
         } else if (dimension === "role") {
           roleTags += 1;
-          if (tag === "role:util" || tag === "role:shared") sharedTags += 1;
+          if (t.tag === "role:util" || t.tag === "role:shared") sharedTags += 1;
         }
       };
-      for (const t of indexed.tags) addTag(t.tag, t.confidence);
-      for (const sym of indexed.symbols) for (const t of sym.tags) addTag(t.tag, t.confidence);
+      for (const t of indexed.tags) addTag(t);
+      for (const sym of indexed.symbols) for (const t of sym.tags) addTag(t);
     }
   }
 
@@ -575,6 +603,17 @@ function profileUnit(
   const lowerName = unit.name.toLowerCase();
   const structural = STRUCTURAL_NAMES.has(lowerName) || SHARED_NAMES.has(lowerName);
   const nameWords = new Set(structural ? [] : identifierWords(unit.name));
+
+  // Corroboration: one repeated lexicon word is not an intent. A parser whose
+  // symbols all say "token" is about tokenizing, not authentication — an
+  // intent asserted by a single stem (and by nothing else: no symbolic
+  // propagation, no agent tag, not the unit's own name) is dropped.
+  for (const [value, stems] of intentStems) {
+    if (intentSupported.has(value) || stems.size >= 2) continue;
+    const stem = [...stems][0];
+    if (stem != null && (nameWords.has(stem) || nameWords.has(value))) continue;
+    intents.delete(value);
+  }
   let nameConcept: string | null = null;
   for (const def of lexicon) {
     if (def.words.some((w) => nameWords.has(w))) {
@@ -702,6 +741,24 @@ export function buildSystemOverview(
 ): SystemOverview {
   const sources = files.filter((f) => !f.test);
 
+  // Workspace shape: when nothing serves HTTP, no server framework is
+  // imported and no path even claims to be one (api/, server/…), there is no
+  // backend — a Tauri/browser app's solver or geometry kernel ships in the
+  // same client bundle as its components. Non-UI systems in such a workspace
+  // land in the frontend lane, not a fictitious backend.
+  const clientOnly =
+    sources.some((f) => UI_FILE_RE.test(f.path)) &&
+    !sources.some(
+      (f) =>
+        (f.endpoints?.length ?? 0) > 0 ||
+        SERVERISH_PATH_RE.test(f.path) ||
+        f.imports.some((i) => {
+          if (i.resolved) return false;
+          const pkg = npmPackageOf(i.specifier);
+          return pkg != null && SERVER_FRAMEWORK_PKGS.has(pkg);
+        }),
+    );
+
   // A. structural units, per package.
   const byPkg = new Map<string, OverviewSourceFile[]>();
   for (const file of sources) {
@@ -773,6 +830,7 @@ export function buildSystemOverview(
     // External services consumed. Databases/caches are the data layer, not
     // integrations — they feed the `data` role instead.
     const externalWeights = new Map<string, { name: string; weight: number }>();
+    const libraryWeights = new Map<string, number>();
     let integrationFiles = 0;
     let dataFiles = 0;
     for (const file of memberFiles) {
@@ -782,7 +840,14 @@ export function buildSystemOverview(
         if (imp.resolved) continue;
         const pkg = npmPackageOf(imp.specifier);
         const meta = pkg ? classifyExternalPackage(pkg) : null;
-        if (!meta) continue;
+        if (!meta) {
+          // Not a service — a plain library still tells a reader what this
+          // system leans on (the whole external story in library-heavy apps).
+          if (pkg && !isPlatformImport(pkg)) {
+            libraryWeights.set(pkg, (libraryWeights.get(pkg) ?? 0) + 1);
+          }
+          continue;
+        }
         const entry = externalWeights.get(meta.id) ?? { name: meta.name, weight: 0 };
         entry.weight += 1;
         externalWeights.set(meta.id, entry);
@@ -796,6 +861,10 @@ export function buildSystemOverview(
       .map(([sid, { name, weight }]) => ({ id: sid, name, weight }))
       .sort((a, b) => b.weight - a.weight || a.name.localeCompare(b.name))
       .slice(0, EXTERNALS_CAP);
+    const libraries = [...libraryWeights.entries()]
+      .map(([pkg, weight]) => ({ pkg, weight }))
+      .sort((a, b) => b.weight - a.weight || a.pkg.localeCompare(b.pkg))
+      .slice(0, LIBRARIES_CAP);
 
     // Role: explicit names first, then external-usage and tag evidence.
     const names = new Set(
@@ -821,14 +890,15 @@ export function buildSystemOverview(
               : "domain";
 
     // Layer: role decides the data/integration buckets; UI-file share and
-    // frontend-ish names decide frontend; everything else is backend.
+    // frontend-ish names decide frontend; everything else is backend —
+    // unless the whole workspace is client-only, where it is all frontend.
     const uiFiles = memberFiles.filter((f) => UI_FILE_RE.test(f.path)).length;
     const layer: SystemLayer =
       role === "data"
         ? "database"
         : role === "integration"
           ? "integrations"
-          : uiFiles / memberCount >= FRONTEND_FILE_SHARE || nameIn(FRONTEND_NAMES)
+          : uiFiles / memberCount >= FRONTEND_FILE_SHARE || nameIn(FRONTEND_NAMES) || clientOnly
             ? "frontend"
             : "backend";
 
@@ -856,6 +926,7 @@ export function buildSystemOverview(
       exports: [], // filled below, once cross-system imports are counted
       exportedTotal: memberFiles.reduce((n, f) => n + f.exports.length, 0),
       externals,
+      libraries,
       endpoints,
       components: [], // filled below, once export consumers are counted
       componentCount: 0,

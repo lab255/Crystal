@@ -7,8 +7,10 @@ import {
   callKey,
   CodeMapAnalyzer,
   declaredEntryPaths,
+  dirModuleOwner,
   parseSource,
   rankJourneySuggestions,
+  synthesizeDirModules,
   type CallGraphRecord,
   type JourneySourceRecord,
 } from "./code-map.js";
@@ -1187,6 +1189,116 @@ export function DeploymentsPage() {
   it("only reports the methods the page actually invokes, not the whole client", async () => {
     const trace = await analyzer.apiTrace("src/page.tsx", "DeploymentsPage");
     expect(trace.calls.some((c) => c.path === "/api/v1/everything")).toBe(false);
+  });
+});
+
+describe("synthesizeDirModules", () => {
+  it("derives modules from top-level dirs, descending into transparent containers", () => {
+    const modules = synthesizeDirModules([
+      "vite.config.ts",
+      "src/App.tsx",
+      "src/store.ts",
+      "src/core/solver.ts",
+      "src/core/expr.ts",
+      "src/geometry/kernel.ts",
+      "scripts/smoke.mjs",
+    ]);
+    expect(modules).toEqual([
+      { path: "scripts", name: "scripts" },
+      { path: "src", name: "src" },
+      { path: "src/core", name: "core" },
+      { path: "src/geometry", name: "geometry" },
+    ]);
+  });
+
+  it("returns [] when the layout has fewer than two directories", () => {
+    expect(synthesizeDirModules(["index.ts", "lib.ts"])).toEqual([]);
+    expect(synthesizeDirModules(["src/a.ts", "src/b.ts"])).toEqual([]);
+  });
+
+  it("keeps full paths as names when basenames collide", () => {
+    const modules = synthesizeDirModules(["src/utils/a.ts", "lib/utils/b.ts", "lib/utils/c.ts"]);
+    expect(modules.map((m) => m.name).sort()).toEqual(["lib/utils", "src/utils"]);
+  });
+
+  it("assigns files to the deepest owning module", () => {
+    const paths = ["src", "src/core", "scripts"];
+    expect(dirModuleOwner("src/core/solver.ts", paths)).toBe("src/core");
+    expect(dirModuleOwner("src/App.tsx", paths)).toBe("src");
+    expect(dirModuleOwner("vite.config.ts", paths)).toBe(".");
+  });
+});
+
+describe("single-package directory modules (analyzer)", () => {
+  let root: string;
+
+  beforeAll(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), "crystal-dirmod-"));
+    await fs.writeFile(path.join(root, "package.json"), JSON.stringify({ name: "solo" }));
+    await fs.mkdir(path.join(root, "src/core"), { recursive: true });
+    await fs.mkdir(path.join(root, "src/ui"), { recursive: true });
+    await fs.writeFile(path.join(root, "src/app.ts"), `import { solve } from "./core/solver.js";\nexport const app = () => solve();\n`);
+    await fs.writeFile(path.join(root, "src/core/solver.ts"), `export function solve() { return 1; }\n`);
+    await fs.writeFile(path.join(root, "src/ui/panel.tsx"), `import { solve } from "../core/solver.js";\nexport const Panel = () => <div>{solve()}</div>;\n`);
+  });
+
+  afterAll(async () => {
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it("splits a single-package workspace into directory modules with deps", async () => {
+    const analyzer = new CodeMapAnalyzer(root);
+    const summary = await analyzer.summary();
+    expect(summary.modules.map((m) => m.path).sort()).toEqual([".", "src", "src/core", "src/ui"]);
+    expect(summary.modules.find((m) => m.path === "src/core")).toMatchObject({ fileCount: 1 });
+    expect(summary.deps).toContainEqual({ source: "src", target: "src/core", weight: 1 });
+    expect(summary.deps).toContainEqual({ source: "src/ui", target: "src/core", weight: 1 });
+  });
+});
+
+describe("working-set changes (no VCS)", () => {
+  let root: string;
+
+  beforeAll(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), "crystal-changes-"));
+    await fs.writeFile(path.join(root, "package.json"), JSON.stringify({ name: "fixture" }));
+    // Aged file (3 days old) importing a freshly rewritten one.
+    await fs.writeFile(path.join(root, "old.ts"), `import { fresh } from "./fresh.js";\nexport const o = fresh;\n`);
+    const aged = new Date(Date.now() - 72 * 3600 * 1000);
+    await fs.utimes(path.join(root, "old.ts"), aged, aged);
+    await fs.writeFile(path.join(root, "fresh.ts"), `export const fresh = 1;\n`);
+    await fs.writeFile(path.join(root, "brand.ts"), `export const brand = 2;\n`);
+    await fs.writeFile(path.join(root, "brand.test.ts"), `import { brand } from "./brand.js";\nbrand;\n`);
+  });
+
+  afterAll(async () => {
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it("reports touched files with wiring, skipping files outside the window", async () => {
+    const analyzer = new CodeMapAnalyzer(root);
+    const report = await analyzer.changes(24);
+    const paths = report.files.map((f) => f.path);
+    expect(paths).not.toContain("old.ts");
+    expect(paths).toEqual(expect.arrayContaining(["fresh.ts", "brand.ts", "brand.test.ts"]));
+    expect(report.total).toBe(3);
+
+    // fresh.ts has a new inode but an importer untouched inside the window —
+    // it predates the window, so it must not read as "added".
+    const fresh = report.files.find((f) => f.path === "fresh.ts")!;
+    expect(fresh.status).toBe("modified");
+    expect(fresh.importedBy).toBe(1);
+    expect(fresh.dependents).toEqual(["old.ts"]);
+
+    const brand = report.files.find((f) => f.path === "brand.ts")!;
+    expect(brand.status).toBe("added");
+    // brand.test.ts is in the changed set, so it is not an outside dependent…
+    expect(brand.dependents).toEqual([]);
+    // …and being imported (by anything) keeps brand.ts out of `unwired`.
+    expect(report.unwired).toEqual([]);
+
+    const rollup = report.modules.find((m) => m.module === ".")!;
+    expect(rollup).toMatchObject({ added: 2, modified: 1, testsTouched: true });
   });
 });
 

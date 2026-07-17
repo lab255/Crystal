@@ -15,6 +15,7 @@ import {
   isTestFile,
   parseSource,
   resolveImportSpecifier,
+  synthesizeDirModules,
 } from "./code-map.js";
 import { gitCatFiles, gitLsTree, gitResolveRef } from "./git.js";
 import { isIgnoredDir, resolveInRoot } from "./paths.js";
@@ -91,6 +92,11 @@ async function loadRefTree(root: string, repoRel: string, ref: string): Promise<
   }
   if (!moduleDirs.some((m) => m.path === ".")) {
     moduleDirs.unshift({ path: ".", name: path.basename(cwd) });
+  }
+  // Single-package repo at the ref: directory-level modules, exactly like the
+  // live analyzer — a ref diff must compare like with like.
+  if (moduleDirs.length === 1) {
+    moduleDirs.push(...synthesizeDirModules(codePaths));
   }
 
   // Each file is owned by the deepest module containing it.

@@ -46,6 +46,43 @@ running per-package vitest.
 Also fixed en route: the web app on main did not boot (workspace links for the new
 surfaces/quality modes were never installed — `pnpm install` was missing).
 
+## Shipped (2026-07-16 — the inventor dogfood)
+
+*Second real-codebase pass: [inventor](~/Workspaces/inventor), a single-package
+Vite + Tauri parametric CAD app — no git, no router, no backend, WASM geometry
+kernel, being actively edited by an agent mid-analysis. Almost the perfect inverse
+of appliance, and it exposed exactly the monorepo/web assumptions you'd expect.*
+
+| Fix / tool | Where |
+| --- | --- |
+| Directory-level code map modules for single-package workspaces: with one package.json the map degenerated to a single "." node (no deps, no crossings, journeys never spanned modules); top-level source dirs (`src/core`, `src/export`, `scripts`…) now become modules, in the live analyzer and git-ref snapshots alike. Monorepos keep exactly their packages. Inventor: 1 module/0 deps → 11 modules/28 weighted edges | `code-map.ts` (`synthesizeDirModules`), `ref-snapshot.ts` |
+| **Recent-changes review without a VCS** (`codemap.changes` + "changes" panel in the architect code views): files touched inside a window from timestamps, added-vs-modified via birthtime (with an importer-age corroboration against atomic-rewrite noise), per-module rollups with tests-touched flags, blast radius (importers outside the changed set), and "unwired" flags on additions nothing imports yet | `code-map.ts` (`changes`), `packages/architect/src/codemap/ChangesPanel.tsx`, deeplink `?changes=1` |
+| Non-git workspaces are a state, not an error: `git.status` reports `isRepo: false` instead of a raw command failure | `apps/server/src/git.ts`, `bridge.ts` |
+| Plain-library visibility: the externals story was services-only (DBs, queues, SaaS), so a client app showed nothing external at all; the heaviest plain npm libraries now surface per workspace (`CodeMapSummary.libraries`) and per system ("Geometry leans on manifold-3d, three") | `packages/core/src/external-services.ts` (`aggregateExternalLibraries`), `system-overview.ts`, `SystemsView.tsx` |
+| Intent corroboration: a single repeated lexicon stem no longer asserts an intent — inventor's expression *tokenizer* was tagged `intent:auth` ("token"/"tokens"). An intent now needs two distinct word stems, symbolic/agent support, or the unit's own name | `code-index.ts` (evidence per hit, `evidenceStem`), `system-overview.ts` (profile pruning) |
+| Client-only layer inference: a Tauri/browser app with no endpoints, no server-framework imports and no server-ish paths no longer labels its solver/kernel systems "backend" — everything ships in the client bundle and lands in the frontend lane | `system-overview.ts` |
+
+Regression standard held: appliance still reports dead-files = 5, endpoints under
+`/api/v1`, quality packages = 8, modules = its packages exactly.
+
+Observed but not yet addressed (adds to Next): `#/architect/codemap` deep links are
+clobbered back to the diagrams view by the workspace-level unification effect —
+links with `?at=module` work, bare codemap links don't survive boot.
+
+## Shipped (2026-07-16 — orchestration layer)
+
+*A generic multi-agent orchestration layer over the existing PM board + agent
+runs, replacing what previously required a hand-pasted "manager kickoff" prompt
+and an external Notion board.*
+
+| Capability | Where |
+| --- | --- |
+| **Lease ownership / borrow checker**: exclusive per-task write leases with TTL + heartbeat; every task mutation must present the lease's capability token (`claimId`); stale leases from crashed agents heal on the next claim; the human owner has an explicit `force` override. Leases and costs are **server-owned columns** — whole-project saves from a (possibly stale) UI snapshot cannot clobber them | `packages/core/src/orchestration.ts` (rules), `apps/server/src/orchestration.ts` (enforcement, serialized per-workspace mutation queue) |
+| **Epics & issues**: `blockedBy` task dependencies with `readyTasks` ordering (priority-first), board-level ready/blocked surfacing | `packages/core/src/project.ts`, orchestrator Board (blocked badge) |
+| **Cost attribution**: per-run usage (already metered per assistant turn) is priced per model (`MODEL_PRICING`, cache reads/writes billed at their real rates, CLI-reported cost preferred) and folded into durable rollups on tasks and epics when runs settle — run history is ephemeral, the board keeps the bill. Board cards fall back to the durable rollup when runs age out | `orchestration.ts` (`rollupCost`, `sumCostRollups`), `workspace-registry.ts` (settle hook), Board/TaskDetail |
+| **Delegation**: manager runs get board tools over the in-process MCP endpoint — `board_status`, `create_epic`, `create_task`, `claim_task`, `update_task`, `release_task` — alongside `dispatch_worker`, which now takes a `taskId` so each worker bills the right task. Claim ids are capabilities: handed only to the claimant, never listed in snapshots | `apps/server/src/mcp/dispatch-mcp.ts`, `mcp/http.ts`, `agent.ts` (WorkerSpec.taskId) |
+| Bridge methods for the same flow (`task.claim` / `task.release` / `task.update`), lease chip + owner force-release in the orchestrator UI, and a rewritten manager-mode preamble teaching the loop (board-first, claim-before-write, review dispatch, escalate only at forks) | `bridge.ts`, `server.ts`, orchestrator `Board.tsx` / `TaskDetail.tsx` / `AgentsTab.tsx` |
+
 ## Next (highest credibility leverage)
 
 1. **API tracing, phase 2.** Instance dispatch now resolves when a method name is

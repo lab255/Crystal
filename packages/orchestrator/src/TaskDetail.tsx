@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Bot, CircleHelp, ExternalLink, Play, Send, Trash2, X } from "lucide-react";
+import { Bot, CircleHelp, ExternalLink, Lock, Play, Send, Trash2, X } from "lucide-react";
 import {
   RUN_PURPOSES,
   TASK_SIZES,
@@ -7,11 +7,12 @@ import {
   TASK_STATUS_LABELS,
   apiRatePerMin,
   createEpic,
+  leaseValid,
   matchAgent,
   nowIso,
   openQuestions,
   rollupRunsUsage,
-  usageTotalTokens,
+  taskLiveUsage,
   type Project,
   type RunPurpose,
   type TaskItem,
@@ -20,7 +21,7 @@ import {
   type TaskSize,
   type TaskStatus,
 } from "@crystal/core";
-import { useAgents, useWorkspace } from "@crystal/client";
+import { useAgents, useCrystal, useWorkspace } from "@crystal/client";
 import { Badge, Button, StatusDot, Textarea, cn } from "@crystal/ui";
 import { buildTaskPrompt, formatCost, formatTokens } from "./prompt.js";
 
@@ -60,6 +61,7 @@ export function TaskDetail({
   const roster = useWorkspace((s) => s.roster);
   const runs = useAgents((s) => s.runs);
   const startRun = useAgents((s) => s.start);
+  const { client } = useCrystal();
 
   const [title, setTitle] = useState(task.title);
   const [description, setDescription] = useState(task.description);
@@ -88,6 +90,9 @@ export function TaskDetail({
   const taskRuns = runs.filter((r) => r.taskId === task.id);
   const rollup = useMemo(() => rollupRunsUsage(taskRuns), [taskRuns]);
   const callRate = apiRatePerMin(rollup.usage, rollup.activeMs);
+  // Durable rollup + live runs — run history in app data ages out, the board's
+  // rollup doesn't, so the runs list alone undercounts.
+  const liveUsage = useMemo(() => taskLiveUsage(task, runs), [task, runs]);
 
   // The dispatch target: the assigned agent, else the tag-matched one.
   const dispatchAgent =
@@ -205,6 +210,33 @@ export function TaskDetail({
           className="text-sm font-semibold"
           aria-label="Task title"
         />
+
+        {leaseValid(task.lease) ? (
+          <div className="flex items-center gap-2 rounded-lg border border-info/30 bg-info/5 px-2 py-1.5 text-[11px] text-ink-muted">
+            <Lock className="h-3.5 w-3.5 shrink-0 text-info" />
+            <span
+              className="min-w-0 flex-1 truncate"
+              title="One writer per task. The board is yours: edits you make here override the agent's lease."
+            >
+              Leased to <span className="text-ink">{task.lease!.holder}</span> until{" "}
+              {new Date(task.lease!.expiresAt).toLocaleTimeString()} — your edits override it
+            </span>
+            <Button
+              variant="ghost"
+              size="xs"
+              onClick={() =>
+                void client.request("task.release", {
+                  path: projectPath,
+                  taskId: task.id,
+                  force: true,
+                })
+              }
+              title="Owner override: revoke the agent's write lease"
+            >
+              Release
+            </Button>
+          </div>
+        ) : null}
 
         <div className="grid grid-cols-2 gap-2">
           <Field label="Status">
@@ -356,6 +388,55 @@ export function TaskDetail({
           </div>
         </Field>
 
+        <Field label={`Blocked by${task.blockedBy.length ? ` (${task.blockedBy.length})` : ""}`}>
+          <div className="space-y-1.5">
+            {task.blockedBy.map((id) => {
+              const blocker = project.tasks.find((t) => t.id === id);
+              const open = blocker ? blocker.status !== "done" : false;
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  title="Remove dependency"
+                  onClick={() =>
+                    patchTask({ blockedBy: task.blockedBy.filter((b) => b !== id) })
+                  }
+                  className="flex w-full items-center gap-1.5 text-left"
+                >
+                  <Badge tone={open ? "amber" : "emerald"} className="max-w-full cursor-pointer">
+                    <span className="truncate">
+                      {blocker ? `${blocker.title} [${blocker.status}]` : `${id} (deleted)`} ×
+                    </span>
+                  </Badge>
+                </button>
+              );
+            })}
+            <select
+              className={cn(selectClasses, "h-7 text-xs text-ink-muted")}
+              value=""
+              onChange={(e) => {
+                if (e.target.value) patchTask({ blockedBy: [...task.blockedBy, e.target.value] });
+              }}
+              aria-label="Add blocking task"
+            >
+              <option value="">+ Add dependency…</option>
+              {project.tasks
+                // No self-blocking, no duplicates, no direct cycles.
+                .filter(
+                  (t) =>
+                    t.id !== task.id &&
+                    !task.blockedBy.includes(t.id) &&
+                    !t.blockedBy.includes(task.id),
+                )
+                .map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.title} [{t.status}]
+                  </option>
+                ))}
+            </select>
+          </div>
+        </Field>
+
         {info && info.manifest.repos.length > 0 ? (
           <Field label="Linked repos">
             <div className="flex flex-wrap gap-1.5">
@@ -480,15 +561,13 @@ export function TaskDetail({
           </label>
         </div>
 
-        {taskRuns.length > 0 ? (
+        {liveUsage || taskRuns.length > 0 ? (
           <Field label="Cost to date">
             <div className="grid grid-cols-2 gap-x-3 gap-y-1 rounded-lg border border-edge bg-surface-2 px-2.5 py-2 text-[11px]">
               <span className="text-ink-faint">Cost</span>
-              <span className="text-right text-ink">{formatCost(rollup.costUsd)}</span>
+              <span className="text-right text-ink">{formatCost(liveUsage?.costUsd)}</span>
               <span className="text-ink-faint">Tokens</span>
-              <span className="text-right text-ink">
-                {formatTokens(usageTotalTokens(rollup.usage))}
-              </span>
+              <span className="text-right text-ink">{formatTokens(liveUsage?.tokens)}</span>
               <span className="text-ink-faint">API calls</span>
               <span className="text-right text-ink">{rollup.usage.apiCalls || "—"}</span>
               <span className="text-ink-faint">API rate</span>
@@ -514,6 +593,14 @@ export function TaskDetail({
                     {new Date(run.createdAt).toLocaleTimeString()} ·{" "}
                     {run.purpose ?? "implement"} · {run.status}
                   </span>
+                  {run.filesTouched.length > 0 ? (
+                    <span
+                      className="shrink-0 text-[10px] text-ink-faint"
+                      title={run.filesTouched.join("\n")}
+                    >
+                      {run.filesTouched.length} file{run.filesTouched.length > 1 ? "s" : ""}
+                    </span>
+                  ) : null}
                   <span className="text-[10px] text-ink-faint">{formatCost(run.costUsd)}</span>
                   <ExternalLink className="h-3 w-3 text-ink-faint" />
                 </button>

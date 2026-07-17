@@ -22,6 +22,7 @@ import {
   Copy as CopyIcon,
   ExternalLink,
   FolderGit2,
+  History,
   Layers,
   LayoutGrid,
   Package,
@@ -77,6 +78,7 @@ import { useRefactorIntents } from "../refactor-intents.js";
 import { SymbolSnippet } from "../snippets.js";
 import { hlClass, useViewHighlight } from "../use-highlight.js";
 import { CodeNode, SYMBOL_DRAG_MIME, type CodeRfNode, type SymbolDragPayload } from "./CodeNode.js";
+import { ChangesPanel } from "./ChangesPanel.js";
 import { DuplicatesPanel } from "./DuplicatesPanel.js";
 import { ReviewPanel } from "./ReviewPanel.js";
 import {
@@ -682,6 +684,11 @@ function CodeMapInner({
     (on: boolean) => nav({ architect: { findings: on } }),
     [nav],
   );
+  const showChanges = useNav((l) => l.architect?.changes) ?? false;
+  const setShowChanges = useCallback(
+    (on: boolean) => nav({ architect: { changes: on } }),
+    [nav],
+  );
 
   /* ---- cross-view highlight ---- */
 
@@ -1145,6 +1152,22 @@ function CodeMapInner({
               </button>
             </Tooltip>
           ) : null}
+          {level && level.kind !== "all" ? (
+            <Tooltip content="Recent changes — files touched lately, their wiring and blast radius (works without git)">
+              <button
+                type="button"
+                aria-pressed={showChanges}
+                onClick={() => setShowChanges(!showChanges)}
+                className={cn(
+                  "flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] transition-colors",
+                  showChanges ? "bg-crystal-500/15 text-crystal-300" : "text-ink-faint hover:text-ink-muted",
+                )}
+              >
+                <History className="h-3 w-3" />
+                changes
+              </button>
+            </Tooltip>
+          ) : null}
           {loading ? <Spinner className="ml-1 h-3 w-3" /> : null}
         </div>
 
@@ -1375,6 +1398,16 @@ function CodeMapInner({
               onHoist={(intent) => void recordHoist(intent)}
               onOpenFile={openInEditor}
               onClose={() => setShowFindings(false)}
+            />
+          </Pane>
+        ) : null}
+        {showChanges && level && level.kind !== "all" ? (
+          <Pane defaultSize={384} minSize={260} maxSize={640}>
+            <ChangesPanel
+              ws={level.ws}
+              moduleFilter={level.kind === "module" ? level.path : undefined}
+              onOpenFile={openInEditor}
+              onClose={() => setShowChanges(false)}
             />
           </Pane>
         ) : null}

@@ -282,6 +282,10 @@ export function identifierWords(input: string): string[] {
     .filter(Boolean);
 }
 
+/** Evidence entries per concept tag — every matched word (capped) so
+ * downstream corroboration can tell "token, tokens" from "auth, login". */
+const CONCEPT_EVIDENCE_CAP = 3;
+
 function conceptTags(
   words: ReadonlySet<string>,
   evidenceLabel: string,
@@ -289,16 +293,26 @@ function conceptTags(
 ): SymbolTag[] {
   const out: SymbolTag[] = [];
   for (const concept of lexicon) {
-    const hit = concept.words.find((w) => words.has(w));
-    if (!hit) continue;
+    const hits = concept.words.filter((w) => words.has(w)).slice(0, CONCEPT_EVIDENCE_CAP);
+    if (hits.length === 0) continue;
     out.push({
       tag: `intent:${concept.value}`,
       source: "heuristic",
       confidence: 1,
-      evidence: [`${evidenceLabel}: ${hit}`],
+      evidence: hits.map((hit) => `${evidenceLabel}: ${hit}`),
     });
   }
   return out;
+}
+
+/**
+ * The lexicon word an evidence entry recorded (`"name: tokenize: token"` →
+ * `"token"`), reduced to a crude stem so plural/singular pairs corroborate
+ * nothing ("token" + "tokens" is one signal, not two).
+ */
+export function evidenceStem(evidence: string): string {
+  const word = evidence.slice(evidence.lastIndexOf(": ") + 2).trim().toLowerCase();
+  return word.length > 3 && word.endsWith("s") ? word.slice(0, -1) : word;
 }
 
 /** A resolved reference to another top-level symbol in the workspace. */

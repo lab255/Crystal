@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ClipboardCheck, Copy, Layers, LayoutGrid, Maximize2, Network, Radar, Rows3, X, ZoomIn } from "lucide-react";
+import { ClipboardCheck, Copy, History, Layers, LayoutGrid, Maximize2, Network, Radar, Rows3, X, ZoomIn } from "lucide-react";
 import type { ArchEdgeKind, ArchitectureGraph, CodeLodLevel } from "@crystal/core";
 import { Button, Tooltip, cn } from "@crystal/ui";
 import { EDGE_KIND_STYLE } from "./model.js";
@@ -26,6 +26,8 @@ export function Toolbar({
   onToggleDuplicates,
   showFindings,
   onToggleFindings,
+  showChanges,
+  onToggleChanges,
   onOpenWorkspacesMap,
 }: {
   graph: ArchitectureGraph;
@@ -49,6 +51,8 @@ export function Toolbar({
   onToggleDuplicates?: (on: boolean) => void;
   showFindings?: boolean;
   onToggleFindings?: (on: boolean) => void;
+  showChanges?: boolean;
+  onToggleChanges?: (on: boolean) => void;
   /** Open the cross-workspace map (all open workspaces and their imports). */
   onOpenWorkspacesMap?: () => void;
 }) {
@@ -230,6 +234,24 @@ export function Toolbar({
           >
             <ClipboardCheck className="h-3.5 w-3.5" />
             review
+          </button>
+        </Tooltip>
+      ) : null}
+      {onToggleChanges ? (
+        <Tooltip content="Recent changes — files touched lately, their wiring and blast radius (works without git)">
+          <button
+            type="button"
+            aria-pressed={showChanges}
+            onClick={() => onToggleChanges(!showChanges)}
+            className={cn(
+              "flex h-6 items-center gap-1.5 rounded-md px-1.5 text-[11px] transition-colors",
+              showChanges
+                ? "bg-crystal-500/15 text-crystal-300"
+                : "text-ink-faint hover:text-ink-muted",
+            )}
+          >
+            <History className="h-3.5 w-3.5" />
+            changes
           </button>
         </Tooltip>
       ) : null}

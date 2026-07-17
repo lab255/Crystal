@@ -1,10 +1,18 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import ts from "typescript";
-import { aggregateExternalDeps, bestServedRoute, routeSegments, routesMatchSuffix } from "@crystal/core";
+import {
+  aggregateExternalDeps,
+  aggregateExternalLibraries,
+  bestServedRoute,
+  routeSegments,
+  routesMatchSuffix,
+} from "@crystal/core";
 import type {
   ApiTrace,
   ApiTraceCall,
+  ChangedFileEntry,
+  ChangedModuleSummary,
   CodeFileDetail,
   CodeFileSummary,
   CodeImport,
@@ -33,6 +41,7 @@ import type {
   SurfacesReport,
   SymbolSearchHit,
   SymbolSite,
+  WorkingSetReport,
 } from "@crystal/core";
 import { isIgnoredDir, resolveInRoot, toRelPath } from "./paths.js";
 import { buildSurfacesReport, computeMountPrefixes, joinMountedPath } from "./surfaces-report.js";
@@ -82,6 +91,11 @@ const JOURNEY_BFS_NODES = 200;
 /** At most this many suggestions per entry module, for diversity. */
 const JOURNEY_PER_MODULE = 2;
 const JOURNEY_DEFAULT_LIMIT = 8;
+/** Default `codemap.changes` window when the caller names none. */
+const DEFAULT_CHANGES_WINDOW_HOURS = 24;
+const CHANGES_MAX_FILES = 400;
+const CHANGES_MAX_EXPORTS = 12;
+const CHANGES_MAX_DEPENDENTS = 8;
 /** A trace this shallow isn't a journey worth suggesting. */
 const JOURNEY_MIN_STEPS = 3;
 
@@ -1387,6 +1401,63 @@ interface ServedRoute {
 }
 
 /**
+ * Was a file created inside the window, or merely edited? Filesystems that
+ * do not track creation times report birthtime 0 (or mirror mtime on some
+ * Linux setups) — a zero degrades to "modified", never a false "added".
+ */
+export function changeStatus(birthtimeMs: number, sinceMs: number): "added" | "modified" {
+  return birthtimeMs > 0 && birthtimeMs >= sinceMs ? "added" : "modified";
+}
+
+/**
+ * Top-level containers that are pure file organization, not modules of their
+ * own — their child directories are the meaningful units.
+ */
+const TRANSPARENT_CONTAINER_DIRS = new Set(["src", "lib", "app", "source"]);
+
+/**
+ * Directory-level modules for single-package workspaces. With only one
+ * package.json the module graph degenerates to a single "." node — no deps,
+ * no crossings, journeys that never span modules. Derive modules from the
+ * top-level source directories instead: `src/core`, `src/export`, `scripts`…
+ * Files directly inside a transparent container (`src/App.tsx`) fall to the
+ * container itself; root-level files stay on ".". Returns [] when the layout
+ * yields fewer than two directories — the package module is all there is.
+ */
+export function synthesizeDirModules(files: readonly string[]): { path: string; name: string }[] {
+  const dirs = new Set<string>();
+  for (const rel of files) {
+    const segs = rel.split("/");
+    if (segs.length < 2) continue; // root-level file — stays on "."
+    const dir =
+      TRANSPARENT_CONTAINER_DIRS.has(segs[0]!) && segs.length >= 3
+        ? `${segs[0]}/${segs[1]}`
+        : segs[0]!;
+    dirs.add(dir);
+  }
+  if (dirs.size < 2) return [];
+  const basename = (dir: string): string => dir.split("/").pop()!;
+  const nameCounts = new Map<string, number>();
+  for (const dir of dirs) {
+    const name = basename(dir);
+    nameCounts.set(name, (nameCounts.get(name) ?? 0) + 1);
+  }
+  // Ambiguous basenames ("src/utils" + "tools/utils") keep their full path.
+  return [...dirs]
+    .sort()
+    .map((dir) => ({ path: dir, name: nameCounts.get(basename(dir))! > 1 ? dir : basename(dir) }));
+}
+
+/**
+ * Deepest synthesized module owning `rel`, or "." when none does — "src/core"
+ * must win over a residual "src" module for `src/core/solver.ts`.
+ */
+export function dirModuleOwner(rel: string, dirModulePaths: readonly string[]): string {
+  const byDepth = [...dirModulePaths].sort((a, b) => b.length - a.length);
+  return byDepth.find((m) => rel === m || rel.startsWith(m + "/")) ?? ".";
+}
+
+/**
  * Analyzes the workspace into the three-level code map. Results are cached by
  * file mtime; call `analyze()` again after changes — unchanged files are not
  * re-parsed.
@@ -1426,7 +1497,17 @@ export class CodeMapAnalyzer {
     this.packageNameToModule.clear();
     this.declaredEntries.clear();
     const moduleDirs = await this.discoverModules();
-    const files = await this.collectFiles(moduleDirs);
+    let files = await this.collectFiles(moduleDirs);
+    // A single-package workspace gets directory-level modules so the module
+    // graph carries structure (monorepos keep exactly their packages).
+    if (moduleDirs.length === 1) {
+      const dirModules = synthesizeDirModules(files.map((f) => f.rel));
+      if (dirModules.length > 0) {
+        const dirPaths = dirModules.map((m) => m.path);
+        moduleDirs.push(...dirModules.map((m) => ({ ...m, fileCount: 0 })));
+        files = files.map((f) => ({ ...f, module: dirModuleOwner(f.rel, dirPaths) }));
+      }
+    }
 
     const records = new Map<string, FileRecord>();
     await Promise.all(
@@ -1618,6 +1699,7 @@ export class CodeMapAnalyzer {
       modules: this.modules,
       deps,
       externals: aggregateExternalDeps(externalImports),
+      libraries: aggregateExternalLibraries(externalImports),
       fileTotal: this.records.size,
       generatedAt: new Date().toISOString(),
     };
@@ -2459,6 +2541,88 @@ export class CodeMapAnalyzer {
       .filter((c) => c.instances.length >= 2)
       .sort((a, b) => b.instances.length * b.tokenCount - a.instances.length * a.tokenCount)
       .slice(0, MAX_DUPLICATE_CLUSTERS);
+  }
+
+  /**
+   * The recent working set: code files touched inside the window, from file
+   * timestamps — the "what changed?" review surface for workspaces without
+   * git. Alongside each file: its current wiring (importer count, dependents
+   * outside the changed set) so a reviewer sees blast radius and not-yet-
+   * imported additions at a glance.
+   */
+  async changes(sinceHours = DEFAULT_CHANGES_WINDOW_HOURS): Promise<WorkingSetReport> {
+    await this.ensureFresh();
+    const hours = Math.max(1, Math.min(sinceHours, 24 * 365));
+    const sinceMs = Date.now() - hours * 3600 * 1000;
+
+    const touched: { record: FileRecord; birthtimeMs: number }[] = [];
+    for (const record of this.records.values()) {
+      if (record.mtimeMs < sinceMs) continue;
+      try {
+        const stat = await fs.stat(resolveInRoot(this.root, record.path));
+        touched.push({ record, birthtimeMs: stat.birthtimeMs });
+      } catch {
+        /* deleted between analyze and stat — not part of the working set */
+      }
+    }
+    touched.sort((a, b) => b.record.mtimeMs - a.record.mtimeMs);
+    const changedSet = new Set(touched.map((t) => t.record.path));
+
+    const files: ChangedFileEntry[] = touched.slice(0, CHANGES_MAX_FILES).map(({ record, birthtimeMs }) => {
+      const importers = [...(this.importedBy.get(record.path) ?? [])].sort();
+      // Editors and agents often replace files wholesale (write + rename),
+      // resetting the inode's birthtime. An importer untouched inside the
+      // window proves the file predates it — downgrade to "modified".
+      const importedByOlder = importers.some(
+        (imp) => (this.records.get(imp)?.mtimeMs ?? Infinity) < sinceMs,
+      );
+      return {
+        path: record.path,
+        module: record.module,
+        status: importedByOlder ? "modified" : changeStatus(birthtimeMs, sinceMs),
+        mtime: new Date(record.mtimeMs).toISOString(),
+        test: isTestFile(record.path),
+        loc: record.loc,
+        exports: record.exports
+          .slice(0, CHANGES_MAX_EXPORTS)
+          .map(({ name, kind }) => ({ name, kind })),
+        importedBy: importers.length,
+        dependents: importers.filter((f) => !changedSet.has(f)).slice(0, CHANGES_MAX_DEPENDENTS),
+      };
+    });
+
+    const byModule = new Map<string, ChangedModuleSummary>();
+    for (const f of files) {
+      let m = byModule.get(f.module);
+      if (!m) byModule.set(f.module, (m = { module: f.module, added: 0, modified: 0, testsTouched: false }));
+      if (f.status === "added") m.added += 1;
+      else m.modified += 1;
+      if (f.test) m.testsTouched = true;
+    }
+    const modules = [...byModule.values()].sort(
+      (a, b) => b.added + b.modified - (a.added + a.modified) || a.module.localeCompare(b.module),
+    );
+
+    const unwired = files
+      .filter(
+        (f) =>
+          f.status === "added" &&
+          !f.test &&
+          f.importedBy === 0 &&
+          !this.declaredEntries.has(f.path) &&
+          !isConventionEntryFile(f.path),
+      )
+      .map((f) => f.path);
+
+    return {
+      sinceHours: hours,
+      since: new Date(sinceMs).toISOString(),
+      files,
+      total: touched.length,
+      modules,
+      unwired,
+      generatedAt: new Date().toISOString(),
+    };
   }
 
   async searchSymbols(query: string, limit = 50): Promise<SymbolSearchHit[]> {

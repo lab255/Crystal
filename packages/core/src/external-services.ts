@@ -141,6 +141,64 @@ export interface CodeExternalDep {
   weight: number;
 }
 
+/** Node builtins — runtime platform, not dependencies worth mapping. */
+const NODE_BUILTINS = new Set([
+  "assert", "async_hooks", "buffer", "child_process", "cluster", "console",
+  "constants", "crypto", "dgram", "dns", "events", "fs", "http", "http2",
+  "https", "inspector", "module", "net", "os", "path", "perf_hooks",
+  "process", "punycode", "querystring", "readline", "repl", "stream",
+  "string_decoder", "timers", "tls", "tty", "url", "util", "v8", "vm",
+  "worker_threads", "zlib",
+]);
+
+/** True for imports that say nothing about what the code leans on. */
+export function isPlatformImport(pkg: string): boolean {
+  return pkg.startsWith("node:") || NODE_BUILTINS.has(pkg) || pkg.startsWith("@types/");
+}
+
+/**
+ * One plain npm library and the modules importing it. The complement of the
+ * service map: WASM kernels, UI frameworks, math libraries — everything a
+ * codebase leans on that isn't a backing service. In library-heavy apps
+ * (games, CAD, editors) this IS the external story; the service registry
+ * alone would report nothing.
+ */
+export interface CodeLibraryDep {
+  /** Package name as imported ("three", "@react-three/fiber"). */
+  pkg: string;
+  /** Total import statements across all clients. */
+  weight: number;
+  /** Importing modules with import-statement counts, heaviest first. */
+  clients: { module: string; weight: number }[];
+}
+
+/**
+ * Aggregate plain-library imports per package, heaviest first. Packages the
+ * service registry recognizes are excluded — they surface via
+ * {@link aggregateExternalDeps} instead — as are node builtins and `@types/*`.
+ */
+export function aggregateExternalLibraries(
+  imports: Iterable<{ module: string; pkg: string }>,
+  cap = 20,
+): CodeLibraryDep[] {
+  const byPkg = new Map<string, Map<string, number>>();
+  for (const { module, pkg } of imports) {
+    if (isPlatformImport(pkg) || classifyExternalPackage(pkg)) continue;
+    let clients = byPkg.get(pkg);
+    if (!clients) byPkg.set(pkg, (clients = new Map()));
+    clients.set(module, (clients.get(module) ?? 0) + 1);
+  }
+  return [...byPkg.entries()]
+    .map(([pkg, clients]) => {
+      const clientList = [...clients.entries()]
+        .map(([module, weight]) => ({ module, weight }))
+        .sort((a, b) => b.weight - a.weight || a.module.localeCompare(b.module));
+      return { pkg, clients: clientList, weight: clientList.reduce((s, c) => s + c.weight, 0) };
+    })
+    .sort((a, b) => b.weight - a.weight || a.pkg.localeCompare(b.pkg))
+    .slice(0, cap);
+}
+
 /**
  * Aggregate raw (module, package) import observations into per-service
  * dependencies. Unrecognized packages are ignored — plain libraries are not

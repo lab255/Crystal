@@ -17,8 +17,10 @@ import type {
   JourneySuggestion,
   PartCrossings,
   SymbolSearchHit,
+  WorkingSetReport,
 } from "./codemap.js";
-import type { Project } from "./project.js";
+import type { Project, TaskItem } from "./project.js";
+import type { ClaimResult, TaskPatch } from "./orchestration.js";
 import type { CoverageReport, QualityRun, TestRunnerInfo } from "./quality.js";
 import type { RefactorApplyResult, RefactorIntent, RefactorPlan } from "./refactor.js";
 import type { SurfaceMapReport, SurfacesRefBundle, SurfacesReport } from "./surfaces.js";
@@ -99,6 +101,8 @@ export interface GitStatusResult {
   repoPath: string;
   branch: string | null;
   files: GitFileStatus[];
+  /** False when `repoPath` is not inside a git repository (a state, not an error). */
+  isRepo: boolean;
 }
 
 /**
@@ -193,6 +197,37 @@ export interface BridgeMethods {
   "archdraft.delete": { params: WsScope & { path: string }; result: { ok: true } };
   "project.save": { params: WsScope & { path: string; project: Project }; result: { ok: true } };
   "project.create": { params: WsScope & { name: string }; result: { path: string; project: Project } };
+  /**
+   * Claim an exclusive write lease on a task (the board's borrow checker —
+   * one writer per task). Succeeds on unleased/stale tasks; passing the
+   * current `claimId` heartbeats the lease instead.
+   */
+  "task.claim": {
+    params: WsScope & {
+      path: string;
+      taskId: string;
+      holder: string;
+      holderRunId?: string | null;
+      claimId?: string;
+      ttlSeconds?: number;
+    };
+    result: ClaimResult;
+  };
+  "task.release": {
+    params: WsScope & { path: string; taskId: string; claimId?: string | null; force?: boolean };
+    result: { ok: true } | { ok: false; reason: string };
+  };
+  /** Lease-checked task mutation. `force` is the human owner's override. */
+  "task.update": {
+    params: WsScope & {
+      path: string;
+      taskId: string;
+      patch: TaskPatch;
+      claimId?: string | null;
+      force?: boolean;
+    };
+    result: { ok: true; task: TaskItem } | { ok: false; reason: string };
+  };
   /** The workspace's todo list (`.crystal/todos.json`; empty list if the file is absent). */
   "todos.get": { params: WsScope; result: { todos: TodoList } };
   "todos.save": { params: WsScope & { todos: TodoList }; result: { ok: true } };
@@ -393,6 +428,10 @@ export interface BridgeMethods {
     result: ApiTrace;
   };
   /** Clusters of functions with identical normalized token streams. */
+  "codemap.changes": {
+    params: WsScope & { sinceHours?: number };
+    result: WorkingSetReport;
+  };
   "codemap.duplicates": {
     params: WsScope & { minTokens?: number };
     result: { clusters: DuplicateCluster[]; generatedAt: string };

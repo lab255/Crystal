@@ -12,8 +12,6 @@ import {
   BRIDGE_TOKEN_COOKIE,
   BRIDGE_TOKEN_PARAM,
   DEFAULT_BRIDGE_PORT,
-  createTaskQuestion,
-  nowIso,
   type DeepLink,
   type WorkspaceDescriptor,
 } from "@crystal/core";
@@ -188,32 +186,9 @@ export function CrystalProvider({
       if (ws === workspacesStore.getState().activeId) fleetStore.getState().markSeen(ws);
     });
 
-    // An agent asked for user input mid-run: file it as an async question on
-    // the run's task, where the human owner answers it from the board.
-    const disposeQuestion = client.events.on("agent.event", ({ runId, event }) => {
-      if (event.type !== "question") return;
-      const run = agentStore.getState().runs.find((r) => r.id === runId);
-      if (!run?.taskId) return;
-      const info = workspaceStore.getState().info;
-      const entry = info?.projects.find((p) =>
-        p.project.tasks.some((t) => t.id === run.taskId),
-      );
-      const task = entry?.project.tasks.find((t) => t.id === run.taskId);
-      if (!entry || !task) return;
-      if (task.questions.some((q) => q.runId === runId && q.text === event.text)) return;
-      workspaceStore.getState().updateProject(entry.path, {
-        ...entry.project,
-        tasks: entry.project.tasks.map((t) =>
-          t.id === task.id
-            ? {
-                ...t,
-                questions: [...t.questions, createTaskQuestion(event.text, runId)],
-                updatedAt: nowIso(),
-              }
-            : t,
-        ),
-      });
-    });
+    // Questions raised by agent runs are filed onto their board task by the
+    // server (which sees them even when no browser is open); the board picks
+    // them up through the workspace.changed refetch like any other write.
 
     const dispose = client.events.on("connection", ({ state }) => {
       if (state === "open") {
@@ -228,7 +203,6 @@ export function CrystalProvider({
     return () => {
       dispose();
       disposeRunChanged();
-      disposeQuestion();
       unsubActive();
       void workspaceStore.getState().flush();
       void fleetStore.getState().flush();

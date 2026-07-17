@@ -19,6 +19,7 @@ function system(id: string, role: SystemRole = "domain", fileCount = 10): System
     exports: [],
     exportedTotal: 0,
     externals: [],
+    libraries: [],
     endpoints: [],
     components: [],
     componentCount: 0,

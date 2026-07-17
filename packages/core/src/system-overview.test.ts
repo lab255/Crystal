@@ -566,3 +566,89 @@ describe("part links", () => {
     expect(portal.partLinks).toBeUndefined();
   });
 });
+
+describe("intent corroboration", () => {
+  const indexOf = (sources: OverviewSourceFile[], names: Record<string, string[]>) =>
+    buildCodeIndex(
+      sources.map((s) => ({
+        path: s.path,
+        module: s.pkg,
+        hash: "h",
+        importerModules: 0,
+        symbols: (names[s.path] ?? []).map((name, i) => ({
+          name,
+          kind: "function" as const,
+          line: i + 1,
+          exported: true,
+        })),
+      })),
+    );
+
+  it("drops an intent asserted by a single repeated stem (tokenizer ≠ auth)", () => {
+    const sources = [
+      src("src/parsing/expr.ts", ".", { exports: ["tokenize"] }),
+      src("src/parsing/eval.ts", ".", { exports: ["evaluate"] }),
+    ];
+    const index = indexOf(sources, {
+      "src/parsing/expr.ts": ["tokenize", "nextToken", "peekTokens"],
+    });
+    const overview = buildSystemOverview(sources, index);
+    const parsing = byName(overview, "Parsing");
+    expect(parsing.intents.map((i) => i.value)).not.toContain("auth");
+  });
+
+  it("keeps intents corroborated by distinct words", () => {
+    const sources = [
+      src("src/access/guard.ts", ".", { exports: ["login"] }),
+      src("src/access/session.ts", ".", { exports: ["createSession"] }),
+    ];
+    const index = indexOf(sources, {
+      "src/access/guard.ts": ["login", "verifyPassword"],
+      "src/access/session.ts": ["createSession"],
+    });
+    const overview = buildSystemOverview(sources, index);
+    // Corroborated tag mass is strong enough to become the cluster concept.
+    const access = overview.systems.find((s) => s.concept === "auth");
+    expect(access).toBeDefined();
+    expect(access!.intents.map((i) => i.value)).toContain("auth");
+  });
+
+  it("keeps a single-stem intent when the unit's own name asserts it", () => {
+    const sources = [
+      src("src/auth/token.ts", ".", { exports: ["issueToken"] }),
+      src("src/auth/refresh.ts", ".", { exports: ["refresh"] }),
+    ];
+    const index = indexOf(sources, { "src/auth/token.ts": ["issueToken"] });
+    const overview = buildSystemOverview(sources, index);
+    const auth = overview.systems.find((s) => s.concept === "auth");
+    expect(auth).toBeDefined();
+    expect(auth!.intents.map((i) => i.value)).toContain("auth");
+  });
+});
+
+describe("client-only workspaces", () => {
+  it("puts non-UI compute systems in the frontend lane when nothing serves HTTP", () => {
+    const overview = buildSystemOverview([
+      src("src/components/Viewport.tsx", ".", { components: ["Viewport"] }),
+      src("src/components/Toolbar.tsx", ".", { components: ["Toolbar"] }),
+      src("src/geometry/kernel.ts", ".", { exports: ["processDocument"] }),
+      src("src/geometry/plane.ts", ".", { exports: ["planeBasis"] }),
+    ]);
+    const geometry = byName(overview, "Geometry");
+    expect(geometry.layer).toBe("frontend");
+  });
+
+  it("keeps plain-ts systems backend when the workspace serves HTTP", () => {
+    const overview = buildSystemOverview([
+      src("web/src/pages/Home.tsx", "web", { components: ["Home"] }),
+      src("svc/src/matching/rules.ts", "svc", { exports: ["match"] }),
+      src("svc/src/routes.ts", "svc", {
+        imports: [{ external: "express" }],
+        endpoints: [{ method: "GET", path: "/things" }],
+      }),
+    ]);
+    // The small svc package folds into one system — it must stay backend.
+    const svc = byName(overview, "Svc");
+    expect(svc.layer).toBe("backend");
+  });
+});

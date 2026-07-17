@@ -61,11 +61,52 @@ export const TaskQuestionSchema = z.object({
 });
 export type TaskQuestion = z.infer<typeof TaskQuestionSchema>;
 
+/**
+ * An exclusive write lease on a task — the board's borrow checker. One writer
+ * per task: mutations must present the lease's `claimId` (a capability token
+ * handed out at claim time, never listed back to other agents). Leases expire
+ * (`expiresAt`, heartbeat-extended by the holder) so a crashed agent's claim
+ * heals instead of deadlocking the board. Server-owned: clients cannot set or
+ * clear leases through whole-project saves, only through claim/release calls.
+ */
+export const TaskLeaseSchema = z.object({
+  /** Capability token; writes must present it. */
+  claimId: z.string(),
+  /** Display identity of the holder (agent profile id, run id, or "user"). */
+  holder: z.string(),
+  /** Run holding the lease, when an agent run claimed it. */
+  holderRunId: z.string().nullish(),
+  acquiredAt: z.string(),
+  /** Past this instant the lease is stale and the next claimant steals it. */
+  expiresAt: z.string(),
+});
+export type TaskLease = z.infer<typeof TaskLeaseSchema>;
+
+/**
+ * Durable cost rollup — run history is ephemeral app data, so the tokens/$ a
+ * task or epic consumed are written onto the board when runs settle. Totals
+ * include cache reads (they dominate real bills); `byModel` keeps the split
+ * that pricing needs. Server-owned, like leases.
+ */
+export const CostRollupSchema = z.object({
+  /** Every token, cache reads included. */
+  totalTokens: z.number().default(0),
+  costUsd: z.number().default(0),
+  runCount: z.number().default(0),
+  byModel: z
+    .record(z.string(), z.object({ totalTokens: z.number(), costUsd: z.number() }))
+    .default({}),
+  updatedAt: z.string(),
+});
+export type CostRollup = z.infer<typeof CostRollupSchema>;
+
 /** Feature epic — the grouping unit for related tasks on a board. */
 export const EpicSchema = z.object({
   id: z.string(),
   name: z.string(),
   description: z.string().default(""),
+  /** Build cost across the epic's tasks (server-maintained, see CostRollup). */
+  cost: CostRollupSchema.nullish(),
 });
 export type Epic = z.infer<typeof EpicSchema>;
 
@@ -99,6 +140,12 @@ export const TaskItemSchema = z.object({
    * until the board dispatches it.
    */
   agentPrompt: z.string().nullish(),
+  /** Task ids that must reach "done" before this one is ready to start. */
+  blockedBy: z.array(z.string()).default([]),
+  /** Exclusive write lease (server-maintained — see TaskLease). */
+  lease: TaskLeaseSchema.nullish(),
+  /** Cumulative agent cost (server-maintained — see CostRollup). */
+  cost: CostRollupSchema.nullish(),
   /** Async questions for the human owner (raised by agent runs mid-task). */
   questions: z.array(TaskQuestionSchema).default([]),
   /** Agent run ids attached to this task (run records live in app data). */
@@ -116,11 +163,20 @@ export const ProjectSchema = z.object({
   description: z.string().default(""),
   epics: z.array(EpicSchema).default([]),
   tasks: z.array(TaskItemSchema).default([]),
+  /**
+   * Save revision, bumped by the server on every board write. Whole-project
+   * saves carry the rev they were loaded at; a stale rev routes the save
+   * through a per-task merge instead of a wholesale replace, so a UI snapshot
+   * from before an agent's write cannot silently revert or delete it.
+   */
+  rev: z.number().default(0),
+  /** Per-status WIP limits ("in_progress" → 3); absent means unlimited. */
+  wipLimits: z.record(z.string(), z.number()).default({}),
 });
 export type Project = z.infer<typeof ProjectSchema>;
 
 export function createProject(name: string): Project {
-  return { id: uid("proj"), name, description: "", epics: [], tasks: [] };
+  return { id: uid("proj"), name, description: "", epics: [], tasks: [], rev: 0, wipLimits: {} };
 }
 
 export function createEpic(name: string): Epic {
@@ -157,4 +213,25 @@ export function tasksInColumn(project: Project, status: TaskStatus): TaskItem[] 
   return project.tasks
     .filter((t) => t.status === status)
     .sort((a, b) => a.order - b.order || b.updatedAt.localeCompare(a.updatedAt));
+}
+
+/**
+ * Backlog tasks whose blockers are all done — what an orchestrator may assign
+ * next, highest priority first. A blocker id that matches no task is treated
+ * as done (deleted tasks must not block forever).
+ */
+export function readyTasks(project: Project): TaskItem[] {
+  const byId = new Map(project.tasks.map((t) => [t.id, t]));
+  return project.tasks
+    .filter(
+      (t) =>
+        t.status === "backlog" &&
+        t.blockedBy.every((id) => (byId.get(id)?.status ?? "done") === "done"),
+    )
+    .sort(
+      (a, b) =>
+        PRIORITY_RANK[b.priority] - PRIORITY_RANK[a.priority] ||
+        a.order - b.order ||
+        a.createdAt.localeCompare(b.createdAt),
+    );
 }

@@ -69,6 +69,7 @@ import {
 import { ArchitectCanvas } from "./ArchitectCanvas.js";
 import { detectDrift, driftSignature, type ArchDrift } from "./auto-map.js";
 import { CodeMapView, requestOpenFile } from "./codemap/CodeMapView.js";
+import { ChangesPanel } from "./codemap/ChangesPanel.js";
 import { DuplicatesPanel } from "./codemap/DuplicatesPanel.js";
 import { ReviewPanel } from "./codemap/ReviewPanel.js";
 import type { MoveLikeIntent } from "./codemap/map-model.js";
@@ -555,6 +556,11 @@ function DiagramsView({
     (on: boolean) => nav({ architect: { findings: on } }),
     [nav],
   );
+  const showChanges = useNav((l) => l.architect?.changes) ?? false;
+  const setShowChanges = useCallback(
+    (on: boolean) => nav({ architect: { changes: on } }),
+    [nav],
+  );
 
   useEffect(() => {
     if (!notice) return;
@@ -1025,6 +1031,8 @@ function DiagramsView({
                   onToggleDuplicates={setShowDuplicates}
                   showFindings={showFindings}
                   onToggleFindings={setShowFindings}
+                  showChanges={showChanges}
+                  onToggleChanges={setShowChanges}
                 />
               )}
               {activeDraft ? (
@@ -1171,6 +1179,16 @@ function DiagramsView({
               onHoist={(intent) => void recordHoist(intent)}
               onOpenFile={(file, line) => requestOpenFile(file, line)}
               onClose={() => setShowFindings(false)}
+            />
+          </Pane>
+        ) : null}
+
+        {variant === "diagrams" && showChanges ? (
+          <Pane defaultSize={384} minSize={260} maxSize={640}>
+            <ChangesPanel
+              ws={activeWs ?? undefined}
+              onOpenFile={(file, line) => requestOpenFile(file, line)}
+              onClose={() => setShowChanges(false)}
             />
           </Pane>
         ) : null}

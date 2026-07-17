@@ -93,6 +93,12 @@ export const AgentRunSchema = z.object({
   agentId: z.string().nullish(),
   /** Manager run that dispatched this worker, if any (see AgentRole). */
   parentRunId: z.string().nullish(),
+  /**
+   * Earlier run this one resumed (same Claude session, fresh run record).
+   * Chains manager turns: the original manager plus every wake-up-on-worker
+   * resume share one logical manager via this link (see chain helpers below).
+   */
+  resumedFromRunId: z.string().nullish(),
   /** Place in the manager/worker hierarchy (unset = standalone run). */
   role: AgentRoleSchema.nullish(),
   /** Why this run touched the task (see RUN_PURPOSES). */
@@ -110,6 +116,8 @@ export const AgentRunSchema = z.object({
   durationMs: z.number().nullish(),
   /** Final result text (or error message on failure). */
   resultText: z.string().nullish(),
+  /** Files the run edited (collected from Edit/Write tool calls), for review. */
+  filesTouched: z.array(z.string()).default([]),
   createdAt: z.string(),
   startedAt: z.string().nullish(),
   endedAt: z.string().nullish(),
@@ -125,6 +133,7 @@ export function createAgentRun(init: {
   isolation?: AgentIsolation;
   agentId?: string | null;
   parentRunId?: string | null;
+  resumedFromRunId?: string | null;
   role?: AgentRole | null;
   purpose?: RunPurpose | null;
   tags?: string[];
@@ -139,6 +148,7 @@ export function createAgentRun(init: {
     isolation: init.isolation ?? "none",
     agentId: init.agentId ?? null,
     parentRunId: init.parentRunId ?? null,
+    resumedFromRunId: init.resumedFromRunId ?? null,
     // A run with a parent is a worker by default; otherwise leave it unset
     // unless the caller declares it a manager.
     role: init.role ?? (init.parentRunId ? "worker" : null),
@@ -146,6 +156,31 @@ export function createAgentRun(init: {
     tags: init.tags ?? [],
     createdAt: nowIso(),
   });
+}
+
+/**
+ * Root of a run's resume chain: the original run that later turns of the same
+ * logical session were resumed from. Runs form chains via `resumedFromRunId`
+ * (a manager woken on worker settlement is a fresh run record, same manager).
+ */
+export function chainRootId(runId: string, runsById: Map<string, AgentRun>): string {
+  let id = runId;
+  const seen = new Set<string>();
+  while (!seen.has(id)) {
+    seen.add(id);
+    const prev = runsById.get(id)?.resumedFromRunId;
+    if (!prev) break;
+    id = prev;
+  }
+  return id;
+}
+
+/** Workspace file path from an Edit/Write-style tool call, or null. */
+export function touchedFileFromToolUse(name: string, input: unknown): string | null {
+  if (!/^(Edit|Write|MultiEdit|NotebookEdit)$/.test(name)) return null;
+  const p = (input as { file_path?: unknown; notebook_path?: unknown } | null | undefined) ?? {};
+  const file = typeof p.file_path === "string" ? p.file_path : p.notebook_path;
+  return typeof file === "string" && file ? file : null;
 }
 
 /** Every run attributed to a task, whatever its purpose (implement, review, merge, CI, …). */
@@ -284,6 +319,12 @@ export const WorkerSpecSchema = z.object({
   isolation: AgentIsolationSchema.nullish(),
   /** Why this worker touches the task (defaults to the manager's purpose). */
   purpose: RunPurposeSchema.nullish(),
+  /**
+   * Board task the worker's cost and history attribute to (defaults to the
+   * manager's own task). A manager driving several tasks must set this, or
+   * every worker bills the manager's task.
+   */
+  taskId: z.string().nullish(),
   /** Dimensional tags stamped onto the worker run. */
   tags: z.array(z.string()).nullish(),
 });

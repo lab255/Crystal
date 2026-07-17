@@ -155,10 +155,23 @@ export async function startCrystalServer(opts: {
       return { ok: true };
     },
     "project.save": async ({ ws, path: p, project }) => {
-      await registry.get(ws).store.saveProject(p, project);
+      // Guarded: leases and cost rollups are server-owned — a stale client
+      // snapshot must not clobber a live claim or a billed epic.
+      await registry.get(ws).orchestration.saveProjectGuarded(p, project);
       return { ok: true };
     },
     "project.create": ({ ws, name }) => registry.get(ws).store.createProject(name),
+    "task.claim": ({ ws, path: p, taskId, holder, holderRunId, claimId, ttlSeconds }) =>
+      registry.get(ws).orchestration.claimTask(p, taskId, {
+        holder,
+        holderRunId,
+        claimId,
+        ttlMs: ttlSeconds != null ? ttlSeconds * 1000 : undefined,
+      }),
+    "task.release": ({ ws, path: p, taskId, claimId, force }) =>
+      registry.get(ws).orchestration.releaseTask(p, taskId, { claimId, force }),
+    "task.update": ({ ws, path: p, taskId, patch, claimId, force }) =>
+      registry.get(ws).orchestration.updateTask(p, taskId, patch, { claimId, force }),
     "agents.get": async ({ ws }) => ({ roster: await registry.get(ws).store.loadAgents() }),
     "agents.save": async ({ ws, roster }) => {
       const rt = registry.get(ws);
@@ -299,6 +312,7 @@ export async function startCrystalServer(opts: {
       registry.get(ws).codemap.trace(file, symbol, maxDepth),
     "codemap.apiTrace": ({ ws, file, symbol, maxDepth }) =>
       registry.get(ws).codemap.apiTrace(file, symbol, maxDepth),
+    "codemap.changes": ({ ws, sinceHours }) => registry.get(ws).codemap.changes(sinceHours),
     "codemap.duplicates": async ({ ws, minTokens }) => ({
       clusters: await registry.get(ws).codemap.duplicates(minTokens),
       generatedAt: new Date().toISOString(),

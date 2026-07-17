@@ -5,10 +5,12 @@ import { promisify } from "node:util";
 import {
   Emitter,
   LineBuffer,
+  chainRootId,
   createAgentRun,
   emptyUsage,
   nowIso,
   parseClaudeStreamLine,
+  touchedFileFromToolUse,
   type AgentEvent,
   type AgentIsolation,
   type AgentRole,
@@ -32,6 +34,8 @@ export interface AgentStartParams {
   agentId?: string | null;
   /** Manager run that dispatched this worker (sets role to "worker"). */
   parentRunId?: string | null;
+  /** Earlier run of the same logical session this run resumes (chains manager turns). */
+  resumedFromRunId?: string | null;
   /** Place in the manager/worker hierarchy (unset = standalone run). */
   role?: AgentRole | null;
   purpose?: RunPurpose | null;
@@ -44,8 +48,11 @@ export interface AgentStartParams {
 
 const MAX_DIFF_BYTES = 1024 * 1024;
 
-/** Fan-out cap: how many workers a single manager run may dispatch. */
+/** Fan-out cap: how many workers one manager (across its whole resume chain) may dispatch. */
 const MAX_WORKERS_PER_MANAGER = 12;
+
+/** How much of a worker's result text rides along in the manager wake-up prompt. */
+const NOTICE_RESULT_CHARS = 1500;
 
 const execFileAsync = promisify(execFile);
 
@@ -104,6 +111,15 @@ export class AgentManager {
   private procs = new Map<string, ActiveProcess>();
   private loaded = false;
   private resolvedBin: string | null = null;
+  /**
+   * Worker-settlement notices queued per manager chain root, delivered by
+   * resuming the manager's session as soon as no chain run is live. This is
+   * what closes the delegation loop: managers end their turn after
+   * dispatching and are woken with results instead of busy-polling.
+   */
+  private pendingNotices = new Map<string, string[]>();
+  /** Set by the workspace runtime: a dispatched worker inherits its task's lease. */
+  onWorkerDispatched: ((worker: AgentRun) => void) | null = null;
 
   constructor(
     private readonly root: string,
@@ -172,6 +188,7 @@ export class AgentManager {
       if (!name.endsWith(".json")) continue;
       try {
         const run = JSON.parse(await fs.readFile(path.join(dir, name), "utf8")) as AgentRun;
+        run.filesTouched ??= []; // records predating the field
         // A run that was live when the server died can never complete.
         if (run.status === "running" || run.status === "queued") {
           run.status = "failed";
@@ -243,8 +260,11 @@ export class AgentManager {
     ];
     if (params.model) args.push("--model", params.model);
     if (params.resumeSessionId) args.push("--resume", params.resumeSessionId);
-    // Managers get the dispatch_worker MCP tool; workers never do.
-    const mcpConfig = run.role === "manager" ? await this.writeMcpConfig(run.id) : null;
+    // Managers get dispatch + board tools; any run attached to a board task
+    // (workers, task runs from the board) gets the self-service task tools.
+    // The endpoint scopes the toolset by the run's role (see mcp/http.ts).
+    const mcpConfig =
+      run.role === "manager" || run.taskId ? await this.writeMcpConfig(run.id) : null;
     if (mcpConfig) args.push("--mcp-config", mcpConfig);
 
     const plan = planClaudeSpawn(await this.claudePath(), args);
@@ -317,6 +337,13 @@ export class AgentManager {
     if (params.skills?.length) {
       prompt += `\n\nUse these skills where relevant: ${params.skills.map((s) => `/${s}`).join(", ")}.`;
     }
+    if (mcpConfig && run.role !== "manager" && run.taskId) {
+      prompt +=
+        "\n\nYour work is tracked on a Crystal board task. Use your mcp__crystal__* tools: " +
+        "my_task (its details and acceptance criteria), update_my_task (move its status as " +
+        "you progress — in_progress when you start, review when done and green), and " +
+        "ask_question (escalate a decision to the human owner without stopping other work).";
+    }
     try {
       child.stdin.write(prompt);
       child.stdin.end();
@@ -336,27 +363,53 @@ export class AgentManager {
     return run;
   }
 
+  /** Run ids in one logical manager's resume chain (root + every wake-up turn). */
+  private chainIds(rootId: string): Set<string> {
+    const ids = new Set<string>([rootId]);
+    for (const r of this.runs.values()) {
+      if (chainRootId(r.id, this.runs) === rootId) ids.add(r.id);
+    }
+    return ids;
+  }
+
+  /**
+   * Workers dispatched by a manager across its whole resume chain — a worker
+   * dispatched before a wake-up still belongs to the woken manager.
+   */
+  async listWorkersFor(managerRunId: string): Promise<AgentRun[]> {
+    await this.ensureLoaded();
+    const chain = this.chainIds(chainRootId(managerRunId, this.runs));
+    return [...this.runs.values()]
+      .filter((r) => r.parentRunId && chain.has(r.parentRunId))
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+
+  /** A run record by id (workers hand their results to managers through this). */
+  async get(runId: string): Promise<AgentRun | null> {
+    await this.ensureLoaded();
+    const run = this.runs.get(runId);
+    return run ? { ...run } : null;
+  }
+
   /**
    * Spawn a worker run on behalf of a manager. The worker is parented to the
    * manager (`parentRunId` + role "worker") and inherits its cwd/repo/task when
    * the spec omits them. Two guards keep a runaway manager from fork-bombing:
    * only manager/standalone runs may dispatch (workers can't, so the tree stays
-   * one level deep), and each manager is capped at {@link MAX_WORKERS_PER_MANAGER}.
-   * Returns null when a guard rejects the dispatch.
+   * one level deep), and each manager chain is capped at
+   * {@link MAX_WORKERS_PER_MANAGER}. Returns null when a guard rejects the
+   * dispatch.
    */
   async dispatchWorker(managerRunId: string, spec: WorkerSpec): Promise<AgentRun | null> {
     await this.ensureLoaded();
     const manager = this.runs.get(managerRunId);
     if (!manager || manager.role === "worker") return null;
-    const dispatched = [...this.runs.values()].filter(
-      (r) => r.parentRunId === managerRunId,
-    ).length;
-    if (dispatched >= MAX_WORKERS_PER_MANAGER) return null;
-    return this.start({
+    if ((await this.listWorkersFor(managerRunId)).length >= MAX_WORKERS_PER_MANAGER) return null;
+    const worker = await this.start({
       prompt: spec.prompt,
       cwd: spec.cwd ?? manager.cwd,
       repoId: manager.repoId,
-      taskId: manager.taskId,
+      taskId: spec.taskId ?? manager.taskId,
       projectId: manager.projectId,
       isolation: spec.isolation ?? "none",
       parentRunId: managerRunId,
@@ -364,6 +417,9 @@ export class AgentManager {
       purpose: spec.purpose ?? manager.purpose,
       tags: spec.tags ?? [],
     });
+    // Hand the task's lease to the run doing the work (see OrchestrationService).
+    this.onWorkerDispatched?.(worker);
+    return worker;
   }
 
   /** Diff of the run's worktree vs its base commit (includes untracked files). */
@@ -463,6 +519,12 @@ export class AgentManager {
       run.sessionId = event.sessionId ?? run.sessionId;
       run.status = event.ok ? "completed" : "failed";
       this.emitRunChanged(run);
+    } else if (event.type === "tool_use") {
+      const file = touchedFileFromToolUse(event.name, event.input);
+      if (file && !run.filesTouched.includes(file)) {
+        run.filesTouched.push(file);
+        this.emitRunChanged(run);
+      }
     } else if (event.type === "dispatch") {
       // A manager delegated a unit of work — spawn it as a tracked worker run
       // parented to this run. The worker streams on its own; a dispatch that
@@ -497,7 +559,101 @@ export class AgentManager {
     this.record(run, { type: "status", status: run.status, message });
     this.emitRunChanged(run);
     await this.persist(run);
+    this.notifyOnSettle(run);
     return run;
+  }
+
+  /* ---------------- manager wake-ups ---------------- */
+
+  /** True while any run of the chain is still live (a wake-up would race it). */
+  private chainLive(rootId: string): boolean {
+    for (const id of this.chainIds(rootId)) {
+      const status = this.runs.get(id)?.status;
+      if (status === "running" || status === "queued") return true;
+    }
+    return false;
+  }
+
+  /**
+   * Close the delegation loop on settlement. A settling worker queues a
+   * result notice for its manager chain; a settling manager turn flushes
+   * anything queued while it ran. Either way the notices are delivered by
+   * resuming the manager's session the moment no chain run is live — the
+   * manager never has to busy-poll `worker_status`.
+   */
+  private notifyOnSettle(run: AgentRun): void {
+    if (run.role === "worker" && run.parentRunId) {
+      const rootId = chainRootId(run.parentRunId, this.runs);
+      const notices = this.pendingNotices.get(rootId) ?? [];
+      notices.push(this.workerNotice(run));
+      this.pendingNotices.set(rootId, notices);
+      if (!this.chainLive(rootId)) void this.flushNotices(rootId);
+      return;
+    }
+    const rootId = chainRootId(run.id, this.runs);
+    if (this.pendingNotices.get(rootId)?.length && !this.chainLive(rootId)) {
+      void this.flushNotices(rootId);
+    }
+  }
+
+  private workerNotice(worker: AgentRun): string {
+    const head = `Worker ${worker.id} settled: ${worker.status}` +
+      (worker.purpose ? ` (purpose: ${worker.purpose})` : "") +
+      (worker.taskId ? ` (task: ${worker.taskId})` : "");
+    const result = (worker.resultText ?? "").trim();
+    const body = result.length > NOTICE_RESULT_CHARS
+      ? `${result.slice(0, NOTICE_RESULT_CHARS)}\n… (truncated — worker_result ${worker.id} has the rest)`
+      : result || "(no result text)";
+    const files = worker.filesTouched.length
+      ? `\nFiles touched: ${worker.filesTouched.slice(0, 10).join(", ")}` +
+        (worker.filesTouched.length > 10 ? ` … +${worker.filesTouched.length - 10} more` : "")
+      : "";
+    return `${head}\n${body}${files}`;
+  }
+
+  /**
+   * Deliver queued worker notices by resuming the manager's session as a new
+   * chained run. Skips (and drops the notices of) chains whose latest turn
+   * the user cancelled — a killed manager must stay dead.
+   */
+  private async flushNotices(rootId: string): Promise<void> {
+    const notices = this.pendingNotices.get(rootId);
+    if (!notices?.length) return;
+    this.pendingNotices.delete(rootId);
+    const chain = [...this.chainIds(rootId)]
+      .map((id) => this.runs.get(id))
+      .filter((r): r is AgentRun => !!r)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    const root = chain[0];
+    const latest = chain[chain.length - 1];
+    if (!root || !latest || latest.status === "cancelled") return;
+    const session = [...chain].reverse().find((r) => r.sessionId)?.sessionId;
+    if (!session) return;
+    const prompt =
+      `${notices.length > 1 ? `${notices.length} workers settled while you were away.\n\n` : ""}` +
+      notices.join("\n\n---\n\n") +
+      "\n\nYou were resumed because dispatched work settled. Review the results, update the " +
+      "board (claim → update_task → release), dispatch follow-up or review workers for " +
+      "anything done, and start the next READY tasks. If everything is done and the board " +
+      "reflects it, say so briefly and stop. You will be resumed again when more workers " +
+      "settle — do not busy-poll worker_status.";
+    try {
+      await this.start({
+        prompt,
+        cwd: root.cwd,
+        taskId: root.taskId,
+        projectId: root.projectId,
+        repoId: root.repoId,
+        resumeSessionId: session,
+        resumedFromRunId: latest.id,
+        agentId: root.agentId,
+        role: root.role === "manager" ? "manager" : null,
+        purpose: root.purpose,
+        tags: root.tags,
+      });
+    } catch (err) {
+      console.warn(`[crystal] could not wake manager ${rootId}:`, (err as Error).message);
+    }
   }
 
   private emitRunChanged(run: AgentRun): void {

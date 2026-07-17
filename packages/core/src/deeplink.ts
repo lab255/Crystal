@@ -72,6 +72,8 @@ export interface ArchitectLink {
   duplicates?: boolean;
   /** Review-findings panel open (code map). */
   findings?: boolean;
+  /** Working-set changes panel open (code map). */
+  changes?: boolean;
   /** Facets panel open (systems overview + code map). */
   facets?: boolean;
   /** Insights panel open (systems overview). */
@@ -117,6 +119,10 @@ export interface OrchestrateLink {
   group?: string;
   /** Board sort key: "manual" (default), "priority", "size", "tokens" or "cost". */
   sort?: string;
+  /** Board text filter (matches title, description and labels). */
+  filter?: string;
+  /** Board owner filter: "agent:<profileId>" or "human:<name>". */
+  owner?: string;
 }
 
 export interface CodeLink {
@@ -233,6 +239,7 @@ export function formatDeepLink(link: DeepLink): string {
       if (a.lens && a.lensCtx) add("lensctx", "1");
       if (a.duplicates) add("dups", "1");
       if (a.findings) add("findings", "1");
+      if (a.changes) add("changes", "1");
       if (a.facets) add("facets", "1");
       if (a.file) add("file", a.file);
     } else {
@@ -253,6 +260,8 @@ export function formatDeepLink(link: DeepLink): string {
     if (tab === "board" && o.task) add("task", o.task);
     if (tab === "board" && o.group) add("group", o.group);
     if (tab === "board" && o.sort) add("sort", o.sort);
+    if (tab === "board" && o.filter) add("filter", o.filter);
+    if (tab === "board" && o.owner) add("owner", o.owner);
     if ((tab === "runs" || tab === "agents") && o.run) add("run", o.run);
   } else if (mode === "code") {
     if (link.code?.file) add("file", link.code.file);
@@ -367,6 +376,7 @@ export function parseDeepLink(hash: string): DeepLink {
     if (params.get("overlay") === "1") a.overlay = true;
     if (params.get("dups") === "1") a.duplicates = true;
     if (params.get("findings") === "1") a.findings = true;
+    if (params.get("changes") === "1") a.changes = true;
     if (params.get("facets") === "1") a.facets = true;
     if (params.get("insights") === "1") a.insights = true;
     if (params.get("contracts") === "1") a.contracts = true;
@@ -409,6 +419,10 @@ export function parseDeepLink(hash: string): DeepLink {
     if (group) o.group = group;
     const sort = params.get("sort");
     if (sort) o.sort = sort;
+    const filter = params.get("filter");
+    if (filter) o.filter = filter;
+    const owner = params.get("owner");
+    if (owner) o.owner = owner;
     const run = params.get("run");
     if (run) o.run = run;
     if (Object.keys(o).length) link.orchestrate = o;
@@ -481,7 +495,7 @@ export function parseDeepLink(hash: string): DeepLink {
  */
 const ARCHITECT_VIEW_FIELDS: Record<ArchitectViewId, readonly (keyof ArchitectLink)[]> = {
   systems: ["view", "system", "sysGroup", "lens", "lensCtx", "edge", "expanded", "focus", "focusSolo", "insights", "contracts", "facets", "sel", "find"],
-  codemap: ["view", "codemap", "lod", "lens", "lensCtx", "duplicates", "findings", "facets", "file", "sel", "find"],
+  codemap: ["view", "codemap", "lod", "lens", "lensCtx", "duplicates", "findings", "changes", "facets", "file", "sel", "find"],
   diagrams: ["view", "diagram", "facet", "draft", "review", "journey", "overlay", "sel", "find"],
   infra: ["view", "diagram", "facet", "draft", "review", "journey", "overlay", "sel", "find"],
 };

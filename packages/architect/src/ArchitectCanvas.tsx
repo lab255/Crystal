@@ -187,6 +187,8 @@ export interface ArchitectCanvasProps {
   onToggleDuplicates?: (on: boolean) => void;
   showFindings?: boolean;
   onToggleFindings?: (on: boolean) => void;
+  showChanges?: boolean;
+  onToggleChanges?: (on: boolean) => void;
 }
 
 const GHOST_STROKE = "var(--color-crystal-400)";
@@ -344,6 +346,8 @@ function CanvasInner({
   onToggleDuplicates,
   showFindings,
   onToggleFindings,
+  showChanges,
+  onToggleChanges,
 }: ArchitectCanvasProps) {
   const [selectedNodes, setSelectedNodes] = useState<ReadonlySet<string>>(new Set());
   const [selectedEdges, setSelectedEdges] = useState<ReadonlySet<string>>(new Set());
@@ -2371,6 +2375,8 @@ function CanvasInner({
             onToggleDuplicates={onToggleDuplicates}
             showFindings={showFindings}
             onToggleFindings={onToggleFindings}
+            showChanges={showChanges}
+            onToggleChanges={onToggleChanges}
             onOpenWorkspacesMap={onOpenWorkspacesMap}
           />
         </Panel>

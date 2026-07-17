@@ -46,6 +46,7 @@ const system = (
   exports: [],
   exportedTotal: 0,
   externals: [],
+  libraries: [],
   endpoints,
   components: [],
   componentCount: 0,

@@ -1,5 +1,5 @@
-import { useMemo, useState, type DragEvent } from "react";
-import { Bot, CircleHelp, Plus, UserRound } from "lucide-react";
+import { useMemo, useState, type DragEvent, type KeyboardEvent } from "react";
+import { Bot, CircleHelp, Lock, Plus, UserRound } from "lucide-react";
 import {
   PRIORITY_RANK,
   TASK_SIZE_POINTS,
@@ -7,14 +7,16 @@ import {
   TASK_STATUS_LABELS,
   createEpic,
   createTask,
+  leaseValid,
   matchAgent,
   nowIso,
   openQuestions,
+  readyTasks,
   tagDimension,
   tagDimensions,
   tagsInDimension,
+  taskLiveUsage,
   tasksInColumn,
-  usageTotalTokens,
   type AgentRoster,
   type Project,
   type TaskItem,
@@ -75,21 +77,37 @@ export function Board({
   const nav = useNavUpdate();
   const group: BoardGroup = useNav((l) => l.orchestrate?.group) ?? "status";
   const sort: BoardSort = useNav((l) => l.orchestrate?.sort) ?? "manual";
+  const filter = useNav((l) => l.orchestrate?.filter) ?? "";
+  const owner = useNav((l) => l.orchestrate?.owner) ?? "";
   const [dragOver, setDragOver] = useState<string | null>(null);
+  const [dragOverCard, setDragOverCard] = useState<string | null>(null);
   const [epicDraft, setEpicDraft] = useState<string | null>(null);
 
   // Every run touching a task bills it — implement, review, merge, CI alike.
+  // The durable rollup carries the settled history (runs age out of app
+  // data); still-active runs add their live usage on top.
   const usageByTask = useMemo(() => {
     const map = new Map<string, { tokens: number; costUsd: number }>();
-    for (const run of runs) {
-      if (!run.taskId) continue;
-      const cur = map.get(run.taskId) ?? { tokens: 0, costUsd: 0 };
-      cur.tokens += usageTotalTokens(run.usage);
-      cur.costUsd += run.costUsd ?? 0;
-      map.set(run.taskId, cur);
+    for (const task of project.tasks) {
+      const usage = taskLiveUsage(task, runs);
+      if (usage) map.set(task.id, usage);
     }
     return map;
-  }, [runs]);
+  }, [runs, project.tasks]);
+
+  // Tasks whose blockers are not all done — surfaced so nobody starts them.
+  const blockedTasks = useMemo(() => {
+    const byId = new Map(project.tasks.map((t) => [t.id, t]));
+    return new Set(
+      project.tasks
+        .filter(
+          (t) =>
+            t.status !== "done" &&
+            t.blockedBy.some((id) => (byId.get(id)?.status ?? "done") !== "done"),
+        )
+        .map((t) => t.id),
+    );
+  }, [project.tasks]);
 
   const dimensions = useMemo(
     () => tagDimensions(project.tasks.flatMap((t) => t.labels)),
@@ -125,44 +143,104 @@ export function Board({
             accent: COLUMN_ACCENTS[s],
           }));
 
-  function tasksInGroup(key: string): TaskItem[] {
-    let tasks: TaskItem[];
-    if (group === "epic") {
-      tasks = project.tasks.filter((t) => (t.epicId ?? "") === key);
-    } else if (group.startsWith("tag:")) {
-      const dim = group.slice(4);
-      tasks = project.tasks.filter((t) => {
-        const values = tagsInDimension(t.labels, dim);
-        return key === "" ? values.length === 0 : values.includes(key);
-      });
-    } else {
-      tasks = tasksInColumn(project, key as TaskStatus);
+  /** Tasks hidden by the toolbar filters are dimmed out of every column. */
+  function matchesFilters(task: TaskItem): boolean {
+    if (owner) {
+      if (owner.startsWith("agent:") && task.owners.agentId !== owner.slice(6)) return false;
+      if (owner.startsWith("human:") && (task.owners.human ?? "") !== owner.slice(6)) return false;
     }
-    return sortTasks(tasks, sort, usageByTask);
+    const q = filter.trim().toLowerCase();
+    if (!q) return true;
+    return (
+      task.title.toLowerCase().includes(q) ||
+      task.description.toLowerCase().includes(q) ||
+      task.labels.some((l) => l.toLowerCase().includes(q))
+    );
   }
 
-  /** Dropping a card re-homes it along the active grouping axis. */
-  function dropTask(taskId: string, columnKey: string): void {
-    const patchTask = (patch: Partial<TaskItem>) =>
-      onProjectChange({
-        ...project,
-        tasks: project.tasks.map((t) =>
-          t.id === taskId ? { ...t, ...patch, updatedAt: nowIso() } : t,
-        ),
-      });
+  /** Every member of a column (unfiltered), in stable manual order. */
+  function groupMembers(key: string): TaskItem[] {
     if (group === "epic") {
-      patchTask({ epicId: columnKey || null });
+      return project.tasks
+        .filter((t) => (t.epicId ?? "") === key)
+        .sort((a, b) => a.order - b.order || b.updatedAt.localeCompare(a.updatedAt));
+    }
+    if (group.startsWith("tag:")) {
+      const dim = group.slice(4);
+      return project.tasks
+        .filter((t) => {
+          const values = tagsInDimension(t.labels, dim);
+          return key === "" ? values.length === 0 : values.includes(key);
+        })
+        .sort((a, b) => a.order - b.order || b.updatedAt.localeCompare(a.updatedAt));
+    }
+    return tasksInColumn(project, key as TaskStatus);
+  }
+
+  function tasksInGroup(key: string): TaskItem[] {
+    return sortTasks(groupMembers(key).filter((t) => matchesFilters(t)), sort, usageByTask);
+  }
+
+  /** The column a task currently sits in along the active grouping axis. */
+  function columnKeyOf(task: TaskItem): string {
+    if (group === "epic") return task.epicId ?? "";
+    if (group.startsWith("tag:")) return tagsInDimension(task.labels, group.slice(4))[0] ?? "";
+    return task.status;
+  }
+
+  /**
+   * Dropping a card re-homes it along the active grouping axis; with a
+   * `beforeId` (dropped onto a card, manual sort) it also lands at that spot —
+   * the target column is renumbered so hidden/filtered tasks keep their
+   * relative order.
+   */
+  function dropTask(taskId: string, columnKey: string, beforeId?: string): void {
+    const task = project.tasks.find((t) => t.id === taskId);
+    if (!task) return;
+    let axisPatch: Partial<TaskItem> = {};
+    if (group === "epic") {
+      axisPatch = { epicId: columnKey || null };
     } else if (group.startsWith("tag:")) {
       const dim = group.slice(4);
-      const task = project.tasks.find((t) => t.id === taskId);
-      if (!task) return;
       const kept = task.labels.filter((l) => tagDimension(l) !== dim);
-      patchTask({ labels: columnKey ? [...kept, `${dim}:${columnKey}`] : kept });
+      axisPatch = { labels: columnKey ? [...kept, `${dim}:${columnKey}`] : kept };
     } else {
-      const status = columnKey as TaskStatus;
-      const maxOrder = Math.max(0, ...tasksInColumn(project, status).map((t) => t.order));
-      patchTask({ status, order: maxOrder + 1 });
+      axisPatch = { status: columnKey as TaskStatus };
     }
+    const members = groupMembers(columnKey).filter((t) => t.id !== taskId);
+    const beforeIdx = beforeId && sort === "manual" ? members.findIndex((t) => t.id === beforeId) : -1;
+    members.splice(beforeIdx >= 0 ? beforeIdx : members.length, 0, task);
+    const orderById = new Map(members.map((t, i) => [t.id, i + 1]));
+    onProjectChange({
+      ...project,
+      tasks: project.tasks.map((t) => {
+        if (t.id === taskId) {
+          return { ...t, ...axisPatch, order: orderById.get(t.id) ?? t.order, updatedAt: nowIso() };
+        }
+        const order = orderById.get(t.id);
+        // Sibling renumbering is cosmetic — leave updatedAt alone so it never
+        // outranks an agent's real write in a stale-save merge.
+        return order != null && order !== t.order ? { ...t, order } : t;
+      }),
+    });
+  }
+
+  /** Keyboard: move a card one column left/right along the active grouping. */
+  function moveTask(task: TaskItem, delta: -1 | 1): void {
+    const idx = columns.findIndex((c) => c.key === columnKeyOf(task));
+    const target = columns[idx + delta];
+    if (target) dropTask(task.id, target.key);
+  }
+
+  /** Keyboard: nudge a card up/down within its column (manual sort only). */
+  function nudgeTask(task: TaskItem, delta: -1 | 1): void {
+    if (sort !== "manual") return;
+    const key = columnKeyOf(task);
+    const members = groupMembers(key);
+    const idx = members.findIndex((t) => t.id === task.id);
+    const targetIdx = delta === -1 ? idx - 1 : idx + 2;
+    if (idx < 0 || (delta === -1 && idx === 0) || (delta === 1 && idx >= members.length - 1)) return;
+    dropTask(task.id, key, members[targetIdx]?.id);
   }
 
   function addTask(status: TaskStatus, title: string): void {
@@ -187,6 +265,24 @@ export function Board({
   const running = new Set(
     runs.filter((r) => r.status === "running" && r.taskId).map((r) => r.taskId as string),
   );
+
+  // Agent-driven boards stall silently when the manager dies: READY work with
+  // nobody to pick it up. Surface it instead of waiting for someone to notice.
+  const ready = useMemo(() => readyTasks(project), [project]);
+  const managerLive = runs.some(
+    (r) => r.role === "manager" && (r.status === "running" || r.status === "queued"),
+  );
+  const agentDriven = project.tasks.some((t) => t.runIds.length > 0);
+  const stalled = agentDriven && !managerLive && ready.length > 0;
+
+  const humans = [
+    ...new Set(
+      [roster?.defaultHuman, ...project.tasks.map((t) => t.owners.human)].filter(
+        (h): h is string => !!h,
+      ),
+    ),
+  ].sort();
+  const filtering = !!filter.trim() || !!owner;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -223,6 +319,31 @@ export function Board({
             ))}
           </select>
         </label>
+        <input
+          value={filter}
+          onChange={(e) => nav({ orchestrate: { filter: e.target.value || null } })}
+          placeholder="Filter…"
+          aria-label="Filter tasks"
+          className="h-6 w-32 rounded-md border border-edge bg-surface-1 px-1.5 text-[11px] text-ink outline-none placeholder:text-ink-faint focus:border-crystal-500/60"
+        />
+        <select
+          className="h-6 rounded-md border border-edge bg-surface-1 px-1.5 text-[11px] text-ink focus:border-crystal-500/60 focus:outline-none"
+          value={owner}
+          onChange={(e) => nav({ orchestrate: { owner: e.target.value || null } })}
+          aria-label="Filter by owner"
+        >
+          <option value="">All owners</option>
+          {(roster?.agents ?? []).map((a) => (
+            <option key={a.id} value={`agent:${a.id}`}>
+              🤖 {a.name}
+            </option>
+          ))}
+          {humans.map((h) => (
+            <option key={h} value={`human:${h}`}>
+              {h}
+            </option>
+          ))}
+        </select>
         {group === "epic" ? (
           epicDraft === null ? (
             <button
@@ -250,11 +371,22 @@ export function Board({
             />
           )
         ) : null}
+        {stalled ? (
+          <span
+            className="ml-auto flex items-center gap-1.5 rounded-md border border-warn/30 bg-warn/5 px-2 py-0.5 text-[11px] text-warn"
+            title="Unblocked backlog tasks are waiting and no manager run is live — dispatch a manager from the Agents tab or start a task run."
+          >
+            <span className="h-1.5 w-1.5 rounded-full bg-warn" />
+            {ready.length} ready · no active manager
+          </span>
+        ) : null}
       </div>
 
       <div className="flex min-h-0 flex-1 gap-3 overflow-x-auto p-3">
         {columns.map((column) => {
           const tasks = tasksInGroup(column.key);
+          const total = filtering ? groupMembers(column.key).length : tasks.length;
+          const wipLimit = group === "status" ? project.wipLimits[column.key] : undefined;
           return (
             <div
               key={`${group}:${column.key}`}
@@ -272,6 +404,7 @@ export function Board({
               onDrop={(e: DragEvent) => {
                 e.preventDefault();
                 setDragOver(null);
+                setDragOverCard(null);
                 const id = e.dataTransfer.getData(TASK_MIME);
                 if (id) dropTask(id, column.key);
               }}
@@ -279,7 +412,22 @@ export function Board({
               <div className="flex items-center gap-2 px-3 py-2.5">
                 <span className="h-2 w-2 rounded-full" style={{ background: column.accent }} />
                 <span className="truncate text-xs font-semibold text-ink">{column.label}</span>
-                <span className="text-[11px] text-ink-faint">{tasks.length}</span>
+                <ColumnCount
+                  shown={tasks.length}
+                  total={total}
+                  filtering={filtering}
+                  limit={wipLimit}
+                  onSetLimit={
+                    group === "status"
+                      ? (limit) => {
+                          const wipLimits = { ...project.wipLimits };
+                          if (limit == null) delete wipLimits[column.key];
+                          else wipLimits[column.key] = limit;
+                          onProjectChange({ ...project, wipLimits });
+                        }
+                      : undefined
+                  }
+                />
               </div>
               <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-2 pb-2">
                 {tasks.map((task) => (
@@ -290,7 +438,33 @@ export function Board({
                     usage={usageByTask.get(task.id) ?? null}
                     selected={task.id === selectedTaskId}
                     agentRunning={running.has(task.id)}
+                    blocked={blockedTasks.has(task.id)}
+                    dropBefore={dragOverCard === task.id}
                     onClick={() => onSelectTask(task.id)}
+                    onDragOverCard={(over) => setDragOverCard(over ? task.id : null)}
+                    onDropBefore={(draggedId) => {
+                      setDragOver(null);
+                      setDragOverCard(null);
+                      dropTask(draggedId, column.key, task.id);
+                    }}
+                    onKeyCommand={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        onSelectTask(task.id);
+                      } else if (e.key === "[" || (e.key === "ArrowLeft" && e.altKey)) {
+                        e.preventDefault();
+                        moveTask(task, -1);
+                      } else if (e.key === "]" || (e.key === "ArrowRight" && e.altKey)) {
+                        e.preventDefault();
+                        moveTask(task, 1);
+                      } else if (e.key === "ArrowUp" && e.altKey) {
+                        e.preventDefault();
+                        nudgeTask(task, -1);
+                      } else if (e.key === "ArrowDown" && e.altKey) {
+                        e.preventDefault();
+                        nudgeTask(task, 1);
+                      }
+                    }}
                   />
                 ))}
                 {group === "status" ? (
@@ -302,6 +476,72 @@ export function Board({
         })}
       </div>
     </div>
+  );
+}
+
+/**
+ * Column count, doubling as the WIP-limit control on status columns: shows
+ * `total/limit` (amber when over), click to set or clear the limit.
+ */
+function ColumnCount({
+  shown,
+  total,
+  filtering,
+  limit,
+  onSetLimit,
+}: {
+  shown: number;
+  total: number;
+  filtering: boolean;
+  limit: number | undefined;
+  onSetLimit?: (limit: number | null) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const over = limit != null && total > limit;
+  const label = filtering ? `${shown}/${total}` : limit != null ? `${total}/${limit}` : `${total}`;
+
+  if (editing && onSetLimit) {
+    return (
+      <input
+        autoFocus
+        value={draft}
+        onChange={(e) => setDraft(e.target.value.replace(/\D/g, ""))}
+        onBlur={() => {
+          onSetLimit(draft ? Math.max(1, Number(draft)) : null);
+          setEditing(false);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") e.currentTarget.blur();
+          else if (e.key === "Escape") setEditing(false);
+        }}
+        placeholder="WIP"
+        aria-label="WIP limit (empty clears)"
+        className="h-5 w-10 rounded border border-crystal-500/40 bg-surface-1 px-1 text-[10px] text-ink outline-none placeholder:text-ink-faint"
+      />
+    );
+  }
+  if (!onSetLimit) return <span className="text-[11px] text-ink-faint">{label}</span>;
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        setDraft(limit != null ? String(limit) : "");
+        setEditing(true);
+      }}
+      title={
+        over
+          ? `Over the WIP limit (${total} > ${limit}) — finish before starting more. Click to change.`
+          : "Click to set a WIP limit"
+      }
+      className={cn(
+        "rounded px-1 text-[11px] transition-colors hover:bg-surface-2",
+        over ? "font-semibold text-warn" : "text-ink-faint",
+      )}
+    >
+      {label}
+      {over ? " !" : ""}
+    </button>
   );
 }
 
@@ -336,33 +576,62 @@ function TaskCard({
   usage,
   selected,
   agentRunning,
+  blocked,
+  dropBefore,
   onClick,
+  onDragOverCard,
+  onDropBefore,
+  onKeyCommand,
 }: {
   task: TaskItem;
   roster: AgentRoster | null;
   usage: { tokens: number; costUsd: number } | null;
   selected: boolean;
   agentRunning: boolean;
+  blocked: boolean;
+  dropBefore: boolean;
   onClick: () => void;
+  onDragOverCard: (over: boolean) => void;
+  onDropBefore: (draggedId: string) => void;
+  onKeyCommand: (e: KeyboardEvent<HTMLDivElement>) => void;
 }) {
   const agent = roster?.agents.find((a) => a.id === task.owners.agentId) ?? null;
   const questions = openQuestions(task).length;
   const unowned = !task.owners.agentId || !task.owners.human;
+  const leased = leaseValid(task.lease);
 
   return (
     <div
       draggable
+      role="button"
+      tabIndex={0}
+      aria-label={`Task: ${task.title}. Enter opens; [ and ] move between columns; Alt+↑/↓ reorder.`}
       onDragStart={(e) => {
         e.dataTransfer.setData(TASK_MIME, task.id);
         e.dataTransfer.effectAllowed = "move";
       }}
+      onDragOver={(e: DragEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+        onDragOverCard(true);
+      }}
+      onDragLeave={() => onDragOverCard(false)}
+      onDrop={(e: DragEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const id = e.dataTransfer.getData(TASK_MIME);
+        if (id && id !== task.id) onDropBefore(id);
+        else onDragOverCard(false);
+      }}
       onClick={onClick}
+      onKeyDown={onKeyCommand}
       className={cn(
-        "cursor-pointer rounded-lg border bg-surface-2 p-2.5 shadow-sm transition-colors",
+        "cursor-pointer rounded-lg border bg-surface-2 p-2.5 shadow-sm transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-crystal-400/60",
         selected
           ? "border-crystal-400/70 ring-1 ring-crystal-400/30"
           : "border-edge hover:border-edge-strong",
       )}
+      style={dropBefore ? { boxShadow: "0 -2px 0 0 var(--color-crystal-400)" } : undefined}
     >
       <div className="text-[13px] font-medium leading-snug text-ink">{task.title}</div>
       {task.description ? (
@@ -373,10 +642,20 @@ function TaskCard({
       <div className="mt-2 flex items-center gap-1.5">
         <Badge tone={PRIORITY_TONES[task.priority]}>{task.priority}</Badge>
         {task.size ? <Badge>{task.size}</Badge> : null}
+        {blocked ? <Badge tone="amber">blocked</Badge> : null}
         {task.labels.slice(0, 2).map((l) => (
           <Badge key={l}>{l}</Badge>
         ))}
         <span className="ml-auto flex items-center gap-1.5">
+          {leased ? (
+            <span
+              className="flex items-center gap-0.5 text-[10px] text-info"
+              title={`Leased to ${task.lease!.holder} until ${new Date(task.lease!.expiresAt).toLocaleTimeString()} — one writer per task`}
+            >
+              <Lock className="h-3 w-3" />
+              <span className="max-w-[80px] truncate">{task.lease!.holder}</span>
+            </span>
+          ) : null}
           {questions > 0 ? (
             <span className="flex items-center gap-0.5 text-[10px] text-warn">
               <CircleHelp className="h-3 w-3" /> {questions}

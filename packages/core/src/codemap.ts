@@ -11,7 +11,7 @@
  * changes — the diagram follows the code, not the other way around.
  */
 
-import type { CodeExternalDep } from "./external-services.js";
+import type { CodeExternalDep, CodeLibraryDep } from "./external-services.js";
 
 /**
  * The global level-of-detail ladder for the code map: how much of the
@@ -59,6 +59,11 @@ export interface CodeMapSummary {
    * older/partial summaries stay valid; absent means "not analyzed".
    */
   externals?: CodeExternalDep[];
+  /**
+   * Heaviest plain npm libraries (not services) with their importing modules
+   * — what the code leans on. Optional like `externals`.
+   */
+  libraries?: CodeLibraryDep[];
   fileTotal: number;
   generatedAt: string;
 }
@@ -317,6 +322,62 @@ export interface SymbolSearchHit {
   kind: CodeSymbolKind;
   line: number;
   exported: boolean;
+}
+
+/* ------------------------------------------------------------------ */
+/* Working-set changes (no VCS required)                               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The recent working set, derived from file timestamps rather than a VCS —
+ * the only "what changed?" signal available in workspaces without git (or
+ * with everything committed). Timestamps make it a review aid, not a diff:
+ * it says which files moved and how they are wired, not what lines changed.
+ */
+
+/** One recently touched code file. */
+export interface ChangedFileEntry {
+  path: string;
+  module: string;
+  /**
+   * "added" when the file was created inside the window (birthtime);
+   * "modified" otherwise. Filesystems without creation times degrade to
+   * "modified".
+   */
+  status: "added" | "modified";
+  /** Last modification, ISO. */
+  mtime: string;
+  test: boolean;
+  loc: number;
+  /** Exported symbols (capped) — the file's public surface at a glance. */
+  exports: { name: string; kind: CodeSymbolKind }[];
+  /** How many files import this one right now. */
+  importedBy: number;
+  /** Direct importers outside the changed set (capped) — the blast radius. */
+  dependents: string[];
+}
+
+/** Per-module rollup of the working set. */
+export interface ChangedModuleSummary {
+  module: string;
+  added: number;
+  modified: number;
+  /** True when a test file in the module was touched inside the window. */
+  testsTouched: boolean;
+}
+
+export interface WorkingSetReport {
+  /** Window the report covers, hours before `generatedAt`. */
+  sinceHours: number;
+  /** Window start, ISO. */
+  since: string;
+  /** Touched files, newest first (capped — `total` counts them all). */
+  files: ChangedFileEntry[];
+  total: number;
+  modules: ChangedModuleSummary[];
+  /** Added source files nothing imports yet and no entry convention claims. */
+  unwired: string[];
+  generatedAt: string;
 }
 
 /* ------------------------------------------------------------------ */
