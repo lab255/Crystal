@@ -59,6 +59,7 @@ import {
   useNav,
   useNavUpdate,
   useSymbolMenu,
+  useWorkerMemo,
   useWorkspaces,
 } from "@crystal/client";
 import {
@@ -98,6 +99,7 @@ import {
   type MapLens,
   type MapRfNode,
   type MapScene,
+  type MapSceneInput,
   type ModuleNodeData,
   type MoveLikeIntent,
   type SymbolNodeData,
@@ -107,6 +109,16 @@ import { LodSlider } from "./LodSlider.js";
 import { MapActionsContext, SYMBOL_TONES, mapNodeTypes, type MapActions } from "./map-nodes.js";
 
 const crossNodeTypes = { code: CodeNode };
+
+/**
+ * The scene build (multiple dagre passes at FormSG scale) runs in a module
+ * worker so it never blocks the UI thread; useWorkerMemo falls back to the
+ * old synchronous build where Workers don't exist (tests).
+ */
+const makeMapSceneWorker =
+  typeof Worker === "undefined"
+    ? null
+    : () => new Worker(new URL("./map-scene.worker.ts", import.meta.url), { type: "module" });
 
 // The drill level is deep-linkable — core owns the shape.
 type Level = CodeMapLevelLink;
@@ -752,9 +764,9 @@ function CodeMapInner({
     return counts;
   }, [bulkLoadedGen, generation, moduleDetails, fileDetails]);
 
-  const scene = useMemo<MapScene | null>(() => {
+  const sceneInput = useMemo<MapSceneInput | null>(() => {
     if (!summary || !level || level.kind === "all") return null;
-    return buildMapScene({
+    return {
       summary,
       moduleDetails: moduleDetailMap,
       fileDetails: fileDetailMap,
@@ -768,7 +780,7 @@ function CodeMapInner({
       lens: mapLens,
       layoutSizes: mapLens ? undefined : layoutSizes,
       memberCounts,
-    });
+    };
   }, [
     summary,
     level,
@@ -785,6 +797,13 @@ function CodeMapInner({
     layoutSizes,
     memberCounts,
   ]);
+  // Built off-thread; the previous scene stays interactive while a newer
+  // input computes.
+  const { value: scene } = useWorkerMemo<MapSceneInput, MapScene>(
+    makeMapSceneWorker,
+    buildMapScene,
+    sceneInput,
+  );
 
   // The coarsest LoD stop: modules grouped by the repository versioning them.
   const repoScene = useMemo(() => {

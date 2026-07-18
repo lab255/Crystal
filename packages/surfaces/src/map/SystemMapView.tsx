@@ -40,6 +40,7 @@ import {
   useNav,
   useNavUpdate,
   useSymbolMenu,
+  useWorkerMemo,
   useWorkspaces,
 } from "@crystal/client";
 import {
@@ -70,6 +71,8 @@ import {
   type MapFeGroupRfNode,
   type MapScreenRfNode,
   type MapSystemRfNode,
+  type SystemMapLayout,
+  type SystemMapLayoutInput,
   type SystemMapNode,
 } from "./scene.js";
 import { diffSystemMap, type MapDiffEntry, type SystemMapDiff } from "./diff.js";
@@ -86,6 +89,12 @@ import { diffSystemMap, type MapDiffEntry, type SystemMapDiff } from "./diff.js"
  */
 
 const EMPTY_CALLS: ScreenApiCall[] = [];
+
+/** Off-thread layout build; null disables the worker path (tests). */
+const makeSystemMapWorker =
+  typeof Worker === "undefined"
+    ? null
+    : () => new Worker(new URL("./system-map.worker.ts", import.meta.url), { type: "module" });
 
 const SOURCE_BADGE: Record<ScreenSurface["source"], string> = {
   "next-app": "next/app",
@@ -472,10 +481,17 @@ function SystemMapInner() {
   // Two-phase build: dagre + attribution re-run only when the data moves;
   // clicking a node or typing in find just re-decorates the laid-out scene.
   // A ref review swaps in the ghost-merged inputs (removed things render).
-  const layout = useMemo(() => {
-    const input = diff ? diff.merged : report && overview ? { report, overview, calls } : null;
-    return input ? buildSystemMapLayout(input) : null;
-  }, [diff, report, overview, calls]);
+  // The expensive phase runs in a module worker (falls back to sync where
+  // Workers don't exist); the previous layout holds while a new one computes.
+  const layoutInput = useMemo<SystemMapLayoutInput | null>(
+    () => (diff ? diff.merged : report && overview ? { report, overview, calls } : null),
+    [diff, report, overview, calls],
+  );
+  const { value: layout } = useWorkerMemo<SystemMapLayoutInput, SystemMapLayout>(
+    makeSystemMapWorker,
+    buildSystemMapLayout,
+    layoutInput,
+  );
   const scene = useMemo(
     () =>
       layout

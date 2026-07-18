@@ -30,6 +30,20 @@ always run things through pnpm.
   the active workspace automatically, so only cross-workspace call sites (e.g. the code
   map's "all workspaces" level) pass `ws` explicitly. Debounced saves must capture `ws` at
   schedule time — a flush can land after the user switches workspaces.
+- Transport: by default the bridge listens only on a local IPC pipe (named pipe /
+  unix socket, NDJSON frames) and advertises its endpoints in
+  `~/.crystal/instances/<pid>.json`; TCP+WebSocket is opt-in via `--listen [host:]port`
+  (the dev script passes `--listen 127.0.0.1:4517` for the Vite proxy; non-loopback
+  hosts force a bearer token). The desktop sidecar is pipe-only — the webview reaches
+  it through the Tauri relay commands (`bridge_connect/send/close` in `lib.rs`), and the
+  shell supervises/restarts it (job object reaps the tree; stdin close = graceful stop).
+  Agent MCP stays HTTP on an ephemeral loopback port (the Claude CLI can't dial a pipe).
+- Heavy compute is off the hot threads: each workspace's `CodeMapAnalyzer` runs in a
+  worker thread behind the async facade in `apps/server/src/analysis-host.ts` (degrades
+  to in-process when the worker can't boot, e.g. under vitest), and the browser scene
+  builds (code map, surfaces system map) run in module Web Workers via `useWorkerMemo`
+  (`@crystal/client`) — scene inputs/outputs must stay structured-clonable, so no
+  functions in react-flow node data (inject callbacks after the scene lands).
 - Packages are consumed **as TypeScript source** (`main: ./src/index.ts`); Vite compiles
   them in the app build. There is no per-package build step.
 - Ambient types shared by all packages live in `types/globals.d.ts` (wired via
