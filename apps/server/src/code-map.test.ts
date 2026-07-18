@@ -67,6 +67,36 @@ export default function main() {}`,
     expect(exports.find((e) => e.name === "Store")!.line).toBe(2);
   });
 
+  it("names identifier default exports and marks their symbol exported", () => {
+    const { exports, symbols, imports } = parseSource(
+      "routes.ts",
+      `import { Router } from "express";
+const router = Router();
+router.get("/forms", (req, res) => res.json([]));
+export default router;`,
+    );
+    expect(exports).toEqual([{ name: "router", kind: "default", line: 4 }]);
+    expect(symbols.find((s) => s.name === "router")!.exported).toBe(true);
+    expect(imports[0]!.defaultName).toBeUndefined();
+  });
+
+  it("records the default-import binding as defaultName", () => {
+    const { imports } = parseSource(
+      "app.ts",
+      `import formsRouter from "./routes";
+import express, { json } from "express";
+import { named } from "./other";`,
+    );
+    expect(imports[0]).toMatchObject({ names: ["formsRouter"], defaultName: "formsRouter" });
+    expect(imports[1]).toMatchObject({ names: ["express", "json"], defaultName: "express" });
+    expect(imports[2]!.defaultName).toBeUndefined();
+  });
+
+  it("keeps non-identifier default exports anonymous", () => {
+    const { exports } = parseSource("config.ts", `export default { port: 4517 };`);
+    expect(exports).toEqual([{ name: "default", kind: "default", line: 1 }]);
+  });
+
   it("captures signatures for function-like exports", () => {
     const { exports } = parseSource(
       "svc.ts",
@@ -438,10 +468,12 @@ function record(path: string, text: string, resolve: Record<string, string> = {}
   return {
     path,
     symbols: parsed.symbols,
-    resolvedImports: parsed.imports.map(({ specifier, names }) => ({
+    exports: parsed.exports,
+    resolvedImports: parsed.imports.map(({ specifier, names, defaultName }) => ({
       specifier,
       resolved: resolve[specifier] ?? null,
       names,
+      ...(defaultName ? { defaultName } : {}),
     })),
   };
 }
@@ -1279,6 +1311,55 @@ router.post("/forms", handlers.create);`,
       { file: "handlers.ts", symbol: "createForm", dynamic: true },
     ]);
   });
+
+  it("resolves default-import references to the target's default-exported symbol", () => {
+    const routes = record(
+      "routes.ts",
+      `import { Router } from "express";
+const router = Router();
+router.get("/forms", (req, res) => res.json([]));
+export default router;`,
+    );
+    const app = record(
+      "app.ts",
+      `import express from "express";
+import formsRouter from "./routes.js";
+export const app = express();
+app.use("/api/forms", formsRouter);`,
+      { "./routes.js": "routes.ts" },
+    );
+    const graph = buildCallGraph(recordsOf(app, routes));
+    // The alias `formsRouter` names nothing in routes.ts — the reference must
+    // land on the default-exported `router` symbol for the trace to descend.
+    expect(graph.get("app.ts#app")!.resolved).toContainEqual({
+      file: "routes.ts",
+      symbol: "router",
+      dynamic: true,
+    });
+  });
+
+  it("falls back to the default export for default-imported member references", () => {
+    const controller = record(
+      "controller.ts",
+      `function createForm() {}
+const controller = { create: createForm };
+export default controller;`,
+    );
+    const routes = record(
+      "routes.ts",
+      `import formController from "./controller.js";
+const router = Router();
+router.post("/forms", formController.create);`,
+      { "./controller.js": "controller.ts" },
+    );
+    const graph = buildCallGraph(recordsOf(controller, routes));
+    expect(graph.get("routes.ts#router")!.resolved).toEqual([
+      { file: "controller.ts", symbol: "controller", dynamic: true },
+    ]);
+    expect(graph.get("controller.ts#controller")!.resolved).toEqual([
+      { file: "controller.ts", symbol: "createForm", dynamic: true },
+    ]);
+  });
 });
 
 describe("CodeMapAnalyzer apiTrace through a client class", () => {
@@ -1398,6 +1479,67 @@ function getForm(req, res) {
       "getForm*",
       "requireAuth*",
     ]);
+  });
+});
+
+describe("CodeMapAnalyzer trace through a default-export router", () => {
+  let root: string;
+  let analyzer: CodeMapAnalyzer;
+
+  beforeAll(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), "crystal-defaulttrace-"));
+    await fs.mkdir(path.join(root, "src"), { recursive: true });
+    await fs.writeFile(path.join(root, "package.json"), JSON.stringify({ name: "fixture" }));
+    await fs.writeFile(
+      path.join(root, "src", "app.ts"),
+      `import express from "express";
+import formsRouter from "./routes";
+export const app = express();
+app.use("/api/forms", formsRouter);
+`,
+    );
+    await fs.writeFile(
+      path.join(root, "src", "routes.ts"),
+      `import { Router } from "express";
+const router = Router();
+router.get("/:id", getForm);
+function getForm(req, res) {
+  res.json({});
+}
+export default router;
+`,
+    );
+    analyzer = new CodeMapAnalyzer(root);
+  });
+
+  afterAll(async () => {
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it("walks mount → default-exported router → handler on dynamic edges", async () => {
+    const trace = await analyzer.trace("src/app.ts", "app");
+    const at = (symbol: string) => trace.steps.find((s) => s.ref.symbol === symbol);
+    expect(at("router")).toMatchObject({ ref: { file: "src/routes.ts" }, depth: 1 });
+    expect(at("getForm")).toMatchObject({ ref: { file: "src/routes.ts" }, depth: 2 });
+    const mountEdge = trace.edges.find((e) => e.to.symbol === "router")!;
+    expect(mountEdge.dynamic).toBe(true);
+  });
+
+  it('resolves the "default" pseudo-symbol to the router', async () => {
+    const trace = await analyzer.trace("src/routes.ts", "default");
+    expect(trace.entry).toEqual({ file: "src/routes.ts", symbol: "router" });
+    expect(trace.steps.some((s) => s.ref.symbol === "getForm")).toBe(true);
+  });
+
+  it("marks the default-exported router symbol exported in the file detail", async () => {
+    const detail = await analyzer.fileDetail("src/routes.ts");
+    expect(detail.symbols.find((s) => s.name === "router")!.exported).toBe(true);
+    expect(detail.exports).toEqual([{ name: "router", kind: "default", line: 7 }]);
+    expect(detail.imports.some((i) => i.defaultName)).toBe(false);
+    const appDetail = await analyzer.fileDetail("src/app.ts");
+    expect(appDetail.imports.find((i) => i.resolved === "src/routes.ts")!.defaultName).toBe(
+      "formsRouter",
+    );
   });
 });
 

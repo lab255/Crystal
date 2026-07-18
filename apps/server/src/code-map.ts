@@ -151,7 +151,7 @@ interface ParsedFile {
   /** FNV-1a 64 hash of the file text (the code-index enrichment freshness key). */
   hash: string;
   loc: number;
-  imports: { specifier: string; names: string[]; line?: number }[];
+  imports: { specifier: string; names: string[]; line?: number; defaultName?: string }[];
   exports: CodeSymbol[];
   symbols: ParsedSymbol[];
   /** `export … from` statements; name is "*" for star re-exports. */
@@ -170,7 +170,13 @@ interface FileRecord extends ParsedFile {
   /** Module path that owns this file. */
   module: string;
   /** Resolved internal import targets (workspace-relative paths). */
-  resolvedImports: { specifier: string; resolved: string | null; names: string[]; line?: number }[];
+  resolvedImports: {
+    specifier: string;
+    resolved: string | null;
+    names: string[];
+    line?: number;
+    defaultName?: string;
+  }[];
   /** Mounts whose router identifier resolved to an imported file. */
   resolvedMounts: { prefix: string; resolved: string }[];
 }
@@ -580,17 +586,28 @@ export function parseSource(fileRel: string, text: string): Omit<ParsedFile, "mt
     ts.canHaveModifiers(node) &&
     (ts.getModifiers(node) ?? []).some((m) => m.kind === ts.SyntaxKind.DefaultKeyword);
 
+  // Identifier a trailing `export default <id>` statement points at, if any.
+  let defaultExportName: string | null = null;
+
   for (const statement of source.statements) {
     // --- imports ---
     if (ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier)) {
       const names: string[] = [];
       const clause = statement.importClause;
-      if (clause?.name) names.push(clause.name.text);
+      // The default binding's local name — recorded separately too, so
+      // resolution can map it to the target file's default-exported symbol.
+      const defaultName = clause?.name?.text;
+      if (defaultName) names.push(defaultName);
       if (clause?.namedBindings) {
         if (ts.isNamespaceImport(clause.namedBindings)) names.push(`* as ${clause.namedBindings.name.text}`);
         else for (const el of clause.namedBindings.elements) names.push(el.name.text);
       }
-      imports.push({ specifier: statement.moduleSpecifier.text, names, line: lineOf(statement) });
+      imports.push({
+        specifier: statement.moduleSpecifier.text,
+        names,
+        line: lineOf(statement),
+        ...(defaultName ? { defaultName } : {}),
+      });
       continue;
     }
     // --- re-exports: export { x } from "./y"; export * from "./z" ---
@@ -618,7 +635,16 @@ export function parseSource(fileRel: string, text: string): Omit<ParsedFile, "mt
     }
     // --- export default ---
     if (ts.isExportAssignment(statement)) {
-      exports.push({ name: "default", kind: "default", line: lineOf(statement) });
+      // `export default router` names a symbol — record the real name (the
+      // convention declaration defaults already follow) so traces can land on
+      // it, and remember it to flip the symbol's exported flag after the loop.
+      const expr = unwrapReceiver(statement.expression);
+      if (ts.isIdentifier(expr)) {
+        defaultExportName = expr.text;
+        exports.push({ name: expr.text, kind: "default", line: lineOf(statement) });
+      } else {
+        exports.push({ name: "default", kind: "default", line: lineOf(statement) });
+      }
       continue;
     }
     // --- top-level declarations (exported or not) → symbols with ranges ---
@@ -714,6 +740,13 @@ export function parseSource(fileRel: string, text: string): Omit<ParsedFile, "mt
         });
       }
     }
+  }
+
+  // `export default router` exports the symbol without an export modifier on
+  // its declaration — without this flag, trace-root candidates skip it.
+  if (defaultExportName) {
+    const sym = symbols.find((s) => s.name === defaultExportName);
+    if (sym) sym.exported = true;
   }
 
   // --- module-scope handler wiring ---
@@ -1148,7 +1181,14 @@ export function parseSource(fileRel: string, text: string): Omit<ParsedFile, "mt
 export interface CallGraphRecord {
   path: string;
   symbols: ParsedSymbol[];
-  resolvedImports: { specifier: string; resolved: string | null; names: string[] }[];
+  resolvedImports: {
+    specifier: string;
+    resolved: string | null;
+    names: string[];
+    defaultName?: string;
+  }[];
+  /** Export list — lets default imports resolve to their declaring symbol. */
+  exports?: { name: string; kind: CodeSymbolKind }[];
 }
 
 export interface CallGraphNode {
@@ -1235,6 +1275,28 @@ export function buildCallGraph(records: Map<string, CallGraphRecord>): CallGraph
     return null;
   };
 
+  /**
+   * The symbol `file`'s default export points at (`export default router` →
+   * router), following `export { default } from "./impl"` pass-through chains.
+   * A default import binds an arbitrary local alias, so this — not the alias
+   * name — is where its references land.
+   */
+  const resolveDefaultExport = (file: string, hops: number): CodeSymbolRef | null => {
+    const rec = records.get(file);
+    if (!rec) return null;
+    const named = rec.exports?.find((e) => e.kind === "default" && e.name !== "default");
+    if (named && rec.symbols.some((s) => s.name === named.name)) {
+      return { file, symbol: named.name };
+    }
+    if (hops >= REEXPORT_MAX_HOPS) return null;
+    for (const imp of rec.resolvedImports) {
+      if (!imp.resolved || !imp.names.includes("default")) continue;
+      const hit = resolveDefaultExport(imp.resolved, hops + 1);
+      if (hit) return hit;
+    }
+    return null;
+  };
+
   // Method name → the one class declaring it (null when several classes do).
   const methodOwners = new Map<string, CodeSymbolRef | null>();
   for (const rec of records.values()) {
@@ -1255,8 +1317,10 @@ export function buildCallGraph(records: Map<string, CallGraphRecord>): CallGraph
     const localNames = new Set(rec.symbols.map((s) => s.name));
     const namedImports = new Map<string, string>();
     const namespaceImports = new Map<string, string>();
+    const defaultImports = new Map<string, string>();
     for (const imp of rec.resolvedImports) {
       if (!imp.resolved) continue;
+      if (imp.defaultName) defaultImports.set(imp.defaultName, imp.resolved);
       for (const name of imp.names) {
         const ns = /^\* as (.+)$/.exec(name);
         if (ns) namespaceImports.set(ns[1]!, imp.resolved);
@@ -1293,6 +1357,12 @@ export function buildCallGraph(records: Map<string, CallGraphRecord>): CallGraph
             } else {
               const importFile = namedImports.get(call.receiver);
               if (importFile) hit = resolveInFile(importFile, call.receiver, 0);
+              // A default-imported receiver (`import controller from …`) —
+              // the alias names nothing in the target; land on its default.
+              if (!hit) {
+                const defFile = defaultImports.get(call.receiver);
+                if (defFile) hit = resolveDefaultExport(defFile, 0);
+              }
             }
           }
         } else if (localNames.has(call.name)) {
@@ -1300,6 +1370,12 @@ export function buildCallGraph(records: Map<string, CallGraphRecord>): CallGraph
         } else {
           const importFile = namedImports.get(call.name);
           if (importFile) hit = resolveInFile(importFile, call.name, 0);
+          // Default-import alias (`import formsRouter from "./routes"`,
+          // `app.use("/api", formsRouter)`) → the routes file's default symbol.
+          if (!hit) {
+            const defFile = defaultImports.get(call.name);
+            if (defFile) hit = resolveDefaultExport(defFile, 0);
+          }
         }
         // References only count when the target is invocable.
         if (hit && call.dynamic && !isCallableSymbol(records.get(hit.file), hit.symbol)) {
@@ -1688,14 +1764,14 @@ export class CodeMapAnalyzer {
     const fileSet = new Set(records.keys());
     const importedBy = new Map<string, Set<string>>();
     for (const record of records.values()) {
-      record.resolvedImports = record.imports.map(({ specifier, names, line }) => {
+      record.resolvedImports = record.imports.map(({ specifier, names, line, defaultName }) => {
         const resolved = this.resolveSpecifier(record.path, specifier, fileSet);
         if (resolved) {
           let set = importedBy.get(resolved);
           if (!set) importedBy.set(resolved, (set = new Set()));
           set.add(record.path);
         }
-        return { specifier, resolved, names, line };
+        return { specifier, resolved, names, line, ...(defaultName ? { defaultName } : {}) };
       });
       // A mount's router identifier resolves through the import that binds it.
       record.resolvedMounts = record.mounts.flatMap(({ prefix, target }) => {
@@ -1974,6 +2050,7 @@ export class CodeMapAnalyzer {
       resolved: imp.resolved,
       targetModule: imp.resolved ? this.moduleOf(imp.resolved) : null,
       names: imp.names,
+      ...(imp.defaultName ? { defaultName: imp.defaultName } : {}),
       external: !imp.resolved && !imp.specifier.startsWith("."),
     }));
     return {
@@ -2064,6 +2141,13 @@ export class CodeMapAnalyzer {
         seen.add(record.path);
         const sym = record.symbols.find((s) => s.name === symbol);
         if (sym) return { record, sym };
+        // The pseudo-symbol "default" lands on whatever `export default <id>`
+        // names — callers resolving a default import don't know the real name.
+        if (symbol === "default") {
+          const named = record.exports.find((e) => e.kind === "default" && e.name !== "default");
+          const defSym = named && record.symbols.find((s) => s.name === named.name);
+          if (defSym) return { record, sym: defSym };
+        }
         for (const rx of record.reexports) {
           if (rx.name !== symbol && rx.name !== "*") continue;
           const resolved = record.resolvedImports.find((i) => i.specifier === rx.specifier)?.resolved;
@@ -2095,7 +2179,7 @@ export class CodeMapAnalyzer {
     }
     return {
       file: declFile,
-      symbol,
+      symbol: sym.name,
       startLine: sym.line,
       endLine: sym.endLine,
       text: slice,
@@ -2131,11 +2215,19 @@ export class CodeMapAnalyzer {
       return false;
     };
 
+    const isDefaultExport = declRecord.exports.some(
+      (e) => e.kind === "default" && e.name === sym.name,
+    );
     const imports: SymbolSite[] = [];
     for (const rec of this.records.values()) {
       if (rec.path === declFile) continue;
       for (const imp of rec.resolvedImports) {
-        if (!imp.resolved || !imp.names.includes(symbol)) continue;
+        if (!imp.resolved) continue;
+        // A default import binds a default-exported symbol under an arbitrary
+        // alias — the names array never carries the declared name.
+        const viaDefault =
+          isDefaultExport && imp.defaultName != null && imp.resolved === declFile;
+        if (!viaDefault && !imp.names.includes(symbol)) continue;
         if (!reaches(imp.resolved, 0)) continue;
         imports.push({ file: rec.path, line: imp.line ?? null });
       }
@@ -2300,10 +2392,11 @@ export class CodeMapAnalyzer {
    * invalidates mid-build.
    */
   private traceSync(file: string, symbol: string, maxDepth = TRACE_MAX_DEPTH): CodeTrace {
-    // Resolve through barrels — the call graph keys on the declaring file.
-    const { record } = this.symbolIn(file, symbol);
+    // Resolve through barrels (and the "default" alias) — the call graph keys
+    // on the declaring file and the symbol's real name.
+    const { record, sym } = this.symbolIn(file, symbol);
     const graph = this.callGraph();
-    const entry: CodeSymbolRef = { file: record.path, symbol };
+    const entry: CodeSymbolRef = { file: record.path, symbol: sym.name };
     const depth = Math.max(1, Math.min(maxDepth, TRACE_MAX_DEPTH));
 
     const steps: CodeTraceStep[] = [];

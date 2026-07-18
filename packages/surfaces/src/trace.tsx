@@ -81,7 +81,12 @@ export function useEndpointTrace(ep: SystemEndpoint | null): EndpointTraceState 
       const named = fileDetail.imports.find((i) => i.resolved && i.names.includes(root));
       if (named?.resolved) {
         if (prop) out.push({ file: named.resolved, symbol: prop });
-        out.push({ file: named.resolved, symbol: root });
+        // A default-import alias names nothing in the target file — trace its
+        // default export instead (the server resolves the "default" pseudo-symbol).
+        out.push({
+          file: named.resolved,
+          symbol: named.defaultName === root ? "default" : root,
+        });
       } else if (prop) {
         for (const i of fileDetail.imports) {
           if (i.resolved && i.names.some((n) => n === "*" || n === "default"))
@@ -160,11 +165,11 @@ export function TraceSection({
 }) {
   const arch = useArchHighlight();
   const [tall, setTall] = useState(false);
-  const { trace, resolved, error, candidates, fileDetail } = state;
+  const { trace, resolved, source, error, candidates, fileDetail } = state;
   const selectStep = onSelectStep ?? ((step: CodeTraceStep) => arch.file(step.ref.file, step.line));
   return (
     <DetailSection
-      title={resolved ? `Trace · from ${resolved.symbol}` : "Trace"}
+      title={resolved ? `Trace · from ${source?.symbol ?? resolved.symbol}` : "Trace"}
       hint="static call graph — drop runtime profiles in .crystal/traces/ to overlay"
       actions={
         trace ? (

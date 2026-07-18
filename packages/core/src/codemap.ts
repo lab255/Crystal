@@ -133,6 +133,8 @@ export interface CodeImport {
   targetModule: string | null;
   /** Imported names ("default" / "*" included). */
   names: string[];
+  /** Local alias of the default binding (`import X from …` → "X"), if any. */
+  defaultName?: string;
   external: boolean;
 }
 
