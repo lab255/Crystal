@@ -128,7 +128,7 @@ const HEADER_H = 54;
 const ROW_H = 18;
 const SECTION_PAD = 26;
 
-type DiffMark = "added" | "removed";
+type DiffMark = "added" | "removed" | "modified";
 
 interface SystemNodeData extends Record<string, unknown> {
   system: SystemModule;
@@ -182,6 +182,11 @@ function SystemNode({ data }: NodeProps<SystemRfNode>) {
             {mark === "removed" && (
               <span className="shrink-0 rounded-full bg-danger/15 px-1.5 text-[9px] text-danger">
                 gone
+              </span>
+            )}
+            {mark === "modified" && (
+              <span className="shrink-0 rounded-full bg-warn/15 px-1.5 text-[9px] text-warn">
+                changed
               </span>
             )}
           </div>
@@ -294,6 +299,9 @@ function SystemGroupNode({ data }: NodeProps<SystemGroupRfNode>) {
         )}
         {mark === "removed" && (
           <span className="shrink-0 rounded-full bg-danger/15 px-1.5 text-[9px] text-danger">gone</span>
+        )}
+        {mark === "modified" && (
+          <span className="shrink-0 rounded-full bg-warn/15 px-1.5 text-[9px] text-warn">changed</span>
         )}
         <span className="text-[10px] text-ink-faint">
           {system.parts.length} components · {system.fileCount} files
@@ -1201,7 +1209,12 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
   const rendered = useMemo(() => {
     if (!refDiff) {
       return overview
-        ? { overview, marks: new Map<string, DiffMark>(), edgeMarks: new Map<string, DiffMark>() }
+        ? {
+            overview,
+            marks: new Map<string, DiffMark>(),
+            edgeMarks: new Map<string, DiffMark>(),
+            reweights: new Map<string, { before: number; after: number }>(),
+          }
         : null;
     }
     const marks = new Map<string, DiffMark>();
@@ -1211,7 +1224,18 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
       refDiff.diff.removedSystems.some((r) => r.id === s.id),
     );
     for (const s of removedSystems) marks.set(s.id, "removed");
+    for (const s of refDiff.diff.resized) if (!marks.has(s.id)) marks.set(s.id, "modified");
+    // Externals shifts are modifications too — but never demote a whole-system
+    // add/remove (an added system's externals are all "new" by definition).
+    for (const x of [...refDiff.diff.addedExternals, ...refDiff.diff.removedExternals]) {
+      if (!marks.has(x.system)) marks.set(x.system, "modified");
+    }
     for (const l of refDiff.diff.addedLinks) edgeMarks.set(`${l.source}->${l.target}`, "added");
+    const reweights = new Map<string, { before: number; after: number }>();
+    for (const l of refDiff.diff.reweighted) {
+      edgeMarks.set(`${l.source}->${l.target}`, "modified");
+      reweights.set(`${l.source}->${l.target}`, { before: l.before, after: l.after });
+    }
     const removedLinks: SystemLink[] = refDiff.diff.removedLinks.map((l) => {
       edgeMarks.set(`${l.source}->${l.target}`, "removed");
       return { source: l.source, target: l.target, weight: l.weight, symbols: l.symbols };
@@ -1224,6 +1248,7 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
       },
       marks,
       edgeMarks,
+      reweights,
     };
   }, [overview, refDiff]);
 
@@ -1334,7 +1359,7 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
 
   const { nodes, edges } = useMemo(() => {
     if (!rendered) return { nodes: [] as ViewNode[], edges: [] as RfEdge[] };
-    const { overview: data, marks, edgeMarks } = rendered;
+    const { overview: data, marks, edgeMarks, reweights } = rendered;
     const query = search.trim().toLowerCase();
     // The focus filter and the facet lens both *remove* everything outside
     // their slice (lens: members + optional neighbor ring) — dagre then lays
@@ -1485,19 +1510,25 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
         ((focusSystems.has(l.source) && focusSystems.has(l.target)) ||
           (focusSystems.size === 1 &&
             (focusSystems.has(l.source) || focusSystems.has(l.target))));
-      const stroke = mark === "added"
-        ? "var(--color-ok)"
-        : mark === "removed"
-          ? "var(--color-danger)"
-          : flow
-            ? "var(--color-accent-cyan)"
-            : inCycle
-              ? "var(--color-accent-rose)"
-              : active
-                ? "var(--color-accent-violet)"
-                : apiOnly
-                  ? "var(--color-accent-amber)"
-                  : "var(--color-edge-strong)";
+      const markColor =
+        mark === "added"
+          ? "var(--color-ok)"
+          : mark === "removed"
+            ? "var(--color-danger)"
+            : mark === "modified"
+              ? "var(--color-warn)"
+              : null;
+      const stroke =
+        markColor ??
+        (flow
+          ? "var(--color-accent-cyan)"
+          : inCycle
+            ? "var(--color-accent-rose)"
+            : active
+              ? "var(--color-accent-violet)"
+              : apiOnly
+                ? "var(--color-accent-amber)"
+                : "var(--color-edge-strong)");
       const shared = {
         data: { linkKey: key },
         // Flow edges march (xyflow's animated dash) toward the consumer, with
@@ -1505,11 +1536,13 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
         animated: flow,
         labelStyle: {
           fontSize: 9,
-          fill: flow
-            ? "var(--color-accent-cyan)"
-            : apiOnly
-              ? "var(--color-accent-amber)"
-              : "var(--color-ink-faint)",
+          fill:
+            markColor ??
+            (flow
+              ? "var(--color-accent-cyan)"
+              : apiOnly
+                ? "var(--color-accent-amber)"
+                : "var(--color-ink-faint)"),
         },
         labelBgStyle: { fill: "var(--color-surface-0)", fillOpacity: 0.8 },
         markerEnd: {
@@ -1559,11 +1592,16 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
         continue;
       }
       const topSymbol = l.symbols[0];
+      // A reweighted edge labels the shift itself — the "what changed" is
+      // readable on the canvas, not just in the review panel.
+      const reweight = mark === "modified" ? reweights.get(key) : undefined;
       const label = apiOnly
         ? `${apis[0]!.method} ${apis[0]!.path}${apis.length > 1 ? ` +${apis.length - 1}` : ""}`
-        : topSymbol
-          ? `${trunc(topSymbol, 18)} ×${l.weight}`
-          : `×${l.weight}`;
+        : reweight
+          ? `${topSymbol ? `${trunc(topSymbol, 14)} ` : ""}×${reweight.before}→×${reweight.after}`
+          : topSymbol
+            ? `${trunc(topSymbol, 18)} ×${l.weight}`
+            : `×${l.weight}`;
       edges.push({
         ...shared,
         id: key,
@@ -2142,19 +2180,33 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
     );
   }
 
-  const panel: SidePanel = selectedLink
-    ? "edge"
-    : selected
-      ? "system"
-      : diffOpen && refDiff
-        ? "diff"
-        : contractsOpen
-          ? "contracts"
-          : facetsOpen
-            ? "facets"
-            : insightsOpen
-              ? "insights"
-              : null;
+  // With a ref review open, clicking a marked (green/red/yellow) element keeps
+  // the review panel up and highlights the specific change instead of swapping
+  // to the generic system/edge detail.
+  const diffHighlight =
+    diffOpen && refDiff
+      ? selectedEdge != null && rendered.edgeMarks.has(selectedEdge)
+        ? selectedEdge
+        : selectedId != null && rendered.marks.has(selectedId)
+          ? selectedId
+          : null
+      : null;
+
+  const panel: SidePanel = diffHighlight
+    ? "diff"
+    : selectedLink
+      ? "edge"
+      : selected
+        ? "system"
+        : diffOpen && refDiff
+          ? "diff"
+          : contractsOpen
+            ? "contracts"
+            : facetsOpen
+              ? "facets"
+              : insightsOpen
+                ? "insights"
+                : null;
 
   return (
     <Split storageKey="architect:systems" direction="horizontal">
@@ -2527,7 +2579,13 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
         />
       )}
       {panel === "diff" && refDiff && (
-        <DiffPanel state={refDiff} onSelect={setSelected} onClose={() => setDiffOpen(false)} />
+        <DiffPanel
+          state={refDiff}
+          highlight={diffHighlight}
+          onSelect={setSelected}
+          onSelectEdge={(key) => nav({ architect: { system: null, edge: key } })}
+          onClose={() => setDiffOpen(false)}
+        />
       )}
       {panel === "contracts" && (
         <ContractsPanel
@@ -3222,32 +3280,61 @@ function InsightsPanel({
 
 function DiffPanel({
   state,
+  highlight,
   onSelect,
+  onSelectEdge,
   onClose,
 }: {
   state: RefDiffState;
+  /** Canvas selection to spotlight: a system id or a `src->tgt` link key. */
+  highlight: string | null;
   onSelect: (id: string) => void;
+  onSelectEdge: (key: string) => void;
   onClose: () => void;
 }) {
   const { diff } = state;
-  const row = (key: string, id: string, label: string, detail: string, tone?: "ok" | "danger") => (
-    <button
-      key={key}
-      type="button"
-      onClick={() => onSelect(id)}
-      className="block w-full rounded-md px-1.5 py-1 text-left hover:bg-surface-2"
-    >
-      <div
+  const row = (
+    key: string,
+    select: () => void,
+    label: string,
+    detail: string,
+    tone?: "ok" | "danger" | "warn",
+  ) => {
+    // System rows match the id exactly; a system's externals rows
+    // (`<sysId>:<service>`) light up with their owner.
+    const highlighted =
+      highlight != null && (key === highlight || key.startsWith(`${highlight}:`));
+    return (
+      <button
+        key={key}
+        type="button"
+        ref={(el) => {
+          if (highlighted) el?.scrollIntoView({ block: "nearest" });
+        }}
+        onClick={select}
         className={cn(
-          "text-[11px]",
-          tone === "ok" ? "text-ok" : tone === "danger" ? "text-danger" : "text-ink",
+          "block w-full rounded-md px-1.5 py-1 text-left hover:bg-surface-2",
+          highlighted && "bg-surface-2 ring-1 ring-inset ring-ink/25",
         )}
       >
-        {label}
-      </div>
-      {detail && <div className="text-[9px] leading-snug text-ink-faint">{detail}</div>}
-    </button>
-  );
+        <div
+          className={cn(
+            "text-[11px]",
+            tone === "ok"
+              ? "text-ok"
+              : tone === "danger"
+                ? "text-danger"
+                : tone === "warn"
+                  ? "text-warn"
+                  : "text-ink",
+          )}
+        >
+          {label}
+        </div>
+        {detail && <div className="text-[9px] leading-snug text-ink-faint">{detail}</div>}
+      </button>
+    );
+  };
 
   return (
     <Pane
@@ -3262,66 +3349,76 @@ function DiffPanel({
       {diff.addedSystems.length > 0 && (
         <Section title="New systems">
           {diff.addedSystems.map((s) =>
-            row(s.id, s.id, s.name, `${s.role} · ${s.fileCount} files`, "ok"),
+            row(s.id, () => onSelect(s.id), s.name, `${s.role} · ${s.fileCount} files`, "ok"),
           )}
         </Section>
       )}
       {diff.removedSystems.length > 0 && (
         <Section title="Removed systems">
           {diff.removedSystems.map((s) =>
-            row(s.id, s.id, s.name, `${s.role} · was ${s.fileCount} files`, "danger"),
+            row(s.id, () => onSelect(s.id), s.name, `${s.role} · was ${s.fileCount} files`, "danger"),
           )}
         </Section>
       )}
       {diff.addedLinks.length > 0 && (
         <Section title="New dependencies">
-          {diff.addedLinks.map((l) =>
-            row(
-              `${l.source}->${l.target}`,
-              l.source,
+          {diff.addedLinks.map((l) => {
+            const key = `${l.source}->${l.target}`;
+            return row(
+              key,
+              () => onSelectEdge(key),
               `${l.sourceName} → ${l.targetName} ×${l.weight}`,
               l.symbols.join(", "),
               "ok",
-            ),
-          )}
+            );
+          })}
         </Section>
       )}
       {diff.removedLinks.length > 0 && (
         <Section title="Dropped dependencies">
-          {diff.removedLinks.map((l) =>
-            row(
-              `${l.source}->${l.target}`,
-              l.source,
+          {diff.removedLinks.map((l) => {
+            const key = `${l.source}->${l.target}`;
+            return row(
+              key,
+              () => onSelectEdge(key),
               `${l.sourceName} → ${l.targetName}`,
               l.symbols.join(", "),
               "danger",
-            ),
-          )}
+            );
+          })}
         </Section>
       )}
       {diff.reweighted.length > 0 && (
         <Section title="Coupling shifts">
-          {diff.reweighted.map((l) =>
-            row(
-              `${l.source}->${l.target}`,
-              l.source,
+          {diff.reweighted.map((l) => {
+            const key = `${l.source}->${l.target}`;
+            return row(
+              key,
+              () => onSelectEdge(key),
               `${l.sourceName} → ${l.targetName}: ×${l.before} → ×${l.after}`,
               l.symbols.join(", "),
-            ),
-          )}
+              "warn",
+            );
+          })}
         </Section>
       )}
       {diff.resized.length > 0 && (
         <Section title="Size shifts">
           {diff.resized.map((s) =>
-            row(s.id, s.id, s.name, `${s.before} → ${s.after} files`),
+            row(s.id, () => onSelect(s.id), s.name, `${s.before} → ${s.after} files`, "warn"),
           )}
         </Section>
       )}
       {diff.addedExternals.length > 0 && (
         <Section title="New external services">
           {diff.addedExternals.map((x) =>
-            row(`${x.system}:${x.name}`, x.system, `${x.systemName} now talks to ${x.name}`, "", "ok"),
+            row(
+              `${x.system}:${x.name}`,
+              () => onSelect(x.system),
+              `${x.systemName} now talks to ${x.name}`,
+              "",
+              "ok",
+            ),
           )}
         </Section>
       )}
@@ -3330,7 +3427,7 @@ function DiffPanel({
           {diff.removedExternals.map((x) =>
             row(
               `${x.system}:${x.name}`,
-              x.system,
+              () => onSelect(x.system),
               `${x.systemName} no longer talks to ${x.name}`,
               "",
               "danger",

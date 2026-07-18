@@ -10,7 +10,7 @@ import {
   useReactFlow,
   type NodeProps,
 } from "@xyflow/react";
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   AppWindow,
@@ -18,6 +18,7 @@ import {
   Boxes,
   Component as ComponentIcon,
   Copy,
+  GitCompareArrows,
   Plug,
   Waypoints,
   Webhook,
@@ -26,10 +27,11 @@ import {
 import type {
   ScreenApiCall,
   ScreenSurface,
+  SurfacesRefBundle,
   SystemEndpoint,
   SystemModule,
 } from "@crystal/core";
-import { useNav, useNavUpdate, useSymbolMenu } from "@crystal/client";
+import { useCrystal, useNav, useNavUpdate, useSymbolMenu, useWorkspaces } from "@crystal/client";
 import {
   Badge,
   EmptyState,
@@ -52,12 +54,14 @@ import {
   epNodeId,
   screenNodeId,
   type MapBandRfNode,
+  type MapDiffMark,
   type MapExternalsRfNode,
   type MapFeGroupRfNode,
   type MapScreenRfNode,
   type MapSystemRfNode,
   type SystemMapNode,
 } from "./scene.js";
+import { diffSystemMap, type MapDiffEntry, type SystemMapDiff } from "./diff.js";
 
 /**
  * System map — the whole stack on one navigable canvas: frontend screens,
@@ -83,6 +87,23 @@ const SOURCE_BADGE: Record<ScreenSurface["source"], string> = {
 /* Node renderers                                                      */
 /* ------------------------------------------------------------------ */
 
+/** Ref-review chip: what happened to this card since the base ref. */
+function MarkBadge({ mark }: { mark?: MapDiffMark }) {
+  if (!mark) return null;
+  return (
+    <span
+      className={cn(
+        "shrink-0 rounded-full px-1.5 text-[9px]",
+        mark === "added" && "bg-ok/15 text-ok",
+        mark === "removed" && "bg-danger/15 text-danger",
+        mark === "modified" && "bg-warn/15 text-warn",
+      )}
+    >
+      {mark === "added" ? "new" : mark === "removed" ? "gone" : "changed"}
+    </span>
+  );
+}
+
 function MapBandNode({ data }: NodeProps<MapBandRfNode>) {
   return (
     <div className="h-full w-full rounded-2xl border border-edge/80 bg-surface-2/40">
@@ -94,13 +115,15 @@ function MapBandNode({ data }: NodeProps<MapBandRfNode>) {
 }
 
 function MapScreenNode({ data }: NodeProps<MapScreenRfNode>) {
-  const { screen, callCount, unmatchedCount, selected, dimmed } = data;
+  const { screen, callCount, unmatchedCount, selected, dimmed, mark } = data;
   return (
     <div
       className={cn(
         "flex h-full w-full flex-col justify-center rounded-lg border bg-surface-1 px-2.5 py-1 shadow-sm transition-opacity",
         selected ? "border-ink/40 ring-2 ring-ink/20" : "border-edge",
+        mark === "removed" && "border-dashed",
         dimmed && "opacity-25",
+        !dimmed && mark === "removed" && "opacity-50",
       )}
       style={{ borderTopColor: "var(--color-accent-cyan)", borderTopWidth: 2 }}
     >
@@ -110,6 +133,7 @@ function MapScreenNode({ data }: NodeProps<MapScreenRfNode>) {
         <span className="min-w-0 truncate font-mono text-[11px] font-medium text-ink">
           {screen.route}
         </span>
+        <MarkBadge mark={mark} />
         <span className="ml-auto shrink-0 rounded bg-surface-3 px-1 text-[8px] uppercase text-ink-faint">
           {SOURCE_BADGE[screen.source]}
         </span>
@@ -138,12 +162,13 @@ function MapScreenNode({ data }: NodeProps<MapScreenRfNode>) {
 }
 
 function MapFeGroupNode({ data }: NodeProps<MapFeGroupRfNode>) {
-  const { system, screenCount, selected, dimmed } = data;
+  const { system, screenCount, selected, dimmed, mark } = data;
   return (
     <div
       className={cn(
         "h-full w-full rounded-lg border bg-surface-1/60 transition-opacity",
         selected ? "border-ink/40 ring-2 ring-ink/20" : "border-edge",
+        mark === "removed" && "border-dashed",
         dimmed && "opacity-25",
       )}
       style={{ borderTopColor: "var(--color-accent-cyan)", borderTopWidth: 2 }}
@@ -153,6 +178,7 @@ function MapFeGroupNode({ data }: NodeProps<MapFeGroupRfNode>) {
       <div className="flex items-center gap-2 px-3 pt-2">
         <AppWindow className="h-3.5 w-3.5 shrink-0 text-accent-cyan" />
         <span className="truncate text-[12px] font-semibold text-ink">{system.name}</span>
+        <MarkBadge mark={mark} />
         <span className="shrink-0 text-[10px] text-ink-faint">
           {screenCount} screen{screenCount === 1 ? "" : "s"}
         </span>
@@ -172,6 +198,8 @@ function MapSystemNode({ data }: NodeProps<MapSystemRfNode>) {
     selected,
     dimmed,
     selectedEndpoint,
+    mark,
+    epMarks,
     onEndpointClick,
     onEndpointDoubleClick,
   } = data;
@@ -188,7 +216,9 @@ function MapSystemNode({ data }: NodeProps<MapSystemRfNode>) {
       className={cn(
         "flex h-full w-full flex-col rounded-lg border bg-surface-1 shadow-sm transition-opacity",
         selected ? "border-ink/40 ring-2 ring-ink/20" : "border-edge",
+        mark === "removed" && "border-dashed",
         dimmed && "opacity-25",
+        !dimmed && mark === "removed" && "opacity-50",
       )}
       style={{ borderTopColor: accent, borderTopWidth: 2 }}
     >
@@ -199,7 +229,10 @@ function MapSystemNode({ data }: NodeProps<MapSystemRfNode>) {
       <div className="flex items-start gap-2 px-3 pt-2">
         <Icon className="mt-0.5 h-3.5 w-3.5 shrink-0" style={{ color: accent }} />
         <div className="min-w-0 flex-1">
-          <div className="truncate text-[12px] font-semibold text-ink">{system.name}</div>
+          <div className="flex items-center gap-1.5">
+            <span className="truncate text-[12px] font-semibold text-ink">{system.name}</span>
+            <MarkBadge mark={mark} />
+          </div>
           <div className="truncate text-[10px] text-ink-faint">
             {system.fileCount} files
             {system.endpoints.length > 0
@@ -214,6 +247,7 @@ function MapSystemNode({ data }: NodeProps<MapSystemRfNode>) {
           <div className="text-[9px] font-medium uppercase tracking-wide text-ink-faint">API</div>
           {endpointsShown.map((ep) => {
             const key = epKeyOf(ep);
+            const epMark = epMarks?.[key];
             return (
               <div
                 key={key}
@@ -238,11 +272,24 @@ function MapSystemNode({ data }: NodeProps<MapSystemRfNode>) {
                   "nodrag -mx-1 flex cursor-pointer items-center gap-1.5 rounded px-1 leading-[18px]",
                   selectedEndpoint === key
                     ? "bg-crystal-500/15"
-                    : "hover:bg-surface-2",
+                    : epMark === "added"
+                      ? "bg-ok/10 hover:bg-ok/15"
+                      : epMark === "removed"
+                        ? "bg-danger/10 hover:bg-danger/15"
+                        : "hover:bg-surface-2",
                 )}
               >
                 <MethodChip method={ep.method} className="!text-[8px]" />
-                <span className="min-w-0 truncate font-mono text-[10px] text-ink-muted">
+                <span
+                  className={cn(
+                    "min-w-0 truncate font-mono text-[10px]",
+                    epMark === "added"
+                      ? "text-ok"
+                      : epMark === "removed"
+                        ? "text-danger line-through"
+                        : "text-ink-muted",
+                  )}
+                >
                   {ep.path}
                 </span>
               </div>
@@ -348,6 +395,8 @@ export function SystemMapView() {
 
 function SystemMapInner() {
   const { report, overview, map, loading } = useSurfaces();
+  const { client } = useCrystal();
+  const activeWs = useWorkspaces((s) => s.activeId);
   const nav = useNavUpdate();
   const { fitView } = useReactFlow();
   const sidePane = useSidePaneLayout();
@@ -362,15 +411,79 @@ function SystemMapInner() {
     [nav],
   );
 
+  /* ---- ref review: the map diffed against a git ref ---- */
+  const [refBundle, setRefBundle] = useState<SurfacesRefBundle | null>(null);
+  const [refInput, setRefInput] = useState("");
+  const [refLoading, setRefLoading] = useState(false);
+  const [refError, setRefError] = useState<string | null>(null);
+  // The clicked change — the review panel scrolls to and spotlights this row.
+  const [diffFocus, setDiffFocus] = useState<string | null>(null);
+  // Ref bundles are workspace-scoped snapshots — never diff one against
+  // another workspace's live data.
+  useEffect(() => {
+    setRefBundle(null);
+    setRefError(null);
+    setDiffFocus(null);
+  }, [activeWs]);
+  const reviewRef = useCallback(
+    async (ref: string) => {
+      if (!ref.trim()) return;
+      setRefLoading(true);
+      setRefError(null);
+      try {
+        setRefBundle(await client.request("surfaces.atRef", { ref: ref.trim() }));
+        setDiffFocus(null);
+      } catch (err) {
+        setRefError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setRefLoading(false);
+      }
+    },
+    [client],
+  );
+  const exitReview = useCallback(() => {
+    setRefBundle(null);
+    setRefError(null);
+    setDiffFocus(null);
+  }, []);
+
+  const diff = useMemo<SystemMapDiff | null>(
+    () =>
+      refBundle && report && overview
+        ? diffSystemMap(
+            { report: refBundle.report, overview: refBundle.overview, calls: refBundle.calls },
+            { report, overview, calls },
+          )
+        : null,
+    [refBundle, report, overview, calls],
+  );
+
   // Two-phase build: dagre + attribution re-run only when the data moves;
   // clicking a node or typing in find just re-decorates the laid-out scene.
-  const layout = useMemo(
-    () => (report && overview ? buildSystemMapLayout({ report, overview, calls }) : null),
-    [report, overview, calls],
-  );
+  // A ref review swaps in the ghost-merged inputs (removed things render).
+  const layout = useMemo(() => {
+    const input = diff ? diff.merged : report && overview ? { report, overview, calls } : null;
+    return input ? buildSystemMapLayout(input) : null;
+  }, [diff, report, overview, calls]);
   const scene = useMemo(
-    () => (layout ? decorateSystemMapScene(layout, { selected, find }) : null),
-    [layout, selected, find],
+    () =>
+      layout
+        ? decorateSystemMapScene(layout, { selected, find, marks: diff?.marks ?? null })
+        : null,
+    [layout, selected, find, diff],
+  );
+
+  /** The review entry a canvas element anchors (nodes prefer node entries). */
+  const focusEntryFor = useCallback(
+    (kind: "node" | "edge", id: string): MapDiffEntry | null => {
+      if (!diff) return null;
+      return (
+        diff.entries.find((e) => (kind === "node" ? e.nodeId === id && !e.edgeId : e.edgeId === id)) ??
+        diff.entries.find((e) => (kind === "node" ? e.nodeId === id : false)) ??
+        null
+      );
+    },
+    [diff],
   );
 
   /* endpoint-row interactions, injected into system-card node data */
@@ -414,10 +527,11 @@ function SystemMapInner() {
   }, [activeMode, selected, setSelected]);
 
   // Refit when the data or the filter reshape the canvas (not on selection).
+  // Entering/leaving a ref review reshapes it too (ghosts appear/vanish).
   useEffect(() => {
     const t = setTimeout(() => void fitView({ padding: 0.15, duration: 300 }), 120);
     return () => clearTimeout(t);
-  }, [report, overview, map, find, fitView]);
+  }, [report, overview, map, find, refBundle, fitView]);
 
   /* navigation targets (double click / context menus / inspector) */
   const openScreen = useCallback(
@@ -530,7 +644,10 @@ function SystemMapInner() {
   const selectedSystem = selection?.kind === "system" ? selection.system : null;
   const selectedEp = selection?.kind === "endpoint" ? selection.epKey : null;
   const epOwner = selection?.kind === "endpoint" ? selection.owner : null;
-  const inspectorOpen = selection != null;
+  // A focused change keeps the review panel on top of the inspector — the
+  // click's job is to spotlight the specific change, not the generic card.
+  const diffPanelOpen = diff != null && (diffFocus != null || selection == null);
+  const inspectorOpen = selection != null && !diffPanelOpen;
 
   return (
     <Split storageKey="surfaces:map" direction="horizontal">
@@ -544,13 +661,24 @@ function SystemMapInner() {
               if (n.type !== "mapScreen" && n.type !== "mapSystem" && n.type !== "mapFeGroup")
                 return;
               setSelected(n.id === selected ? null : n.id);
+              // In a ref review, clicking a marked card spotlights its change.
+              setDiffFocus(focusEntryFor("node", n.id)?.key ?? null);
+            }}
+            onEdgeClick={(_evt, e) => {
+              // Edges only interact during a ref review: a marked (colored)
+              // edge spotlights the specific change in the review panel.
+              const entry = focusEntryFor("edge", e.id);
+              if (entry) setDiffFocus(entry.key);
             }}
             onNodeDoubleClick={(_evt, n) => {
               if (n.type === "mapScreen") openScreen((n.data as MapScreenRfNode["data"]).screen);
               else if (n.type === "mapSystem" || n.type === "mapFeGroup")
                 openSystemInArchitect(n.id);
             }}
-            onPaneClick={() => setSelected(null)}
+            onPaneClick={() => {
+              setSelected(null);
+              setDiffFocus(null);
+            }}
             onNodeContextMenu={(evt, n) => {
               evt.preventDefault();
               if (n.type === "mapScreen") {
@@ -641,10 +769,102 @@ function SystemMapInner() {
               <AlertTriangle className="h-2.5 w-2.5 text-warn" />
               call with no serving route
             </span>
+            {diff ? (
+              <>
+                <span className="flex items-center gap-1 text-ok">
+                  <svg width="14" height="6" aria-hidden>
+                    <line x1="0" y1="3" x2="14" y2="3" stroke="var(--color-ok)" strokeWidth="2" />
+                  </svg>
+                  added
+                </span>
+                <span className="flex items-center gap-1 text-danger">
+                  <svg width="14" height="6" aria-hidden>
+                    <line
+                      x1="0"
+                      y1="3"
+                      x2="14"
+                      y2="3"
+                      stroke="var(--color-danger)"
+                      strokeWidth="2"
+                      strokeDasharray="5 4"
+                    />
+                  </svg>
+                  removed
+                </span>
+                <span className="flex items-center gap-1 text-warn">
+                  <svg width="14" height="6" aria-hidden>
+                    <line x1="0" y1="3" x2="14" y2="3" stroke="var(--color-warn)" strokeWidth="2" />
+                  </svg>
+                  changed
+                </span>
+              </>
+            ) : null}
           </div>
+          {/* Top-right: review the map against a git ref. */}
+          <div className="absolute right-3 top-3 flex items-center gap-1.5">
+            {refBundle ? (
+              <div className="flex items-center gap-1.5 rounded-lg border border-edge bg-surface-1/95 px-2 py-1 text-[10px] shadow-sm">
+                <GitCompareArrows className="h-3 w-3 text-crystal-300" />
+                <span className="text-ink">
+                  vs {refBundle.ref}
+                  <span className="ml-1 text-ink-faint">{refBundle.commit}</span>
+                </span>
+                <button
+                  type="button"
+                  onClick={exitReview}
+                  aria-label="Exit ref review"
+                  className="rounded p-0.5 text-ink-faint hover:bg-surface-3 hover:text-ink"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </div>
+            ) : (
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void reviewRef(refInput);
+                }}
+                className="flex items-center gap-1 rounded-lg border border-edge bg-surface-1/95 px-1.5 py-1 shadow-sm"
+              >
+                <GitCompareArrows className="h-3 w-3 shrink-0 text-ink-faint" />
+                <input
+                  value={refInput}
+                  onChange={(e) => setRefInput(e.target.value)}
+                  placeholder="main"
+                  spellCheck={false}
+                  aria-label="Git ref to review against"
+                  className="w-24 bg-transparent text-[10px] text-ink outline-none placeholder:text-ink-faint"
+                />
+                <button
+                  type="submit"
+                  disabled={refLoading || !refInput.trim()}
+                  className="rounded-md bg-surface-3 px-1.5 py-0.5 text-[10px] text-ink-muted hover:text-ink disabled:opacity-50"
+                >
+                  {refLoading ? "Analyzing…" : "Review"}
+                </button>
+              </form>
+            )}
+          </div>
+          {refError ? (
+            <div className="absolute right-3 top-12 max-w-72 rounded-lg border border-danger/40 bg-surface-1/95 px-2 py-1 text-[10px] text-danger shadow-sm">
+              {refError}
+            </div>
+          ) : null}
         </div>
       </SplitPane>
-      {inspectorOpen ? (
+      {diffPanelOpen && diff && refBundle ? (
+        <SplitPane defaultSize={sidePane.defaultSize} minSize={320} maxSize="60%">
+          <MapDiffPanel
+            diff={diff}
+            refName={refBundle.ref}
+            commit={refBundle.commit}
+            focus={diffFocus}
+            onFocus={setDiffFocus}
+            onSelect={setSelected}
+            onClose={exitReview}
+          />
+        </SplitPane>
+      ) : inspectorOpen ? (
         <SplitPane defaultSize={sidePane.defaultSize} minSize={320} maxSize="60%">
           <div className="flex h-full min-h-0 flex-col overflow-y-auto border-l border-edge bg-surface-0">
             <InspectorHeader
@@ -704,6 +924,110 @@ function InspectorHeader({ title, onClose }: { title: string; onClose: () => voi
       >
         <X className="h-3.5 w-3.5" />
       </button>
+    </div>
+  );
+}
+
+/** The ref review's change list — every row anchors a canvas element. */
+function MapDiffPanel({
+  diff,
+  refName,
+  commit,
+  focus,
+  onFocus,
+  onSelect,
+  onClose,
+}: {
+  diff: SystemMapDiff;
+  refName: string;
+  commit: string;
+  /** `MapDiffEntry.key` to spotlight (set by canvas clicks on marked elements). */
+  focus: string | null;
+  onFocus: (key: string | null) => void;
+  onSelect: (nodeId: string | null) => void;
+  onClose: () => void;
+}) {
+  // Sections keep first-appearance order — the diff builder emits them
+  // grouped (screens, systems, links, endpoints, flows).
+  const sections = useMemo(() => {
+    const out = new Map<string, MapDiffEntry[]>();
+    for (const e of diff.entries) {
+      const list = out.get(e.section) ?? [];
+      list.push(e);
+      out.set(e.section, list);
+    }
+    return out;
+  }, [diff]);
+  return (
+    <div className="flex h-full min-h-0 flex-col overflow-y-auto border-l border-edge bg-surface-0">
+      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-edge bg-surface-1 px-3">
+        <GitCompareArrows className="h-3.5 w-3.5 shrink-0 text-crystal-300" />
+        <span className="min-w-0 truncate text-[12px] font-semibold text-ink">
+          Review vs {refName}
+        </span>
+        <span className="shrink-0 text-[10px] text-ink-faint">
+          {diff.total === 0
+            ? "no surface changes"
+            : `${diff.total} change${diff.total === 1 ? "" : "s"} · ${commit}`}
+        </span>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Exit ref review"
+          className="ml-auto rounded-md p-1 text-ink-faint hover:bg-surface-3 hover:text-ink"
+        >
+          <X className="h-3.5 w-3.5" />
+        </button>
+      </div>
+      {diff.total === 0 ? (
+        <div className="px-4 py-3 text-[11px] text-ink-faint">
+          The map looks the same at {refName} — screens, endpoints and call flows all match.
+        </div>
+      ) : (
+        [...sections.entries()].map(([section, entries]) => (
+          <div key={section} className="border-b border-edge/60 px-3 py-2">
+            <div className="pb-1 text-[9px] font-medium uppercase tracking-wide text-ink-faint">
+              {section}
+            </div>
+            {entries.map((e) => {
+              const highlighted = focus === e.key;
+              return (
+                <button
+                  key={e.key}
+                  type="button"
+                  ref={(el) => {
+                    if (highlighted) el?.scrollIntoView({ block: "nearest" });
+                  }}
+                  onClick={() => {
+                    onFocus(e.key);
+                    if (e.nodeId) onSelect(e.nodeId);
+                  }}
+                  className={cn(
+                    "block w-full rounded-md px-1.5 py-1 text-left hover:bg-surface-2",
+                    highlighted && "bg-surface-2 ring-1 ring-inset ring-ink/25",
+                  )}
+                >
+                  <div
+                    className={cn(
+                      "truncate font-mono text-[11px]",
+                      e.mark === "added"
+                        ? "text-ok"
+                        : e.mark === "removed"
+                          ? "text-danger"
+                          : "text-warn",
+                    )}
+                  >
+                    {e.label}
+                  </div>
+                  {e.detail ? (
+                    <div className="truncate text-[9px] leading-snug text-ink-faint">{e.detail}</div>
+                  ) : null}
+                </button>
+              );
+            })}
+          </div>
+        ))
+      )}
     </div>
   );
 }

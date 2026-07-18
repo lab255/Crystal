@@ -27,7 +27,7 @@ import { createConsoleHandler, resolveConsoleDir } from "./console-static.js";
 import { deleteAt, listDir, mkdirAt, readFileCapped, renameAt, writeFileAt } from "./fs-api.js";
 import { changedFiles, gitCheckout, gitLog, gitRefs, gitStatus } from "./git.js";
 import { handleMcpRequest, isMcpRequest } from "./mcp/http.js";
-import { overviewSourcesAtRef, snapshotAtRef } from "./ref-snapshot.js";
+import { overviewSourcesAtRef, snapshotAtRef, surfacesSnapshotAtRef } from "./ref-snapshot.js";
 import { WorkspaceRegistry } from "./workspace-registry.js";
 
 type Handlers = {
@@ -363,6 +363,20 @@ export async function startCrystalServer(opts: {
     },
     "surfaces.get": ({ ws }) => registry.get(ws).codemap.surfaces(),
     "surfaces.map": ({ ws }) => registry.get(ws).codemap.surfaceMap(),
+    "surfaces.atRef": async ({ ws, ref, repoPath }) => {
+      const rt = registry.get(ws);
+      const [{ index }, snap] = await Promise.all([
+        rt.codeindex.get(),
+        surfacesSnapshotAtRef(rt.root, repoPath ?? ".", ref),
+      ]);
+      // The head's semantic index clusters both sides — same convention as
+      // `codemap.overviewDiff`, so system ids stay comparable across refs.
+      const overview = {
+        ...buildSystemOverview(snap.sources, index),
+        generatedAt: new Date().toISOString(),
+      };
+      return { ref, commit: snap.commit, report: snap.report, overview, calls: snap.calls };
+    },
     "quality.detect": ({ ws }) => registry.get(ws).quality.detect(),
     "quality.run": ({ ws, ...params }) => registry.get(ws).quality.run(params),
     "quality.cancel": ({ ws, runId }) => registry.get(ws).quality.cancel(runId),

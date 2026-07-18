@@ -1,4 +1,4 @@
-import type { SystemEndpoint } from "./system-overview.js";
+import type { SystemEndpoint, SystemOverview } from "./system-overview.js";
 
 /**
  * Surfaces — everything a product presents to the outside world, extracted
@@ -138,6 +138,19 @@ export interface SurfacesReport {
   schemas: SchemaSurface[];
   demo: DemoTargets;
   generatedAt: string;
+}
+
+/**
+ * The product surfaces rebuilt at a git ref — the same report/overview/calls
+ * triple the live system map renders, snapshotted from the ref's tree. The
+ * map's ref review diffs this against the live data client-side.
+ */
+export interface SurfacesRefBundle {
+  ref: string;
+  commit: string;
+  report: SurfacesReport;
+  overview: SystemOverview;
+  calls: ScreenApiCall[];
 }
 
 /**

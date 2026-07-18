@@ -106,6 +106,67 @@ function stringValue(expr: ts.Expression): string | null {
   return ts.isStringLiteral(expr) || ts.isNoSubstitutionTemplateLiteral(expr) ? expr.text : null;
 }
 
+/**
+ * Resolve a compile-time string expression: literals, identifiers with known
+ * values, and template literals over both. `onMiss` hears every identifier
+ * that had no value (even when another part of the template also failed).
+ */
+function resolveStringExpr(
+  expr: ts.Expression,
+  lookup: (name: string) => string | undefined,
+  onMiss?: (name: string) => void,
+): string | null {
+  const e = unwrapExpression(expr);
+  const lit = stringValue(e);
+  if (lit != null) return lit;
+  if (ts.isIdentifier(e)) {
+    const hit = lookup(e.text);
+    if (hit === undefined) {
+      onMiss?.(e.text);
+      return null;
+    }
+    return hit;
+  }
+  if (ts.isTemplateExpression(e)) {
+    let out = e.head.text;
+    let ok = true;
+    for (const span of e.templateSpans) {
+      const part = resolveStringExpr(span.expression, lookup, onMiss);
+      if (part == null) ok = false;
+      else out += part + span.literal.text;
+    }
+    return ok ? out : null;
+  }
+  return null;
+}
+
+/** Top-level `const X = "…"` values, composing template consts in declaration order. */
+function collectStringConsts(source: ts.SourceFile): Map<string, string> {
+  const consts = new Map<string, string>();
+  for (const st of source.statements) {
+    if (!ts.isVariableStatement(st)) continue;
+    for (const decl of st.declarationList.declarations) {
+      if (!ts.isIdentifier(decl.name) || !decl.initializer) continue;
+      const value = resolveStringExpr(decl.initializer, (n) => consts.get(n));
+      if (value != null) consts.set(decl.name.text, value);
+    }
+  }
+  return consts;
+}
+
+/**
+ * String-valued top-level consts of one file (`export const FOO = '/path'`,
+ * including templates over earlier consts). Never throws — a malformed file
+ * yields an empty map.
+ */
+export function extractStringConsts(fileRel: string, text: string): Map<string, string> {
+  try {
+    return collectStringConsts(createSource(fileRel, text));
+  } catch {
+    return new Map();
+  }
+}
+
 /** Whitespace-collapsed, length-capped source text for field types. */
 function compactType(t: string): string {
   const c = t.replace(/\s+/g, " ").trim();
@@ -160,24 +221,49 @@ export interface RouterScreen {
   line: number;
 }
 
+export interface RouterScreenOptions {
+  /** Imported constant values (name → string) for `path={CONST}` resolution. */
+  constants?: ReadonlyMap<string, string>;
+  /** Receives path identifiers that resolved neither locally nor via `constants`. */
+  unresolved?: Set<string>;
+}
+
 /**
  * Routes declared in one react-router file: JSX `<Route path element/Component>`
  * trees and route-object arrays passed to createBrowserRouter/useRoutes and
  * friends. Nested children join with their parent path; index routes take the
  * parent path. Parents that only group children (path but no element) are not
- * emitted themselves. Never throws — a malformed file yields [].
+ * emitted themselves. `path` accepts string literals, identifiers (same-file
+ * consts, then `opts.constants`), and template literals over both — an
+ * unresolvable path degrades to a pathless layout route. Never throws — a
+ * malformed file yields [].
  */
-export function extractRouterScreens(fileRel: string, text: string): RouterScreen[] {
+export function extractRouterScreens(
+  fileRel: string,
+  text: string,
+  opts?: RouterScreenOptions,
+): RouterScreen[] {
   try {
-    return extractRouterScreensUnsafe(fileRel, text);
+    return extractRouterScreensUnsafe(fileRel, text, opts);
   } catch {
     return [];
   }
 }
 
-function extractRouterScreensUnsafe(fileRel: string, text: string): RouterScreen[] {
+function extractRouterScreensUnsafe(
+  fileRel: string,
+  text: string,
+  opts?: RouterScreenOptions,
+): RouterScreen[] {
   const source = createSource(fileRel, text);
   const out: RouterScreen[] = [];
+
+  const localConsts = collectStringConsts(source);
+  const lookup = (name: string): string | undefined =>
+    localConsts.get(name) ?? opts?.constants?.get(name);
+  const miss = opts?.unresolved ? (n: string): void => void opts.unresolved!.add(n) : undefined;
+  const pathValue = (expr: ts.Expression): string | null =>
+    resolveStringExpr(expr, lookup, miss);
 
   const tagText = (tag: ts.JsxTagNameExpression): string | null =>
     ts.isIdentifier(tag)
@@ -222,7 +308,7 @@ function extractRouterScreensUnsafe(fileRel: string, text: string): RouterScreen
           if (name === "path") {
             if (init && ts.isStringLiteral(init)) routePath = init.text;
             else if (init && ts.isJsxExpression(init) && init.expression) {
-              routePath = stringValue(init.expression);
+              routePath = pathValue(init.expression);
             }
           } else if (name === "index") {
             isIndex = true;
@@ -263,7 +349,7 @@ function extractRouterScreensUnsafe(fileRel: string, text: string): RouterScreen
     for (const prop of obj.properties) {
       if (!ts.isPropertyAssignment(prop)) continue;
       const name = propName(prop.name);
-      if (name === "path") routePath = stringValue(prop.initializer);
+      if (name === "path") routePath = pathValue(prop.initializer);
       else if (name === "index" && prop.initializer.kind === ts.SyntaxKind.TrueKeyword) isIndex = true;
       else if (name === "element" || name === "Component" || name === "component") {
         componentName = componentNameOf(prop.initializer) ?? componentName;
@@ -833,13 +919,45 @@ export async function buildSurfacesReport(
     if (pagesRoute != null && (await dependsOnNext(p))) pushScreen(nextish(pagesRoute, "next-pages"));
   }
 
+  // Route constants imported from shared modules (`path={ADMIN_ROUTE}`): a
+  // first pass records the identifiers the router file couldn't resolve, then
+  // only the files exporting those names are read for their string consts.
+  const constFileCache = new Map<string, Map<string, string> | null>();
+  const importedRouteConsts = async (
+    rec: SurfaceSourceRecord,
+    wanted: ReadonlySet<string>,
+  ): Promise<Map<string, string>> => {
+    const constants = new Map<string, string>();
+    for (const imp of rec.resolvedImports) {
+      if (!imp.resolved || !imp.names.some((n) => wanted.has(n))) continue;
+      let consts = constFileCache.get(imp.resolved);
+      if (consts === undefined) {
+        const constText = await readText(imp.resolved);
+        consts = constText != null ? extractStringConsts(imp.resolved, constText) : null;
+        constFileCache.set(imp.resolved, consts);
+      }
+      if (!consts) continue;
+      for (const n of imp.names) {
+        const value = consts.get(n);
+        if (value !== undefined && wanted.has(n)) constants.set(n, value);
+      }
+    }
+    return constants;
+  };
+
   for (const p of paths) {
     if (isTestPath(p) || isStoryPath(p)) continue;
     const rec = records.get(p)!;
     if (!rec.resolvedImports.some((i) => ROUTER_SPECIFIERS.has(i.specifier))) continue;
     const text = await readText(p);
     if (text == null) continue;
-    for (const raw of extractRouterScreens(p, text)) {
+    const unresolved = new Set<string>();
+    let raws = extractRouterScreens(p, text, { unresolved });
+    if (unresolved.size > 0) {
+      const constants = await importedRouteConsts(rec, unresolved);
+      if (constants.size > 0) raws = extractRouterScreens(p, text, { constants });
+    }
+    for (const raw of raws) {
       const componentFile = raw.componentName
         ? resolveComponentFile(rec, raw.componentName)
         : undefined;

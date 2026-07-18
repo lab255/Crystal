@@ -474,3 +474,69 @@ describe("buildSystemMapScene — selection and find", () => {
     expect((nodeById(byRoute, "sys:api")?.data as MapSystemData).dimmed).toBe(false);
   });
 });
+
+describe("buildSystemMapScene — ref-review marks", () => {
+  const backend = sys("sys:api", "backend", "server/api", {
+    endpoints: [
+      { method: "GET", path: "/x", file: "server/api/r.ts" },
+      { method: "POST", path: "/x", file: "server/api/r.ts" },
+    ],
+  });
+  const screens = [
+    screen("s1", "/caller", "web/pages/Caller.tsx"),
+    screen("s2", "/gone", "web/pages/Gone.tsx"),
+  ];
+  const calls = [call("s1", "GET", "/x", "server/api/r.ts")];
+  const marks = {
+    node: new Map([
+      [screenNodeId("s1"), "modified" as const],
+      [screenNodeId("s2"), "removed" as const],
+      ["sys:api", "modified" as const],
+    ]),
+    edge: new Map([[`call:${screenNodeId("s1")}->sys:api`, "added" as const]]),
+    ep: new Map([["sys:api|POST /x", "removed" as const]]),
+  };
+
+  it("stamps node marks and per-card endpoint marks during decoration", () => {
+    const scene = build({ report: report({ screens }), overview: overview([backend]), calls, marks });
+    expect((nodeById(scene, screenNodeId("s1"))?.data as MapScreenData).mark).toBe("modified");
+    expect((nodeById(scene, screenNodeId("s2"))?.data as MapScreenData).mark).toBe("removed");
+    const sysData = nodeById(scene, "sys:api")?.data as MapSystemData;
+    expect(sysData.mark).toBe("modified");
+    expect(sysData.epMarks).toEqual({ "POST /x": "removed" });
+  });
+
+  it("colors marked edges even at rest and keeps them readable when faded", () => {
+    const scene = build({ report: report({ screens }), overview: overview([backend]), calls, marks });
+    const edge = scene.edges.find((e) => e.id === `call:${screenNodeId("s1")}->sys:api`)!;
+    expect(edge.style?.stroke).toBe("var(--color-ok)");
+    // Selecting an unrelated node fades the marked edge but not to invisibility.
+    const selectedScene = build({
+      report: report({ screens }),
+      overview: overview([backend]),
+      calls,
+      marks,
+      selected: screenNodeId("s2"),
+    });
+    const faded = selectedScene.edges.find((e) => e.id === `call:${screenNodeId("s1")}->sys:api`)!;
+    expect(faded.style?.stroke).toBe("var(--color-ok)");
+    expect(faded.style?.opacity).toBe(0.45);
+  });
+
+  it("dashes removed edges", () => {
+    const removedMarks = {
+      node: new Map(),
+      edge: new Map([[`call:${screenNodeId("s1")}->sys:api`, "removed" as const]]),
+      ep: new Map(),
+    };
+    const scene = build({
+      report: report({ screens }),
+      overview: overview([backend]),
+      calls,
+      marks: removedMarks,
+    });
+    const edge = scene.edges.find((e) => e.id === `call:${screenNodeId("s1")}->sys:api`)!;
+    expect(edge.style?.stroke).toBe("var(--color-danger)");
+    expect(edge.style?.strokeDasharray).toBe("5 4");
+  });
+});

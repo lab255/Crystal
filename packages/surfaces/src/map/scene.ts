@@ -56,6 +56,19 @@ export interface MapBandData extends Record<string, unknown> {
   label: string;
 }
 
+/** How a ref review marks a node/edge/endpoint-row: green / red / yellow. */
+export type MapDiffMark = "added" | "removed" | "modified";
+
+/** The ref review's marks, applied during decoration (geometry-blind). */
+export interface SystemMapMarks {
+  /** react-flow node id (`screen:…`, system id) → mark. */
+  node: ReadonlyMap<string, MapDiffMark>;
+  /** react-flow edge id (`call:…`, `feapi:…`, `link:…`) → mark. */
+  edge: ReadonlyMap<string, MapDiffMark>;
+  /** `${systemId}|${epKey}` → mark for endpoint rows on system cards. */
+  ep: ReadonlyMap<string, MapDiffMark>;
+}
+
 export interface MapScreenData extends Record<string, unknown> {
   screen: ScreenSurface;
   /** Outgoing HTTP calls reachable from this screen (matched or not). */
@@ -64,6 +77,8 @@ export interface MapScreenData extends Record<string, unknown> {
   unmatchedCount: number;
   selected: boolean;
   dimmed: boolean;
+  /** Ref-review mark ("new" / "gone" / "changed" badge). */
+  mark?: MapDiffMark;
 }
 
 /** Container for one frontend system's screens (multi-frontend workspaces). */
@@ -72,6 +87,8 @@ export interface MapFeGroupData extends Record<string, unknown> {
   screenCount: number;
   selected: boolean;
   dimmed: boolean;
+  /** Ref-review mark ("new" / "gone" / "changed" badge). */
+  mark?: MapDiffMark;
 }
 
 /** Endpoint-row interactions the view injects (the builder never sets these). */
@@ -95,6 +112,10 @@ export interface MapSystemData extends Record<string, unknown>, MapEndpointHandl
   dimmed: boolean;
   /** "METHOD path" of the selected endpoint when it lives on this card. */
   selectedEndpoint: string | null;
+  /** Ref-review mark ("new" / "gone" / "changed" badge). */
+  mark?: MapDiffMark;
+  /** Ref-review marks for this card's endpoint rows, keyed by epKey. */
+  epMarks?: Readonly<Record<string, MapDiffMark>>;
 }
 
 /** Aggregated external services across every system (integrations band). */
@@ -270,6 +291,8 @@ export interface SystemMapSceneInput extends SystemMapLayoutInput {
   selected: string | null;
   /** Case-insensitive substring filter; misses dim. */
   find: string;
+  /** Ref-review marks; when present every node/edge is re-decorated. */
+  marks?: SystemMapMarks | null;
 }
 
 export interface SystemMapScene {
@@ -921,7 +944,7 @@ export function buildSystemMapLayout(input: SystemMapLayoutInput): SystemMapLayo
  */
 export function decorateSystemMapScene(
   layout: SystemMapLayout,
-  opts: { selected: string | null; find: string },
+  opts: { selected: string | null; find: string; marks?: SystemMapMarks | null },
 ): SystemMapScene {
   const { nodes, bases, empty, fixturesHidden, quietHidden, stats, ctx } = layout;
   const { screens, systems, screenIds, screensBySystem, screenOwner, feNodeIds, adjacency, calls } =
@@ -986,10 +1009,25 @@ export function decorateSystemMapScene(
   const dimmedOf = (id: string, matches: boolean): boolean =>
     (q.length > 0 && !matches) || (selectionActive && !bright.has(id));
 
+  const marks = opts.marks ?? null;
+
   // At rest the laid-out scene is already correct — reuse it wholesale.
-  if (!selectionActive && q.length === 0) {
+  // (A ref review re-decorates everything: marks touch nodes and edges.)
+  if (!selectionActive && q.length === 0 && !marks) {
     return { nodes, edges: bases.map((b) => b.edge), empty, fixturesHidden, quietHidden, stats, selection };
   }
+
+  /** This system card's endpoint-row marks, keyed by epKey. */
+  const epMarksOf = (sysId: string): Readonly<Record<string, MapDiffMark>> | undefined => {
+    if (!marks || marks.ep.size === 0) return undefined;
+    const prefix = `${sysId}|`;
+    let out: Record<string, MapDiffMark> | undefined;
+    for (const [key, mark] of marks.ep) {
+      if (!key.startsWith(prefix)) continue;
+      (out ??= {})[key.slice(prefix.length)] = mark;
+    }
+    return out;
+  };
 
   const decorated = nodes.map((n): SystemMapNode => {
     switch (n.type) {
@@ -1001,6 +1039,7 @@ export function decorateSystemMapScene(
             ...d,
             selected: n.id === selNodeId,
             dimmed: dimmedOf(n.id, screenMatches(d.screen)),
+            mark: marks?.node.get(n.id),
           },
         };
       }
@@ -1012,6 +1051,7 @@ export function decorateSystemMapScene(
             ...d,
             selected: n.id === selNodeId,
             dimmed: dimmedOf(n.id, sysMatches(d.system)),
+            mark: marks?.node.get(n.id),
           },
         };
       }
@@ -1025,6 +1065,8 @@ export function decorateSystemMapScene(
             selected: n.id === selNodeId || epHere,
             dimmed: dimmedOf(n.id, sysMatches(d.system)),
             selectedEndpoint: epHere ? selEp : null,
+            mark: marks?.node.get(n.id),
+            epMarks: epMarksOf(n.id),
           },
         };
       }
@@ -1047,18 +1089,32 @@ export function decorateSystemMapScene(
         ? b.kind === "call" && b.epKeys.includes(selEp)
         : false;
     const faded = selectionActive && !active;
-    if (!active && !faded) return b.edge;
+    const mark = marks?.edge.get(b.edge.id);
+    const markColor =
+      mark === "added"
+        ? "var(--color-ok)"
+        : mark === "removed"
+          ? "var(--color-danger)"
+          : mark === "modified"
+            ? "var(--color-warn)"
+            : null;
+    if (!active && !faded && !markColor) return b.edge;
     return {
       ...b.edge,
-      animated: b.apiOnly && b.kind !== "call" && !faded,
+      animated: b.apiOnly && b.kind !== "call" && !faded && !markColor,
+      labelStyle: markColor ? { ...b.edge.labelStyle, fill: markColor } : b.edge.labelStyle,
       style: {
         ...b.edge.style,
-        stroke: b.apiOnly
-          ? "var(--color-accent-amber)"
-          : active
-            ? "var(--color-accent-violet)"
-            : "var(--color-edge-strong)",
-        opacity: faded ? 0.08 : b.restingOpacity,
+        stroke:
+          markColor ??
+          (b.apiOnly
+            ? "var(--color-accent-amber)"
+            : active
+              ? "var(--color-accent-violet)"
+              : "var(--color-edge-strong)"),
+        strokeDasharray: mark === "removed" ? "5 4" : b.edge.style?.strokeDasharray,
+        // Marked edges stay readable even outside the selection's bright set.
+        opacity: faded ? (markColor ? 0.45 : 0.08) : b.restingOpacity,
       },
     };
   });

@@ -101,6 +101,52 @@ export const router = createBrowserRouter([
     expect(screens.find((s) => s.route === "/*")!.componentName).toBeUndefined();
   });
 
+  it("resolves same-file path consts and template literals", () => {
+    const screens = extractRouterScreens(
+      "src/AppRouter.tsx",
+      `import { Routes, Route } from "react-router-dom";
+const ADMINFORM_ROUTE = "/admin/form";
+const SETTINGS_SUBROUTE = "settings";
+export const AppRouter = () => (
+  <Routes>
+    <Route path={\`\${ADMINFORM_ROUTE}/:formId\`} element={<AdminFormLayout />}>
+      <Route index element={<CreatePage />} />
+      <Route path={SETTINGS_SUBROUTE} element={<SettingsPage />}>
+        <Route path={':settingsTab'} element={<SettingsPage />} />
+      </Route>
+    </Route>
+  </Routes>
+);`,
+    );
+    expect(screens.map((s) => s.route)).toEqual([
+      "/admin/form/:formId",
+      "/admin/form/:formId",
+      "/admin/form/:formId/settings",
+      "/admin/form/:formId/settings/:settingsTab",
+    ]);
+  });
+
+  it("resolves imported consts via opts.constants and records unresolved names", () => {
+    const src = `import { Routes, Route } from "react-router-dom";
+import { DASH_ROUTE } from "./constants/routes.js";
+export const App = () => (
+  <Routes>
+    <Route path={DASH_ROUTE} element={<Dash />}>
+      <Route path=":tab" element={<Dash />} />
+    </Route>
+  </Routes>
+);`;
+    const unresolved = new Set<string>();
+    const first = extractRouterScreens("src/App.tsx", src, { unresolved });
+    expect([...unresolved]).toEqual(["DASH_ROUTE"]);
+    // Unresolved parent degrades to a pathless layout: the child loses its prefix.
+    expect(first.map((s) => s.route)).toEqual(["/:tab"]);
+    const second = extractRouterScreens("src/App.tsx", src, {
+      constants: new Map([["DASH_ROUTE", "/dash"]]),
+    });
+    expect(second.map((s) => s.route)).toEqual(["/dash", "/dash/:tab"]);
+  });
+
   it("never throws on malformed sources", () => {
     expect(extractRouterScreens("x.tsx", "const = <<<%%% nope")).toEqual([]);
   });
@@ -521,6 +567,66 @@ export interface UserRow {
     const second = await analyzer.surfaces();
     expect(second).not.toBe(first);
     expect(second.screens).toEqual(first.screens);
+  });
+});
+
+describe("CodeMapAnalyzer.surfaces — react-router route constants", () => {
+  let root: string;
+  let analyzer: CodeMapAnalyzer;
+
+  beforeAll(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), "crystal-surfaces-rc-"));
+    await write(root, "package.json", JSON.stringify({ name: "fixture" }));
+    await write(
+      root,
+      "src/constants/routes.ts",
+      `export const ADMINFORM_ROUTE = '/admin/form'
+export const SETTINGS_SUBROUTE = 'settings'
+export const SINGPASS_SUBROUTE = \`\${SETTINGS_SUBROUTE}/singpass\`
+`,
+    );
+    await write(
+      root,
+      "src/AppRouter.tsx",
+      `import { Routes, Route } from "react-router-dom";
+import { ADMINFORM_ROUTE, SETTINGS_SUBROUTE, SINGPASS_SUBROUTE } from "./constants/routes.js";
+import { SettingsPage } from "./views/SettingsPage.js";
+export const AppRouter = () => (
+  <Routes>
+    <Route path={\`\${ADMINFORM_ROUTE}/:formId\`} element={<AdminFormLayout />}>
+      <Route path={SETTINGS_SUBROUTE} element={<SettingsPage />}>
+        <Route path=":settingsTab" element={<SettingsPage />} />
+      </Route>
+      <Route path={SINGPASS_SUBROUTE} element={<SettingsPage />} />
+    </Route>
+  </Routes>
+);`,
+    );
+    await write(
+      root,
+      "src/views/SettingsPage.tsx",
+      `export const SettingsPage = () => <div>settings</div>;`,
+    );
+    analyzer = new CodeMapAnalyzer(root);
+  });
+
+  afterAll(async () => {
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it("composes full routes from constants imported across files", async () => {
+    const { screens } = await analyzer.surfaces();
+    expect(screens.map((s) => s.route)).toEqual([
+      "/admin/form/:formId",
+      "/admin/form/:formId/settings",
+      "/admin/form/:formId/settings/:settingsTab",
+      "/admin/form/:formId/settings/singpass",
+    ]);
+    const tab = screens.find((s) => s.route === "/admin/form/:formId/settings/:settingsTab")!;
+    expect(tab).toMatchObject({
+      component: "SettingsPage",
+      componentFile: "src/views/SettingsPage.tsx",
+    });
   });
 });
 

@@ -1,11 +1,21 @@
+import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import type {
   CodeArchSnapshot,
   CodeModule,
   CodeModuleDep,
   OverviewSourceFile,
+  ScreenApiCall,
+  SurfacesReport,
 } from "@crystal/core";
-import { isCodeFile, isTestFile, parseSource, resolveImportSpecifier } from "./code-map.js";
+import {
+  CodeMapAnalyzer,
+  isCodeFile,
+  isTestFile,
+  parseSource,
+  resolveImportSpecifier,
+} from "./code-map.js";
 import { gitCatFiles, gitLsTree, gitResolveRef } from "./git.js";
 import { isIgnoredDir, resolveInRoot } from "./paths.js";
 import { computeMountPrefixes, joinMountedPath } from "./surfaces-report.js";
@@ -155,6 +165,105 @@ export async function snapshotAtRef(
   }));
 
   return { ref, commit: t.commit, modules, deps, fileTotal: t.contents.size };
+}
+
+export interface SurfacesSnapshot {
+  commit: string;
+  report: SurfacesReport;
+  calls: ScreenApiCall[];
+  /** Overview inputs from the same snapshot — `buildSystemOverview` fodder. */
+  sources: OverviewSourceFile[];
+}
+
+/** Non-code files the surfaces analyzer reads: manifests, ts configs, prisma. */
+function isAnalyzerConfigFile(rel: string): boolean {
+  return (
+    rel === "package.json" ||
+    rel.endsWith("/package.json") ||
+    /(^|\/)tsconfig[^/]*\.json$/.test(rel) ||
+    rel.endsWith(".prisma")
+  );
+}
+
+/** Snapshots already built this session, keyed by repo + commit (small LRU). */
+const surfacesSnapshotCache = new Map<string, Promise<SurfacesSnapshot>>();
+const SNAPSHOT_CACHE_MAX = 3;
+
+/**
+ * The full surfaces analysis at a git ref: the ref's tree is materialized into
+ * a temp directory and the live `CodeMapAnalyzer` runs over it unchanged — the
+ * base and head of a ref review can never disagree on heuristics. Expensive
+ * (a full analyzer pass), so results cache per commit; a nested `repoRel`
+ * materializes under its workspace-relative prefix so every path in the
+ * result stays workspace-relative.
+ */
+export function surfacesSnapshotAtRef(
+  root: string,
+  repoRel: string,
+  ref: string,
+): Promise<SurfacesSnapshot> {
+  const cwd = resolveInRoot(root, repoRel || ".");
+  return (async () => {
+    const commit = await gitResolveRef(cwd, ref);
+    const key = `${cwd}\0${commit}`;
+    const hit = surfacesSnapshotCache.get(key);
+    if (hit) return hit;
+    const pending = buildSurfacesSnapshot(cwd, repoRel, ref, commit).catch((err) => {
+      surfacesSnapshotCache.delete(key); // failures must not stick
+      throw err;
+    });
+    surfacesSnapshotCache.set(key, pending);
+    for (const k of surfacesSnapshotCache.keys()) {
+      if (surfacesSnapshotCache.size <= SNAPSHOT_CACHE_MAX) break;
+      surfacesSnapshotCache.delete(k);
+    }
+    return pending;
+  })();
+}
+
+async function buildSurfacesSnapshot(
+  cwd: string,
+  repoRel: string,
+  ref: string,
+  commit: string,
+): Promise<SurfacesSnapshot> {
+  const tree = (await gitLsTree(cwd, ref)).filter((p) => !underIgnoredDir(p));
+  const wanted = [
+    ...tree.filter((p) => isCodeFile(p)).slice(0, MAX_FILES),
+    ...tree.filter(isAnalyzerConfigFile),
+  ];
+  const contents = await gitCatFiles(cwd, ref, wanted);
+
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "crystal-ref-surfaces-"));
+  try {
+    const prefix =
+      !repoRel || repoRel === "." ? "" : repoRel.replace(/\\/g, "/").replace(/\/+$/, "") + "/";
+    const entries = [...contents.entries()];
+    const WRITE_BATCH = 64;
+    for (let i = 0; i < entries.length; i += WRITE_BATCH) {
+      await Promise.all(
+        entries.slice(i, i + WRITE_BATCH).map(async ([rel, text]) => {
+          const abs = path.join(tmp, ...(prefix + rel).split("/"));
+          try {
+            await fs.mkdir(path.dirname(abs), { recursive: true });
+            await fs.writeFile(abs, text, "utf8");
+          } catch {
+            /* blob name invalid on this OS — skip, the analyzer never sees it */
+          }
+        }),
+      );
+    }
+    // realpath: mkdtemp can hand back an 8.3 short path on Windows and the
+    // analyzer's path arithmetic must match what fs resolves.
+    const analyzerRoot = await fs.realpath(tmp);
+    const analyzer = new CodeMapAnalyzer(analyzerRoot);
+    const report = await analyzer.surfaces();
+    const { calls } = await analyzer.surfaceMap();
+    const sources = await analyzer.overviewSourceFiles();
+    return { commit, report, calls, sources };
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 /**
