@@ -238,11 +238,18 @@ export interface CodeTraceStep {
 export interface CodeTraceEdge {
   from: CodeSymbolRef;
   to: CodeSymbolRef;
+  /**
+   * A reference edge: the callee is invoked reflectively — a framework
+   * handler (`app.get("/x", handler)`), a callback argument, a handler-table
+   * entry — rather than called directly.
+   */
+  dynamic?: boolean;
 }
 
 /**
- * A call-graph trace from one entry symbol. Syntax-resolved only: instance
- * method calls and dynamic dispatch land in `unresolvedCalls` rather than
+ * A call-graph trace from one entry symbol. Syntax-resolved only: handler
+ * and callback *references* resolve as `dynamic` edges; instance method
+ * calls the syntax can't attribute land in `unresolvedCalls` rather than
  * silently vanishing.
  */
 export interface CodeTrace {

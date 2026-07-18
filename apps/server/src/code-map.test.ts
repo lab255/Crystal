@@ -1129,6 +1129,158 @@ describe("instance-method dispatch", () => {
   });
 });
 
+describe("dynamic references", () => {
+  it("collects handler references from call arguments, arrays, tables, and JSX props", () => {
+    const { symbols } = parseSource(
+      "src/wiring.tsx",
+      `import { save } from "./svc.js";
+function handler() {}
+function mw() {}
+export function setup(app) {
+  app.get("/x", mw, handler);
+  app.use([mw, ...extras]);
+}
+export const table = { create: handler, remove: save };
+export function Screen() {
+  return <button onClick={save} />;
+}
+export const chain = [mw, handler] as unknown[];`,
+    );
+    const setup = symbols.find((s) => s.name === "setup")!;
+    expect(setup.calls.filter((c) => c.dynamic).map((c) => c.name)).toEqual([
+      "mw",
+      "handler",
+      "mw",
+      "extras",
+    ]);
+    const table = symbols.find((s) => s.name === "table")!;
+    expect(table.calls).toEqual([
+      { name: "handler", receiver: null, line: 8, dynamic: true },
+      { name: "save", receiver: null, line: 8, dynamic: true },
+    ]);
+    // FormSG-style middleware chain: an `as`-wrapped array of handlers.
+    const chain = symbols.find((s) => s.name === "chain")!;
+    expect(chain.calls).toEqual([
+      { name: "mw", receiver: null, line: 12, dynamic: true },
+      { name: "handler", receiver: null, line: 12, dynamic: true },
+    ]);
+    const screen = symbols.find((s) => s.name === "Screen")!;
+    expect(screen.calls).toContainEqual({ name: "save", receiver: null, line: 10, dynamic: true });
+  });
+
+  it("collects shorthand property references", () => {
+    const { symbols } = parseSource(
+      "src/store.ts",
+      `function fetchUser() {}
+export function makeStore() {
+  return { fetchUser };
+}`,
+    );
+    const store = symbols.find((s) => s.name === "makeStore")!;
+    expect(store.calls).toContainEqual({ name: "fetchUser", receiver: null, line: 3, dynamic: true });
+  });
+
+  it("attributes module-scope router registrations to the router symbol", () => {
+    const { symbols, endpoints } = parseSource(
+      "src/routes.ts",
+      `import { Router } from "express";
+import { requireAuth } from "./auth.js";
+import * as controller from "./controller.js";
+export const router = Router();
+router.get("/forms", requireAuth, controller.listForms);
+router.route("/forms/:id").delete(controller.removeForm);
+router.use(audit);`,
+    );
+    const router = symbols.find((s) => s.name === "router")!;
+    const refs = router.calls
+      .filter((c) => c.dynamic)
+      .map((c) => (c.receiver ? `${c.receiver}.${c.name}` : c.name));
+    expect(refs).toEqual(["requireAuth", "controller.listForms", "controller.removeForm", "audit"]);
+    // The registrar calls themselves stay framework surface, not callees.
+    expect(router.calls.some((c) => !c.dynamic && c.receiver === "router")).toBe(false);
+    // Endpoint detection is untouched by the attribution.
+    expect(endpoints).toContainEqual({
+      method: "GET",
+      path: "/forms",
+      line: 5,
+      handler: "controller.listForms",
+    });
+  });
+
+  it("resolves references to callable targets only, silently dropping the rest", () => {
+    const app = record(
+      "app.ts",
+      `import { router } from "./routes.js";
+const app = express();
+app.use("/api", router);
+app.listen(PORT);`,
+      { "./routes.js": "routes.ts" },
+    );
+    const routes = record(
+      "routes.ts",
+      `import { requireAuth } from "./auth.js";
+export const router = Router();
+export const LIMIT = 5;
+router.get("/forms", requireAuth, listForms);
+function listForms() {}
+export function check() { validate(LIMIT); }
+function validate(n) {}`,
+      { "./auth.js": "auth.ts" },
+    );
+    const auth = record("auth.ts", `export function requireAuth() {}`);
+    const graph = buildCallGraph(recordsOf(app, routes, auth));
+    // app.use("/api", router) → the imported router const, flagged dynamic.
+    expect(graph.get("app.ts#app")!.resolved).toEqual([
+      { file: "routes.ts", symbol: "router", dynamic: true },
+    ]);
+    const router = graph.get("routes.ts#router")!;
+    expect(router.resolved).toContainEqual({ file: "auth.ts", symbol: "requireAuth", dynamic: true });
+    expect(router.resolved).toContainEqual({ file: "routes.ts", symbol: "listForms", dynamic: true });
+    // Data constants never become reference targets, and the unresolved
+    // reference (PORT) stays silent.
+    const check = graph.get("routes.ts#check")!;
+    expect(check.resolved).toEqual([{ file: "routes.ts", symbol: "validate" }]);
+    expect(graph.get("app.ts#app")!.unresolved).toEqual([]);
+  });
+
+  it("keeps a target reached both directly and by reference as a call edge", () => {
+    const a = record(
+      "a.ts",
+      `function job() {}
+export function run() {
+  job();
+  schedule(job);
+}`,
+    );
+    const graph = buildCallGraph(recordsOf(a));
+    expect(graph.get("a.ts#run")!.resolved).toEqual([{ file: "a.ts", symbol: "job" }]);
+  });
+
+  it("falls back to the receiver symbol for member references without a unique owner", () => {
+    const handlers = record(
+      "handlers.ts",
+      `function createForm() {}
+export const handlers = { create: createForm };`,
+    );
+    const routes = record(
+      "routes.ts",
+      `import { handlers } from "./handlers.js";
+const router = Router();
+router.post("/forms", handlers.create);`,
+      { "./handlers.js": "handlers.ts" },
+    );
+    const graph = buildCallGraph(recordsOf(handlers, routes));
+    // `create` is too short for instance dispatch — the reference lands on
+    // the handler table itself, whose own references continue the chain.
+    expect(graph.get("routes.ts#router")!.resolved).toEqual([
+      { file: "handlers.ts", symbol: "handlers", dynamic: true },
+    ]);
+    expect(graph.get("handlers.ts#handlers")!.resolved).toEqual([
+      { file: "handlers.ts", symbol: "createForm", dynamic: true },
+    ]);
+  });
+});
+
 describe("CodeMapAnalyzer apiTrace through a client class", () => {
   let root: string;
   let analyzer: CodeMapAnalyzer;
@@ -1189,6 +1341,63 @@ export function DeploymentsPage() {
   it("only reports the methods the page actually invokes, not the whole client", async () => {
     const trace = await analyzer.apiTrace("src/page.tsx", "DeploymentsPage");
     expect(trace.calls.some((c) => c.path === "/api/v1/everything")).toBe(false);
+  });
+});
+
+describe("CodeMapAnalyzer trace through express handler chains", () => {
+  let root: string;
+  let analyzer: CodeMapAnalyzer;
+
+  beforeAll(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), "crystal-dyntrace-"));
+    await fs.mkdir(path.join(root, "src"), { recursive: true });
+    await fs.writeFile(path.join(root, "package.json"), JSON.stringify({ name: "fixture" }));
+    await fs.writeFile(
+      path.join(root, "src", "app.ts"),
+      `import express from "express";
+import { formsRouter } from "./routes";
+export const app = express();
+app.use("/api/forms", formsRouter);
+`,
+    );
+    await fs.writeFile(
+      path.join(root, "src", "routes.ts"),
+      `import { Router } from "express";
+import { requireAuth } from "./auth";
+export const formsRouter = Router();
+formsRouter.get("/:id", requireAuth, getForm);
+function getForm(req, res) {
+  res.json({});
+}
+`,
+    );
+    await fs.writeFile(
+      path.join(root, "src", "auth.ts"),
+      `export function requireAuth(req, res, next) {
+  next();
+}
+`,
+    );
+    analyzer = new CodeMapAnalyzer(root);
+  });
+
+  afterAll(async () => {
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it("walks mount → router → middleware and handler on dynamic edges", async () => {
+    const trace = await analyzer.trace("src/app.ts", "app");
+    const at = (symbol: string) => trace.steps.find((s) => s.ref.symbol === symbol);
+    expect(at("formsRouter")).toMatchObject({ ref: { file: "src/routes.ts" }, depth: 1 });
+    expect(at("requireAuth")).toMatchObject({ ref: { file: "src/auth.ts" }, depth: 2 });
+    expect(at("getForm")).toMatchObject({ ref: { file: "src/routes.ts" }, depth: 2 });
+    const mountEdge = trace.edges.find((e) => e.to.symbol === "formsRouter")!;
+    expect(mountEdge.dynamic).toBe(true);
+    const chainEdges = trace.edges.filter((e) => e.from.symbol === "formsRouter");
+    expect(chainEdges.map((e) => `${e.to.symbol}${e.dynamic ? "*" : ""}`).sort()).toEqual([
+      "getForm*",
+      "requireAuth*",
+    ]);
   });
 });
 

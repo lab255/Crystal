@@ -114,6 +114,17 @@ export interface SymbolCall {
    * `<Dialog/>` is not a missing local callee.
    */
   render?: boolean;
+  /**
+   * A value-position *reference* rather than an invocation: a handler passed
+   * to a registrar (`app.get("/x", requireAuth, handler)`), a handler-table
+   * entry (`{ create: createForm }`), a JSX prop (`onClick={save}`). The
+   * framework invokes these reflectively, so they are call edges in every way
+   * that matters for tracing — but most call arguments are plain data, so the
+   * graph only links a reference when its target resolves to something
+   * callable, and unresolved references are dropped silently (never noise in
+   * `unresolved`).
+   */
+  dynamic?: boolean;
 }
 
 /** Every top-level declaration, exported or not, with its source range. */
@@ -295,8 +306,32 @@ function unwrapReceiver(expr: ts.Expression): ts.Expression {
  * is how a screen invokes a component, and the API trace has to walk that
  * edge to reach the fetches the rendered tree makes. Lowercase (intrinsic)
  * tags are skipped.
+ *
+ * Alongside genuine invocations, value-position references are collected as
+ * `dynamic` calls (see `SymbolCall.dynamic`): call/new arguments, object
+ * literal property values (incl. shorthand) and JSX attribute expressions —
+ * the places frameworks read handlers from before invoking them reflectively.
  */
 function collectCalls(root: ts.Node, out: SymbolCall[], lineOf?: (node: ts.Node) => number): void {
+  /** A referenced (not invoked) callee. Arrays flatten so express-style
+   *  `[mw1, mw2]` chains keep every entry; spreads keep their identifier. */
+  const pushRef = (expr: ts.Expression): void => {
+    const e = unwrapReceiver(ts.isSpreadElement(expr) ? expr.expression : expr);
+    if (ts.isIdentifier(e)) {
+      out.push({ name: e.text, receiver: null, line: lineOf?.(e), dynamic: true });
+    } else if (ts.isPropertyAccessExpression(e) && ts.isIdentifier(e.name)) {
+      const recv = unwrapReceiver(e.expression);
+      if (ts.isIdentifier(recv)) {
+        out.push({ name: e.name.text, receiver: recv.text, line: lineOf?.(e), dynamic: true });
+      }
+    } else if (ts.isArrayLiteralExpression(e)) {
+      for (const el of e.elements) pushRef(el);
+    }
+  };
+  // A middleware-chain body (`const handler = [validate, respond]`) is all
+  // references — its identifier elements sit in no argument/property position
+  // the visitor below would collect from.
+  if (ts.isArrayLiteralExpression(root)) pushRef(root);
   const visit = (node: ts.Node): void => {
     if (ts.isCallExpression(node) && node.expression.kind !== ts.SyntaxKind.ImportKeyword) {
       const callee = node.expression;
@@ -308,6 +343,20 @@ function collectCalls(root: ts.Node, out: SymbolCall[], lineOf?: (node: ts.Node)
           out.push({ name: callee.name.text, receiver: recv.text, line: lineOf?.(node) });
         }
       }
+      for (const arg of node.arguments) pushRef(arg);
+    } else if (ts.isNewExpression(node)) {
+      for (const arg of node.arguments ?? []) pushRef(arg);
+    } else if (ts.isPropertyAssignment(node)) {
+      pushRef(node.initializer);
+    } else if (ts.isShorthandPropertyAssignment(node)) {
+      out.push({ name: node.name.text, receiver: null, line: lineOf?.(node.name), dynamic: true });
+    } else if (
+      ts.isJsxAttribute(node) &&
+      node.initializer &&
+      ts.isJsxExpression(node.initializer) &&
+      node.initializer.expression
+    ) {
+      pushRef(node.initializer.expression);
     } else if (ts.isJsxSelfClosingElement(node) || ts.isJsxOpeningElement(node)) {
       const tag = node.tagName;
       if (ts.isIdentifier(tag) && /^[A-Z]/.test(tag.text)) {
@@ -501,7 +550,10 @@ export function parseSource(fileRel: string, text: string): Omit<ParsedFile, "mt
     let tokenCount = 0;
     if (body) {
       collectCalls(body, calls, lineOf);
-      if (kind === "function" || kind === "component" || kind === "const") {
+      // Literal bodies (handler tables) are walked for references only —
+      // fingerprinting them would turn config data into duplicate clusters.
+      const literal = ts.isObjectLiteralExpression(body) || ts.isArrayLiteralExpression(body);
+      if (!literal && (kind === "function" || kind === "component" || kind === "const")) {
         ({ fingerprint, tokenCount } = fingerprintBody(text.slice(body.getStart(source), body.getEnd())));
       }
     }
@@ -574,8 +626,16 @@ export function parseSource(fileRel: string, text: string): Omit<ParsedFile, "mt
       for (const decl of statement.declarationList.declarations) {
         if (!ts.isIdentifier(decl.name)) continue;
         const name = decl.name.text;
-        const init = decl.initializer ?? null;
+        // Unwrap `as`/parens/`satisfies` — handler chains are exported as
+        // `[validator, handler] as ControllerHandler[]` in the wild.
+        const init = decl.initializer ? unwrapReceiver(decl.initializer) : null;
         const fnLike = init != null && (ts.isArrowFunction(init) || ts.isFunctionExpression(init));
+        // Object/array literal initializers are walked too: a handler table
+        // (`const routes = { create: createForm }`) or middleware chain
+        // (`const handler = [validate, respond]`) is how frameworks dispatch,
+        // and their references make the symbol traceable.
+        const literalLike =
+          init != null && (ts.isObjectLiteralExpression(init) || ts.isArrayLiteralExpression(init));
         const isComponent =
           /^[A-Z]/.test(name) &&
           init != null &&
@@ -586,7 +646,7 @@ export function parseSource(fileRel: string, text: string): Omit<ParsedFile, "mt
           name,
           isComponent ? "component" : "const",
           hasExportModifier(statement),
-          fnLike ? init : null,
+          fnLike || literalLike ? init : null,
         );
       }
     } else if (ts.isFunctionDeclaration(statement) && statement.name) {
@@ -596,8 +656,14 @@ export function parseSource(fileRel: string, text: string): Omit<ParsedFile, "mt
       // Calls inside methods are attributed to the class symbol; method names
       // (with ranges) let the call graph resolve `instance.method()` dispatch
       // back here and let apiTrace narrow collection to the method invoked.
+      // Arrow-function properties count as methods too — express controllers
+      // routinely declare handlers as `getForm = async (req, res) => …`.
       const methods = statement.members.flatMap((m) =>
-        ts.isMethodDeclaration(m) && (ts.isIdentifier(m.name) || ts.isStringLiteral(m.name))
+        (ts.isMethodDeclaration(m) ||
+          (ts.isPropertyDeclaration(m) &&
+            m.initializer != null &&
+            (ts.isArrowFunction(m.initializer) || ts.isFunctionExpression(m.initializer)))) &&
+        (ts.isIdentifier(m.name) || ts.isStringLiteral(m.name))
           ? [{ name: m.name.text, line: lineOf(m), endLine: endLineOf(m) }]
           : [],
       );
@@ -647,6 +713,43 @@ export function parseSource(fileRel: string, text: string): Omit<ParsedFile, "mt
           signature: signatureOf(statement),
         });
       }
+    }
+  }
+
+  // --- module-scope handler wiring ---
+  // Frameworks assemble routers reflectively at module scope:
+  // `router.get("/x", requireAuth, handler)`, `app.use(audit)`. No symbol
+  // body contains those statements, so without attribution the handler chain
+  // would be invisible to the call graph. Attribute each top-level method
+  // call whose receiver chain bottoms out in a locally declared symbol
+  // (`router`, `app`) to that symbol — a mount elsewhere
+  // (`app.use("/api", router)`) then traces through the router into its
+  // middleware and handlers.
+  const symbolByName = new Map(symbols.map((s) => [s.name, s]));
+  for (const statement of source.statements) {
+    if (!ts.isExpressionStatement(statement)) continue;
+    let expr = statement.expression;
+    while (ts.isAwaitExpression(expr) || ts.isParenthesizedExpression(expr)) expr = expr.expression;
+    if (!ts.isCallExpression(expr) || !ts.isPropertyAccessExpression(expr.expression)) continue;
+    // Base identifier of the callee chain: `router.route("/x").get(h)` → router.
+    let base = unwrapReceiver(expr.expression.expression);
+    while (
+      ts.isPropertyAccessExpression(base) ||
+      ts.isElementAccessExpression(base) ||
+      ts.isCallExpression(base)
+    ) {
+      base = unwrapReceiver(base.expression);
+    }
+    if (!ts.isIdentifier(base)) continue;
+    const owner = symbolByName.get(base.text);
+    if (!owner) continue;
+    const collected: SymbolCall[] = [];
+    collectCalls(expr, collected, lineOf);
+    for (const call of collected) {
+      // The registrar calls themselves (`router.get`) are framework surface,
+      // not callees; the references (and anything inside inline handlers) are.
+      if (!call.dynamic && call.receiver === base.text) continue;
+      owner.calls.push(call);
     }
   }
 
@@ -1050,7 +1153,9 @@ export interface CallGraphRecord {
 
 export interface CallGraphNode {
   ref: CodeSymbolRef;
-  resolved: CodeSymbolRef[];
+  /** Callees; `dynamic` marks reference edges (handler/callback wiring) —
+   *  a target also reached by a direct call stays a plain call edge. */
+  resolved: (CodeSymbolRef & { dynamic?: boolean })[];
   unresolved: string[];
 }
 
@@ -1085,6 +1190,22 @@ const AMBIENT_METHOD_NAMES = new Set([
   "next", "then", "catch", "finally", "push", "emit", "send", "write",
 ]);
 
+/** Kinds that are invocable as referenced values without further evidence. */
+const CALLABLE_KINDS = new Set<CodeSymbolKind>(["function", "component", "class"]);
+
+/**
+ * Is `name` in `rec` something a framework could invoke? A const qualifies
+ * when behavior was recorded in it: a function body, a handler table's
+ * references, or module-scope registrations attributed to it (routers).
+ * Bare data consts have no calls and stay unlinked — most call arguments are
+ * plain values, and linking `save(user)` to a `user` constant would drown
+ * the graph in value edges.
+ */
+function isCallableSymbol(rec: CallGraphRecord | undefined, name: string): boolean {
+  const sym = rec?.symbols.find((s) => s.name === name);
+  return sym != null && (CALLABLE_KINDS.has(sym.kind) || sym.calls.length > 0);
+}
+
 /**
  * Syntax-only call graph over top-level symbols. Callees resolve through
  * same-file declarations, named imports, `* as ns` namespaces, barrel
@@ -1092,6 +1213,10 @@ const AMBIENT_METHOD_NAMES = new Set([
  * dispatch — the unique class declaring that method name (API-client methods
  * like `listDeployments` are distinctive; ambiguous or generic names stay
  * unresolved rather than guessing).
+ *
+ * Dynamic references (see `SymbolCall.dynamic`) resolve through the same
+ * paths and become `dynamic` edges, but only when the target is callable
+ * (`isCallableSymbol`); unresolved references are dropped silently.
  */
 export function buildCallGraph(records: Map<string, CallGraphRecord>): CallGraph {
   /** Symbol named `name` declared in (or re-exported through) `file`. */
@@ -1141,11 +1266,15 @@ export function buildCallGraph(records: Map<string, CallGraphRecord>): CallGraph
 
     for (const symbol of rec.symbols) {
       const ref: CodeSymbolRef = { file: rec.path, symbol: symbol.name };
-      const resolved: CodeSymbolRef[] = [];
+      const resolved: CallGraphNode["resolved"] = [];
       const unresolved: string[] = [];
       const seenResolved = new Set<string>();
       const seenUnresolved = new Set<string>();
-      for (const call of symbol.calls) {
+      // Direct calls first: a target reached both ways stays a call edge.
+      const ordered = [...symbol.calls].sort(
+        (a, b) => Number(a.dynamic ?? false) - Number(b.dynamic ?? false),
+      );
+      for (const call of ordered) {
         let hit: CodeSymbolRef | null = null;
         if (call.receiver) {
           const nsFile = namespaceImports.get(call.receiver);
@@ -1155,22 +1284,38 @@ export function buildCallGraph(records: Map<string, CallGraphRecord>): CallGraph
             const owner = methodOwners.get(call.name);
             if (owner && callKey(owner) !== callKey(ref)) hit = owner;
           }
+          // A handler reference like `controller.create` whose method has no
+          // unique owner still names *some* member of the receiver — fall
+          // back to the receiver symbol so the trace enters the right file.
+          if (!hit && call.dynamic) {
+            if (localNames.has(call.receiver) && call.receiver !== symbol.name) {
+              hit = { file: rec.path, symbol: call.receiver };
+            } else {
+              const importFile = namedImports.get(call.receiver);
+              if (importFile) hit = resolveInFile(importFile, call.receiver, 0);
+            }
+          }
         } else if (localNames.has(call.name)) {
           if (call.name !== symbol.name) hit = { file: rec.path, symbol: call.name };
         } else {
           const importFile = namedImports.get(call.name);
           if (importFile) hit = resolveInFile(importFile, call.name, 0);
         }
+        // References only count when the target is invocable.
+        if (hit && call.dynamic && !isCallableSymbol(records.get(hit.file), hit.symbol)) {
+          hit = null;
+        }
         if (hit) {
           const key = callKey(hit);
           if (!seenResolved.has(key)) {
             seenResolved.add(key);
-            resolved.push(hit);
+            resolved.push(call.dynamic ? { ...hit, dynamic: true } : hit);
           }
         } else {
           // Unresolved renders are third-party components (<Dialog/> from a
           // UI library), not missing local callees — pure noise in the list.
-          if (call.render) continue;
+          // Unresolved references are usually plain data arguments: silent.
+          if (call.render || call.dynamic) continue;
           const ambient = call.receiver
             ? GLOBAL_RECEIVERS.has(call.receiver)
             : GLOBAL_CALLEES.has(call.name);
@@ -2179,7 +2324,11 @@ export class CodeMapAnalyzer {
         if (!node) continue;
         for (const callee of node.unresolved) unresolvedCalls.push({ from: ref, callee });
         for (const target of node.resolved) {
-          edges.push({ from: ref, to: target });
+          edges.push({
+            from: ref,
+            to: { file: target.file, symbol: target.symbol },
+            ...(target.dynamic ? { dynamic: true } : {}),
+          });
           const key = callKey(target);
           if (visited.has(key)) continue;
           if (visited.size >= TRACE_MAX_NODES) {
