@@ -2,7 +2,28 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { AgentManager, planClaudeSpawn } from "./agent-manager.js";
+import { AgentManager, claudeRunArgs, planClaudeSpawn } from "./agent-manager.js";
+
+describe("claudeRunArgs", () => {
+  it("pre-allows the crystal MCP server when an mcp-config is attached", () => {
+    // Regression: headless (-p) runs cannot answer permission prompts, so
+    // without --allowedTools every mcp__crystal__* call was declined
+    // ("Claude requested permissions to use mcp__crystal__my_task…").
+    const args = claudeRunArgs({ mcpConfigPath: "C:\\data\\mcp\\run_1.json" });
+    const i = args.indexOf("--mcp-config");
+    expect(i).toBeGreaterThan(-1);
+    expect(args[i + 1]).toBe("C:\\data\\mcp\\run_1.json");
+    expect(args[args.indexOf("--allowedTools") + 1]).toBe("mcp__crystal");
+  });
+
+  it("omits MCP flags (and never the allowlist alone) without an mcp-config", () => {
+    const args = claudeRunArgs({ model: "opus", resumeSessionId: "sess_1" });
+    expect(args).not.toContain("--mcp-config");
+    expect(args).not.toContain("--allowedTools");
+    expect(args[args.indexOf("--model") + 1]).toBe("opus");
+    expect(args[args.indexOf("--resume") + 1]).toBe("sess_1");
+  });
+});
 
 describe("planClaudeSpawn", () => {
   const ARGS = ["-p", "--mcp-config", "C:\\Users\\Eliot Lim\\.crystal\\mcp\\run_1.json"];

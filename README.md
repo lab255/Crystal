@@ -130,7 +130,9 @@ headless with `BridgeClient` and the `@crystal/core` model. All packages build t
 ## Agent execution
 
 Runs are spawned as `claude -p --output-format stream-json --verbose --permission-mode acceptEdits`
-in the chosen repo, with the prompt piped over stdin (never shell-interpolated). The
+(plus `--mcp-config … --allowedTools mcp__crystal` for manager and task-bound runs, since
+headless runs cannot answer permission prompts) in the chosen repo, with the prompt piped
+over stdin (never shell-interpolated). The
 NDJSON stream is normalized into a stable `AgentEvent` union, broadcast live over the
 bridge, and persisted for replay. Session ids are captured so runs can be resumed.
 

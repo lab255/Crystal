@@ -90,6 +90,35 @@ function winShellQuote(arg: string): string {
  * through untouched. Only .cmd/.bat npm shims need cmd.exe (`shell: true`),
  * and on that path every arg must be hand-quoted (see winShellQuote).
  */
+/**
+ * The Claude CLI argv for one run. When an mcp-config rides along, the
+ * crystal server's tools are pre-allowed: headless (-p) runs have no one to
+ * answer permission prompts, so without this every `mcp__crystal__*` call is
+ * declined ("requested permissions … but you haven't granted it"). A bare
+ * `mcp__crystal` rule allows the whole server; the endpoint already scopes
+ * the actual toolset per run (see mcp/http.ts).
+ */
+export function claudeRunArgs(opts: {
+  model?: string | null;
+  resumeSessionId?: string | null;
+  mcpConfigPath?: string | null;
+}): string[] {
+  const args = [
+    "-p",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--permission-mode",
+    "acceptEdits",
+  ];
+  if (opts.model) args.push("--model", opts.model);
+  if (opts.resumeSessionId) args.push("--resume", opts.resumeSessionId);
+  if (opts.mcpConfigPath) {
+    args.push("--mcp-config", opts.mcpConfigPath, "--allowedTools", "mcp__crystal");
+  }
+  return args;
+}
+
 export function planClaudeSpawn(
   bin: string,
   args: string[],
@@ -263,22 +292,16 @@ export class AgentManager {
       }
     }
 
-    const args = [
-      "-p",
-      "--output-format",
-      "stream-json",
-      "--verbose",
-      "--permission-mode",
-      "acceptEdits",
-    ];
-    if (params.model) args.push("--model", params.model);
-    if (params.resumeSessionId) args.push("--resume", params.resumeSessionId);
     // Managers get dispatch + board tools; any run attached to a board task
     // (workers, task runs from the board) gets the self-service task tools.
     // The endpoint scopes the toolset by the run's role (see mcp/http.ts).
     const mcpConfig =
       run.role === "manager" || run.taskId ? await this.writeMcpConfig(run.id) : null;
-    if (mcpConfig) args.push("--mcp-config", mcpConfig);
+    const args = claudeRunArgs({
+      model: params.model,
+      resumeSessionId: params.resumeSessionId,
+      mcpConfigPath: mcpConfig,
+    });
 
     const plan = planClaudeSpawn(await this.claudePath(), args);
     let child: ChildProcessWithoutNullStreams;
