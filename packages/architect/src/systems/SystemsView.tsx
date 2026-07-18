@@ -62,8 +62,6 @@ import {
   type ArchNode,
   type ArchNodeKind,
   type CodeIndex,
-  type GitCommit,
-  type GitRefsResult,
   type SystemInsights,
   type SystemLayer,
   type SystemLink,
@@ -75,11 +73,17 @@ import {
   type SystemsGroup,
   type SystemsLayout,
 } from "@crystal/core";
-import { useCrystal, useNav, useNavUpdate, useSymbolMenu, useWorkspaces } from "@crystal/client";
+import {
+  RefCombobox,
+  useCrystal,
+  useNav,
+  useNavUpdate,
+  useSymbolMenu,
+  useWorkspaces,
+} from "@crystal/client";
 import {
   Badge,
   Button,
-  Combobox,
   ContextMenu,
   EmptyState,
   Pane as SplitPane,
@@ -89,7 +93,6 @@ import {
   cn,
   useContextMenu,
   useSidePaneLayout,
-  type ComboboxOption,
   type MenuEntry,
 } from "@crystal/ui";
 import { requestOpenFile } from "../codemap/CodeMapView.js";
@@ -858,9 +861,6 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
   const [refLoading, setRefLoading] = useState(false);
   const [refError, setRefError] = useState<string | null>(null);
   const [menu, setMenu] = useState<MenuState | null>(null);
-  const [refs, setRefs] = useState<GitRefsResult | null>(null);
-  const [refCommits, setRefCommits] = useState<GitCommit[] | null>(null);
-  const refsFetched = useRef(false);
   const reviewBoxRef = useRef<HTMLDivElement | null>(null);
 
   /* ---- hand arrangement: manual positions + user groups ---- */
@@ -1053,40 +1053,6 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
     });
   }, []);
 
-  /** Ref-picker options — fetched once per mount, when the control first gains focus. */
-  const loadRefs = useCallback(() => {
-    if (refsFetched.current) return;
-    refsFetched.current = true;
-    client
-      .request("git.refs", {})
-      .then(setRefs)
-      .catch(() => {});
-    client
-      .request("git.log", { limit: 20 })
-      .then((r) => setRefCommits(r.commits))
-      .catch(() => {});
-  }, [client]);
-
-  const refOptions = useMemo<ComboboxOption[]>(() => {
-    const opts: ComboboxOption[] = [];
-    if (refs) {
-      const branches = refs.current
-        ? [refs.current, ...refs.branches.filter((b) => b !== refs.current)]
-        : refs.branches;
-      for (const b of branches)
-        opts.push({ value: b, group: "Branches", hint: b === refs.current ? "current" : undefined });
-      for (const b of refs.remoteBranches) opts.push({ value: b, group: "Remote" });
-      for (const t of refs.tags) opts.push({ value: t, group: "Tags" });
-    }
-    for (const c of refCommits ?? [])
-      opts.push({
-        value: c.shortHash,
-        group: "Commits",
-        hint: c.subject.length > 42 ? `${c.subject.slice(0, 41)}…` : c.subject,
-      });
-    return opts;
-  }, [refs, refCommits]);
-
   useEffect(() => {
     if (!activeWs) return;
     let cancelled = false;
@@ -1129,11 +1095,8 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
     setDiffOpen(false);
     setMenu(null);
     setCodeIndex(null);
-    setRefs(null);
-    setRefCommits(null);
     setSavedLayout(null);
     setRenamingGroup(null);
-    refsFetched.current = false;
     setGeneration((g) => g + 1);
   }, [activeWs]);
 
@@ -2475,15 +2438,13 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
           ) : (
             <div
               ref={reviewBoxRef}
-              onFocusCapture={loadRefs}
               className="@max-[900px]:hidden flex items-center gap-1 rounded-lg border border-edge bg-surface-1/95 px-1.5 py-1 shadow-sm"
             >
               <GitCompare className="ml-0.5 h-3 w-3 shrink-0 text-ink-faint" />
-              <Combobox
+              <RefCombobox
                 value={refInput}
                 onChange={setRefInput}
                 onSubmit={(v) => void reviewRef(v)}
-                options={refOptions}
                 placeholder="Review vs ref…"
                 className="w-44"
                 inputClassName="h-6 rounded-md border-0 bg-transparent px-1 text-[11px] focus:ring-0"

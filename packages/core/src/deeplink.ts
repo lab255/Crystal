@@ -134,7 +134,7 @@ export interface SurfacesLink {
   view?: SurfaceViewId;
   /**
    * Selected system-map node (map view) — `screen:<ScreenSurface.id>`,
-   * `sys:<SystemModule.id>` or `ep:<METHOD> <path>`.
+   * a raw `SystemModule.id` (already `sys:`-prefixed) or `ep:<METHOD> <path>`.
    */
   node?: string;
   /** Selected screen id (`ScreenSurface.id`). */

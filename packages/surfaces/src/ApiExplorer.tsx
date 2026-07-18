@@ -6,18 +6,12 @@ import {
   Copy,
   ExternalLink,
   ListFilter,
-  Maximize2,
-  Minimize2,
   TerminalSquare,
   Webhook,
   X,
 } from "lucide-react";
 import {
-  createArchitectureGraph,
   endpointKey,
-  type CodeFileDetail,
-  type CodeSymbolSource,
-  type CodeTrace,
   type SystemEndpoint,
   type SystemModule,
   type SystemOverview,
@@ -31,8 +25,9 @@ import {
   useWorkspaces,
 } from "@crystal/client";
 import { EmptyState, Pane as SplitPane, Split, Spinner, Tooltip, cn, useContextMenu } from "@crystal/ui";
-import { JourneyProfilePanel, ROLE_META } from "@crystal/architect";
+import { ROLE_META } from "@crystal/architect";
 import { DetailSection, copyText, useArchHighlight, useSurfaces } from "./common.js";
+import { TraceSection, useEndpointTrace } from "./trace.js";
 
 /**
  * API explorer — every served route in the workspace, one selection away from
@@ -339,7 +334,6 @@ export function ApiExplorer({ appUrl }: { appUrl: string | null }) {
 /* Detail pane                                                         */
 /* ------------------------------------------------------------------ */
 
-const EMPTY_GRAPH = createArchitectureGraph("API trace");
 const SNIPPET_COLLAPSED_LINES = 14;
 
 function ApiDetail({
@@ -357,70 +351,19 @@ function ApiDetail({
   const { systemOfFile } = useSurfaces();
   const { system, ep } = row;
 
-  const [fileDetail, setFileDetail] = useState<CodeFileDetail | null>(null);
-  const [source, setSource] = useState<CodeSymbolSource | null>(null);
-  const [trace, setTrace] = useState<CodeTrace | null>(null);
-  const [traceError, setTraceError] = useState<string | null>(null);
   const [sites, setSites] = useState<
     { file: string; line?: number; method: string; path: string }[] | null
   >(null);
   const [snippetOpen, setSnippetOpen] = useState(false);
-  const [traceTall, setTraceTall] = useState(false);
   const [copied, setCopied] = useState(false);
 
-  // The symbol the definition/trace anchor on — resolved, best first:
-  //   1. the registration's handler reference ("Controller.createForm"),
-  //      followed through the route file's imports to its declaring file;
-  //   2. the top-level symbol enclosing the registration line;
-  //   3. the file's first exported function-ish symbol (file-convention routes).
-  const [resolved, setResolved] = useState<{ file: string; symbol: string } | null>(null);
-
-  const candidates = useMemo(() => {
-    if (!fileDetail) return [];
-    const out: { file: string; symbol: string }[] = [];
-    if (ep.handler) {
-      const [root, prop] = ep.handler.split(".") as [string, string?];
-      // Named import of the root wins; namespace imports are tried for the
-      // property (`import * as C` … `C.handle` → handle in the resolved file).
-      const named = fileDetail.imports.find((i) => i.resolved && i.names.includes(root));
-      if (named?.resolved) {
-        if (prop) out.push({ file: named.resolved, symbol: prop });
-        out.push({ file: named.resolved, symbol: root });
-      } else if (prop) {
-        for (const i of fileDetail.imports) {
-          if (i.resolved && i.names.some((n) => n === "*" || n === "default"))
-            out.push({ file: i.resolved, symbol: prop });
-        }
-      }
-      if (prop) out.push({ file: ep.file, symbol: prop });
-      out.push({ file: ep.file, symbol: root });
-    }
-    const symbols = fileDetail.symbols;
-    if (ep.line != null) {
-      const enclosing = symbols.find((s) => ep.line! >= s.line && ep.line! <= (s.endLine ?? s.line));
-      if (enclosing) out.push({ file: ep.file, symbol: enclosing.name });
-      const above = symbols.filter((s) => s.line <= ep.line!);
-      if (above.length > 0) out.push({ file: ep.file, symbol: above[above.length - 1]!.name });
-    }
-    const firstFn = symbols.find(
-      (s) => s.exported && (s.kind === "function" || s.kind === "const" || s.kind === "component"),
-    );
-    if (firstFn) out.push({ file: ep.file, symbol: firstFn.name });
-    const seen = new Set<string>();
-    return out.filter((c) => {
-      const key = `${c.file} ${c.symbol}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-  }, [fileDetail, ep.handler, ep.file, ep.line]);
+  // Handler resolution + static call graph — shared with the system map's
+  // endpoint inspector (trace.tsx).
+  const traceState = useEndpointTrace(ep);
+  const { fileDetail, resolved, source } = traceState;
 
   useEffect(() => {
     let cancelled = false;
-    client
-      .request("codemap.file", { path: ep.file })
-      .then((d) => !cancelled && setFileDetail(d))
-      .catch(() => {});
     client
       .request("codemap.apiSites", { method: ep.method, path: ep.path })
       .then((r) => !cancelled && setSites(r.sites))
@@ -428,38 +371,7 @@ function ApiDetail({
     return () => {
       cancelled = true;
     };
-  }, [client, ep.file, ep.method, ep.path]);
-
-  useEffect(() => {
-    if (candidates.length === 0) return;
-    let cancelled = false;
-    void (async () => {
-      for (const c of candidates) {
-        try {
-          const t = await client.request("codemap.trace", { file: c.file, symbol: c.symbol });
-          if (cancelled) return;
-          setTrace(t);
-          setResolved(c);
-          setTraceError(null);
-          client
-            .request("codemap.symbolSource", { file: c.file, symbol: c.symbol })
-            .then((s) => !cancelled && setSource(s))
-            .catch(() => {});
-          return;
-        } catch {
-          // Not a top-level symbol there — try the next candidate.
-        }
-      }
-      if (!cancelled) {
-        setTrace(null);
-        setResolved(null);
-        setTraceError("No traceable handler symbol found for this route.");
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [client, candidates]);
+  }, [client, ep.method, ep.path]);
 
   useEffect(() => {
     if (!copied) return;
@@ -599,51 +511,9 @@ function ApiDetail({
         )}
       </DetailSection>
 
-      {/* trace */}
-      <DetailSection
-        title={resolved ? `Trace · from ${resolved.symbol}` : "Trace"}
-        hint="static call graph — drop runtime profiles in .crystal/traces/ to overlay"
-        actions={
-          trace ? (
-            <button
-              type="button"
-              onClick={() => setTraceTall((t) => !t)}
-              className="flex items-center gap-1 text-[10px] text-ink-faint hover:text-ink"
-              aria-expanded={traceTall}
-            >
-              {traceTall ? <Minimize2 className="h-3 w-3" /> : <Maximize2 className="h-3 w-3" />}
-              {traceTall ? "shrink" : "expand"}
-            </button>
-          ) : undefined
-        }
-      >
-        {trace ? (
-          <div
-            className={cn(
-              "overflow-hidden rounded-lg border border-edge",
-              traceTall ? "h-[36rem]" : "h-72",
-            )}
-          >
-            {/* Flamegraph semantics: single click highlights the owning
-                system in the architecture pane; double click opens the code. */}
-            <JourneyProfilePanel
-              trace={trace}
-              graph={EMPTY_GRAPH}
-              summary={null}
-              onOpenStep={(step) => requestOpenFile(step.ref.file, step.line)}
-              onSelectStep={(step) => arch.file(step.ref.file, step.line)}
-            />
-          </div>
-        ) : traceError ? (
-          <div className="text-[11px] text-danger">{traceError}</div>
-        ) : (
-          <div className="text-[11px] text-ink-faint">
-            {candidates.length > 0 || !fileDetail
-              ? "Tracing…"
-              : "No handler symbol to trace from."}
-          </div>
-        )}
-      </DetailSection>
+      {/* trace — single click highlights the owning system in the
+          architecture pane; double click opens the code. */}
+      <TraceSection state={traceState} />
 
       {/* callers */}
       <DetailSection

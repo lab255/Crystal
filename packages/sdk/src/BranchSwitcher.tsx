@@ -1,11 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Check, Focus, FolderGit2, GitBranch } from "lucide-react";
-import {
-  suggestIndexFacets,
-  type GitRefsResult,
-  type IndexFacetSuggestion,
-} from "@crystal/core";
-import { useCrystal, useNav, useNavUpdate, useWorkspaces } from "@crystal/client";
+import { suggestIndexFacets, type IndexFacetSuggestion } from "@crystal/core";
+import { useCrystal, useGitRefs, useNav, useNavUpdate, useWorkspaces } from "@crystal/client";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -28,26 +24,38 @@ export function BranchSwitcher() {
   const lensParam = useNav((l) => l.architect?.lens ?? null);
   const updateNav = useNavUpdate();
 
-  const [refs, setRefs] = useState<GitRefsResult | null>(null);
+  // Shared refs fetch (branches + worktrees; no commits needed here) — the
+  // hook clears on workspace switch so another repo's branches never linger.
+  const { refs, error: refsError, load: loadRefs, reload: reloadRefs } = useGitRefs({
+    commitLimit: 0,
+  });
   const [facets, setFacets] = useState<IndexFacetSuggestion[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(() => {
-    setError(null);
-    client
-      .request("git.refs", {})
-      .then(setRefs)
-      .catch((err) => setError((err as Error).message));
+  const loadFacets = useCallback(() => {
     client
       .request("codeindex.get", {})
       .then((res) => setFacets(suggestIndexFacets(res.index).slice(0, 6)))
       .catch(() => setFacets([]));
   }, [client]);
 
+  const load = useCallback(() => {
+    setError(null);
+    loadRefs();
+    loadFacets();
+  }, [loadRefs, loadFacets]);
+
+  // Opening the menu re-fetches — branches move underneath us (fetches,
+  // checkouts in a terminal…).
+  const refresh = useCallback(() => {
+    setError(null);
+    reloadRefs();
+    loadFacets();
+  }, [reloadRefs, loadFacets]);
+
   // The trigger shows the current branch, so refresh on workspace switch too —
   // not just when the menu opens. Stale data is cleared first.
   useEffect(() => {
-    setRefs(null);
     setFacets(null);
     setError(null);
     if (activeWsId) load();
@@ -58,13 +66,13 @@ export function BranchSwitcher() {
       setError(null);
       try {
         await client.request("git.checkout", { ref });
-        setRefs(await client.request("git.refs", {}));
+        reloadRefs();
       } catch (err) {
         // Git's own message (dirty tree, conflicts…) shown inline in the menu.
         setError((err as Error).message);
       }
     },
-    [client],
+    [client, reloadRefs],
   );
 
   const openWorktree = useCallback(
@@ -92,7 +100,7 @@ export function BranchSwitcher() {
   const worktrees = refs?.worktrees ?? [];
 
   return (
-    <DropdownMenu onOpenChange={(open) => open && load()}>
+    <DropdownMenu onOpenChange={(open) => open && refresh()}>
       <DropdownMenuTrigger asChild>
         <button
           type="button"
@@ -130,9 +138,9 @@ export function BranchSwitcher() {
         {refs && refs.branches.length === 0 ? (
           <div className="px-2 py-1 text-[11px] text-ink-faint">No local branches</div>
         ) : null}
-        {error ? (
+        {(error ?? refsError) ? (
           <div className="max-w-64 whitespace-pre-wrap break-words px-2 py-1 text-[10px] text-danger">
-            {error}
+            {error ?? refsError}
           </div>
         ) : null}
 

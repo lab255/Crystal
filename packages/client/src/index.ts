@@ -34,6 +34,13 @@ export {
 export { createNavStore, type NavPatch, type NavState, type NavStore } from "./nav-store.js";
 export { requestOpenFile } from "./open-file.js";
 export {
+  RefCombobox,
+  gitRefOptions,
+  useGitRefs,
+  type GitRefsState,
+  type RefComboboxProps,
+} from "./git-refs.js";
+export {
   symbolMenuEntries,
   useSymbolMenu,
   type SymbolMenuContext,

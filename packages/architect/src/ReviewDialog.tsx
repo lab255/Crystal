@@ -1,7 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { GitCommit as GitCommitIcon, History } from "lucide-react";
-import type { GitCommit, GitRefsResult } from "@crystal/core";
-import { useCrystal, useWorkspace } from "@crystal/client";
+import { useGitRefs, useWorkspace } from "@crystal/client";
 import {
   Badge,
   Button,
@@ -11,7 +10,6 @@ import {
   DialogContent,
   Spinner,
   cn,
-  type ComboboxOption,
 } from "@crystal/ui";
 
 /**
@@ -34,53 +32,28 @@ export function ReviewDialog({
   archPath: string;
   onCreated: (draftPath: string) => void;
 }) {
-  const { client } = useCrystal();
   const repos = useWorkspace((s) => s.info?.manifest.repos ?? EMPTY_REPOS);
   const createFromRef = useWorkspace((s) => s.createArchDraftFromRef);
 
   const [repoPath, setRepoPath] = useState(".");
-  const [commits, setCommits] = useState<GitCommit[] | null>(null);
-  const [refs, setRefs] = useState<GitRefsResult | null>(null);
   const [ref, setRef] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Shared picker data — branches/remotes/tags plus recent commits, refreshed
+  // on every open (and whenever the repo selection changes, via `reload`'s
+  // repo-scoped identity).
+  const {
+    commits,
+    options: refOptions,
+    error: refsError,
+    reload: reloadRefs,
+  } = useGitRefs({ repoPath: repoPath === "." ? undefined : repoPath, commitLimit: 30 });
   useEffect(() => {
     if (!open) return;
     setError(null);
-    setCommits(null);
-    setRefs(null);
-    let cancelled = false;
-    client
-      .request("git.log", { repoPath, limit: 30 })
-      .then((r) => !cancelled && setCommits(r.commits))
-      .catch((err: Error) => {
-        if (!cancelled) {
-          setCommits([]);
-          setError(err.message);
-        }
-      });
-    client
-      .request("git.refs", { repoPath })
-      .then((r) => !cancelled && setRefs(r))
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [open, repoPath, client]);
-
-  const refOptions = useMemo<ComboboxOption[]>(() => {
-    if (!refs) return [];
-    const opts: ComboboxOption[] = [];
-    const branches = refs.current
-      ? [refs.current, ...refs.branches.filter((b) => b !== refs.current)]
-      : refs.branches;
-    for (const b of branches)
-      opts.push({ value: b, group: "Branches", hint: b === refs.current ? "current" : undefined });
-    for (const b of refs.remoteBranches) opts.push({ value: b, group: "Remote" });
-    for (const t of refs.tags) opts.push({ value: t, group: "Tags" });
-    return opts;
-  }, [refs]);
+    reloadRefs();
+  }, [open, reloadRefs]);
 
   async function review(target: string) {
     const trimmed = target.trim();
@@ -151,9 +124,9 @@ export function ReviewDialog({
             </Button>
           </form>
 
-          {error ? (
+          {(error ?? refsError) ? (
             <div className="rounded-lg border border-danger/40 bg-danger/10 px-2.5 py-1.5 text-[11px] text-danger">
-              {error}
+              {error ?? refsError}
             </div>
           ) : null}
 
@@ -168,7 +141,7 @@ export function ReviewDialog({
                 </div>
               ) : commits.length === 0 ? (
                 <div className="px-3 py-4 text-center text-[11px] text-ink-faint">
-                  No commits found{error ? "" : " — is this directory a git repository?"}
+                  No commits found{refsError ? "" : " — is this directory a git repository?"}
                 </div>
               ) : (
                 commits.map((c) => (

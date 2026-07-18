@@ -14,6 +14,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   AppWindow,
+  ArrowDownLeft,
   ArrowUpRight,
   Boxes,
   Component as ComponentIcon,
@@ -25,13 +26,22 @@ import {
   X,
 } from "lucide-react";
 import type {
+  CodeTraceStep,
   ScreenApiCall,
   ScreenSurface,
   SurfacesRefBundle,
   SystemEndpoint,
+  SystemLink,
   SystemModule,
 } from "@crystal/core";
-import { useCrystal, useNav, useNavUpdate, useSymbolMenu, useWorkspaces } from "@crystal/client";
+import {
+  RefCombobox,
+  useCrystal,
+  useNav,
+  useNavUpdate,
+  useSymbolMenu,
+  useWorkspaces,
+} from "@crystal/client";
 import {
   Badge,
   EmptyState,
@@ -47,6 +57,7 @@ import {
 import { ROLE_META } from "@crystal/architect";
 import { MethodChip } from "../ApiExplorer.js";
 import { DetailSection, FileLink, copyText, useSurfaces } from "../common.js";
+import { TraceSection, useEndpointTrace } from "../trace.js";
 import {
   buildSystemMapLayout,
   decorateSystemMapScene,
@@ -827,13 +838,15 @@ function SystemMapInner() {
                 className="flex items-center gap-1 rounded-lg border border-edge bg-surface-1/95 px-1.5 py-1 shadow-sm"
               >
                 <GitCompareArrows className="h-3 w-3 shrink-0 text-ink-faint" />
-                <input
+                {/* The shared picker: branches, remotes, tags and recent
+                    commits — free-typing still reaches anything git resolves. */}
+                <RefCombobox
                   value={refInput}
-                  onChange={(e) => setRefInput(e.target.value)}
-                  placeholder="main"
-                  spellCheck={false}
-                  aria-label="Git ref to review against"
-                  className="w-24 bg-transparent text-[10px] text-ink outline-none placeholder:text-ink-faint"
+                  onChange={setRefInput}
+                  onSubmit={(v) => void reviewRef(v)}
+                  placeholder="Review vs ref…"
+                  className="w-44"
+                  inputClassName="h-6 rounded-md border-0 bg-transparent px-1 text-[11px] focus:ring-0"
                 />
                 <button
                   type="submit"
@@ -885,6 +898,7 @@ function SystemMapInner() {
             ) : selectedSystem ? (
               <SystemInspector
                 system={selectedSystem}
+                onSelectSystem={setSelected}
                 onSelectEndpoint={(ep) => setSelected(epNodeId(ep))}
                 onOpenApi={openApi}
                 onOpenArchitect={openSystemInArchitect}
@@ -1133,16 +1147,37 @@ function ScreenInspector({
 
 function SystemInspector({
   system,
+  onSelectSystem,
   onSelectEndpoint,
   onOpenApi,
   onOpenArchitect,
 }: {
   system: SystemModule;
+  onSelectSystem: (sysId: string) => void;
   onSelectEndpoint: (ep: SystemEndpoint) => void;
   onOpenApi: (epKey: string, sysId?: string) => void;
   onOpenArchitect: (sysId: string) => void;
 }) {
   const meta = ROLE_META[system.role];
+  const { overview } = useSurfaces();
+  // Relationship insight, same shape the architecture inspector shows:
+  // who this system consumes and who consumes it, weighted by imports
+  // (plus matched API calls, which carry weight-0 links).
+  const relations = useMemo(() => {
+    const links = overview?.links ?? [];
+    const nameOf = (id: string) =>
+      overview?.systems.find((s) => s.id === id)?.name ?? id.replace(/^sys:/, "");
+    const describe = (l: SystemLink, otherId: string) => ({
+      id: otherId,
+      name: nameOf(otherId),
+      weight: l.weight,
+      apiCount: l.apis?.length ?? 0,
+    });
+    return {
+      uses: links.filter((l) => l.source === system.id).map((l) => describe(l, l.target)),
+      usedBy: links.filter((l) => l.target === system.id).map((l) => describe(l, l.source)),
+    };
+  }, [overview, system.id]);
   return (
     <>
       <div className="border-b border-edge/60 px-4 py-3">
@@ -1166,6 +1201,42 @@ function SystemInspector({
           <Boxes className="h-3 w-3" /> Open in architecture view
         </button>
       </div>
+      {relations.uses.length > 0 || relations.usedBy.length > 0 ? (
+        <DetailSection
+          title="Connections"
+          hint="import/API links from the code map · click selects the system"
+        >
+          <div className="space-y-0.5">
+            {(["uses", "usedBy"] as const).flatMap((dir) =>
+              relations[dir].map((r) => (
+                <div
+                  key={`${dir}:${r.id}`}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => onSelectSystem(r.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") onSelectSystem(r.id);
+                  }}
+                  className="flex w-full cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1 text-left hover:bg-surface-2"
+                >
+                  {dir === "uses" ? (
+                    <ArrowUpRight className="h-3 w-3 shrink-0 text-ink-faint" />
+                  ) : (
+                    <ArrowDownLeft className="h-3 w-3 shrink-0 text-ink-faint" />
+                  )}
+                  <span className="min-w-0 flex-1 truncate text-[10px] text-ink">
+                    {dir === "uses" ? `uses ${r.name}` : `used by ${r.name}`}
+                  </span>
+                  <span className="shrink-0 text-[9px] text-ink-faint">
+                    {r.weight > 0 ? `×${r.weight}` : ""}
+                    {r.apiCount > 0 ? `${r.weight > 0 ? " · " : ""}${r.apiCount} API` : ""}
+                  </span>
+                </div>
+              )),
+            )}
+          </div>
+        </DetailSection>
+      ) : null}
       {system.endpoints.length > 0 ? (
         <DetailSection
           title={`Endpoints · ${system.endpoints.length}`}
@@ -1222,6 +1293,19 @@ function SystemInspector({
           </div>
         </DetailSection>
       ) : null}
+      {system.externals.length > 0 ? (
+        <DetailSection title="Talks to" hint="external services, by import weight">
+          <div className="space-y-0.5">
+            {system.externals.map((x) => (
+              <div key={x.id} className="flex items-baseline gap-1.5 px-1.5">
+                <Plug className="h-3 w-3 shrink-0 self-center text-accent-amber" />
+                <span className="min-w-0 truncate text-[10px] text-ink-muted">{x.name}</span>
+                <span className="ml-auto shrink-0 text-[9px] text-ink-faint">×{x.weight}</span>
+              </div>
+            ))}
+          </div>
+        </DetailSection>
+      ) : null}
       <DetailSection title="Parts" hint="directory subtrees forming this system">
         <div className="space-y-1">
           {system.parts.map((p) => (
@@ -1252,6 +1336,20 @@ function EndpointInspector({
   onOpenApi: (epKey: string, sysId?: string) => void;
 }) {
   const ep = owner.endpoints.find((e) => epKeyOf(e) === epKey) ?? null;
+  const { systemOfFile } = useSurfaces();
+  const { fitView } = useReactFlow();
+  // The same handler-resolution + flamegraph the API explorer shows — the map
+  // is the architecture here, so a single click pans the canvas to the frame's
+  // owning system (the endpoint stays selected, keeping the trace open);
+  // double click opens the code.
+  const traceState = useEndpointTrace(ep);
+  const spotlightStep = useCallback(
+    (step: CodeTraceStep) => {
+      const sys = systemOfFile(step.ref.file);
+      if (sys) void fitView({ nodes: [{ id: sys.id }], duration: 400, padding: 0.3, maxZoom: 1 });
+    },
+    [systemOfFile, fitView],
+  );
   const callers = screens.filter((s) =>
     calls.some((c) => c.screen === s.id && c.endpoint && epKeyOf(c.endpoint) === epKey),
   );
@@ -1271,6 +1369,7 @@ function EndpointInspector({
           <Webhook className="h-3 w-3" /> Open in API explorer
         </button>
       </div>
+      {ep ? <TraceSection state={traceState} onSelectStep={spotlightStep} /> : null}
       <DetailSection
         title={`Callers · ${callers.length}`}
         hint="screens whose call graph reaches this endpoint"
