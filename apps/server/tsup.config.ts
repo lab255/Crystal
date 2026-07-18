@@ -1,8 +1,11 @@
 import { defineConfig } from "tsup";
 
 // Single-file CJS bundle used for the desktop sidecar (fed into Node SEA).
+// The analysis worker builds as its own on-disk bundle: worker threads need a
+// real file, which a SEA can't provide — build-sidecar.mjs stages it next to
+// node-pty and the host resolves it via CRYSTAL_SIDECAR_MODULE_BASE.
 export default defineConfig({
-  entry: { "crystal-server": "src/index.ts" },
+  entry: { "crystal-server": "src/index.ts", "analysis-worker": "src/analysis-worker.ts" },
   format: ["cjs"],
   platform: "node",
   target: "node20",

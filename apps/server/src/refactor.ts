@@ -10,6 +10,7 @@ import type {
   RefactorPlan,
 } from "@crystal/core";
 import type { CodeMapAnalyzer, ParsedSymbol } from "./code-map.js";
+import type { CodeMapFacade } from "./analysis-host.js";
 import { deleteAt, writeFileAt } from "./fs-api.js";
 import { resolveInRoot, toRelPath } from "./paths.js";
 
@@ -171,7 +172,9 @@ export class RefactorEngine {
 
   constructor(
     private readonly root: string,
-    private readonly codemap: CodeMapAnalyzer,
+    // Every use is awaited, so the worker-backed facade and the in-process
+    // analyzer are interchangeable here.
+    private readonly codemap: CodeMapAnalyzer | CodeMapFacade,
   ) {}
 
   dispose(): void {
@@ -245,7 +248,7 @@ export class RefactorEngine {
           pathsTouched.add(del);
         }
         // Later intents must see this move's result.
-        this.codemap.invalidate();
+        void this.codemap.invalidate();
         applied.push({
           intentId: intent.id,
           filesTouched: [...plan.writes.map((w) => w.file), ...(plan.deletes ?? [])],

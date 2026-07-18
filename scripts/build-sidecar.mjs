@@ -98,3 +98,12 @@ fs.cpSync(platDir, path.join(stageRoot, path.basename(platformPkg)), {
 });
 console.log("staged node-pty:", ptyDir);
 console.log("staged prebuild:", platDir);
+
+// 6. Stage the analysis worker bundle. Worker threads need a real file on
+//    disk — a SEA can't host one — so the host resolves it from the module
+//    base dir (see workerEntry() in apps/server/src/analysis-host.ts).
+fs.copyFileSync(
+  path.resolve("dist", "analysis-worker.cjs"),
+  path.join(stageBase, "analysis-worker.cjs"),
+);
+console.log("staged analysis worker");

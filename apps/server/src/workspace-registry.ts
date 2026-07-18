@@ -13,8 +13,9 @@ import type {
   WorkspaceDescriptor,
 } from "@crystal/core";
 import { AgentManager } from "./agent-manager.js";
+import { AnalysisBackend, createCodeMapFacade, type CodeMapFacade } from "./analysis-host.js";
 import { CodeIndexService } from "./code-index.js";
-import { CodeMapAnalyzer, type CrossSurface } from "./code-map.js";
+import { type CrossSurface } from "./code-map.js";
 import { OrchestrationService } from "./orchestration.js";
 import { appDataDir, isIgnoredDir, workspaceIdFor } from "./paths.js";
 import { QualityService } from "./quality-runner.js";
@@ -51,7 +52,7 @@ export class WorkspaceRuntime {
   readonly store: WorkspaceStore;
   readonly agents: AgentManager;
   readonly terminals: TerminalManager;
-  readonly codemap: CodeMapAnalyzer;
+  readonly codemap: CodeMapFacade;
   readonly codeindex: CodeIndexService;
   readonly quality: QualityService;
   readonly orchestration: OrchestrationService;
@@ -63,6 +64,8 @@ export class WorkspaceRuntime {
   private pendingPaths = new Set<string>();
   private disposeAgentListeners: (() => void)[] = [];
   private refactorEngine: RefactorEngine | null = null;
+  /** Worker thread hosting the CPU-heavy code-map analysis (see analysis-host). */
+  private readonly analysis: AnalysisBackend;
 
   constructor(
     readonly root: string,
@@ -79,7 +82,8 @@ export class WorkspaceRuntime {
       mcpBaseUrl ? { baseUrl: mcpBaseUrl, wsId: this.id } : null,
     );
     this.terminals = new TerminalManager(root);
-    this.codemap = new CodeMapAnalyzer(root);
+    this.analysis = new AnalysisBackend(root);
+    this.codemap = createCodeMapFacade(this.analysis);
     this.codeindex = new CodeIndexService(root, this.codemap);
     this.quality = new QualityService(root);
     this.orchestration = new OrchestrationService(this.store, this.agents, () =>
@@ -190,6 +194,7 @@ export class WorkspaceRuntime {
     this.quality.dispose();
     this.refactorEngine?.dispose();
     this.refactorEngine = null;
+    this.analysis.dispose();
   }
 }
 

@@ -37,7 +37,9 @@ export class CodeIndexService {
 
   constructor(
     private readonly root: string,
-    private readonly codemap: CodeMapAnalyzer,
+    // Only the (async) source pull is needed, so the worker-backed facade
+    // plugs in as well as the real analyzer.
+    private readonly codemap: Pick<CodeMapAnalyzer, "indexSourceFiles">,
   ) {}
 
   /** Call when code or `.crystal/index/` changes; the next get() rebuilds. */
