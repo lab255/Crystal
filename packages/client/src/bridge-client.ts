@@ -12,6 +12,39 @@ import {
 
 export type ConnectionState = "connecting" | "open" | "closed";
 
+/**
+ * Minimal duplex frame transport the BridgeClient drives. One instance per
+ * connection attempt: the client installs the three callbacks right after the
+ * factory returns, so implementations must fire them asynchronously.
+ */
+export interface BridgeTransport {
+  send(text: string): void;
+  close(): void;
+  onopen: (() => void) | null;
+  onmessage: ((text: string) => void) | null;
+  onclose: (() => void) | null;
+}
+
+/** Called for every (re)connection attempt. */
+export type BridgeTransportFactory = () => BridgeTransport;
+
+/** The default transport: a browser WebSocket speaking the bridge frames. */
+export function webSocketTransport(url: string): BridgeTransport {
+  const ws = new WebSocket(url);
+  const t: BridgeTransport = {
+    send: (text) => ws.send(text),
+    close: () => ws.close(),
+    onopen: null,
+    onmessage: null,
+    onclose: null,
+  };
+  ws.onopen = () => t.onopen?.();
+  ws.onmessage = (msg) => t.onmessage?.(String(msg.data));
+  ws.onclose = () => t.onclose?.();
+  ws.onerror = () => ws.close();
+  return t;
+}
+
 interface Pending {
   resolve: (value: unknown) => void;
   reject: (err: Error) => void;
@@ -21,23 +54,29 @@ interface Pending {
 const REQUEST_TIMEOUT_MS = 30_000;
 
 /**
- * WebSocket client for the Crystal bridge protocol. Reconnects automatically
- * with capped backoff; consumers watch `connection` events and refetch on
- * reopen.
+ * Client for the Crystal bridge protocol over any frame transport — a
+ * WebSocket URL (the default) or a custom transport factory (the desktop
+ * shell's IPC-pipe relay). Reconnects automatically with capped backoff;
+ * consumers watch `connection` events and refetch on reopen.
  */
 export class BridgeClient {
   readonly events = new Emitter<
     BridgeEvents & { connection: { state: ConnectionState } }
   >();
 
-  private ws: WebSocket | null = null;
+  private transport: BridgeTransport | null = null;
   private pending = new Map<string, Pending>();
   private closedByUser = false;
   private retryDelay = 500;
   private _state: ConnectionState = "closed";
   private scopeWs: string | null = null;
 
-  constructor(readonly url: string) {}
+  constructor(private readonly target: string | BridgeTransportFactory) {}
+
+  /** The WebSocket URL when connected by URL; null for custom transports. */
+  get url(): string | null {
+    return typeof this.target === "string" ? this.target : null;
+  }
 
   get state(): ConnectionState {
     return this._state;
@@ -66,23 +105,34 @@ export class BridgeClient {
     this.events.emit("connection", { state });
   }
 
+  private scheduleRetry(): void {
+    setTimeout(() => this.open(), this.retryDelay);
+    this.retryDelay = Math.min(this.retryDelay * 2, 5_000);
+  }
+
   private open(): void {
-    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
+    if (this.transport) return; // already connecting or open
+    this.setState("connecting");
+    let transport: BridgeTransport;
+    try {
+      transport =
+        typeof this.target === "string" ? webSocketTransport(this.target) : this.target();
+    } catch {
+      this.setState("closed");
+      if (!this.closedByUser) this.scheduleRetry();
       return;
     }
-    this.setState("connecting");
-    const ws = new WebSocket(this.url);
-    this.ws = ws;
+    this.transport = transport;
 
-    ws.onopen = () => {
+    transport.onopen = () => {
       this.retryDelay = 500;
       this.setState("open");
     };
 
-    ws.onmessage = (msg) => {
+    transport.onmessage = (text) => {
       let data: BridgeResponse | { type: "evt"; event: BridgeEventName; payload: unknown };
       try {
-        data = JSON.parse(String(msg.data));
+        data = JSON.parse(text);
       } catch {
         return;
       }
@@ -98,19 +148,12 @@ export class BridgeClient {
       }
     };
 
-    ws.onclose = () => {
-      if (this.ws !== ws) return;
-      this.ws = null;
+    transport.onclose = () => {
+      if (this.transport !== transport) return;
+      this.transport = null;
       this.setState("closed");
       this.failAllPending(new Error("Connection closed"));
-      if (!this.closedByUser) {
-        setTimeout(() => this.open(), this.retryDelay);
-        this.retryDelay = Math.min(this.retryDelay * 2, 5_000);
-      }
-    };
-
-    ws.onerror = () => {
-      ws.close();
+      if (!this.closedByUser) this.scheduleRetry();
     };
   }
 
@@ -124,8 +167,8 @@ export class BridgeClient {
 
   close(): void {
     this.closedByUser = true;
-    this.ws?.close();
-    this.ws = null;
+    this.transport?.close();
+    this.transport = null;
     this.setState("closed");
   }
 
@@ -133,8 +176,8 @@ export class BridgeClient {
     method: M,
     params: BridgeMethods[M]["params"],
   ): Promise<BridgeMethods[M]["result"]> {
-    const ws = this.ws;
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
+    const transport = this.transport;
+    if (!transport || this._state !== "open") {
       return Promise.reject(new Error("Bridge not connected"));
     }
     const id = uid("req");
@@ -151,7 +194,7 @@ export class BridgeClient {
         reject(new Error(`Request timed out: ${method}`));
       }, REQUEST_TIMEOUT_MS);
       this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer });
-      ws.send(JSON.stringify(req));
+      transport.send(JSON.stringify(req));
     });
   }
 

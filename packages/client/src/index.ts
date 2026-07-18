@@ -1,4 +1,11 @@
-export { BridgeClient, type ConnectionState } from "./bridge-client.js";
+export {
+  BridgeClient,
+  webSocketTransport,
+  type BridgeTransport,
+  type BridgeTransportFactory,
+  type ConnectionState,
+} from "./bridge-client.js";
+export { tauriBridgeTransport } from "./tauri-transport.js";
 export {
   createWorkspaceStore,
   type WorkspaceState,
@@ -55,6 +62,7 @@ export {
 } from "./highlight-store.js";
 export {
   CrystalProvider,
+  defaultBridgeTarget,
   defaultBridgeUrl,
   useActiveWorkspace,
   useAgents,

@@ -7,7 +7,7 @@
     "crystal-server": "./src/index.ts"
   },
   "scripts": {
-    "dev": "tsx watch src/index.ts --root ../..",
+    "dev": "tsx watch src/index.ts --root ../.. --listen 127.0.0.1:4517",
     "start": "tsx src/index.ts",
     "build": "tsup",
     "build:sidecar": "node ../../scripts/build-sidecar.mjs",

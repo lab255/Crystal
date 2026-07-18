@@ -15,7 +15,12 @@ import {
   type DeepLink,
   type WorkspaceDescriptor,
 } from "@crystal/core";
-import { BridgeClient, type ConnectionState } from "./bridge-client.js";
+import {
+  BridgeClient,
+  type BridgeTransportFactory,
+  type ConnectionState,
+} from "./bridge-client.js";
+import { tauriBridgeTransport } from "./tauri-transport.js";
 import { createAgentStore, type AgentState, type AgentStore } from "./agent-store.js";
 import { createFleetStore, type FleetState, type FleetStore } from "./fleet-store.js";
 import {
@@ -115,10 +120,19 @@ export function defaultBridgeUrl(): string {
     const query = token ? `?${BRIDGE_TOKEN_PARAM}=${encodeURIComponent(token)}` : "";
     return `${scheme}//${window.location.host}${BRIDGE_PATH}${query}`;
   }
-  // Tauri desktop: the WebView serves the app from tauri.localhost (Windows
-  // WebView2) or the tauri:// asset protocol (macOS/Linux) — neither is the
-  // bridge origin. The sidecar bridge is always local on loopback:4517.
   return `ws://127.0.0.1:${DEFAULT_BRIDGE_PORT}${BRIDGE_PATH}`;
+}
+
+/**
+ * Where the bridge client should connect by default. In the Tauri desktop the
+ * WebView serves the app from tauri.localhost / tauri:// — not the bridge
+ * origin — and the sidecar listens on a local IPC pipe rather than TCP, so
+ * the connection goes through the shell's pipe relay (falling back to the dev
+ * WebSocket only when the shell owns no pipe). Everywhere else: WebSocket URL.
+ */
+export function defaultBridgeTarget(): string | BridgeTransportFactory {
+  if (inTauriWebview()) return tauriBridgeTransport(defaultBridgeUrl());
+  return defaultBridgeUrl();
 }
 
 export function CrystalProvider({
@@ -130,7 +144,7 @@ export function CrystalProvider({
   children: ReactNode;
 }) {
   const value = useMemo<CrystalContextValue>(() => {
-    const client = new BridgeClient(url ?? defaultBridgeUrl());
+    const client = new BridgeClient(url ?? defaultBridgeTarget());
     return {
       client,
       workspacesStore: createWorkspacesStore(client),

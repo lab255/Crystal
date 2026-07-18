@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import http from "node:http";
+import net from "node:net";
 import path from "node:path";
 import { WebSocketServer, WebSocket } from "ws";
 import {
@@ -22,8 +23,18 @@ import {
   diffSystemOverviews,
   suggestFacets,
 } from "@crystal/core";
+import { LineBuffer } from "@crystal/core";
 import { browseDirs } from "./browse.js";
 import { createConsoleHandler, resolveConsoleDir } from "./console-static.js";
+import {
+  claimPipePath,
+  defaultInstancesDir,
+  defaultPipePath,
+  removeInstanceFile,
+  unlinkPipe,
+  writeInstanceFile,
+} from "./instances.js";
+import { workspaceIdFor } from "./paths.js";
 import { deleteAt, listDir, mkdirAt, readFileCapped, renameAt, writeFileAt } from "./fs-api.js";
 import { changedFiles, gitCheckout, gitLog, gitRefs, gitStatus } from "./git.js";
 import { handleMcpRequest, isMcpRequest } from "./mcp/http.js";
@@ -37,23 +48,40 @@ type Handlers = {
 };
 
 export interface CrystalServer {
-  port: number;
+  /** TCP port of the opt-in network listener, null when IPC-only. */
+  port: number | null;
+  /** Loopback port of the always-on in-process MCP endpoint. */
+  mcpPort: number;
+  /** IPC endpoint (named pipe / unix socket), null when disabled. */
+  pipe: string | null;
   close(): Promise<void>;
+}
+
+/** A connected bridge client, whatever transport it arrived on. */
+interface RpcClient {
+  send(text: string): void;
+  close(): void;
 }
 
 export async function startCrystalServer(opts: {
   /** Roots to open at startup; the first becomes the default workspace. */
   root: string | string[];
-  port: number;
   /**
-   * Interface to bind. Default `127.0.0.1` (loopback) keeps the server local
-   * and unauthenticated. A non-loopback host (e.g. `0.0.0.0`) requires a token
-   * — one is generated and printed if `token` is not supplied.
+   * Opt-in TCP listener for the web console and remote access. When omitted
+   * (the default) the bridge is reachable only over the local IPC pipe —
+   * nothing for a firewall to flag. A non-loopback host requires a token —
+   * one is generated and printed if `token` is not supplied.
    */
-  host?: string;
+  listen?: { host?: string; port: number } | null;
   /**
-   * Bearer token gating the console + WS upgrade. `null`/omitted on a loopback
-   * bind disables auth (preserves the desktop + `pnpm dev` experience).
+   * IPC endpoint path (named pipe on Windows, unix socket elsewhere).
+   * `undefined` derives one from the primary root; `null` disables IPC.
+   */
+  pipe?: string | null;
+  /**
+   * Bearer token gating the console + WS upgrade on the TCP listener.
+   * `null`/omitted on a loopback bind disables auth (preserves the desktop +
+   * `pnpm dev` experience). The IPC pipe trusts the OS user boundary instead.
    */
   token?: string | null;
   /**
@@ -65,17 +93,57 @@ export async function startCrystalServer(opts: {
   restorePersisted?: boolean;
   /** Override where the open-workspace set persists; null disables it. */
   persistFile?: string | null;
+  /**
+   * Directory for the instance discovery file (default
+   * `~/.crystal/instances`); `null` disables discovery.
+   */
+  instancesDir?: string | null;
 }): Promise<CrystalServer> {
   // Declared ahead of the registry: opening the startup workspaces already
   // broadcasts, and `broadcast` (hoisted) closes over this set.
-  const clients = new Set<WebSocket>();
+  const clients = new Set<RpcClient>();
+
+  // --- MCP loopback listener, started first. Agent runs reach the in-process
+  // MCP endpoint over plain HTTP (the Claude CLI can't dial a pipe), so a
+  // small loopback-only server on an ephemeral port always exists; its
+  // resolved port feeds the registry's MCP base URL. It serves nothing but
+  // /health and /mcp — no console, no WS upgrade.
+  let registryRef: WorkspaceRegistry | null = null;
+  const mcpServer = http.createServer((req, res) => {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    if (url.pathname === "/health") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+    if (isMcpRequest(req.url) && registryRef) {
+      const registry = registryRef;
+      void handleMcpRequest(req, res, registry).catch((err) => {
+        if (!res.headersSent) res.writeHead(500, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: null,
+            error: { code: -32603, message: (err as Error).message },
+          }),
+        );
+      });
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  await new Promise<void>((resolve, reject) => {
+    mcpServer.once("error", reject);
+    mcpServer.listen(0, "127.0.0.1", () => resolve());
+  });
+  const mcpPort = (mcpServer.address() as net.AddressInfo).port;
 
   const registry = new WorkspaceRegistry(
     (event, payload) => broadcast(event, payload),
     opts.persistFile,
-    // Manager runs reach the in-process MCP endpoint on this same server.
-    `http://127.0.0.1:${opts.port}`,
+    `http://127.0.0.1:${mcpPort}`,
   );
+  registryRef = registry;
 
   // Open CLI roots first (first one is the default), then persisted ones.
   for (const root of Array.isArray(opts.root) ? opts.root : [opts.root]) {
@@ -410,11 +478,12 @@ export async function startCrystalServer(opts: {
     },
   };
 
-  // --- Networking: host bind, bearer-token auth, same-origin console ---
-  const host = opts.host ?? "127.0.0.1";
+  // --- Networking: opt-in TCP bind, bearer-token auth, same-origin console ---
+  const listen = opts.listen ?? null;
+  const host = listen?.host ?? "127.0.0.1";
   const isLoopback = host === "127.0.0.1" || host === "::1" || host === "localhost";
   let token = opts.token ?? null;
-  if (!token && !isLoopback) {
+  if (!token && listen && !isLoopback) {
     // Refuse to expose fs/git/terminal/agent execution on a public interface
     // with no credential — mint one so remote binds are never wide open.
     token = crypto.randomBytes(32).toString("base64url");
@@ -448,7 +517,7 @@ export async function startCrystalServer(opts: {
     try {
       const u = new URL(origin);
       return (
-        u.host === `${host}:${opts.port}` ||
+        (listen != null && u.host === `${host}:${listen.port}`) ||
         u.hostname === host ||
         u.hostname === "localhost" ||
         u.hostname === "127.0.0.1" ||
@@ -465,7 +534,9 @@ export async function startCrystalServer(opts: {
   const consoleDir = opts.consoleDir === undefined ? resolveConsoleDir() : opts.consoleDir;
   const serveConsole = createConsoleHandler(consoleDir);
 
-  const httpServer = http.createServer((req, res) => {
+  const httpServer = !listen
+    ? null
+    : http.createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
 
     // Health stays unauthenticated for readiness probes / load balancers, but
@@ -518,98 +589,199 @@ export async function startCrystalServer(opts: {
     serveConsole(req, res);
   });
 
-  const wss = new WebSocketServer({
-    server: httpServer,
-    path: BRIDGE_PATH,
-    verifyClient: (info, cb) => {
-      if (!originAllowed(info.origin)) return cb(false, 403, "Forbidden");
-      if (!tokenValid(tokenFromReq(info.req))) return cb(false, 401, "Unauthorized");
-      cb(true);
-    },
-  });
-
   function broadcast<E extends BridgeEventName>(event: E, payload: BridgeEvents[E]): void {
     const msg: BridgeEventMessage<E> = { type: "evt", event, payload };
     const text = JSON.stringify(msg);
-    for (const ws of clients) {
-      if (ws.readyState === WebSocket.OPEN) ws.send(text);
-    }
+    for (const client of clients) client.send(text);
   }
 
-  wss.on("connection", (ws) => {
-    clients.add(ws);
-    ws.on("close", () => clients.delete(ws));
-    ws.on("message", async (data) => {
-      let req: BridgeRequest;
+  /** Parse one request frame and produce the response frame (null = not a request). */
+  async function dispatchRaw(raw: string): Promise<string | null> {
+    let req: BridgeRequest;
+    try {
+      req = JSON.parse(raw) as BridgeRequest;
+    } catch {
+      return null;
+    }
+    if (req.type !== "req" || typeof req.method !== "string") return null;
+    const handler = handlers[req.method as BridgeMethodName] as
+      | ((params: unknown) => Promise<unknown>)
+      | undefined;
+    let res: BridgeResponse;
+    if (!handler) {
+      res = {
+        id: req.id,
+        type: "res",
+        ok: false,
+        error: { message: `Unknown method: ${req.method}`, code: "unknown_method" },
+      };
+    } else {
       try {
-        req = JSON.parse(String(data)) as BridgeRequest;
-      } catch {
-        return;
-      }
-      if (req.type !== "req" || typeof req.method !== "string") return;
-      const handler = handlers[req.method as BridgeMethodName] as
-        | ((params: unknown) => Promise<unknown>)
-        | undefined;
-      let res: BridgeResponse;
-      if (!handler) {
+        const result = await handler(req.params);
+        res = { id: req.id, type: "res", ok: true, result } as BridgeResponse;
+      } catch (err) {
         res = {
           id: req.id,
           type: "res",
           ok: false,
-          error: { message: `Unknown method: ${req.method}`, code: "unknown_method" },
+          error: { message: (err as Error).message },
         };
-      } else {
-        try {
-          const result = await handler(req.params);
-          res = { id: req.id, type: "res", ok: true, result } as BridgeResponse;
-        } catch (err) {
-          res = {
-            id: req.id,
-            type: "res",
-            ok: false,
-            error: { message: (err as Error).message },
-          };
-        }
       }
-      if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(res));
+    }
+    return JSON.stringify(res);
+  }
+
+  const wss = !httpServer
+    ? null
+    : new WebSocketServer({
+        server: httpServer,
+        path: BRIDGE_PATH,
+        verifyClient: (info, cb) => {
+          if (!originAllowed(info.origin)) return cb(false, 403, "Forbidden");
+          if (!tokenValid(tokenFromReq(info.req))) return cb(false, 401, "Unauthorized");
+          cb(true);
+        },
+      });
+
+  wss?.on("connection", (ws) => {
+    const client: RpcClient = {
+      send: (text) => {
+        if (ws.readyState === WebSocket.OPEN) ws.send(text);
+      },
+      close: () => ws.terminate(),
+    };
+    clients.add(client);
+    ws.on("close", () => clients.delete(client));
+    ws.on("message", async (data) => {
+      const res = await dispatchRaw(String(data));
+      if (res) client.send(res);
     });
   });
 
-  await new Promise<void>((resolve, reject) => {
-    httpServer.once("error", reject);
-    httpServer.listen(opts.port, host, () => resolve());
-  });
+  // --- IPC pipe: the default local transport. Same request/response/event
+  // frames as the WebSocket, newline-delimited (JSON.stringify never emits a
+  // raw newline, so line framing is safe). Native clients — the desktop
+  // shell's relay, CLI tools — connect here; browsers use the TCP listener.
+  const instDir = opts.instancesDir === undefined ? defaultInstancesDir() : opts.instancesDir;
+  let pipePath: string | null = null;
+  let pipeServer: net.Server | null = null;
+  if (opts.pipe !== null) {
+    const primaryRoot = Array.isArray(opts.root) ? opts.root[0]! : opts.root;
+    const primaryId = workspaceIdFor(primaryRoot);
+    pipePath =
+      opts.pipe ??
+      (await claimPipePath(
+        defaultPipePath(primaryId),
+        // Second server on the same root (or a foreign pipe squatting the
+        // name): fall back to a pid-unique endpoint.
+        defaultPipePath(`${primaryId}-${process.pid}`),
+        instDir,
+      ));
+    const server = net.createServer((socket) => {
+      const client: RpcClient = {
+        send: (text) => {
+          if (!socket.destroyed) socket.write(text + "\n");
+        },
+        close: () => socket.destroy(),
+      };
+      clients.add(client);
+      const lines = new LineBuffer();
+      socket.setEncoding("utf8");
+      socket.on("data", (chunk: string) => {
+        for (const line of lines.push(chunk)) {
+          void dispatchRaw(line).then((res) => {
+            if (res) client.send(res);
+          });
+        }
+      });
+      const drop = () => {
+        clients.delete(client);
+        socket.destroy();
+      };
+      socket.on("close", drop);
+      socket.on("error", drop);
+    });
+    pipeServer = server;
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(pipePath!, () => resolve());
+    });
+  }
+
+  if (httpServer) {
+    await new Promise<void>((resolve, reject) => {
+      httpServer.once("error", reject);
+      httpServer.listen(listen!.port, host, () => resolve());
+    });
+  }
+
+  // Advertise the endpoints for local discovery (desktop shell, CLI tools).
+  let instanceFile: string | null = null;
+  if (instDir) {
+    try {
+      instanceFile = await writeInstanceFile(instDir, {
+        pid: process.pid,
+        pipe: pipePath,
+        port: listen?.port ?? null,
+        mcpPort,
+        roots: registry.list().map((w) => w.root),
+        ...(token ? { token } : {}),
+        startedAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.warn("[crystal] could not write instance file:", (err as Error).message);
+    }
+  }
 
   const roots = registry.list().map((w) => path.resolve(w.root));
-  console.log(
-    `[crystal] bridge server on ws://${host}:${opts.port}${BRIDGE_PATH} (workspaces: ${roots.join(", ")})`,
-  );
-  if (authEnabled && !opts.token) {
-    console.log(
-      `\n[crystal] auth enabled — generated a session token (set CRYSTAL_TOKEN to pin one):\n\n` +
-        `    ${token}\n\n` +
-        `[crystal] open the console:  http://${host}:${opts.port}/?${BRIDGE_TOKEN_PARAM}=${token}\n`,
-    );
-  } else if (authEnabled) {
-    console.log(`[crystal] auth enabled (token from CRYSTAL_TOKEN)`);
-  } else {
-    console.log(`[crystal] auth disabled — loopback bind, no token required`);
+  if (pipePath) {
+    console.log(`[crystal] bridge on ipc:${pipePath} (workspaces: ${roots.join(", ")})`);
   }
-  if (consoleDir) {
-    console.log(`[crystal] serving web console from ${consoleDir}`);
-  } else {
-    console.log(
-      `[crystal] web console bundle not found — serving API only ` +
-        `(build @crystal/web or set CRYSTAL_CONSOLE_DIR)`,
-    );
+  console.log(`[crystal] mcp endpoint on http://127.0.0.1:${mcpPort}/mcp (loopback only)`);
+  if (listen) {
+    console.log(`[crystal] bridge server on ws://${host}:${listen.port}${BRIDGE_PATH}`);
+    if (authEnabled && !opts.token) {
+      console.log(
+        `\n[crystal] auth enabled — generated a session token (set CRYSTAL_TOKEN to pin one):\n\n` +
+          `    ${token}\n\n` +
+          `[crystal] open the console:  http://${host}:${listen.port}/?${BRIDGE_TOKEN_PARAM}=${token}\n`,
+      );
+    } else if (authEnabled) {
+      console.log(`[crystal] auth enabled (token from CRYSTAL_TOKEN)`);
+    } else {
+      console.log(`[crystal] auth disabled — loopback bind, no token required`);
+    }
+    if (consoleDir) {
+      console.log(`[crystal] serving web console from ${consoleDir}`);
+    } else {
+      console.log(
+        `[crystal] web console bundle not found — serving API only ` +
+          `(build @crystal/web or set CRYSTAL_CONSOLE_DIR)`,
+      );
+    }
+  } else if (!pipePath) {
+    console.warn(`[crystal] no bridge listener configured (pipe disabled, no --listen)`);
   }
 
   return {
-    port: opts.port,
+    port: listen?.port ?? null,
+    mcpPort,
+    pipe: pipePath,
     close: async () => {
       registry.closeAll();
-      wss.close();
-      await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+      if (instanceFile) await removeInstanceFile(instanceFile);
+      // Server .close() waits for open connections — drop live clients first
+      // so shutdown can't hang on an idle browser tab or a wedged pipe.
+      for (const client of clients) client.close();
+      clients.clear();
+      wss?.close();
+      httpServer?.closeAllConnections();
+      mcpServer.closeAllConnections();
+      const stop = (s: http.Server | net.Server | null) =>
+        new Promise<void>((resolve) => (s ? s.close(() => resolve()) : resolve()));
+      await Promise.all([stop(httpServer), stop(pipeServer), stop(mcpServer)]);
+      // A unix socket file outlives its server; named pipes clean up themselves.
+      if (pipePath) await unlinkPipe(pipePath);
     },
   };
 }
