@@ -534,7 +534,28 @@ export function parseClaudeStreamLine(line: string): AgentEvent[] {
 export class LineBuffer {
   private buf = "";
 
+  constructor(
+    /**
+     * Flush the pending partial line once it exceeds this many characters —
+     * bounds memory against a pathological never-ending line (the consumer
+     * sees the oversized fragment as one line; stream parsers record it as
+     * noise). Default: unlimited.
+     */
+    private readonly maxBuffered = Infinity,
+  ) {}
+
   push(chunk: string): string[] {
+    // Fast path: no newline means pure append — re-splitting the whole
+    // accumulated buffer per chunk would be quadratic on one long line.
+    if (!chunk.includes("\n")) {
+      this.buf += chunk;
+      if (this.buf.length > this.maxBuffered) {
+        const flushed = this.buf;
+        this.buf = "";
+        return [flushed];
+      }
+      return [];
+    }
     this.buf += chunk;
     const lines = this.buf.split(/\r?\n/);
     this.buf = lines.pop() ?? "";

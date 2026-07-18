@@ -35,6 +35,9 @@ function openWorkspacesFile(): string {
 /** How many recently-opened workspaces the reopen list keeps. */
 const MAX_RECENTS = 12;
 
+/** Settled-run ids remembered for settle-once dedup before pruning oldest. */
+const MAX_SETTLED_REMEMBERED = 500;
+
 /** realpath expands Windows 8.3 short paths, which crash libuv's recursive fs watcher. */
 export function canonicalRoot(p: string): string {
   try {
@@ -98,7 +101,11 @@ export class WorkspaceRuntime {
 
   /** Set by start(): board writes announce themselves like manifest edits do. */
   private notifyWorkspaceChanged: (() => void) | null = null;
-  /** Runs already billed to their task (settlement fires once per run). */
+  /**
+   * Runs already billed to their task (settlement fires once per run).
+   * Pruned oldest-first past MAX_SETTLED_REMEMBERED — a long-lived server
+   * must not remember every run id forever.
+   */
   private settledRuns = new Set<string>();
 
   /** Attach a run's CRYSTAL_QUESTION to its board task. */
@@ -141,6 +148,11 @@ export class WorkspaceRuntime {
           run.status === "completed" || run.status === "failed" || run.status === "cancelled";
         if (terminal && !this.settledRuns.has(run.id)) {
           this.settledRuns.add(run.id);
+          while (this.settledRuns.size > MAX_SETTLED_REMEMBERED) {
+            const oldest = this.settledRuns.values().next().value;
+            if (oldest === undefined) break;
+            this.settledRuns.delete(oldest);
+          }
           void this.orchestration.settleRun(run);
         }
       }),
@@ -167,18 +179,28 @@ export class WorkspaceRuntime {
           this.watchTimer = null;
           const paths = [...this.pendingPaths];
           this.pendingPaths.clear();
-          broadcast("fs.changed", { ws: this.id, paths });
-          const codeChanged = paths.some((p) => CODE_FILE_RE.test(p) && !INDEX_FILE_RE.test(p));
-          if (codeChanged) {
-            this.codemap.invalidate();
-            broadcast("codemap.changed", { ws: this.id });
-          }
-          // The index follows both the code and agent-written enrichments.
-          if (codeChanged || paths.some((p) => INDEX_FILE_RE.test(p))) {
-            this.codeindex.invalidate();
-            broadcast("codeindex.changed", { ws: this.id });
+          // A throw here (a broadcast listener, an invalidation) would ride
+          // the timer straight to uncaughtException — contain it.
+          try {
+            broadcast("fs.changed", { ws: this.id, paths });
+            const codeChanged = paths.some((p) => CODE_FILE_RE.test(p) && !INDEX_FILE_RE.test(p));
+            if (codeChanged) {
+              void this.codemap.invalidate();
+              broadcast("codemap.changed", { ws: this.id });
+            }
+            // The index follows both the code and agent-written enrichments.
+            if (codeChanged || paths.some((p) => INDEX_FILE_RE.test(p))) {
+              this.codeindex.invalidate();
+              broadcast("codeindex.changed", { ws: this.id });
+            }
+          } catch (err) {
+            console.warn(`[crystal] watcher flush failed for ${this.root}:`, (err as Error).message);
           }
         }, 250);
+      });
+      // An unhandled 'error' on the watcher would crash the process.
+      this.watcher.on("error", (err) => {
+        console.warn(`[crystal] fs watch error for ${this.root}:`, (err as Error).message);
       });
     } catch (err) {
       console.warn(`[crystal] fs watch unavailable for ${this.root}:`, (err as Error).message);

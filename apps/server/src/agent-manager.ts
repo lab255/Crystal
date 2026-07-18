@@ -48,6 +48,15 @@ export interface AgentStartParams {
 
 const MAX_DIFF_BYTES = 1024 * 1024;
 
+/** In-memory replay-buffer cap per run (full history stays on disk until finish). */
+const MAX_RUN_EVENTS = 5000;
+
+/** Coalescing window for non-terminal runChanged broadcasts. */
+const RUN_CHANGED_DEBOUNCE_MS = 100;
+
+/** One stream-json line larger than this is flushed (and recorded as stderr). */
+const MAX_STREAM_LINE_BYTES = 16 * 1024 * 1024;
+
 /** Fan-out cap: how many workers one manager (across its whole resume chain) may dispatch. */
 const MAX_WORKERS_PER_MANAGER = 12;
 
@@ -108,6 +117,10 @@ export class AgentManager {
 
   private runs = new Map<string, AgentRun>();
   private runEvents = new Map<string, RunEvent[]>();
+  /** Monotonic per-run event seq — survives the replay buffer being trimmed. */
+  private runSeqs = new Map<string, number>();
+  /** Trailing debounce per run for non-terminal runChanged broadcasts. */
+  private runChangedTimers = new Map<string, NodeJS.Timeout>();
   private procs = new Map<string, ActiveProcess>();
   private loaded = false;
   private resolvedBin: string | null = null;
@@ -298,8 +311,8 @@ export class AgentManager {
       this.record(run, { type: "stderr", text: `stdin: ${err.message}` });
     });
 
-    const stdout = new LineBuffer();
-    const stderr = new LineBuffer();
+    const stdout = new LineBuffer(MAX_STREAM_LINE_BYTES);
+    const stderr = new LineBuffer(MAX_STREAM_LINE_BYTES);
 
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => {
@@ -536,13 +549,20 @@ export class AgentManager {
 
     const buffer = this.runEvents.get(run.id);
     if (!buffer) return;
+    const seq = this.runSeqs.get(run.id) ?? buffer.length;
+    this.runSeqs.set(run.id, seq + 1);
     const runEvent: RunEvent = {
       runId: run.id,
-      seq: buffer.length,
+      seq,
       ts: nowIso(),
       event,
     };
     buffer.push(runEvent);
+    // A chatty run must not grow memory without bound; drop the oldest chunk
+    // (in blocks — a front splice per event would be quadratic). The
+    // persisted history keeps only what's in memory at finish, so the cap is
+    // generous.
+    if (buffer.length > MAX_RUN_EVENTS) buffer.splice(0, Math.ceil(MAX_RUN_EVENTS / 5));
     this.events.emit("event", runEvent);
   }
 
@@ -558,7 +578,18 @@ export class AgentManager {
     run.endedAt = nowIso();
     this.record(run, { type: "status", status: run.status, message });
     this.emitRunChanged(run);
-    await this.persist(run);
+    // finish() is fired-and-forgotten from 'close'/'error' handlers — a
+    // persist rejection (disk full, AV lock) must not become an unhandled
+    // rejection, and the run should still land on disk if the hiccup passes.
+    try {
+      await this.persist(run);
+    } catch (err) {
+      console.warn(`[crystal] persist failed for run ${run.id}, retrying:`, (err as Error).message);
+      await new Promise((r) => setTimeout(r, 500));
+      await this.persist(run).catch((err2) =>
+        console.error(`[crystal] could not persist run ${run.id}:`, (err2 as Error).message),
+      );
+    }
     this.notifyOnSettle(run);
     return run;
   }
@@ -656,8 +687,31 @@ export class AgentManager {
     }
   }
 
+  /**
+   * Terminal states broadcast immediately (settlement and wake-ups hang off
+   * them); while a run is live, high-frequency updates (usage per turn,
+   * tool_use per file) coalesce into one trailing broadcast — each broadcast
+   * re-serializes the whole run for every connected client.
+   */
   private emitRunChanged(run: AgentRun): void {
-    this.events.emit("runChanged", { run: { ...run } });
+    const terminal = run.status !== "running" && run.status !== "queued";
+    const timer = this.runChangedTimers.get(run.id);
+    if (terminal) {
+      if (timer) {
+        clearTimeout(timer);
+        this.runChangedTimers.delete(run.id);
+      }
+      this.events.emit("runChanged", { run: { ...run } });
+      return;
+    }
+    if (timer) return; // trailing emit already scheduled; run is mutated in place
+    this.runChangedTimers.set(
+      run.id,
+      setTimeout(() => {
+        this.runChangedTimers.delete(run.id);
+        this.events.emit("runChanged", { run: { ...run } });
+      }, RUN_CHANGED_DEBOUNCE_MS),
+    );
   }
 
   private async persist(run: AgentRun): Promise<void> {

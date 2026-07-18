@@ -229,6 +229,19 @@ describe("LineBuffer", () => {
     expect(buf.flush()).toEqual(['{"c":3}']);
     expect(buf.flush()).toEqual([]);
   });
+
+  it("handles \\r\\n split across the newline-less fast path", () => {
+    const buf = new LineBuffer();
+    expect(buf.push('{"a":1}\r')).toEqual([]);
+    expect(buf.push("\n")).toEqual(['{"a":1}']);
+  });
+
+  it("flushes a pathological never-ending line at the cap", () => {
+    const buf = new LineBuffer(10);
+    expect(buf.push("12345")).toEqual([]);
+    expect(buf.push("123456")).toEqual(["12345123456"]); // over cap → flushed as-is
+    expect(buf.push("ok\n")).toEqual(["ok"]); // framing recovers afterwards
+  });
 });
 
 describe("extractDispatches", () => {
