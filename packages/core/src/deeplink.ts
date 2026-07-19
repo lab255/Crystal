@@ -27,7 +27,7 @@ export type CrystalModeId =
   | "surfaces"
   | "quality";
 export type ArchitectViewId = "systems" | "diagrams" | "infra" | "codemap";
-export type OrchestratorTabId = "board" | "runs" | "agents";
+export type OrchestratorTabId = "board" | "runs" | "agents" | "workflows";
 
 /** Mirrors the code map's drill levels (all workspaces → workspace → module → file). */
 export type CodeMapLevelLink =
@@ -115,6 +115,8 @@ export interface OrchestrateLink {
   task?: string;
   /** Selected agent run id (runs tab). */
   run?: string;
+  /** Selected workflow id (workflows tab). */
+  workflow?: string;
   /** Board grouping: "status" (default), "epic", or "tag:<dimension>". */
   group?: string;
   /** Board sort key: "manual" (default), "priority", "size", "tokens" or "cost". */
@@ -263,6 +265,7 @@ export function formatDeepLink(link: DeepLink): string {
     if (tab === "board" && o.filter) add("filter", o.filter);
     if (tab === "board" && o.owner) add("owner", o.owner);
     if ((tab === "runs" || tab === "agents") && o.run) add("run", o.run);
+    if (tab === "workflows" && o.workflow) add("workflow", o.workflow);
   } else if (mode === "code") {
     if (link.code?.file) add("file", link.code.file);
   } else if (mode === "surfaces") {
@@ -410,7 +413,7 @@ export function parseDeepLink(hash: string): DeepLink {
     link.mode = "orchestrate";
     const o: OrchestrateLink = {};
     const tab = segments[1];
-    if (tab === "board" || tab === "runs" || tab === "agents") o.tab = tab;
+    if (tab === "board" || tab === "runs" || tab === "agents" || tab === "workflows") o.tab = tab;
     const project = params.get("project");
     if (project) o.project = project;
     const task = params.get("task");
@@ -425,6 +428,8 @@ export function parseDeepLink(hash: string): DeepLink {
     if (owner) o.owner = owner;
     const run = params.get("run");
     if (run) o.run = run;
+    const workflow = params.get("workflow");
+    if (workflow) o.workflow = workflow;
     if (Object.keys(o).length) link.orchestrate = o;
   } else if (mode === "code") {
     link.mode = "code";
@@ -504,6 +509,7 @@ const ORCHESTRATE_TAB_FIELDS: Record<OrchestratorTabId, readonly (keyof Orchestr
   board: ["tab", "project", "task", "group", "sort"],
   runs: ["tab", "project", "run"],
   agents: ["tab", "project", "run"],
+  workflows: ["tab", "project", "workflow"],
 };
 
 const SURFACES_VIEW_FIELDS: Record<SurfaceViewId, readonly (keyof SurfacesLink)[]> = {

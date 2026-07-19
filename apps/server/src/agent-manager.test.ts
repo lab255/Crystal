@@ -13,13 +13,23 @@ describe("claudeRunArgs", () => {
     const i = args.indexOf("--mcp-config");
     expect(i).toBeGreaterThan(-1);
     expect(args[i + 1]).toBe("C:\\data\\mcp\\run_1.json");
-    expect(args[args.indexOf("--allowedTools") + 1]).toBe("mcp__crystal");
+    const allowed = args[args.indexOf("--allowedTools") + 1]!;
+    expect(allowed.startsWith("mcp__crystal,")).toBe(true);
+    // Dev-loop commands ride every allowlist — a worker that cannot
+    // `git commit` loses its work in the disposable worktree.
+    expect(allowed).toContain("Bash(git commit *)");
+    expect(allowed).toContain("Bash(npm test*)");
+    // Outward-facing commands stay gated behind a human.
+    expect(allowed).not.toContain("git push");
+    expect(allowed).not.toContain("npm publish");
   });
 
-  it("omits MCP flags (and never the allowlist alone) without an mcp-config", () => {
+  it("keeps the dev-loop allowlist (without mcp__crystal) when no mcp-config", () => {
     const args = claudeRunArgs({ model: "opus", resumeSessionId: "sess_1" });
     expect(args).not.toContain("--mcp-config");
-    expect(args).not.toContain("--allowedTools");
+    const allowed = args[args.indexOf("--allowedTools") + 1]!;
+    expect(allowed).not.toContain("mcp__crystal");
+    expect(allowed).toContain("Bash(git commit *)");
     expect(args[args.indexOf("--model") + 1]).toBe("opus");
     expect(args[args.indexOf("--resume") + 1]).toBe("sess_1");
   });

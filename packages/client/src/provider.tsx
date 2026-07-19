@@ -35,6 +35,11 @@ import {
   type TerminalsStore,
 } from "./terminal-store.js";
 import {
+  createWorkflowStore,
+  type WorkflowState,
+  type WorkflowStore,
+} from "./workflow-store.js";
+import {
   createWorkspaceStore,
   type WorkspaceState,
   type WorkspaceStore,
@@ -52,6 +57,7 @@ export interface CrystalContextValue {
   agentStore: AgentStore;
   fleetStore: FleetStore;
   terminalsStore: TerminalsStore;
+  workflowStore: WorkflowStore;
   navStore: NavStore;
   highlightStore: HighlightStore;
 }
@@ -152,18 +158,27 @@ export function CrystalProvider({
       agentStore: createAgentStore(client),
       fleetStore: createFleetStore(client),
       terminalsStore: createTerminalsStore(client),
+      workflowStore: createWorkflowStore(client),
       navStore: createNavStore(),
       highlightStore: createHighlightStore(),
     };
   }, [url]);
 
   useEffect(() => {
-    const { client, workspacesStore, workspaceStore, agentStore, fleetStore, terminalsStore } =
-      value;
+    const {
+      client,
+      workspacesStore,
+      workspaceStore,
+      agentStore,
+      fleetStore,
+      terminalsStore,
+      workflowStore,
+    } = value;
 
     const refreshScoped = () => {
       void workspaceStore.getState().refresh();
       void agentStore.getState().refresh();
+      void workflowStore.getState().refresh();
     };
 
     const refreshFleet = () => {
@@ -276,6 +291,12 @@ export function useFleet<T>(selector: (s: FleetState) => T): T {
 export function useTerminals<T>(selector: (s: TerminalsState) => T): T {
   const { terminalsStore } = useCrystal();
   return useStore(terminalsStore, selector);
+}
+
+/** Multi-agent workflows of the active workspace (see `WorkflowState`). */
+export function useWorkflows<T>(selector: (s: WorkflowState) => T): T {
+  const { workflowStore } = useCrystal();
+  return useStore(workflowStore, selector);
 }
 
 /**

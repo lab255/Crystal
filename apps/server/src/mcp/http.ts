@@ -54,7 +54,25 @@ export async function handleMcpRequest(
     return { projectPath, holder: run?.agentId ?? runId };
   };
   const isManager = run?.role === "manager";
+  // A manager run tagged `workflow:<id>` also drives its workflow record.
+  const workflow = isManager && run ? await rt.workflows.workflowForRun(run) : null;
   const server = new McpDispatchServer({
+    workflow: workflow
+      ? {
+          status: () => rt.workflows.statusText(workflow.id),
+          advanceStage: (stageId, status, note) =>
+            rt.workflows.advanceStage(workflow.id, stageId, status, note),
+          addTrack: (init) => rt.workflows.addTrack(workflow.id, init),
+          setTrackStatus: (trackId, status) =>
+            rt.workflows.setTrackStatus(workflow.id, trackId, status),
+          bindEpic: async (epicId) => {
+            await rt.workflows.bindEpic(workflow.id, epicId);
+          },
+          complete: async (outcome, summary) => {
+            await rt.workflows.complete(workflow.id, outcome, summary);
+          },
+        }
+      : undefined,
     dispatch:
       run != null && run.role !== "worker"
         ? {

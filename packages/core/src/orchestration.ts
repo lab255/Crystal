@@ -182,6 +182,16 @@ export function pricingForModel(model: string | null | undefined): ModelPricing 
   return MODEL_PRICING.find((m) => id.includes(m.match))?.pricing ?? FALLBACK_PRICING;
 }
 
+/**
+ * One run's dollars — the single cost-precedence rule: the CLI-reported
+ * `costUsd` wins when present (it knows the real bill), usage-based
+ * estimation covers the rest. Every spend rollup (task, epic, workflow)
+ * folds over this so the rule can never drift between them.
+ */
+export function runCostUsd(run: Pick<AgentRun, "costUsd" | "model" | "usage">): number {
+  return run.costUsd ?? (run.usage ? estimateCostUsd(run.model, run.usage) : 0);
+}
+
 /** Estimated $ for one run's usage at its model's prices. */
 export function estimateCostUsd(model: string | null | undefined, usage: AgentUsage): number {
   const p = pricingForModel(model);
@@ -207,10 +217,8 @@ export function rollupCost(runs: readonly AgentRun[], at = nowIso()): CostRollup
   let runCount = 0;
   for (const run of runs) {
     const usage = run.usage;
-    const tokens = usage
-      ? usage.inputTokens + usage.outputTokens + usage.cacheReadTokens + usage.cacheCreationTokens
-      : 0;
-    const dollars = run.costUsd ?? (usage ? estimateCostUsd(run.model, usage) : 0);
+    const tokens = usageTotalTokens(usage);
+    const dollars = runCostUsd(run);
     if (tokens === 0 && dollars === 0) continue;
     runCount += 1;
     totalTokens += tokens;
@@ -288,14 +296,14 @@ export function taskLiveUsage(
         .reduce(
           (acc, r) => ({
             tokens: acc.tokens + usageTotalTokens(r.usage),
-            costUsd: acc.costUsd + (r.costUsd ?? (r.usage ? estimateCostUsd(r.model, r.usage) : 0)),
+            costUsd: acc.costUsd + runCostUsd(r),
           }),
           { tokens: 0, costUsd: 0 },
         );
   const total = active.reduce(
     (acc, r) => ({
       tokens: acc.tokens + usageTotalTokens(r.usage),
-      costUsd: acc.costUsd + (r.costUsd ?? (r.usage ? estimateCostUsd(r.model, r.usage) : 0)),
+      costUsd: acc.costUsd + runCostUsd(r),
     }),
     base,
   );

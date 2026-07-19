@@ -14,6 +14,7 @@ export * from "./terminal.js";
 export * from "./workspace.js";
 export * from "./agent.js";
 export * from "./orchestration.js";
+export * from "./workflow.js";
 export * from "./serialization.js";
 export * from "./survey.js";
 export * from "./trace-profile.js";

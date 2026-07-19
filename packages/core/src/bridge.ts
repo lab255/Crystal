@@ -29,6 +29,7 @@ import type { SystemOverviewDiff } from "./system-insights.js";
 import type { SystemsLayout } from "./systems-layout.js";
 import type { TerminalChunk, TerminalInfo } from "./terminal.js";
 import type { TodoList } from "./todo.js";
+import type { Workflow, WorkflowSpend } from "./workflow.js";
 import type { WorkspaceManifest } from "./workspace.js";
 
 /**
@@ -532,6 +533,57 @@ export interface BridgeMethods {
    * it. Null until a coverage run (or an external one) exists.
    */
   "quality.coverage": { params: WsScope; result: { coverage: CoverageReport | null } };
+  /**
+   * Start a multi-agent workflow: creates the durable workflow record and
+   * spawns its manager — a long-lived, interactive Claude session (resume-
+   * chained) that refines requirements, plans onto the board, dispatches
+   * stage workers, and accounts cost against `budgetUsd`.
+   */
+  "workflow.start": {
+    params: WsScope & {
+      name: string;
+      goal: string;
+      /** Template id (defaults to "standard"). */
+      templateId?: string;
+      projectId?: string | null;
+      cwd?: string;
+      /** Agent profile for the manager (model + skills resolve server-side). */
+      agentId?: string | null;
+      /** Spend ceiling in USD; dispatches are refused once crossed. */
+      budgetUsd?: number | null;
+    };
+    result: { workflow: Workflow; run: AgentRun };
+  };
+  "workflow.list": { params: WsScope; result: { workflows: Workflow[] } };
+  "workflow.get": {
+    params: WsScope & { workflowId: string };
+    result: { workflow: Workflow; spend: WorkflowSpend };
+  };
+  /**
+   * Remote control: deliver a user message into the manager's interactive
+   * session. Delivered immediately as a resumed turn when the manager chain
+   * is idle; queued and delivered on settlement when a turn is live. `run` is
+   * the resumed manager run when delivery was immediate, null when queued.
+   */
+  "workflow.message": {
+    params: WsScope & { workflowId: string; text: string };
+    result: { run: AgentRun | null; queued: boolean };
+  };
+  /** Pause (hold new dispatches) or resume a workflow. */
+  "workflow.setPaused": {
+    params: WsScope & { workflowId: string; paused: boolean; reason?: string | null };
+    result: { workflow: Workflow };
+  };
+  /** Raise/lower/clear the budget (auto-resumes a budget-exhausted pause when it now fits). */
+  "workflow.setBudget": {
+    params: WsScope & { workflowId: string; budgetUsd: number | null };
+    result: { workflow: Workflow };
+  };
+  /** Cancel a workflow: kills its live runs and marks it cancelled. */
+  "workflow.cancel": {
+    params: WsScope & { workflowId: string };
+    result: { workflow: Workflow };
+  };
   /** Dry-run of refactor intents — per-intent engine + change summaries. */
   "refactor.preview": {
     params: WsScope & { intents: RefactorIntent[] };
@@ -588,6 +640,8 @@ export interface BridgeEvents {
   "quality.runChanged": { ws: string; run: QualityRun };
   /** New coverage data landed (a coverage run finished or external output changed). */
   "quality.coverageChanged": { ws: string };
+  /** A workflow was created or changed (stage advanced, spend, pause, settle). */
+  "workflow.changed": { ws: string; workflow: Workflow };
   /** The set of open workspaces changed (opened/closed/renamed). */
   "workspaces.changed": Record<string, never>;
 }

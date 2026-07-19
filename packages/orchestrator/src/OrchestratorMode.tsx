@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Bot, ChevronDown, KanbanSquare, ListTodo, Plus, Sparkles } from "lucide-react";
+import { Bot, ChevronDown, KanbanSquare, ListTodo, Network, Plus, Sparkles } from "lucide-react";
 import type { OrchestratorTabId, Project } from "@crystal/core";
 import { useAgents, useNav, useNavUpdate, useWorkspace } from "@crystal/client";
 import {
@@ -22,6 +22,7 @@ import { Board } from "./Board.js";
 import { RunList } from "./RunList.js";
 import { RunView } from "./RunView.js";
 import { TaskDetail } from "./TaskDetail.js";
+import { WorkflowsTab } from "./WorkflowsTab.js";
 
 type OrchestratorTab = OrchestratorTabId;
 
@@ -53,6 +54,11 @@ export function OrchestratorMode() {
   const runId = useNav((l) => l.orchestrate?.run) ?? null;
   const setRunId = useCallback(
     (id: string | null) => nav({ orchestrate: { run: id } }),
+    [nav],
+  );
+  const workflowId = useNav((l) => l.orchestrate?.workflow) ?? null;
+  const setWorkflowId = useCallback(
+    (id: string | null) => nav({ orchestrate: { workflow: id } }),
     [nav],
   );
   const [createOpen, setCreateOpen] = useState(false);
@@ -109,6 +115,9 @@ export function OrchestratorMode() {
           <TabButton active={tab === "board"} onClick={() => setTab("board")}>
             <ListTodo className="h-3.5 w-3.5" /> Board
           </TabButton>
+          <TabButton active={tab === "workflows"} onClick={() => setTab("workflows")}>
+            <Network className="h-3.5 w-3.5" /> Workflows
+          </TabButton>
           <TabButton active={tab === "runs"} onClick={() => setTab("runs")}>
             <Bot className="h-3.5 w-3.5" /> Runs
             {runningCount > 0 ? (
@@ -163,6 +172,19 @@ export function OrchestratorMode() {
               with your code.
             </EmptyState>
           )
+        ) : tab === "workflows" ? (
+          <WorkflowsTab
+            selectedWorkflowId={workflowId}
+            onSelectWorkflow={setWorkflowId}
+            onOpenRun={(id) => {
+              setRunId(id);
+              setTab("runs");
+            }}
+            onOpenTask={(id) => {
+              setTaskId(id);
+              setTab("board");
+            }}
+          />
         ) : tab === "agents" ? (
           <AgentsTab selectedRunId={runId} onSelectRun={setRunId} />
         ) : (

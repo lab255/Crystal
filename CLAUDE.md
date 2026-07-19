@@ -53,6 +53,15 @@ always run things through pnpm.
   raw hex in components.
 - zustand v5: selectors must return stable references — no `?? []` literals inside
   selectors (use module-level empty constants); deriving arrays belongs outside the selector.
+- Workflows (the layer above manager/worker runs): rules are pure in
+  `packages/core/src/workflow.ts` (templates, stage graph, tracks/branches, spend vs
+  budget, the manager's standing prompt); enforcement is `apps/server/src/workflow-engine.ts`
+  (persists to app-data `workflows/`, installs `AgentManager.dispatchGuard`, pauses on
+  budget exhaustion, queues/delivers user messages into the manager's resume chain).
+  Attribution rides the `workflow:<id>` run tag — dispatched workers inherit it, so spend
+  is derivable from the run list alone (the UI computes it client-side from the agent
+  store). A `WorkerSpec.branch` implies worktree isolation on that named branch (parallel
+  tracks); two live workers must never share a track branch.
 - Deep links: every view is addressable via the URL hash (`#/<mode>/<subview>?…`). The
   codec is `packages/core/src/deeplink.ts`, view/selection state lives in the client nav
   store (`useNav`/`useNavUpdate`), and the SDK's `useDeepLinks` syncs store ↔ URL. New

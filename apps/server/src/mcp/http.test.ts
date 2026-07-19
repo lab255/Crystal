@@ -46,6 +46,9 @@ function fakeRegistry(over: { dispatchWorker?: (runId: string, spec: WorkerSpec)
         throw new Error("no board in this fixture");
       },
     },
+    workflows: {
+      workflowForRun: async () => null,
+    },
   };
   const registry = {
     get: (ws?: string) => {

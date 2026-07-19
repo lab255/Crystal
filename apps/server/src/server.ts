@@ -464,6 +464,27 @@ export async function startCrystalServer(opts: {
     "quality.cancel": ({ ws, runId }) => registry.get(ws).quality.cancel(runId),
     "quality.runs": ({ ws }) => registry.get(ws).quality.runs(),
     "quality.coverage": ({ ws }) => registry.get(ws).quality.coverage(),
+    "workflow.start": ({ ws, ...params }) => registry.get(ws).workflows.start(params),
+    "workflow.list": async ({ ws }) => ({
+      workflows: await registry.get(ws).workflows.list(),
+    }),
+    "workflow.get": async ({ ws, workflowId }) => {
+      const rt = registry.get(ws);
+      const workflow = await rt.workflows.get(workflowId);
+      if (!workflow) throw new Error(`Unknown workflow: ${workflowId}`);
+      return { workflow, spend: await rt.workflows.spend(workflowId) };
+    },
+    "workflow.message": ({ ws, workflowId, text }) =>
+      registry.get(ws).workflows.message(workflowId, text),
+    "workflow.setPaused": async ({ ws, workflowId, paused, reason }) => ({
+      workflow: await registry.get(ws).workflows.setPaused(workflowId, paused, reason),
+    }),
+    "workflow.setBudget": async ({ ws, workflowId, budgetUsd }) => ({
+      workflow: await registry.get(ws).workflows.setBudget(workflowId, budgetUsd),
+    }),
+    "workflow.cancel": async ({ ws, workflowId }) => ({
+      workflow: await registry.get(ws).workflows.cancel(workflowId),
+    }),
     "refactor.preview": ({ ws, intents }) => registry.get(ws).refactor().preview(intents),
     "refactor.apply": async ({ ws, intents }) => {
       const rt = registry.get(ws);

@@ -374,3 +374,112 @@ describe("McpDispatchServer own-task tools (workers)", () => {
     expect(res?.error?.code).toBe(McpRpcError.MethodNotFound);
   });
 });
+
+describe("workflow tools", () => {
+  function workflowHarness() {
+    const calls: Record<string, unknown[]> = {};
+    const note = (name: string, args: unknown[]) => (calls[name] = args);
+    const workflow: NonNullable<DispatchTools["workflow"]> = {
+      status: vi.fn(async () => "Workflow wf_1: Ship [running]"),
+      advanceStage: vi.fn(async (...args: unknown[]) => {
+        note("advanceStage", args);
+        return args[0] === "merge"
+          ? { ok: false as const, reason: "Stage merge requires develop, review to be done first." }
+          : { ok: true as const };
+      }),
+      addTrack: vi.fn(async (init: { name: string; branch?: string | null }) => ({
+        id: "track_1",
+        name: init.name,
+        branch: init.branch ?? "wf/ship/api",
+        taskIds: [],
+        status: "active" as const,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      })),
+      setTrackStatus: vi.fn(async () => ({ ok: true as const })),
+      bindEpic: vi.fn(async () => {}),
+      complete: vi.fn(async (...args: unknown[]) => {
+        note("complete", args);
+      }),
+    };
+    return { server: new McpDispatchServer({ workflow }), workflow, calls };
+  }
+
+  it("lists only the workflow group when no other tools are present", async () => {
+    const { server } = workflowHarness();
+    const res = await server.handle({ jsonrpc: "2.0", id: 1, method: "tools/list" });
+    const names = (res?.result as { tools: { name: string }[] }).tools.map((t) => t.name);
+    expect(names).toEqual([
+      "workflow_status",
+      "advance_stage",
+      "add_track",
+      "set_track_status",
+      "bind_epic",
+      "complete_workflow",
+    ]);
+  });
+
+  it("routes workflow_status, advance_stage and add_track", async () => {
+    const { server, workflow } = workflowHarness();
+    const status = await server.handle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: { name: "workflow_status" },
+    });
+    expect((status?.result as { content: { text: string }[] }).content[0]!.text).toContain("wf_1");
+
+    const ok = await server.handle({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "tools/call",
+      params: { name: "advance_stage", arguments: { stageId: "plan", status: "done", note: "planned" } },
+    });
+    expect((ok?.result as { content: { text: string }[] }).content[0]!.text).toContain("plan → done");
+    expect(workflow.advanceStage).toHaveBeenCalledWith("plan", "done", "planned");
+
+    const blocked = await server.handle({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "tools/call",
+      params: { name: "advance_stage", arguments: { stageId: "merge", status: "active" } },
+    });
+    expect((blocked?.result as { isError?: boolean }).isError).toBe(true);
+
+    const track = await server.handle({
+      jsonrpc: "2.0",
+      id: 5,
+      method: "tools/call",
+      params: { name: "add_track", arguments: { name: "API" } },
+    });
+    expect((track?.result as { content: { text: string }[] }).content[0]!.text).toContain(
+      'branch "wf/ship/api"',
+    );
+  });
+
+  it("validates workflow tool arguments", async () => {
+    const { server, workflow } = workflowHarness();
+    const bad = await server.handle({
+      jsonrpc: "2.0",
+      id: 6,
+      method: "tools/call",
+      params: { name: "advance_stage", arguments: { stageId: "plan", status: "sideways" } },
+    });
+    expect(bad?.error?.code).toBe(McpRpcError.InvalidParams);
+    expect(workflow.advanceStage).not.toHaveBeenCalled();
+  });
+
+  it("completes the workflow with an outcome and summary", async () => {
+    const { server, workflow } = workflowHarness();
+    const res = await server.handle({
+      jsonrpc: "2.0",
+      id: 7,
+      method: "tools/call",
+      params: {
+        name: "complete_workflow",
+        arguments: { outcome: "completed", summary: "Shipped." },
+      },
+    });
+    expect((res?.result as { content: { text: string }[] }).content[0]!.text).toMatch(/completed/);
+    expect(workflow.complete).toHaveBeenCalledWith("completed", "Shipped.");
+  });
+});

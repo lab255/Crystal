@@ -8,6 +8,7 @@ import {
   chainRootId,
   createAgentRun,
   emptyUsage,
+  isWorkflowTag,
   nowIso,
   parseClaudeStreamLine,
   touchedFileFromToolUse,
@@ -44,6 +45,8 @@ export interface AgentStartParams {
   model?: string | null;
   /** Skill names woven into the prompt (from the dispatched agent profile). */
   skills?: string[];
+  /** Git branch for the run's worktree (implies worktree isolation). */
+  branch?: string | null;
 }
 
 const MAX_DIFF_BYTES = 1024 * 1024;
@@ -59,6 +62,13 @@ const MAX_STREAM_LINE_BYTES = 16 * 1024 * 1024;
 
 /** Fan-out cap: how many workers one manager (across its whole resume chain) may dispatch. */
 const MAX_WORKERS_PER_MANAGER = 12;
+
+/**
+ * Fan-out cap for workflow managers (runs tagged `workflow:*`). A full
+ * workflow — plan, design, N develop tracks, their reviews, fixes, merge,
+ * release — legitimately outgrows the standalone-manager cap.
+ */
+const MAX_WORKERS_PER_WORKFLOW = 40;
 
 /** How much of a worker's result text rides along in the manager wake-up prompt. */
 const NOTICE_RESULT_CHARS = 1500;
@@ -91,12 +101,57 @@ function winShellQuote(arg: string): string {
  * and on that path every arg must be hand-quoted (see winShellQuote).
  */
 /**
+ * Dev-loop commands every headless run is pre-allowed to execute. `-p` runs
+ * have no one to answer permission prompts, and `acceptEdits` covers only
+ * file edits — without these rules a worker cannot `git commit` its track
+ * branch or run the test suite, and the work dies uncommitted in a
+ * disposable worktree (found the hard way). Scoped per verb, not
+ * `Bash(git *)`: everything outward-facing (push, publish, remote, clone)
+ * and history-destroying (reset, clean) stays gated behind a human.
+ */
+const ALLOWED_RUN_TOOLS = [
+  "Bash(git status*)",
+  "Bash(git add *)",
+  "Bash(git commit *)",
+  "Bash(git diff*)",
+  "Bash(git log*)",
+  "Bash(git show *)",
+  "Bash(git branch*)",
+  "Bash(git switch *)",
+  "Bash(git checkout *)",
+  "Bash(git merge *)",
+  "Bash(git worktree *)",
+  "Bash(git rev-parse *)",
+  "Bash(git stash*)",
+  "Bash(git restore *)",
+  "Bash(git tag *)",
+  "Bash(git rm *)",
+  "Bash(git mv *)",
+  "Bash(npm test*)",
+  "Bash(npm run *)",
+  "Bash(npm ci*)",
+  "Bash(npm install*)",
+  "Bash(pnpm test*)",
+  "Bash(pnpm run *)",
+  "Bash(pnpm install*)",
+  "Bash(pnpm typecheck*)",
+  "Bash(pnpm vitest*)",
+  "Bash(yarn test*)",
+  "Bash(yarn run *)",
+  "Bash(yarn install*)",
+  "Bash(node *)",
+  "Bash(npx *)",
+  "Bash(tsx *)",
+] as const;
+
+/**
  * The Claude CLI argv for one run. When an mcp-config rides along, the
  * crystal server's tools are pre-allowed: headless (-p) runs have no one to
  * answer permission prompts, so without this every `mcp__crystal__*` call is
  * declined ("requested permissions … but you haven't granted it"). A bare
  * `mcp__crystal` rule allows the whole server; the endpoint already scopes
- * the actual toolset per run (see mcp/http.ts).
+ * the actual toolset per run (see mcp/http.ts). The dev-loop allowlist
+ * ({@link ALLOWED_RUN_TOOLS}) rides on every run for the same reason.
  */
 export function claudeRunArgs(opts: {
   model?: string | null;
@@ -113,9 +168,9 @@ export function claudeRunArgs(opts: {
   ];
   if (opts.model) args.push("--model", opts.model);
   if (opts.resumeSessionId) args.push("--resume", opts.resumeSessionId);
-  if (opts.mcpConfigPath) {
-    args.push("--mcp-config", opts.mcpConfigPath, "--allowedTools", "mcp__crystal");
-  }
+  if (opts.mcpConfigPath) args.push("--mcp-config", opts.mcpConfigPath);
+  const allowed = [...(opts.mcpConfigPath ? ["mcp__crystal"] : []), ...ALLOWED_RUN_TOOLS];
+  args.push("--allowedTools", allowed.join(","));
   return args;
 }
 
@@ -160,8 +215,18 @@ export class AgentManager {
    * dispatching and are woken with results instead of busy-polling.
    */
   private pendingNotices = new Map<string, string[]>();
+  /** Per-chain-root serialization of resume attempts (see resumeChain). */
+  private resumeLocks = new Map<string, Promise<unknown>>();
+  /** Per-branch serialization of track-worktree adopt-or-create (see start). */
+  private branchLocks = new Map<string, Promise<unknown>>();
   /** Set by the workspace runtime: a dispatched worker inherits its task's lease. */
   onWorkerDispatched: ((worker: AgentRun) => void) | null = null;
+  /**
+   * Set by the workflow engine: veto a manager's dispatch (paused workflow,
+   * exhausted budget). Returns a human-readable rejection reason, or null to
+   * allow. Rejections surface to the manager as thrown dispatch errors.
+   */
+  dispatchGuard: ((manager: AgentRun, spec: WorkerSpec) => Promise<string | null>) | null = null;
 
   constructor(
     private readonly root: string,
@@ -273,16 +338,7 @@ export class AgentManager {
 
     if (run.isolation === "worktree") {
       try {
-        const worktree = path.join(this.dataDir, "worktrees", run.id);
-        await fs.mkdir(path.dirname(worktree), { recursive: true });
-        await runGit(cwdAbs, ["worktree", "add", "--detach", worktree]);
-        run.worktreePath = worktree;
-        cwdAbs = worktree;
-        this.record(run, {
-          type: "status",
-          status: "queued",
-          message: `Isolated worktree: ${worktree}`,
-        });
+        cwdAbs = await this.acquireWorktree(run, cwdAbs);
       } catch (err) {
         return this.finish(
           run,
@@ -399,6 +455,84 @@ export class AgentManager {
     return run;
   }
 
+  /**
+   * Give a worktree-isolated run its working directory. Branchless runs get
+   * a fresh detached worktree. Branch-bound runs (workflow tracks) treat the
+   * branch as an identity: successive workers on the same branch
+   * (develop → fix → fix) continue in the *same* worktree so uncommitted
+   * work carries over and the checked-out branch can't block a follow-up —
+   * with only ever one live worker per branch, and acquisition serialized
+   * per repo+branch so two concurrent dispatches can't both race
+   * `git worktree add` for the same branch.
+   */
+  private async acquireWorktree(run: AgentRun, repoAbs: string): Promise<string> {
+    const acquire = async (): Promise<string> => {
+      const adopted = run.branch ? await this.adoptTrackWorktree(run) : null;
+      if (adopted) {
+        run.worktreePath = adopted;
+        this.record(run, {
+          type: "status",
+          status: "queued",
+          message: `Continuing in track worktree: ${adopted} (branch ${run.branch})`,
+        });
+        return adopted;
+      }
+      const worktree = path.join(this.dataDir, "worktrees", run.id);
+      await fs.mkdir(path.dirname(worktree), { recursive: true });
+      if (run.branch) {
+        // Named-branch worktree: check the branch out if it exists, create
+        // it at HEAD otherwise.
+        try {
+          await runGit(repoAbs, ["worktree", "add", worktree, run.branch]);
+        } catch {
+          await runGit(repoAbs, ["worktree", "add", "-b", run.branch, worktree]);
+        }
+      } else {
+        await runGit(repoAbs, ["worktree", "add", "--detach", worktree]);
+      }
+      run.worktreePath = worktree;
+      this.record(run, {
+        type: "status",
+        status: "queued",
+        message: `Isolated worktree: ${worktree}${run.branch ? ` (branch ${run.branch})` : ""}`,
+      });
+      return worktree;
+    };
+    if (!run.branch) return acquire();
+    const key = `${run.cwd} ${run.branch}`;
+    const prev = this.branchLocks.get(key) ?? Promise.resolve();
+    const task = prev.then(acquire, acquire);
+    this.branchLocks.set(key, task.catch(() => {}));
+    return task;
+  }
+
+  /**
+   * The existing worktree a branch-bound run should continue in: the most
+   * recent run on the same repo+branch whose worktree still exists (a branch
+   * name is only an identity within one repo — same-named branches in other
+   * repos must not cross-adopt). Throws when a live run holds the branch —
+   * two concurrent workers must never share a track. Null when there is
+   * nothing to adopt (fresh track).
+   */
+  private async adoptTrackWorktree(run: AgentRun): Promise<string | null> {
+    const holders = [...this.runs.values()]
+      .filter(
+        (r) =>
+          r.id !== run.id && r.branch === run.branch && r.cwd === run.cwd && r.worktreePath,
+      )
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    const live = holders.find((r) => r.status === "running" || r.status === "queued");
+    if (live) {
+      throw new Error(`Branch ${run.branch} is in use by live worker ${live.id}`);
+    }
+    for (const holder of holders) {
+      if (await fs.access(holder.worktreePath!).then(() => true, () => false)) {
+        return holder.worktreePath!;
+      }
+    }
+    return null;
+  }
+
   /** Run ids in one logical manager's resume chain (root + every wake-up turn). */
   private chainIds(rootId: string): Set<string> {
     const ids = new Set<string>([rootId]);
@@ -418,6 +552,74 @@ export class AgentManager {
     return [...this.runs.values()]
       .filter((r) => r.parentRunId && chain.has(r.parentRunId))
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+
+  /** The runs of one chain root, oldest first (see chainRuns). */
+  private orderedChain(rootId: string): AgentRun[] {
+    return [...this.chainIds(rootId)]
+      .map((id) => this.runs.get(id))
+      .filter((r): r is AgentRun => !!r)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+
+  /**
+   * Every run of one logical session's resume chain (root and each wake-up /
+   * user-message turn), oldest first — the workflow engine reads a manager's
+   * interactive session through this.
+   */
+  async chainRuns(runId: string): Promise<AgentRun[]> {
+    await this.ensureLoaded();
+    return this.orderedChain(chainRootId(runId, this.runs));
+  }
+
+  /** True while any run of the chain containing `runId` is queued/running. */
+  async isChainLive(runId: string): Promise<boolean> {
+    await this.ensureLoaded();
+    return this.chainLive(chainRootId(runId, this.runs));
+  }
+
+  /**
+   * Resume a logical session's chain with a new turn — the single primitive
+   * every wake-up path uses (worker-settlement notices here, workflow user
+   * messages in the WorkflowEngine). Attempts are serialized per chain root
+   * and liveness is re-checked inside the lock, so two callers racing one
+   * settlement event can never fork the Claude session with concurrent
+   * `--resume`s. Returns the resumed run, or null when the chain cannot be
+   * resumed right now (a turn is live, no session id yet, or the latest turn
+   * was cancelled) — callers keep their payload queued and retry on the next
+   * settlement.
+   */
+  async resumeChain(fromRunId: string, prompt: string): Promise<AgentRun | null> {
+    await this.ensureLoaded();
+    const rootId = chainRootId(fromRunId, this.runs);
+    const prev = this.resumeLocks.get(rootId) ?? Promise.resolve();
+    const attempt = prev.then(async (): Promise<AgentRun | null> => {
+      if (this.chainLive(rootId)) return null;
+      const chain = this.orderedChain(rootId);
+      const root = chain[0];
+      const latest = chain[chain.length - 1];
+      if (!root || !latest || latest.status === "cancelled") return null;
+      const session = [...chain].reverse().find((r) => r.sessionId)?.sessionId;
+      if (!session) return null;
+      return this.start({
+        prompt,
+        cwd: root.cwd,
+        taskId: root.taskId,
+        projectId: root.projectId,
+        repoId: root.repoId,
+        resumeSessionId: session,
+        resumedFromRunId: latest.id,
+        agentId: root.agentId,
+        // Resumed turns stay on the chain's model — the CLI would otherwise
+        // fall back to its configured default mid-conversation.
+        model: latest.model ?? root.model ?? null,
+        role: root.role === "manager" ? "manager" : null,
+        purpose: root.purpose,
+        tags: root.tags,
+      });
+    });
+    this.resumeLocks.set(rootId, attempt.catch(() => {}));
+    return attempt;
   }
 
   /** A run record by id (workers hand their results to managers through this). */
@@ -440,7 +642,21 @@ export class AgentManager {
     await this.ensureLoaded();
     const manager = this.runs.get(managerRunId);
     if (!manager || manager.role === "worker") return null;
-    if ((await this.listWorkersFor(managerRunId)).length >= MAX_WORKERS_PER_MANAGER) return null;
+    // Workflow attribution is inherited, not opt-in: every worker a workflow
+    // manager dispatches bills the workflow, whatever tags the spec carried.
+    // Inherited tags come FIRST and spec-supplied workflow tags are dropped —
+    // attribution resolves to the first `workflow:` tag, and a stray one in
+    // the spec must not divert the worker's spend to another workflow.
+    const inherited = manager.tags.filter(isWorkflowTag);
+    const tags = [
+      ...new Set([...inherited, ...(spec.tags ?? []).filter((t) => !isWorkflowTag(t))]),
+    ];
+    const cap = inherited.length ? MAX_WORKERS_PER_WORKFLOW : MAX_WORKERS_PER_MANAGER;
+    if ((await this.listWorkersFor(managerRunId)).length >= cap) return null;
+    // The guard (workflow pause / exhausted budget) throws so the manager
+    // sees *why* the dispatch was refused, not just that it was.
+    const veto = await this.dispatchGuard?.(manager, spec);
+    if (veto) throw new Error(veto);
     const worker = await this.start({
       prompt: spec.prompt,
       cwd: spec.cwd ?? manager.cwd,
@@ -448,10 +664,12 @@ export class AgentManager {
       taskId: spec.taskId ?? manager.taskId,
       projectId: manager.projectId,
       isolation: spec.isolation ?? "none",
+      branch: spec.branch ?? null,
+      model: spec.model ?? null,
       parentRunId: managerRunId,
       role: "worker",
       purpose: spec.purpose ?? manager.purpose,
-      tags: spec.tags ?? [],
+      tags,
     });
     // Hand the task's lease to the run doing the work (see OrchestrationService).
     this.onWorkerDispatched?.(worker);
@@ -483,15 +701,29 @@ export class AgentManager {
     await this.ensureLoaded();
     const run = this.runs.get(runId);
     if (!run?.worktreePath) return;
+    // Track worktrees are shared across a branch's successive workers — the
+    // directory may be another run's live cwd, and removing it would pull
+    // the floor out from under that process.
+    const sharers = [...this.runs.values()].filter(
+      (r) => r.id !== run.id && r.worktreePath === run.worktreePath,
+    );
+    const live = sharers.find((r) => r.status === "running" || r.status === "queued");
+    if (live) {
+      throw new Error(`Worktree is in use by live run ${live.id} — cancel it first.`);
+    }
     const base = resolveInRoot(this.root, run.cwd);
     await runGit(base, ["worktree", "remove", "--force", run.worktreePath]).catch(async () => {
       // Fall back to manual removal + prune if git refuses (e.g. locked files).
       await fs.rm(run.worktreePath!, { recursive: true, force: true });
       await runGit(base, ["worktree", "prune"]).catch(() => {});
     });
-    run.worktreePath = null;
-    this.emitRunChanged(run);
-    await this.persist(run);
+    // Clear every record pointing at the removed directory, not just this
+    // run's — a dangling worktreePath would offer diffs of a deleted dir.
+    for (const r of [run, ...sharers]) {
+      r.worktreePath = null;
+      this.emitRunChanged(r);
+      await this.persist(r);
+    }
   }
 
   async cancel(runId: string): Promise<void> {
@@ -673,16 +905,12 @@ export class AgentManager {
   private async flushNotices(rootId: string): Promise<void> {
     const notices = this.pendingNotices.get(rootId);
     if (!notices?.length) return;
-    this.pendingNotices.delete(rootId);
-    const chain = [...this.chainIds(rootId)]
-      .map((id) => this.runs.get(id))
-      .filter((r): r is AgentRun => !!r)
-      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-    const root = chain[0];
-    const latest = chain[chain.length - 1];
-    if (!root || !latest || latest.status === "cancelled") return;
-    const session = [...chain].reverse().find((r) => r.sessionId)?.sessionId;
-    if (!session) return;
+    // A killed manager must stay dead — drop its notices instead of retrying.
+    const latest = this.orderedChain(rootId).at(-1);
+    if (latest?.status === "cancelled") {
+      this.pendingNotices.delete(rootId);
+      return;
+    }
     const prompt =
       `${notices.length > 1 ? `${notices.length} workers settled while you were away.\n\n` : ""}` +
       notices.join("\n\n---\n\n") +
@@ -691,20 +919,18 @@ export class AgentManager {
       "anything done, and start the next READY tasks. If everything is done and the board " +
       "reflects it, say so briefly and stop. You will be resumed again when more workers " +
       "settle — do not busy-poll worker_status.";
+    const delivered = notices.length;
     try {
-      await this.start({
-        prompt,
-        cwd: root.cwd,
-        taskId: root.taskId,
-        projectId: root.projectId,
-        repoId: root.repoId,
-        resumeSessionId: session,
-        resumedFromRunId: latest.id,
-        agentId: root.agentId,
-        role: root.role === "manager" ? "manager" : null,
-        purpose: root.purpose,
-        tags: root.tags,
-      });
+      const run = await this.resumeChain(rootId, prompt);
+      // A null means something else resumed the chain first (or no session
+      // yet): the notices stay queued and flush on the next settlement
+      // instead of forking the session. On delivery, drop exactly what the
+      // prompt carried — notices appended while resuming must survive.
+      if (run) {
+        const rest = (this.pendingNotices.get(rootId) ?? []).slice(delivered);
+        if (rest.length) this.pendingNotices.set(rootId, rest);
+        else this.pendingNotices.delete(rootId);
+      }
     } catch (err) {
       console.warn(`[crystal] could not wake manager ${rootId}:`, (err as Error).message);
     }

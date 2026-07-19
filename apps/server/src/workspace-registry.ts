@@ -21,6 +21,7 @@ import { appDataDir, isIgnoredDir, workspaceIdFor } from "./paths.js";
 import { QualityService } from "./quality-runner.js";
 import { RefactorEngine } from "./refactor.js";
 import { TerminalManager } from "./terminal-manager.js";
+import { WorkflowEngine } from "./workflow-engine.js";
 import { WorkspaceStore } from "./workspace-store.js";
 
 const CODE_FILE_RE = /\.(ts|tsx|js|jsx|mjs|cjs)$/;
@@ -59,6 +60,7 @@ export class WorkspaceRuntime {
   readonly codeindex: CodeIndexService;
   readonly quality: QualityService;
   readonly orchestration: OrchestrationService;
+  readonly workflows: WorkflowEngine;
   /** Manifest name, kept fresh by workspace.get / saveManifest handlers. */
   name: string;
 
@@ -92,6 +94,8 @@ export class WorkspaceRuntime {
     this.orchestration = new OrchestrationService(this.store, this.agents, () =>
       this.notifyWorkspaceChanged?.(),
     );
+    // Installs the dispatch guard (pause/budget veto) and settle hooks.
+    this.workflows = new WorkflowEngine(appDataDir(root), this.agents, this.store);
     // A worker dispatched against a claimed task inherits the lease, so it is
     // released when the work settles rather than when the manager's turn ends.
     this.agents.onWorkerDispatched = (worker) => {
@@ -168,6 +172,9 @@ export class WorkspaceRuntime {
       this.quality.events.on("coverageChanged", () =>
         broadcast("quality.coverageChanged", { ws: this.id }),
       ),
+      this.workflows.events.on("changed", ({ workflow }) =>
+        broadcast("workflow.changed", { ws: this.id, workflow }),
+      ),
     ];
     try {
       this.watcher = fsSync.watch(this.root, { recursive: true }, (_evt, filename) => {
@@ -212,6 +219,9 @@ export class WorkspaceRuntime {
     if (this.watchTimer) clearTimeout(this.watchTimer);
     for (const dispose of this.disposeAgentListeners) dispose();
     this.disposeAgentListeners = [];
+    // A replaced engine must not keep settling runs into the same app-data
+    // files after the workspace reopens with a fresh one.
+    this.workflows.dispose();
     this.terminals.disposeAll();
     this.quality.dispose();
     this.refactorEngine?.dispose();

@@ -39,6 +39,11 @@ export {
   type TerminalsState,
   type TerminalsStore,
 } from "./terminal-store.js";
+export {
+  createWorkflowStore,
+  type WorkflowState,
+  type WorkflowStore,
+} from "./workflow-store.js";
 export { createNavStore, type NavPatch, type NavState, type NavStore } from "./nav-store.js";
 export { requestOpenFile } from "./open-file.js";
 export {
@@ -75,6 +80,7 @@ export {
   useNav,
   useNavUpdate,
   useTerminals,
+  useWorkflows,
   useWorkspace,
   useWorkspaces,
   type CrystalContextValue,

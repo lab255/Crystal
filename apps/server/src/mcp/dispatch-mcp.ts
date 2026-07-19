@@ -2,12 +2,17 @@ import { z } from "zod";
 import {
   TaskPatchSchema,
   WorkerSpecSchema,
+  WORKFLOW_STAGE_STATUSES,
+  WORKFLOW_TRACK_STATUSES,
   type AgentRun,
   type ClaimResult,
   type Epic,
   type TaskItem,
   type TaskPatch,
   type WorkerSpec,
+  type WorkflowStageStatus,
+  type WorkflowTrack,
+  type WorkflowTrackStatus,
 } from "@crystal/core";
 
 /**
@@ -62,6 +67,30 @@ export interface DispatchTools {
   board?: BoardTools;
   /** Self-service surface for a run bound to one task. */
   ownTask?: OwnTaskTools;
+  /** Workflow control surface — present on a workflow's manager session. */
+  workflow?: WorkflowTools;
+}
+
+/**
+ * What a workflow's manager may do to its own workflow record: read status
+ * (stages, tracks, spend vs budget), advance stages along the template's
+ * dependency graph, manage parallel tracks, and declare the outcome.
+ */
+export interface WorkflowTools {
+  status(): Promise<string>;
+  advanceStage(
+    stageId: string,
+    status: WorkflowStageStatus,
+    note?: string | null,
+  ): Promise<{ ok: true } | { ok: false; reason: string }>;
+  addTrack(init: { name: string; branch?: string | null; taskIds?: string[] }): Promise<WorkflowTrack>;
+  setTrackStatus(
+    trackId: string,
+    status: WorkflowTrackStatus,
+  ): Promise<{ ok: true } | { ok: false; reason: string }>;
+  /** Record the board epic this workflow's tasks live under. */
+  bindEpic(epicId: string): Promise<void>;
+  complete(outcome: "completed" | "failed", summary: string): Promise<void>;
 }
 
 /**
@@ -152,7 +181,23 @@ const DISPATCH_WORKER_TOOL = {
         enum: ["none", "worktree"],
         description: "Run the worker in a disposable git worktree instead of the repo.",
       },
+      branch: {
+        type: "string",
+        description:
+          "Git branch for the worker's worktree (created at HEAD if missing). " +
+          "Implies worktree isolation — use one branch per parallel track.",
+      },
       purpose: { type: "string", description: "Attribution, e.g. implement, code-review, fix." },
+      model: {
+        type: "string",
+        description:
+          "Claude model alias for the worker (e.g. \"opus\" for code-intensive " +
+          "work, \"sonnet\" for lighter tasks). Omitted = CLI default.",
+      },
+      taskId: {
+        type: "string",
+        description: "Board task the worker's cost and history bill to (defaults to yours).",
+      },
       tags: { type: "array", items: { type: "string" }, description: "Dimensional tags." },
     },
     required: ["prompt"],
@@ -362,6 +407,128 @@ const UPDATE_MY_TASK_TOOL = {
   },
 } as const;
 
+const WORKFLOW_STATUS_TOOL = {
+  name: "workflow_status",
+  description:
+    "Your workflow's full state: stages with their statuses, parallel tracks " +
+    "with branches and tasks, and spend vs budget across every run. Check it " +
+    "before each wave of dispatches — dispatches are refused once the budget " +
+    "is exhausted or the workflow is paused.",
+  inputSchema: { type: "object", properties: {}, additionalProperties: false },
+} as const;
+
+const ADVANCE_STAGE_TOOL = {
+  name: "advance_stage",
+  description:
+    "Move a workflow stage to a new status (pending, active, done, skipped). " +
+    "Activating or completing a stage requires its dependencies to be done or " +
+    "skipped. Record a note — stage notes are the workflow's durable memory.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      stageId: { type: "string", description: "Stage id from workflow_status (e.g. plan, merge)." },
+      status: { type: "string", enum: [...WORKFLOW_STAGE_STATUSES] },
+      note: { type: "string", description: "Outcome note (plan summary, review verdict…)." },
+    },
+    required: ["stageId", "status"],
+    additionalProperties: false,
+  },
+} as const;
+
+const ADD_TRACK_TOOL = {
+  name: "add_track",
+  description:
+    "Create a parallel development track: a named slice of the plan with its " +
+    "own git branch. Dispatch that track's develop workers with the branch so " +
+    "tracks never collide; reviews and fixes stay on the same branch.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      name: { type: "string", description: "Track name (e.g. \"API layer\")." },
+      branch: { type: "string", description: "Branch name (defaults to wf/<workflow>/<track>)." },
+      taskIds: { type: "array", items: { type: "string" }, description: "Board tasks on this track." },
+    },
+    required: ["name"],
+    additionalProperties: false,
+  },
+} as const;
+
+const SET_TRACK_STATUS_TOOL = {
+  name: "set_track_status",
+  description:
+    "Update a track's status: merged once its branch landed in the main line, " +
+    "abandoned if the track was cut.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      trackId: { type: "string" },
+      status: { type: "string", enum: [...WORKFLOW_TRACK_STATUSES] },
+    },
+    required: ["trackId", "status"],
+    additionalProperties: false,
+  },
+} as const;
+
+const BIND_EPIC_TOOL = {
+  name: "bind_epic",
+  description:
+    "Record the board epic this workflow's tasks live under (call it right " +
+    "after create_epic so cost and progress roll up in one place).",
+  inputSchema: {
+    type: "object",
+    properties: { epicId: { type: "string" } },
+    required: ["epicId"],
+    additionalProperties: false,
+  },
+} as const;
+
+const COMPLETE_WORKFLOW_TOOL = {
+  name: "complete_workflow",
+  description:
+    "Declare the workflow finished: outcome \"completed\" when the goal is " +
+    "met (merged, released as planned), \"failed\" when it is genuinely " +
+    "blocked. The summary should cover what shipped, what it cost, and " +
+    "anything left open.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      outcome: { type: "string", enum: ["completed", "failed"] },
+      summary: { type: "string" },
+    },
+    required: ["outcome", "summary"],
+    additionalProperties: false,
+  },
+} as const;
+
+const WORKFLOW_TOOLS = [
+  WORKFLOW_STATUS_TOOL,
+  ADVANCE_STAGE_TOOL,
+  ADD_TRACK_TOOL,
+  SET_TRACK_STATUS_TOOL,
+  BIND_EPIC_TOOL,
+  COMPLETE_WORKFLOW_TOOL,
+] as const;
+
+const AdvanceStageArgs = z.object({
+  stageId: z.string().min(1),
+  status: z.enum(WORKFLOW_STAGE_STATUSES),
+  note: z.string().optional(),
+});
+const AddTrackArgs = z.object({
+  name: z.string().min(1),
+  branch: z.string().optional(),
+  taskIds: z.array(z.string()).optional(),
+});
+const SetTrackStatusArgs = z.object({
+  trackId: z.string().min(1),
+  status: z.enum(WORKFLOW_TRACK_STATUSES),
+});
+const BindEpicArgs = z.object({ epicId: z.string().min(1) });
+const CompleteWorkflowArgs = z.object({
+  outcome: z.enum(["completed", "failed"]),
+  summary: z.string().min(1),
+});
+
 const DISPATCH_TOOLS = [DISPATCH_WORKER_TOOL, WORKER_STATUS_TOOL, WORKER_RESULT_TOOL] as const;
 
 const BOARD_TOOLS = [
@@ -403,6 +570,7 @@ export class McpDispatchServer {
       case "tools/list": {
         const tools = [
           ...(this.tools.dispatch ? DISPATCH_TOOLS : []),
+          ...(this.tools.workflow ? WORKFLOW_TOOLS : []),
           ...(this.tools.board ? BOARD_TOOLS : []),
           ...(this.tools.ownTask ? OWN_TASK_TOOLS : []),
         ];
@@ -472,6 +640,10 @@ export class McpDispatchServer {
         return this.toolError(id, `worker_result failed: ${(err as Error).message}`);
       }
     }
+    const workflow = this.tools.workflow;
+    if (workflow && WORKFLOW_TOOLS.some((t) => t.name === name)) {
+      return this.callWorkflowTool(workflow, id, name!, args);
+    }
     const own = this.tools.ownTask;
     if (own && OWN_TASK_TOOLS.some((t) => t.name === name)) {
       return this.callOwnTaskTool(own, id, name!, args);
@@ -481,6 +653,65 @@ export class McpDispatchServer {
       return this.callBoardTool(board, id, name!, args);
     }
     return this.fail(id, McpRpcError.MethodNotFound, `Unknown tool: ${name ?? "(none)"}`);
+  }
+
+  private async callWorkflowTool(
+    workflow: WorkflowTools,
+    id: string | number | null,
+    name: string,
+    args: unknown,
+  ): Promise<JsonRpcMessage> {
+    try {
+      switch (name) {
+        case "workflow_status":
+          return this.toolText(id, await workflow.status());
+        case "advance_stage": {
+          const a = AdvanceStageArgs.safeParse(args ?? {});
+          if (!a.success) return this.invalidArgs(id, name, a.error);
+          const result = await workflow.advanceStage(a.data.stageId, a.data.status, a.data.note);
+          return result.ok
+            ? this.toolText(id, `Stage ${a.data.stageId} → ${a.data.status}.`)
+            : this.toolError(id, result.reason);
+        }
+        case "add_track": {
+          const a = AddTrackArgs.safeParse(args ?? {});
+          if (!a.success) return this.invalidArgs(id, name, a.error);
+          const track = await workflow.addTrack(a.data);
+          return this.toolText(
+            id,
+            `Created track ${track.id} "${track.name}" on branch ${track.branch}. ` +
+              `Dispatch its develop workers with branch "${track.branch}".`,
+          );
+        }
+        case "set_track_status": {
+          const a = SetTrackStatusArgs.safeParse(args ?? {});
+          if (!a.success) return this.invalidArgs(id, name, a.error);
+          const result = await workflow.setTrackStatus(a.data.trackId, a.data.status);
+          return result.ok
+            ? this.toolText(id, `Track ${a.data.trackId} → ${a.data.status}.`)
+            : this.toolError(id, result.reason);
+        }
+        case "bind_epic": {
+          const a = BindEpicArgs.safeParse(args ?? {});
+          if (!a.success) return this.invalidArgs(id, name, a.error);
+          await workflow.bindEpic(a.data.epicId);
+          return this.toolText(id, `Workflow bound to epic ${a.data.epicId}.`);
+        }
+        case "complete_workflow": {
+          const a = CompleteWorkflowArgs.safeParse(args ?? {});
+          if (!a.success) return this.invalidArgs(id, name, a.error);
+          await workflow.complete(a.data.outcome, a.data.summary);
+          return this.toolText(
+            id,
+            `Workflow marked ${a.data.outcome}. Thank you — end your turn with a short wrap-up for the user.`,
+          );
+        }
+        default:
+          return this.fail(id, McpRpcError.MethodNotFound, `Unknown tool: ${name}`);
+      }
+    } catch (err) {
+      return this.toolError(id, `${name} failed: ${(err as Error).message}`);
+    }
   }
 
   private async callOwnTaskTool(

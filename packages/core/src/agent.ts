@@ -40,6 +40,9 @@ export type AgentRole = z.infer<typeof AgentRoleSchema>;
  */
 export const RUN_PURPOSES = [
   "implement",
+  "plan",
+  "design",
+  "manage",
   "code-review",
   "security-review",
   "merge",
@@ -88,6 +91,11 @@ export const AgentRunSchema = z.object({
   isolation: AgentIsolationSchema.default("none"),
   /** Absolute host path of the run's worktree (null once cleaned up). */
   worktreePath: z.string().nullish(),
+  /**
+   * Git branch the run's worktree is checked out on (parallel workflow
+   * tracks). Setting a branch implies worktree isolation.
+   */
+  branch: z.string().nullish(),
   prompt: z.string(),
   /** Agent profile that executed this run (see agent-profile.ts). */
   agentId: z.string().nullish(),
@@ -131,6 +139,7 @@ export function createAgentRun(init: {
   projectId?: string | null;
   repoId?: string | null;
   isolation?: AgentIsolation;
+  branch?: string | null;
   agentId?: string | null;
   parentRunId?: string | null;
   resumedFromRunId?: string | null;
@@ -145,7 +154,9 @@ export function createAgentRun(init: {
     taskId: init.taskId ?? null,
     projectId: init.projectId ?? null,
     repoId: init.repoId ?? null,
-    isolation: init.isolation ?? "none",
+    // A named branch needs a worktree to live in — branch implies isolation.
+    isolation: init.branch ? "worktree" : (init.isolation ?? "none"),
+    branch: init.branch ?? null,
     agentId: init.agentId ?? null,
     parentRunId: init.parentRunId ?? null,
     resumedFromRunId: init.resumedFromRunId ?? null,
@@ -317,6 +328,18 @@ export const WorkerSpecSchema = z.object({
   cwd: z.string().nullish(),
   /** Run the worker in a disposable git worktree (defaults to "none"). */
   isolation: AgentIsolationSchema.nullish(),
+  /**
+   * Git branch to check the worker's worktree out on (created at HEAD when it
+   * doesn't exist). Implies worktree isolation — parallel workflow tracks
+   * each develop on their own branch.
+   */
+  branch: z.string().nullish(),
+  /**
+   * Claude model alias/id for the worker (`--model`). Route by intensity:
+   * heavyweight models for code-intensive work (develop, merge), lighter
+   * ones for plan/design/review-style tasks. Omitted = CLI default.
+   */
+  model: z.string().nullish(),
   /** Why this worker touches the task (defaults to the manager's purpose). */
   purpose: RunPurposeSchema.nullish(),
   /**
