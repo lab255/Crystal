@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened-runtime entitlements for the notarized macOS bundle.
+
+  Notarization requires the hardened runtime (`codesign --options runtime`),
+  which by default forbids the very things the bundled bridge sidecar needs.
+  The sidecar is a Node Single-Executable-Application (a copy of the `node`
+  binary with the server blob injected — see scripts/build-sidecar.mjs), so:
+
+    * allow-jit / allow-unsigned-executable-memory — V8 JITs JavaScript; under
+      the hardened runtime both are required or the sidecar is SIGKILLed on
+      launch after notarization.
+    * disable-library-validation — the sidecar loads node-pty's native `.node`
+      addon from the app's Resources dir (staged as a Tauri resource, not baked
+      into the SEA). Library validation would refuse to load a Mach-O signed
+      under a different Team ID / seal; disabling it lets the app-signed addon
+      load. (node-pty can't live inside the SEA — native addons aren't
+      embeddable — hence the on-disk resource + this entitlement.)
+
+  Wired via tauri.conf.json → bundle.macOS.entitlements. Tauri applies it when
+  code-signing the app (and the embedded sidecar) during `tauri build`.
+-->
+<plist version="1.0">
+  <dict>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+  </dict>
+</plist>

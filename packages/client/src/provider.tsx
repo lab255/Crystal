@@ -21,6 +21,7 @@ import {
   type ConnectionState,
 } from "./bridge-client.js";
 import { tauriBridgeTransport } from "./tauri-transport.js";
+import { checkForDesktopUpdate } from "./desktop-update.js";
 import { createAgentStore, type AgentState, type AgentStore } from "./agent-store.js";
 import { createFleetStore, type FleetState, type FleetStore } from "./fleet-store.js";
 import {
@@ -229,6 +230,8 @@ export function CrystalProvider({
       }
     });
     client.connect();
+    // Desktop only, best-effort: pull a newer signed build if one's out.
+    void checkForDesktopUpdate();
     return () => {
       dispose();
       disposeRunChanged();

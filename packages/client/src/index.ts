@@ -6,6 +6,7 @@ export {
   type ConnectionState,
 } from "./bridge-client.js";
 export { tauriBridgeTransport } from "./tauri-transport.js";
+export { checkForDesktopUpdate } from "./desktop-update.js";
 export { useWorkerMemo, type WorkerMemoResult } from "./use-worker-memo.js";
 export {
   createWorkspaceStore,

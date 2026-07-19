@@ -20,6 +20,11 @@ serde_json = "1"
 # Pipe relay: the webview reaches the sidecar's IPC pipe through Rust (JS has
 # no pipe access), so we need async pipe/socket clients.
 tokio = { version = "1", features = ["net", "io-util", "sync", "time"] }
+# In-app auto-update: check the GitHub-hosted `latest.json`, verify the
+# minisign signature against the pubkey in tauri.conf.json, download + swap the
+# app, then relaunch (process plugin). Desktop-only — gated in lib.rs.
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 
 # Job object with kill-on-close: the OS reaps the whole sidecar tree even if
 # the desktop process crashes without running its shutdown path.

@@ -452,7 +452,18 @@ fn supervise(app: tauri::AppHandle, sup: Arc<BridgeSupervisor>, mut cmd: Command
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     install_panic_hook();
-    tauri::Builder::default()
+    #[allow(unused_mut)]
+    let mut builder = tauri::Builder::default();
+    // Updater + process (relaunch) are desktop-only; the mobile entry point
+    // skips them. The JS side (checkForDesktopUpdate in @crystal/client) drives
+    // the check on launch through these plugins.
+    #[cfg(desktop)]
+    {
+        builder = builder
+            .plugin(tauri_plugin_updater::Builder::new().build())
+            .plugin(tauri_plugin_process::init());
+    }
+    builder
         .invoke_handler(tauri::generate_handler![
             bridge_endpoint,
             bridge_connect,

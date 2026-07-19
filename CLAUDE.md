@@ -16,6 +16,12 @@ bottom terminal panel that runs shells and agent consoles in any open workspace.
 Node 24.18 is pinned via `use-node-version` in `.npmrc`; system `node` may be older —
 always run things through pnpm.
 
+Releases are macOS-only, conventional-commit driven, and cut by
+`.github/workflows/release.yml` (push to `main` → `plan` dry-run → `release`
+environment approval → per-arch build/sign/notarize → signed updater `latest.json`).
+`scripts/release.mjs` is the nx-release stand-in (bump/changelog/tag). Full runbook
++ the secret checklist: `docs/releasing.md`.
+
 ## Architecture rules
 
 - Dependency direction: `core`, `ui` ← `client` ← modes
@@ -89,3 +95,8 @@ always run things through pnpm.
 - `finish()` in `agent-manager.ts` must run on process close even when a `result` event
   already settled the run status — it persists the run and emits the terminal event.
   It is also idempotent via `endedAt` (a failed spawn fires both `error` and `close`).
+- A release `tauri build` now REQUIRES the updater signing env — with
+  `createUpdaterArtifacts` + a `plugins.updater.pubkey` set in `tauri.conf.json`, the
+  bundler errors out (it won't emit unsigned archives) unless `TAURI_SIGNING_PRIVATE_KEY`
+  (+ `_PASSWORD`) are exported. Locally: `export`-them from `~/.crystal/updater/` (see
+  `docs/releasing.md`). `tauri dev` is unaffected (dev makes no updater artifacts).
