@@ -3,18 +3,20 @@ import {
   Ban,
   CircleDollarSign,
   GitBranch,
+  LayoutTemplate,
   MessageSquare,
   Network,
   Pause,
   Play,
   Plus,
   Send,
+  Workflow as WorkflowIcon,
 } from "lucide-react";
 import {
   budgetState,
+  templateOf,
   workflowSpend,
   workflowTag,
-  workflowTemplate,
   type AgentRun,
   type AgentRunStatus,
   type Workflow,
@@ -25,6 +27,8 @@ import { useAgents, useWorkflows, useWorkspace } from "@crystal/client";
 import { Badge, Button, EmptyState, Input, Spinner, Textarea, Tooltip, cn } from "@crystal/ui";
 import { formatCost, formatTokens } from "./prompt.js";
 import { RunView } from "./RunView.js";
+import { TemplateBuilder } from "./TemplateBuilder.js";
+import { WorkflowGraph } from "./WorkflowGraph.js";
 
 const EMPTY_PROJECTS: never[] = [];
 
@@ -40,6 +44,10 @@ export function WorkflowsTab({
   onSelectWorkflow,
   onOpenRun,
   onOpenTask,
+  builderOpen = false,
+  onToggleBuilder,
+  selectedTemplateId = null,
+  onSelectTemplate,
 }: {
   selectedWorkflowId: string | null;
   onSelectWorkflow: (id: string | null) => void;
@@ -47,6 +55,12 @@ export function WorkflowsTab({
   onOpenRun?: (id: string) => void;
   /** Open a task on the Board tab (answering questions). */
   onOpenTask?: (id: string) => void;
+  /** Visual template builder open (deep-linkable — lives in the nav store). */
+  builderOpen?: boolean;
+  onToggleBuilder?: (open: boolean) => void;
+  /** Template selected in the builder. */
+  selectedTemplateId?: string | null;
+  onSelectTemplate?: (id: string | null) => void;
 }) {
   const workflows = useWorkflows((s) => s.workflows);
   const runs = useAgents((s) => s.runs);
@@ -64,12 +78,25 @@ export function WorkflowsTab({
         <div className="flex items-center gap-2 border-b border-edge px-3 py-2">
           <Network className="h-3.5 w-3.5 text-crystal-300" />
           <span className="text-xs font-semibold text-ink">Workflows</span>
+          <Tooltip content="Template builder">
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className={cn("ml-auto", builderOpen && "bg-surface-3 text-ink")}
+              aria-label="Template builder"
+              onClick={() => onToggleBuilder?.(!builderOpen)}
+            >
+              <LayoutTemplate className="h-3.5 w-3.5" />
+            </Button>
+          </Tooltip>
           <Button
             variant="ghost"
             size="icon-sm"
-            className="ml-auto"
             aria-label="New workflow"
-            onClick={() => onSelectWorkflow(null)}
+            onClick={() => {
+              onToggleBuilder?.(false);
+              onSelectWorkflow(null);
+            }}
           >
             <Plus className="h-3.5 w-3.5" />
           </Button>
@@ -95,7 +122,13 @@ export function WorkflowsTab({
         </div>
       </aside>
       <main className="min-w-0 flex-1">
-        {selected ? (
+        {builderOpen ? (
+          <TemplateBuilder
+            selectedTemplateId={selectedTemplateId}
+            onSelectTemplate={(id) => onSelectTemplate?.(id)}
+            onClose={() => onToggleBuilder?.(false)}
+          />
+        ) : selected ? (
           <WorkflowDetail
             workflow={selected}
             runs={runs}
@@ -104,7 +137,10 @@ export function WorkflowsTab({
             onOpenTask={onOpenTask}
           />
         ) : (
-          <NewWorkflowPanel onStarted={onSelectWorkflow} />
+          <NewWorkflowPanel
+            onStarted={onSelectWorkflow}
+            onEditTemplates={() => onToggleBuilder?.(true)}
+          />
         )}
       </main>
     </div>
@@ -192,7 +228,12 @@ function WorkflowDetail({
   const setBudget = useWorkflows((s) => s.setBudget);
   const cancel = useWorkflows((s) => s.cancel);
 
-  const template = workflowTemplate(workflow.templateId);
+  const template = templateOf(workflow);
+  const [graphOpen, setGraphOpen] = useState(false);
+  const stageStatuses = useMemo(
+    () => new Map(workflow.stages.map((s) => [s.id, s.status])),
+    [workflow.stages],
+  );
   const budget = budgetState(workflow, spend);
   const terminal =
     workflow.status === "completed" ||
@@ -290,7 +331,7 @@ function WorkflowDetail({
           </p>
         ) : null}
 
-        {/* Stage pipeline */}
+        {/* Stage pipeline — chips inline, expandable into the dependency graph */}
         <div className="mt-2 flex flex-wrap items-center gap-1">
           {template.stages.map((def, i) => {
             const state = workflow.stages.find((s) => s.id === def.id);
@@ -311,7 +352,27 @@ function WorkflowDetail({
               </span>
             );
           })}
+          <Tooltip content={graphOpen ? "Hide the stage graph" : "Show the stage graph"}>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label="Toggle stage graph"
+              className={cn(graphOpen && "bg-surface-3 text-ink")}
+              onClick={() => setGraphOpen((v) => !v)}
+            >
+              <WorkflowIcon className="h-3.5 w-3.5" />
+            </Button>
+          </Tooltip>
         </div>
+        {graphOpen ? (
+          <div className="mt-2 h-52 overflow-hidden rounded-lg border border-edge bg-surface-0">
+            <WorkflowGraph
+              key={workflow.id}
+              stages={template.stages}
+              statuses={stageStatuses}
+            />
+          </div>
+        ) : null}
 
         {/* Tracks + budget */}
         <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] text-ink-muted">
@@ -501,16 +562,26 @@ function ManagerComposer({ workflowId }: { workflowId: string }) {
   );
 }
 
-function NewWorkflowPanel({ onStarted }: { onStarted: (id: string) => void }) {
+function NewWorkflowPanel({
+  onStarted,
+  onEditTemplates,
+}: {
+  onStarted: (id: string) => void;
+  onEditTemplates?: () => void;
+}) {
   const start = useWorkflows((s) => s.start);
+  const templates = useWorkflows((s) => s.templates);
   const projects = useWorkspace((s) => s.info?.projects ?? EMPTY_PROJECTS);
 
   const [name, setName] = useState("");
   const [goal, setGoal] = useState("");
   const [budget, setBudgetInput] = useState("");
   const [projectId, setProjectId] = useState<string>("");
+  const [templateId, setTemplateId] = useState<string>("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const template = templates.find((t) => t.id === templateId) ?? templates[0] ?? null;
 
   async function create() {
     if (!name.trim() || !goal.trim() || busy) return;
@@ -521,6 +592,7 @@ function NewWorkflowPanel({ onStarted }: { onStarted: (id: string) => void }) {
       const workflow = await start({
         name: name.trim(),
         goal: goal.trim(),
+        templateId: template?.id,
         projectId: projectId || null,
         budgetUsd: budget.trim() !== "" && Number.isFinite(n) ? n : null,
       });
@@ -553,6 +625,23 @@ function NewWorkflowPanel({ onStarted }: { onStarted: (id: string) => void }) {
           aria-label="Workflow goal"
           className="mt-2"
         />
+        <div className="mt-2 flex items-center gap-2">
+          <select
+            className="h-8 flex-1 rounded-lg border border-edge bg-surface-1 px-2 text-[13px] text-ink focus:border-crystal-500/60 focus:outline-none"
+            value={template?.id ?? ""}
+            onChange={(e) => setTemplateId(e.target.value)}
+            aria-label="Workflow template"
+          >
+            {templates.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name} ({t.stages.length} stages)
+              </option>
+            ))}
+          </select>
+          <Button variant="ghost" size="sm" onClick={() => onEditTemplates?.()}>
+            <LayoutTemplate className="h-3 w-3" /> Edit templates
+          </Button>
+        </div>
         <div className="mt-2 flex items-center gap-2">
           <Input
             value={budget}

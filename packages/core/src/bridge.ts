@@ -29,7 +29,7 @@ import type { SystemOverviewDiff } from "./system-insights.js";
 import type { SystemsLayout } from "./systems-layout.js";
 import type { TerminalChunk, TerminalInfo } from "./terminal.js";
 import type { TodoList } from "./todo.js";
-import type { Workflow, WorkflowSpend } from "./workflow.js";
+import type { Workflow, WorkflowSpend, WorkflowTemplate } from "./workflow.js";
 import type { WorkspaceManifest } from "./workspace.js";
 
 /**
@@ -584,6 +584,23 @@ export interface BridgeMethods {
     params: WsScope & { workflowId: string };
     result: { workflow: Workflow };
   };
+  /** Every selectable template: built-ins first, then custom (builder-authored). */
+  "workflow.templates": { params: WsScope; result: { templates: WorkflowTemplate[] } };
+  /**
+   * Create or update a custom template (visual builder). Validated
+   * server-side (`validateWorkflowTemplate`); a blank id mints a fresh one;
+   * built-in ids are refused — duplicate them instead. Running workflows are
+   * unaffected: each holds its own snapshot.
+   */
+  "workflow.saveTemplate": {
+    params: WsScope & { template: WorkflowTemplate };
+    result: { template: WorkflowTemplate };
+  };
+  /** Delete a custom template (built-ins are refused). */
+  "workflow.deleteTemplate": {
+    params: WsScope & { templateId: string };
+    result: { ok: true };
+  };
   /** Dry-run of refactor intents — per-intent engine + change summaries. */
   "refactor.preview": {
     params: WsScope & { intents: RefactorIntent[] };
@@ -642,6 +659,8 @@ export interface BridgeEvents {
   "quality.coverageChanged": { ws: string };
   /** A workflow was created or changed (stage advanced, spend, pause, settle). */
   "workflow.changed": { ws: string; workflow: Workflow };
+  /** The custom template set changed (saved or deleted in the builder). */
+  "workflow.templatesChanged": { ws: string };
   /** The set of open workspaces changed (opened/closed/renamed). */
   "workspaces.changed": Record<string, never>;
 }

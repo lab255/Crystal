@@ -485,6 +485,16 @@ export async function startCrystalServer(opts: {
     "workflow.cancel": async ({ ws, workflowId }) => ({
       workflow: await registry.get(ws).workflows.cancel(workflowId),
     }),
+    "workflow.templates": async ({ ws }) => ({
+      templates: await registry.get(ws).workflows.listTemplates(),
+    }),
+    "workflow.saveTemplate": async ({ ws, template }) => ({
+      template: await registry.get(ws).workflows.saveTemplate(template),
+    }),
+    "workflow.deleteTemplate": async ({ ws, templateId }) => {
+      await registry.get(ws).workflows.deleteTemplate(templateId);
+      return { ok: true as const };
+    },
     "refactor.preview": ({ ws, intents }) => registry.get(ws).refactor().preview(intents),
     "refactor.apply": async ({ ws, intents }) => {
       const rt = registry.get(ws);

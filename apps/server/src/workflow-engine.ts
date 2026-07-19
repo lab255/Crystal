@@ -2,7 +2,9 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import {
   Emitter,
+  WORKFLOW_TEMPLATES,
   WorkflowSchema,
+  WorkflowTemplateSchema,
   addTrack,
   budgetState,
   buildWorkflowManagerPrompt,
@@ -11,6 +13,8 @@ import {
   nowIso,
   setStageStatus,
   setTrackStatus as setTrackStatusPure,
+  uid,
+  validateWorkflowTemplate,
   workflowIdOfRun,
   workflowSpend,
   workflowStatusText,
@@ -19,6 +23,7 @@ import {
   type Workflow,
   type WorkflowSpend,
   type WorkflowStageStatus,
+  type WorkflowTemplate,
   type WorkflowTrack,
   type WorkflowTrackStatus,
 } from "@crystal/core";
@@ -44,9 +49,14 @@ const MAX_SETTLED_REMEMBERED = 500;
  *  - Run settlements recompute spend and broadcast `workflow.changed`.
  */
 export class WorkflowEngine {
-  readonly events = new Emitter<{ changed: { workflow: Workflow } }>();
+  readonly events = new Emitter<{
+    changed: { workflow: Workflow };
+    templatesChanged: Record<string, never>;
+  }>();
 
   private workflows = new Map<string, Workflow>();
+  /** Custom (builder-authored) templates by id; built-ins stay in core. */
+  private templates = new Map<string, WorkflowTemplate>();
   private loaded = false;
   /** User messages waiting for the manager chain to go idle, per workflow. */
   private pendingMessages = new Map<string, string[]>();
@@ -94,6 +104,10 @@ export class WorkflowEngine {
     return path.join(this.dataDir, "workflows");
   }
 
+  private templatesDir(): string {
+    return path.join(this.dir(), "templates");
+  }
+
   private async ensureLoaded(): Promise<void> {
     if (this.loaded) return;
     this.loaded = true;
@@ -106,6 +120,17 @@ export class WorkflowEngine {
         this.workflows.set(wf.id, wf);
       } catch {
         // Ignore corrupt records — a bad file must not take the engine down.
+      }
+    }
+    const templateNames = await fs.readdir(this.templatesDir()).catch(() => [] as string[]);
+    for (const name of templateNames) {
+      if (!name.endsWith(".json")) continue;
+      try {
+        const raw = JSON.parse(await fs.readFile(path.join(this.templatesDir(), name), "utf8"));
+        const template = WorkflowTemplateSchema.parse(raw);
+        this.templates.set(template.id, template);
+      } catch {
+        // Same policy as workflow records: a corrupt template is skipped.
       }
     }
   }
@@ -160,6 +185,54 @@ export class WorkflowEngine {
     return workflowSpend(workflowId, await this.agents.list());
   }
 
+  /* ---------------- templates ---------------- */
+
+  /** Built-ins first (stable order), then customs sorted by name. */
+  async listTemplates(): Promise<WorkflowTemplate[]> {
+    await this.ensureLoaded();
+    const custom = [...this.templates.values()].sort((a, b) => a.name.localeCompare(b.name));
+    return [...Object.values(WORKFLOW_TEMPLATES), ...custom];
+  }
+
+  /**
+   * Create or update a custom template. A blank id mints a fresh one;
+   * built-in ids are read-only (duplicate them client-side instead). Running
+   * workflows are unaffected — each holds its own snapshot.
+   */
+  async saveTemplate(input: WorkflowTemplate): Promise<WorkflowTemplate> {
+    await this.ensureLoaded();
+    const template = WorkflowTemplateSchema.parse({
+      ...input,
+      id: input.id.trim() || uid("wft"),
+    });
+    if (WORKFLOW_TEMPLATES[template.id]) {
+      throw new Error(`Template "${template.id}" is built-in and read-only — duplicate it instead.`);
+    }
+    const errors = validateWorkflowTemplate(template);
+    if (errors.length) throw new Error(`Invalid template: ${errors.join(" ")}`);
+    await fs.mkdir(this.templatesDir(), { recursive: true });
+    await fs.writeFile(
+      path.join(this.templatesDir(), `${template.id}.json`),
+      JSON.stringify(template, null, 2),
+      "utf8",
+    );
+    this.templates.set(template.id, template);
+    this.events.emit("templatesChanged", {});
+    return template;
+  }
+
+  async deleteTemplate(templateId: string): Promise<void> {
+    await this.ensureLoaded();
+    if (WORKFLOW_TEMPLATES[templateId]) {
+      throw new Error(`Template "${templateId}" is built-in and cannot be deleted.`);
+    }
+    if (!this.templates.delete(templateId)) {
+      throw new Error(`Unknown template: ${templateId}`);
+    }
+    await fs.rm(path.join(this.templatesDir(), `${templateId}.json`), { force: true });
+    this.events.emit("templatesChanged", {});
+  }
+
   /* ---------------- lifecycle ---------------- */
 
   async start(init: {
@@ -172,7 +245,13 @@ export class WorkflowEngine {
     budgetUsd?: number | null;
   }): Promise<{ workflow: Workflow; run: AgentRun }> {
     await this.ensureLoaded();
-    const workflow = createWorkflow(init);
+    // A custom template id resolves to its current definition and is
+    // snapshotted into the record; built-ins resolve by id forever.
+    const custom = init.templateId ? this.templates.get(init.templateId) : undefined;
+    if (init.templateId && !custom && !WORKFLOW_TEMPLATES[init.templateId]) {
+      throw new Error(`Unknown workflow template: ${init.templateId}`);
+    }
+    const workflow = createWorkflow({ ...init, template: custom ?? null });
 
     // Resolve the manager's model + skills from the roster on disk, like
     // agent.start does. The manager defaults to a heavyweight model — it

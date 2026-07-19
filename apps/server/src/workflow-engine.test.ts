@@ -100,12 +100,9 @@ describe("WorkflowEngine", () => {
 
   function makeEngine() {
     const agents = new FakeAgents();
-    const engine = new WorkflowEngine(
-      path.join(dir, `e${Math.random().toString(36).slice(2)}`),
-      agents as unknown as AgentManager,
-      fakeStore,
-    );
-    return { agents, engine };
+    const dataDir = path.join(dir, `e${Math.random().toString(36).slice(2)}`);
+    const engine = new WorkflowEngine(dataDir, agents as unknown as AgentManager, fakeStore);
+    return { agents, engine, dataDir };
   }
 
   it("start spawns a tagged manager session and persists the workflow", async () => {
@@ -218,6 +215,61 @@ describe("WorkflowEngine", () => {
     const status = await engine.statusText(workflow.id);
     expect(status).toContain("refine [done]");
     expect(status).toContain("wf/big-ship/api-layer");
+  });
+
+  it("saves, lists, starts from and deletes custom templates; built-ins are read-only", async () => {
+    const { engine } = makeEngine();
+
+    // Built-ins are always listed first.
+    const before = await engine.listTemplates();
+    expect(before.map((t) => t.id)).toContain("standard");
+
+    const saved = await engine.saveTemplate({
+      id: "",
+      name: "Docs pass",
+      stages: [
+        { id: "a", name: "Survey", purpose: "survey", dependsOn: [], perTrack: false, description: "" },
+        { id: "b", name: "Write", purpose: "implement", dependsOn: ["a"], perTrack: false, description: "" },
+      ],
+    });
+    expect(saved.id).toMatch(/^wft_/);
+    expect((await engine.listTemplates()).map((t) => t.id)).toContain(saved.id);
+
+    // Starting from the custom id snapshots it into the workflow.
+    const { workflow, run } = await engine.start({ name: "Docs", goal: "g", templateId: saved.id });
+    expect(workflow.template?.id).toBe(saved.id);
+    expect(workflow.stages.map((s) => s.id)).toEqual(["a", "b"]);
+    expect(run.prompt).toContain("Survey");
+
+    // Invalid graphs and built-in ids are refused.
+    await expect(
+      engine.saveTemplate({ ...saved, stages: [{ ...saved.stages[0]!, dependsOn: ["ghost"] }] }),
+    ).rejects.toThrow(/unknown stage/);
+    await expect(engine.saveTemplate({ ...saved, id: "standard" })).rejects.toThrow(/read-only/);
+    await expect(engine.deleteTemplate("standard")).rejects.toThrow(/built-in/);
+    await expect(engine.start({ name: "X", goal: "g", templateId: "nope" })).rejects.toThrow(
+      /Unknown workflow template/,
+    );
+
+    // Deleting the template leaves the running workflow on its snapshot.
+    await engine.deleteTemplate(saved.id);
+    expect((await engine.listTemplates()).map((t) => t.id)).not.toContain(saved.id);
+    const still = await engine.get(workflow.id);
+    expect(still?.template?.stages.map((s) => s.id)).toEqual(["a", "b"]);
+    expect((await engine.advanceStage(workflow.id, "a", "done")).ok).toBe(true);
+  });
+
+  it("custom templates persist across engine restarts on the same data dir", async () => {
+    const { engine, dataDir } = makeEngine();
+    const saved = await engine.saveTemplate({
+      id: "",
+      name: "Persisted",
+      stages: [
+        { id: "only", name: "Only", purpose: "implement", dependsOn: [], perTrack: false, description: "" },
+      ],
+    });
+    const fresh = new WorkflowEngine(dataDir, new FakeAgents() as unknown as AgentManager, fakeStore);
+    expect((await fresh.listTemplates()).map((t) => t.id)).toContain(saved.id);
   });
 
   it("cancel kills live tagged runs and marks the workflow cancelled", async () => {

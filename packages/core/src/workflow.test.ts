@@ -6,13 +6,19 @@ import {
   budgetState,
   buildWorkflowManagerPrompt,
   createWorkflow,
+  duplicateTemplate,
   formatUserMessage,
+  isCustomTemplateId,
   setStageStatus,
+  stagePurpose,
+  templateOf,
+  validateWorkflowTemplate,
   workflowIdOfRun,
   workflowSpend,
   workflowStatusText,
   workflowTag,
   workflowTemplate,
+  type WorkflowTemplate,
 } from "./workflow.js";
 
 function makeWorkflow(budgetUsd: number | null = null) {
@@ -43,6 +49,89 @@ describe("workflow template", () => {
 
   it("unknown template ids fall back to standard", () => {
     expect(workflowTemplate("nope").id).toBe("standard");
+  });
+});
+
+/** A small custom template: a → b ∥ c → d. */
+function customTemplate(): WorkflowTemplate {
+  return {
+    id: "wft_custom",
+    name: "Docs pass",
+    stages: [
+      { id: "a", name: "Survey", purpose: "survey", dependsOn: [], perTrack: false, description: "look" },
+      { id: "b", name: "Write", purpose: "implement", dependsOn: ["a"], perTrack: true, description: "write", model: "opus" },
+      { id: "c", name: "Review", purpose: "code-review", dependsOn: ["a"], perTrack: true, description: "check" },
+      { id: "d", name: "Publish", purpose: "release", dependsOn: ["b", "c"], perTrack: false, description: "ship" },
+    ],
+  };
+}
+
+describe("template validation and authoring", () => {
+  it("built-in templates validate clean", () => {
+    expect(validateWorkflowTemplate(STANDARD_WORKFLOW_TEMPLATE)).toEqual([]);
+    expect(validateWorkflowTemplate(customTemplate())).toEqual([]);
+  });
+
+  it("flags empty names, missing stages, duplicate ids and unknown deps", () => {
+    expect(validateWorkflowTemplate({ id: "wft_x", name: " ", stages: [] })).toEqual(
+      expect.arrayContaining([expect.stringMatching(/name/), expect.stringMatching(/at least one stage/)]),
+    );
+    const t = customTemplate();
+    t.stages.push({ ...t.stages[0]! });
+    expect(validateWorkflowTemplate(t).join(" ")).toMatch(/Duplicate stage id: a/);
+    const u = customTemplate();
+    u.stages[3]!.dependsOn = ["b", "ghost"];
+    expect(validateWorkflowTemplate(u).join(" ")).toMatch(/unknown stage: ghost/);
+    const s = customTemplate();
+    s.stages[0]!.dependsOn = ["a"];
+    expect(validateWorkflowTemplate(s).join(" ")).toMatch(/depends on itself/);
+  });
+
+  it("detects dependency cycles", () => {
+    const t = customTemplate();
+    t.stages[0]!.dependsOn = ["d"]; // a → d → {b,c} → a
+    expect(validateWorkflowTemplate(t).join(" ")).toMatch(/cycle/i);
+  });
+
+  it("duplicateTemplate mints an editable custom copy", () => {
+    const copy = duplicateTemplate(STANDARD_WORKFLOW_TEMPLATE);
+    expect(isCustomTemplateId(copy.id)).toBe(true);
+    expect(isCustomTemplateId(STANDARD_WORKFLOW_TEMPLATE.id)).toBe(false);
+    expect(copy.name).toBe("Standard delivery (copy)");
+    expect(copy.stages).toEqual(STANDARD_WORKFLOW_TEMPLATE.stages);
+    // Deep copy — mutating the duplicate must not touch the built-in.
+    copy.stages[0]!.dependsOn.push("x");
+    expect(STANDARD_WORKFLOW_TEMPLATE.stages[0]!.dependsOn).toEqual([]);
+  });
+});
+
+describe("custom-template workflows", () => {
+  it("snapshots the template and runs stages on it", () => {
+    const wf = createWorkflow({ name: "Docs", goal: "write docs", template: customTemplate() });
+    expect(wf.templateId).toBe("wft_custom");
+    expect(templateOf(wf).name).toBe("Docs pass");
+    expect(wf.stages.map((s) => s.id)).toEqual(["a", "b", "c", "d"]);
+
+    // Dependency rails come from the snapshot, not the built-in registry.
+    expect(setStageStatus(wf, "d", "active").ok).toBe(false);
+    const a = setStageStatus(wf, "a", "done");
+    expect(a.ok).toBe(true);
+    if (a.ok) expect(setStageStatus(a.workflow, "b", "active").ok).toBe(true);
+
+    expect(stagePurpose(wf, "c")).toBe("code-review");
+    expect(buildWorkflowManagerPrompt(wf)).toContain("Write (b, per track, model: opus)");
+  });
+
+  it("rejects invalid templates at creation", () => {
+    const bad = customTemplate();
+    bad.stages[0]!.dependsOn = ["d"];
+    expect(() => createWorkflow({ name: "X", goal: "g", template: bad })).toThrow(/cycle/i);
+  });
+
+  it("workflows without a snapshot resolve built-ins by id", () => {
+    const wf = makeWorkflow();
+    expect(wf.template ?? null).toBeNull();
+    expect(templateOf(wf).id).toBe("standard");
   });
 });
 

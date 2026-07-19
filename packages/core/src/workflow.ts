@@ -30,29 +30,111 @@ import { runCostUsd } from "./orchestration.js";
 /* ------------------------------------------------------------------ */
 
 /** One stage of a workflow template. */
-export interface WorkflowStageDef {
-  id: string;
-  name: string;
+export const WorkflowStageDefSchema = z.object({
+  id: z.string(),
+  name: z.string(),
   /** Run purpose stamped on workers dispatched for this stage. */
-  purpose: RunPurpose;
+  purpose: RunPurposeSchema,
   /** Stage ids that must be done (or skipped) before this one activates. */
-  dependsOn: string[];
+  dependsOn: z.array(z.string()).default([]),
   /** Stage runs once per parallel track (develop/review) instead of once. */
-  perTrack: boolean;
+  perTrack: z.boolean().default(false),
   /** One-line description woven into prompts and shown in the UI. */
-  description: string;
+  description: z.string().default(""),
   /**
    * Suggested model for this stage's workers — cost routing: heavyweight
    * models where the code is written, lighter ones everywhere else. The
    * manager passes it as dispatch_worker's `model`.
    */
-  model?: string;
+  model: z.string().optional(),
+});
+export type WorkflowStageDef = z.infer<typeof WorkflowStageDefSchema>;
+
+/**
+ * A workflow template: the stage graph a workflow instantiates. Built-ins
+ * live in {@link WORKFLOW_TEMPLATES}; custom templates (authored in the
+ * visual builder) are persisted server-side and snapshotted into each
+ * workflow at start, so editing or deleting a template never corrupts a
+ * running instance.
+ */
+export const WorkflowTemplateSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  stages: z.array(WorkflowStageDefSchema),
+});
+export type WorkflowTemplate = z.infer<typeof WorkflowTemplateSchema>;
+
+/** Id prefix marking custom (builder-authored) templates. */
+export function isCustomTemplateId(id: string): boolean {
+  return id.startsWith("wft_");
 }
 
-export interface WorkflowTemplate {
-  id: string;
-  name: string;
-  stages: WorkflowStageDef[];
+/**
+ * Structural validation for builder-authored templates. Returns a list of
+ * human-readable problems (empty = valid): a template must have a name and
+ * at least one stage, stage ids must be unique and non-empty, dependencies
+ * must reference existing stages (no self-deps), and the dependency graph
+ * must be acyclic — {@link setStageStatus} walks it as a DAG.
+ */
+export function validateWorkflowTemplate(template: WorkflowTemplate): string[] {
+  const errors: string[] = [];
+  if (!template.name.trim()) errors.push("Template needs a name.");
+  if (template.stages.length === 0) errors.push("Template needs at least one stage.");
+
+  const ids = new Set<string>();
+  for (const stage of template.stages) {
+    if (!stage.id.trim()) errors.push("A stage has an empty id.");
+    else if (ids.has(stage.id)) errors.push(`Duplicate stage id: ${stage.id}`);
+    ids.add(stage.id);
+    if (!stage.name.trim()) errors.push(`Stage ${stage.id || "?"} needs a name.`);
+  }
+  for (const stage of template.stages) {
+    for (const dep of stage.dependsOn) {
+      if (dep === stage.id) errors.push(`Stage ${stage.id} depends on itself.`);
+      else if (!ids.has(dep)) errors.push(`Stage ${stage.id} depends on unknown stage: ${dep}`);
+    }
+  }
+
+  // Kahn's algorithm — anything left over after peeling roots sits on a cycle.
+  const indegree = new Map(template.stages.map((s) => [s.id, 0]));
+  for (const stage of template.stages) {
+    for (const dep of stage.dependsOn) {
+      if (dep !== stage.id && indegree.has(dep)) {
+        indegree.set(stage.id, (indegree.get(stage.id) ?? 0) + 1);
+      }
+    }
+  }
+  const queue = template.stages.filter((s) => (indegree.get(s.id) ?? 0) === 0).map((s) => s.id);
+  const seen = new Set<string>();
+  while (queue.length) {
+    const id = queue.shift()!;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    for (const stage of template.stages) {
+      if (!stage.dependsOn.includes(id) || seen.has(stage.id)) continue;
+      const left = (indegree.get(stage.id) ?? 0) - 1;
+      indegree.set(stage.id, left);
+      if (left <= 0) queue.push(stage.id);
+    }
+  }
+  const cyclic = template.stages.filter((s) => s.id.trim() && !seen.has(s.id));
+  if (cyclic.length && ids.size === template.stages.length) {
+    errors.push(`Dependency cycle through: ${cyclic.map((s) => s.id).join(", ")}`);
+  }
+  return errors;
+}
+
+/**
+ * A builder-editable copy: fresh custom id, "(copy)" name, deep-cloned
+ * stages. The duplicate of a built-in is how built-ins get customized —
+ * they themselves are read-only.
+ */
+export function duplicateTemplate(template: WorkflowTemplate): WorkflowTemplate {
+  return {
+    id: uid("wft"),
+    name: `${template.name} (copy)`,
+    stages: template.stages.map((s) => ({ ...s, dependsOn: [...s.dependsOn] })),
+  };
 }
 
 /**
@@ -142,6 +224,17 @@ export function workflowTemplate(templateId: string): WorkflowTemplate {
   return WORKFLOW_TEMPLATES[templateId] ?? STANDARD_WORKFLOW_TEMPLATE;
 }
 
+/**
+ * The template a workflow runs on: its embedded snapshot when it has one
+ * (custom templates are snapshotted at start), else the built-in registry.
+ * Every consumer of a workflow's stage graph goes through here — never
+ * straight to {@link workflowTemplate} — or custom-template workflows would
+ * silently fall back to the standard stages.
+ */
+export function templateOf(workflow: Pick<Workflow, "templateId" | "template">): WorkflowTemplate {
+  return workflow.template ?? workflowTemplate(workflow.templateId);
+}
+
 /* ------------------------------------------------------------------ */
 /* Instances                                                           */
 /* ------------------------------------------------------------------ */
@@ -194,6 +287,12 @@ export const WorkflowSchema = z.object({
   /** The user's goal, refined over the manager's `refine` stage. */
   goal: z.string(),
   templateId: z.string().default(STANDARD_WORKFLOW_TEMPLATE.id),
+  /**
+   * Snapshot of a custom template's stage graph, taken at start. Built-in
+   * templates resolve by id; customs embed so later edits/deletes in the
+   * builder can't change a workflow that is already running.
+   */
+  template: WorkflowTemplateSchema.nullish(),
   /** Board the workflow plans onto (null = the workspace's first board). */
   projectId: z.string().nullish(),
   /** Epic the manager created for this workflow, once it exists. */
@@ -228,18 +327,26 @@ export function createWorkflow(init: {
   name: string;
   goal: string;
   templateId?: string;
+  /** Custom template to run on — validated and snapshotted into the record. */
+  template?: WorkflowTemplate | null;
   projectId?: string | null;
   cwd?: string;
   agentId?: string | null;
   budgetUsd?: number | null;
 }): Workflow {
-  const template = workflowTemplate(init.templateId ?? STANDARD_WORKFLOW_TEMPLATE.id);
+  const template =
+    init.template ?? workflowTemplate(init.templateId ?? STANDARD_WORKFLOW_TEMPLATE.id);
+  if (init.template) {
+    const errors = validateWorkflowTemplate(init.template);
+    if (errors.length) throw new Error(`Invalid workflow template: ${errors.join(" ")}`);
+  }
   const ts = nowIso();
   return WorkflowSchema.parse({
     id: uid("wf"),
     name: init.name,
     goal: init.goal,
     templateId: template.id,
+    template: init.template ?? null,
     projectId: init.projectId ?? null,
     cwd: init.cwd ?? ".",
     agentId: init.agentId ?? null,
@@ -295,7 +402,7 @@ export function setStageStatus(
   note?: string | null,
   at = nowIso(),
 ): StageTransition {
-  const template = workflowTemplate(workflow.templateId);
+  const template = templateOf(workflow);
   const def = template.stages.find((s) => s.id === stageId);
   if (!def) return { ok: false, reason: `Unknown stage: ${stageId}` };
   const state = workflow.stages.find((s) => s.id === stageId);
@@ -431,7 +538,7 @@ export function budgetState(workflow: Workflow, spend: WorkflowSpend): BudgetSta
 
 /** The workflow_status tool text: stages, tracks, spend vs budget. */
 export function workflowStatusText(workflow: Workflow, spend: WorkflowSpend): string {
-  const template = workflowTemplate(workflow.templateId);
+  const template = templateOf(workflow);
   const lines = [
     `Workflow ${workflow.id}: ${workflow.name} [${workflow.status}]` +
       (workflow.pausedReason ? ` — ${workflow.pausedReason}` : ""),
@@ -475,7 +582,7 @@ export function workflowStatusText(workflow: Workflow, spend: WorkflowSpend): st
  * steerable by user messages at any time.
  */
 export function buildWorkflowManagerPrompt(workflow: Workflow): string {
-  const template = workflowTemplate(workflow.templateId);
+  const template = templateOf(workflow);
   const budget =
     workflow.budgetUsd != null
       ? `Your budget is $${workflow.budgetUsd.toFixed(2)}. Check workflow_status before each wave of dispatches; once spend crosses the budget, dispatches are refused and the workflow pauses — warn the user via ask_question *before* that happens if the goal looks bigger than the budget.`
@@ -518,6 +625,6 @@ export function formatUserMessage(text: string): string {
 
 /** Purpose for a stage's workers (template lookup with implement fallback). */
 export function stagePurpose(workflow: Workflow, stageId: string): RunPurpose {
-  const def = workflowTemplate(workflow.templateId).stages.find((s) => s.id === stageId);
+  const def = templateOf(workflow).stages.find((s) => s.id === stageId);
   return def ? def.purpose : RunPurposeSchema.parse("implement");
 }

@@ -175,6 +175,9 @@ export class WorkspaceRuntime {
       this.workflows.events.on("changed", ({ workflow }) =>
         broadcast("workflow.changed", { ws: this.id, workflow }),
       ),
+      this.workflows.events.on("templatesChanged", () =>
+        broadcast("workflow.templatesChanged", { ws: this.id }),
+      ),
     ];
     try {
       this.watcher = fsSync.watch(this.root, { recursive: true }, (_evt, filename) => {

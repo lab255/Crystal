@@ -117,6 +117,10 @@ export interface OrchestrateLink {
   run?: string;
   /** Selected workflow id (workflows tab). */
   workflow?: string;
+  /** Template builder pane open (workflows tab). */
+  builder?: boolean;
+  /** Selected template id in the builder. */
+  template?: string;
   /** Board grouping: "status" (default), "epic", or "tag:<dimension>". */
   group?: string;
   /** Board sort key: "manual" (default), "priority", "size", "tokens" or "cost". */
@@ -266,6 +270,8 @@ export function formatDeepLink(link: DeepLink): string {
     if (tab === "board" && o.owner) add("owner", o.owner);
     if ((tab === "runs" || tab === "agents") && o.run) add("run", o.run);
     if (tab === "workflows" && o.workflow) add("workflow", o.workflow);
+    if (tab === "workflows" && o.builder) add("builder", "1");
+    if (tab === "workflows" && o.builder && o.template) add("template", o.template);
   } else if (mode === "code") {
     if (link.code?.file) add("file", link.code.file);
   } else if (mode === "surfaces") {
@@ -430,6 +436,9 @@ export function parseDeepLink(hash: string): DeepLink {
     if (run) o.run = run;
     const workflow = params.get("workflow");
     if (workflow) o.workflow = workflow;
+    if (params.get("builder") === "1") o.builder = true;
+    const template = params.get("template");
+    if (template) o.template = template;
     if (Object.keys(o).length) link.orchestrate = o;
   } else if (mode === "code") {
     link.mode = "code";
@@ -509,7 +518,7 @@ const ORCHESTRATE_TAB_FIELDS: Record<OrchestratorTabId, readonly (keyof Orchestr
   board: ["tab", "project", "task", "group", "sort"],
   runs: ["tab", "project", "run"],
   agents: ["tab", "project", "run"],
-  workflows: ["tab", "project", "workflow"],
+  workflows: ["tab", "project", "workflow", "builder", "template"],
 };
 
 const SURFACES_VIEW_FIELDS: Record<SurfaceViewId, readonly (keyof SurfacesLink)[]> = {

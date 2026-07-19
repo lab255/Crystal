@@ -61,6 +61,16 @@ export function OrchestratorMode() {
     (id: string | null) => nav({ orchestrate: { workflow: id } }),
     [nav],
   );
+  const builderOpen = useNav((l) => l.orchestrate?.builder) ?? false;
+  const setBuilderOpen = useCallback(
+    (open: boolean) => nav({ orchestrate: { builder: open } }),
+    [nav],
+  );
+  const templateId = useNav((l) => l.orchestrate?.template) ?? null;
+  const setTemplateId = useCallback(
+    (id: string | null) => nav({ orchestrate: { template: id } }),
+    [nav],
+  );
   const [createOpen, setCreateOpen] = useState(false);
   const [newName, setNewName] = useState("");
 
@@ -176,6 +186,10 @@ export function OrchestratorMode() {
           <WorkflowsTab
             selectedWorkflowId={workflowId}
             onSelectWorkflow={setWorkflowId}
+            builderOpen={builderOpen}
+            onToggleBuilder={setBuilderOpen}
+            selectedTemplateId={templateId}
+            onSelectTemplate={setTemplateId}
             onOpenRun={(id) => {
               setRunId(id);
               setTab("runs");
