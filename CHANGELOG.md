@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.2.0 (2026-07-20)
+
+### Features
+
+- global lens spanning all tools + endpoint validation + Ask AI ([`c858ffc`](https://github.com/eliotlim/crystal/commit/c858ffc))
+
 ## v0.1.2 (2026-07-20)
 
 ### Bug Fixes
