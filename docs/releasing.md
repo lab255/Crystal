@@ -111,3 +111,24 @@ an Apple cert. The hardened-runtime entitlements are wired
 working setup. If the first notarized build is rejected, check `notarytool`'s log
 for an unsigned/mis-sealed nested binary and add a deep-sign step before
 notarization in `publish-tauri`.
+
+Why each entitlement is required (the sidecar is a Node Single-Executable-App —
+a copy of `node` with the server blob injected, see `scripts/build-sidecar.mjs`):
+
+- `allow-jit` / `allow-unsigned-executable-memory` — V8 JITs JavaScript; under
+  the hardened runtime both are required or the sidecar is SIGKILLed on launch
+  after notarization.
+- `disable-library-validation` — the sidecar loads node-pty's native `.node`
+  addon from the app's Resources dir (staged as a Tauri resource, not baked into
+  the SEA — native addons aren't embeddable). Library validation would refuse a
+  Mach-O sealed under a different Team ID; disabling it lets the app-signed addon
+  load.
+
+**Do not add XML comments (`<!-- … -->`) to `entitlements.plist`.** `codesign`
+embeds entitlements through AMFI's deserializer (`AMFIUnserializeXML`), which is
+stricter than a normal plist parser and errors on comments —
+`Failed to parse entitlements: AMFIUnserializeXML: syntax error near line N`,
+failing the whole `tauri build`. `plutil -lint` will NOT catch this (it passes
+on comments); test with `codesign -s - --force --options runtime --entitlements
+entitlements.plist <copy-of-any-macho>`. Keep the rationale here in the runbook,
+not in the plist.
