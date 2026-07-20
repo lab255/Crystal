@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.2 (2026-07-20)
+
+### Bug Fixes
+
+- Developer-ID sign node-pty's nested Mach-O for notarization ([`3dc6edf`](https://github.com/eliotlim/crystal/commit/3dc6edf))
+
 ## v0.1.1 (2026-07-20)
 
 ### Bug Fixes
