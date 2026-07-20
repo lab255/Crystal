@@ -5,7 +5,7 @@
 // artifact; the other platforms build on their own CI runners.
 //
 // Run from apps/server via `pnpm build:sidecar` (Node >= 20 with SEA).
-import { execSync } from "node:child_process";
+import { execSync, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
@@ -14,6 +14,36 @@ const run = (cmd) => {
   console.log(">", cmd);
   execSync(cmd, { stdio: "inherit" });
 };
+
+/** Mach-O magic numbers (thin + fat, both byte orders), read big-endian. */
+const MACHO_MAGIC = new Set([
+  0xfeedface, 0xcefaedfe, 0xfeedfacf, 0xcffaedfe, 0xcafebabe, 0xbebafeca,
+]);
+
+/** True if `file`'s first four bytes are a Mach-O magic (native binary). */
+function isMachO(file) {
+  let fd;
+  try {
+    fd = fs.openSync(file, "r");
+    const buf = Buffer.alloc(4);
+    if (fs.readSync(fd, buf, 0, 4, 0) < 4) return false;
+    return MACHO_MAGIC.has(buf.readUInt32BE(0));
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+}
+
+/** Recursively collect every Mach-O file under `dir`. */
+function collectMachO(dir, acc = []) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, entry.name);
+    if (entry.isDirectory()) collectMachO(p, acc);
+    else if (entry.isFile() && isMachO(p)) acc.push(p);
+  }
+  return acc;
+}
 
 /** Node target triple for the host — matches Tauri's externalBin naming. */
 function hostTriple() {
@@ -107,3 +137,26 @@ fs.copyFileSync(
   path.join(stageBase, "analysis-worker.cjs"),
 );
 console.log("staged analysis worker");
+
+// 7. Developer-ID sign the staged native Mach-O (node-pty's pty.node +
+//    spawn-helper). They ship ad-hoc / linker-signed — no Team ID, no secure
+//    timestamp — and Tauri signs only the app's own executables, never nested
+//    Mach-O under Contents/Resources, so notarytool rejects the bundle without
+//    this. `beforeBuildCommand` re-stages this dir on every build (the rmSync
+//    above), so the signing has to happen HERE — a pre-`tauri build` workflow
+//    step would just be wiped — and before Tauri seals the app. Gated on
+//    APPLE_SIGNING_IDENTITY: only CI (release.yml) sets it, so local/dev builds
+//    stay ad-hoc and offline (no --timestamp network call). See docs/releasing.md.
+const signingIdentity = process.env.APPLE_SIGNING_IDENTITY;
+if (isMac && signingIdentity) {
+  const nested = collectMachO(stageBase);
+  for (const bin of nested) {
+    console.log("> codesign (runtime + timestamp)", path.relative(stageBase, bin));
+    execFileSync(
+      "codesign",
+      ["--force", "--options", "runtime", "--timestamp", "--sign", signingIdentity, bin],
+      { stdio: "inherit" },
+    );
+  }
+  console.log(`signed ${nested.length} nested Mach-O for notarization`);
+}

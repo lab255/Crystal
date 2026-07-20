@@ -105,3 +105,12 @@ environment approval → per-arch build/sign/notarize → signed updater `latest
   normal plist parser and dies on comments (`syntax error near line N`), failing
   `tauri build` at the signing step. `plutil -lint` passes on comments so it won't catch
   it. Keep the entitlement rationale in `docs/releasing.md`, not the plist.
+- Tauri signs only the app's own executables (main binary + `externalBin` sidecar), never
+  nested Mach-O under `Contents/Resources`. node-pty's staged prebuild (`pty.node` +
+  `spawn-helper`) ships ad-hoc-signed, so notarization rejects it. `scripts/build-sidecar.mjs`
+  (step 7) Developer-ID-signs every staged Mach-O with `--options runtime --timestamp` when
+  `APPLE_SIGNING_IDENTITY` is set — it must run there (inside `beforeBuildCommand`) because
+  the step re-stages `resources/sidecar` each build, wiping anything signed earlier. The
+  release job imports the cert into a keychain itself and passes the identity as
+  `APPLE_SIGNING_IDENTITY` (not `APPLE_CERTIFICATE` — a duplicate import makes `codesign`
+  ambiguous). See `docs/releasing.md`.

@@ -101,16 +101,45 @@ pnpm --filter @crystal/desktop build
 
 `tauri dev` is unaffected (no updater artifacts are produced in dev).
 
-## Residual risk — verify on the first real release
+## Signing node-pty's nested Mach-O (notarization)
 
-Notarization of the **Node-SEA sidecar and node-pty's native `.node`** (both
-nested Mach-O inside the bundle) is the one thing that can't be verified without
-an Apple cert. The hardened-runtime entitlements are wired
-(`entitlements.plist` → `allow-jit`, `allow-unsigned-executable-memory`,
-`disable-library-validation` for the on-disk `.node`), matching OpenBook's
-working setup. If the first notarized build is rejected, check `notarytool`'s log
-for an unsigned/mis-sealed nested binary and add a deep-sign step before
-notarization in `publish-tauri`.
+node-pty's prebuild ships two Mach-O — `pty.node` and `spawn-helper` — that get
+staged into `Contents/Resources/sidecar/…`. They arrive **ad-hoc / linker-signed
+(no Team ID, no secure timestamp)**, and Tauri signs only the app's own
+executables (the `crystal-desktop` binary and the `crystal-server` externalBin),
+never nested Mach-O under `Resources`. So notarytool rejects the bundle with:
+
+```
+"The binary is not signed with a valid Developer ID certificate."
+"The signature does not include a secure timestamp."
+  …/sidecar/node_modules/@lydell/node-pty-*/prebuilds/*/spawn-helper
+```
+
+Fix (wired in `scripts/build-sidecar.mjs` step 7): after staging node-pty, it
+Developer-ID-signs every nested Mach-O with `codesign --options runtime
+--timestamp` when `APPLE_SIGNING_IDENTITY` is set. This runs inside `tauri
+build`'s `beforeBuildCommand`, so the signatures are in place before Tauri seals
+and notarizes the app. It has to live there, not in a pre-build workflow step:
+`build-sidecar` wipes and re-stages `resources/sidecar` on every build, so
+anything signed earlier would be clobbered. Local/dev builds don't set
+`APPLE_SIGNING_IDENTITY`, so they stay ad-hoc and offline (no `--timestamp`).
+
+Because the signing has to happen during `beforeBuildCommand` — before Tauri's
+own cert import — `publish-tauri` imports the Developer ID cert into a keychain
+itself (the "Import signing certificate" step) and passes the identity to the
+build via `APPLE_SIGNING_IDENTITY` instead of `APPLE_CERTIFICATE`. Keep it a
+single import: adding `APPLE_CERTIFICATE` back would land a second copy of the
+same identity and `codesign` would fail on an ambiguous match.
+
+Still verify on the first real release: with a valid cert, confirm `notarytool`
+returns `Accepted` and that `spctl -a -vvv Crystal.app` / `codesign -dvvv` on the
+two nested binaries show a Developer ID authority **and** a signed timestamp.
+The hardened-runtime entitlements (`entitlements.plist` → `allow-jit`,
+`allow-unsigned-executable-memory`, `disable-library-validation` for the on-disk
+`.node`) apply to the app process; the nested binaries are signed without
+entitlements (they don't JIT).
+
+## Hardened-runtime entitlements
 
 Why each entitlement is required (the sidecar is a Node Single-Executable-App —
 a copy of `node` with the server blob injected, see `scripts/build-sidecar.mjs`):

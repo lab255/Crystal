@@ -172,19 +172,61 @@ jobs:
           workspaces: apps/desktop/src-tauri
       - run: pnpm install --frozen-lockfile
 
+      # Import the Developer ID cert into a keychain OURSELVES (rather than letting
+      # Tauri import APPLE_CERTIFICATE at signing time). Why: node-pty's nested
+      # Mach-O (pty.node + spawn-helper) ship ad-hoc-signed and Tauri never signs
+      # anything under Contents/Resources, so notarization rejects them. build-
+      # sidecar Developer-ID-signs them during `tauri build`'s beforeBuildCommand
+      # (see scripts/build-sidecar.mjs) — which needs the identity in a keychain
+      # BEFORE the build starts, too early for Tauri's own import. One keychain +
+      # one identity (via APPLE_SIGNING_IDENTITY below): importing the cert twice
+      # would make `codesign` fail on an ambiguous identity match.
+      - name: Import signing certificate into a keychain
+        id: keychain
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/crystal-signing.keychain-db"
+          keypass="$(uuidgen)"
+          security create-keychain -p "$keypass" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"   # don't auto-lock mid-build
+          security unlock-keychain -p "$keypass" "$keychain"
+          cert="$RUNNER_TEMP/certificate.p12"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$cert"
+          security import "$cert" -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$keychain"
+          rm -f "$cert"
+          # Let codesign use the key non-interactively (no UI prompt on the runner).
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$keypass" "$keychain" >/dev/null
+          # Prepend our keychain to the user search list, keeping the defaults.
+          security list-keychains -d user -s "$keychain" \
+            $(security list-keychains -d user | sed 's/["]//g')
+          identity=$(security find-identity -v -p codesigning "$keychain" \
+            | awk -F'"' '/Developer ID Application/ {print $2; exit}')
+          if [ -z "$identity" ]; then
+            echo "::error::No 'Developer ID Application' identity in the imported certificate — check APPLE_CERTIFICATE/APPLE_CERTIFICATE_PASSWORD." >&2
+            exit 1
+          fi
+          echo "identity=$identity" >> "$GITHUB_OUTPUT"
+          echo "Imported signing identity: $identity"
+
       # tauri build runs its beforeBuildCommand (web + Node-SEA sidecar) then
       # bundles. --target pins the output path (target/<triple>/release/bundle)
       # and arch-suffixes the dmg; on each runner target == host, so the sidecar
       # (host-only) lands at the externalBin path Tauri expects.
       - name: Build, sign, notarize
         env:
-          # macOS Developer ID signing + notarization. Tauri imports the .p12 into
-          # an ephemeral keychain and auto-detects the identity; APPLE_ID +
-          # app-specific APPLE_PASSWORD + APPLE_TEAM_ID drive notarytool. The Node
-          # SEA sidecar's hardened-runtime entitlements live in entitlements.plist
-          # (wired via tauri.conf.json → bundle.macOS.entitlements).
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          # App signing uses the identity imported above (single keychain — do NOT
+          # also pass APPLE_CERTIFICATE, which would import a duplicate and make
+          # codesign's identity match ambiguous). build-sidecar reads the same
+          # APPLE_SIGNING_IDENTITY to Developer-ID-sign node-pty's nested Mach-O
+          # before Tauri seals the bundle. APPLE_ID + app-specific APPLE_PASSWORD +
+          # APPLE_TEAM_ID drive notarytool. The Node-SEA sidecar's hardened-runtime
+          # entitlements live in entitlements.plist (via tauri.conf.json).
+          APPLE_SIGNING_IDENTITY: ${{ steps.keychain.outputs.identity }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
