@@ -100,3 +100,8 @@ environment approval → per-arch build/sign/notarize → signed updater `latest
   bundler errors out (it won't emit unsigned archives) unless `TAURI_SIGNING_PRIVATE_KEY`
   (+ `_PASSWORD`) are exported. Locally: `export`-them from `~/.crystal/updater/` (see
   `docs/releasing.md`). `tauri dev` is unaffected (dev makes no updater artifacts).
+- Never put XML comments (`<!-- … -->`) in `apps/desktop/src-tauri/entitlements.plist`.
+  `codesign` embeds entitlements via AMFI's `AMFIUnserializeXML`, which is stricter than a
+  normal plist parser and dies on comments (`syntax error near line N`), failing
+  `tauri build` at the signing step. `plutil -lint` passes on comments so it won't catch
+  it. Keep the entitlement rationale in `docs/releasing.md`, not the plist.
