@@ -11,7 +11,17 @@ import {
 import { storybookStorySlug, type StorySurface } from "@crystal/core";
 import { useNav, useNavUpdate, useSymbolMenu } from "@crystal/client";
 import { EmptyState, Pane as SplitPane, Split, Tooltip, cn, useContextMenu } from "@crystal/ui";
-import { DetailSection, FileLink, GroupHeader, ListHeader, copyText, useSurfaces } from "./common.js";
+import {
+  DetailSection,
+  FileLink,
+  GroupHeader,
+  LENS_DIM_CLASS,
+  LensHint,
+  ListHeader,
+  copyText,
+  useSurfaces,
+  useSurfacesLens,
+} from "./common.js";
 
 /**
  * Stories — the workspace's CSF stories, grouped by their meta title, with a
@@ -31,10 +41,20 @@ export function StoriesView() {
   const find = (useNav((l) => l.surfaces?.find) ?? "").trim().toLowerCase();
   const menu = useContextMenu();
   const symbolMenu = useSymbolMenu();
+  const lens = useSurfacesLens();
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
 
   const stories = report?.stories ?? [];
   const storybookUrl = report?.demo.storybookUrl ?? null;
+
+  /** Lens members (null when no lens dims) — non-members render dimmed. */
+  const lensMembers = useMemo(
+    () =>
+      lens.active
+        ? new Set(stories.filter((s) => lens.matcher.file(s.file)).map((s) => s.id))
+        : null,
+    [lens, stories],
+  );
 
   const visible = useMemo(
     () =>
@@ -133,7 +153,9 @@ export function StoriesView() {
             title="Stories"
             shown={visible.length}
             total={stories.length}
-          />
+          >
+            <LensHint lens={lens} matched={lensMembers?.size ?? 0} total={stories.length} />
+          </ListHeader>
           <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2">
             {groups.map(({ title, list }) => (
               <div key={title} className="mb-1.5">
@@ -162,6 +184,7 @@ export function StoriesView() {
                           selected?.id === s.id
                             ? "bg-crystal-500/15 text-ink"
                             : "text-ink-muted hover:bg-surface-2 hover:text-ink",
+                          lensMembers && !lensMembers.has(s.id) && LENS_DIM_CLASS,
                         )}
                       >
                         <span className="min-w-0 flex-1 truncate text-[11px]">{s.name}</span>

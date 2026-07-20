@@ -180,59 +180,82 @@ describe("round trips", () => {
     }
   });
 
-  it("code map level of detail and facet lens", () => {
+  it("code map level of detail and the global lens", () => {
     const link: DeepLink = {
       ws: "abc",
+      lens: "intent:auth,intent:payments",
       mode: "architect",
       architect: {
         view: "codemap",
         codemap: { kind: "workspace", ws: "abc" },
         lod: "members",
-        lens: "intent:auth,intent:payments",
       },
     };
     expect(roundTrip(link)).toEqual(link);
     expect(formatDeepLink(link)).toBe(
-      "#/architect/codemap?ws=abc&at=workspace&lod=members&lens=intent%3Aauth,intent%3Apayments",
+      "#/architect/codemap?ws=abc&lens=intent%3Aauth,intent%3Apayments&at=workspace&lod=members",
     );
+  });
+
+  it("global lens travels with every mode", () => {
+    const surfaces: DeepLink = {
+      ws: "abc",
+      lens: "diff:worktree",
+      mode: "surfaces",
+      surfaces: { view: "apis" },
+    };
+    expect(roundTrip(surfaces)).toEqual(surfaces);
+    expect(formatDeepLink(surfaces)).toBe("#/surfaces/apis?ws=abc&lens=diff%3Aworktree");
+    const quality: DeepLink = {
+      ws: "abc",
+      lens: "facet:f1",
+      mode: "quality",
+      quality: { view: "tests" },
+    };
+    expect(roundTrip(quality)).toEqual(quality);
+  });
+
+  it("old architect-local lens URLs parse into the global lens", () => {
+    const parsed = parseDeepLink("#/architect/codemap?ws=abc&at=workspace&lens=intent%3Aauth");
+    expect(parsed.lens).toBe("intent:auth");
   });
 
   it("code map lens context toggle", () => {
     const link: DeepLink = {
       ws: "abc",
+      lens: "intent:auth",
       mode: "architect",
       architect: {
         view: "codemap",
         codemap: { kind: "workspace", ws: "abc" },
-        lens: "intent:auth",
         lensCtx: true,
       },
     };
     expect(roundTrip(link)).toEqual(link);
     expect(formatDeepLink(link)).toBe(
-      "#/architect/codemap?ws=abc&at=workspace&lens=intent%3Aauth&lensctx=1",
+      "#/architect/codemap?ws=abc&lens=intent%3Aauth&at=workspace&lensctx=1",
     );
     // off = omitted entirely
     expect(formatDeepLink({ ...link, architect: { ...link.architect, lensCtx: false } })).toBe(
-      "#/architect/codemap?ws=abc&at=workspace&lens=intent%3Aauth",
+      "#/architect/codemap?ws=abc&lens=intent%3Aauth&at=workspace",
     );
     expect(parseDeepLink("#/architect/codemap?ws=abc&at=workspace").architect?.lensCtx).toBeUndefined();
   });
 
-  it("systems grouping and facet lens", () => {
+  it("systems grouping with the global lens", () => {
     const link: DeepLink = {
       ws: "abc",
+      lens: "intent:auth",
       mode: "architect",
       architect: {
         view: "systems",
         system: "sys:auth",
         sysGroup: "layers",
-        lens: "intent:auth",
       },
     };
     expect(roundTrip(link)).toEqual(link);
     expect(formatDeepLink(link)).toBe(
-      "#/architect/systems?ws=abc&system=sys%3Aauth&group=layers&lens=intent%3Aauth",
+      "#/architect/systems?ws=abc&lens=intent%3Aauth&system=sys%3Aauth&group=layers",
     );
     // "modules" (the default) round-trips too when explicitly set
     const modules: DeepLink = {
@@ -246,10 +269,10 @@ describe("round trips", () => {
   it("systems lens context toggle (system-id lens)", () => {
     const link: DeepLink = {
       ws: "abc",
+      lens: "sys:auth",
       mode: "architect",
       architect: {
         view: "systems",
-        lens: "sys:auth",
         lensCtx: true,
       },
     };

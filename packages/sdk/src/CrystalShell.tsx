@@ -30,6 +30,7 @@ import {
 import { Spinner, StatusDot, Tooltip, TooltipProvider, TrafficLightDot, cn } from "@crystal/ui";
 import { BranchSwitcher } from "./BranchSwitcher.js";
 import { CommandPalette } from "./CommandPalette.js";
+import { LensBar } from "./LensBar.js";
 import { useDeepLinks } from "./deeplinks.js";
 import { CRYSTAL_MODES, MODE_LABELS, type CrystalMode } from "./modes.js";
 import { TerminalPanel } from "./TerminalPanel.js";
@@ -242,6 +243,7 @@ export function CrystalShell({
             onSelectWorkspace={selectWorkspace}
           />
           <BranchSwitcher />
+          <LensBar onOpenTerminal={() => setTerminalOpen(true)} />
         </header>
 
         <div className="flex min-h-0 flex-1">

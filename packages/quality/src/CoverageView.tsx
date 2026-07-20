@@ -12,7 +12,15 @@ import type { CoverageMetric, CoverageReport, FileCoverage } from "@crystal/core
 import { sumCoverage } from "@crystal/core";
 import { requestOpenFile, useNav, useNavUpdate, useSymbolMenu } from "@crystal/client";
 import { EmptyState, Pane as SplitPane, Split, Tooltip, cn, useContextMenu } from "@crystal/ui";
-import { CoverageBar, PctLabel, copyText, useQuality } from "./common.js";
+import {
+  CoverageBar,
+  LensHint,
+  PctLabel,
+  copyText,
+  useQuality,
+  useQualityLens,
+  type QualityLens,
+} from "./common.js";
 
 /**
  * Coverage — the latest istanbul report rendered as an expandable directory
@@ -113,6 +121,7 @@ export function CoverageView() {
   const find = (useNav((l) => l.quality?.find) ?? "").trim().toLowerCase();
   const menu = useContextMenu();
   const symbolMenu = useSymbolMenu();
+  const lens = useQualityLens();
   const [expanded, setExpanded] = useState<ReadonlySet<string> | null>(null);
 
   const filtered = useMemo(() => {
@@ -122,6 +131,11 @@ export function CoverageView() {
   }, [coverage, find]);
 
   const tree = useMemo(() => (filtered ? buildTree(filtered.files) : null), [filtered]);
+
+  const lensMemberCount = useMemo(
+    () => (filtered ? filtered.files.filter((f) => lens.matcher.file(f.path)).length : 0),
+    [filtered, lens.matcher],
+  );
 
   // First render of a report: open the top level so the tree isn't a wall of
   // closed folders; explicit user toggles take over from there.
@@ -235,6 +249,12 @@ export function CoverageView() {
                 Coverage tree
               </span>
               <span className="text-[10px] text-ink-faint">{tree?.fileCount ?? 0} files</span>
+              <LensHint
+                lens={lens}
+                member={lensMemberCount}
+                total={tree?.fileCount ?? 0}
+                noun="files"
+              />
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2">
               {tree?.children.map((node) => (
@@ -245,6 +265,7 @@ export function CoverageView() {
                   expanded={expandedSet}
                   autoExpand={find.length > 0}
                   selectedPath={selectedPath}
+                  lens={lens}
                   onToggle={toggle}
                   onSelect={(p) => nav({ quality: { covPath: p } })}
                   onContextMenu={(e, n) => menu.open(e, nodeMenu(n))}
@@ -279,6 +300,7 @@ function TreeRow({
   expanded,
   autoExpand,
   selectedPath,
+  lens,
   onToggle,
   onSelect,
   onContextMenu,
@@ -289,12 +311,15 @@ function TreeRow({
   /** Find active: open everything so hits are visible. */
   autoExpand: boolean;
   selectedPath: string | null;
+  lens: QualityLens;
   onToggle: (path: string) => void;
   onSelect: (path: string) => void;
   onContextMenu: (e: React.MouseEvent, node: CovNode) => void;
 }) {
   const isDir = node.file === null;
   const open = autoExpand || expanded.has(node.path);
+  // Lens-relevant: a member file, or a directory the lens touches.
+  const inLens = isDir ? lens.matcher.under(node.path) : lens.matcher.file(node.path);
   return (
     <>
       <button
@@ -307,6 +332,8 @@ function TreeRow({
           selectedPath === node.path
             ? "bg-crystal-500/15 text-ink"
             : "text-ink-muted hover:bg-surface-2 hover:text-ink",
+          // Outside the lens: dimmed but present, same as find elsewhere.
+          lens.dimming && !inLens && "opacity-40",
         )}
         style={{ paddingLeft: 8 + depth * 14 }}
       >
@@ -340,6 +367,7 @@ function TreeRow({
               expanded={expanded}
               autoExpand={autoExpand}
               selectedPath={selectedPath}
+              lens={lens}
               onToggle={onToggle}
               onSelect={onSelect}
               onContextMenu={onContextMenu}

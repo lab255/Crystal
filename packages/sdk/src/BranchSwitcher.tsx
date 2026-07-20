@@ -21,7 +21,7 @@ export function BranchSwitcher() {
   const { client } = useCrystal();
   const activeWsId = useWorkspaces((s) => s.activeId);
   const openWorkspace = useWorkspaces((s) => s.openWorkspace);
-  const lensParam = useNav((l) => l.architect?.lens ?? null);
+  const lensParam = useNav((l) => l.lens ?? null);
   const updateNav = useNavUpdate();
 
   // Shared refs fetch (branches + worktrees; no commits needed here) — the
@@ -90,7 +90,7 @@ export function BranchSwitcher() {
 
   const applyLens = useCallback(
     (s: IndexFacetSuggestion) => {
-      updateNav({ mode: "architect", architect: { view: "systems", lens: s.tags.join(",") } });
+      updateNav({ mode: "architect", architect: { view: "systems" }, lens: s.tags.join(",") });
     },
     [updateNav],
   );
@@ -187,7 +187,7 @@ export function BranchSwitcher() {
         )}
         {lensParam ? (
           <DropdownMenuItem
-            onSelect={() => updateNav({ architect: { lens: null } })}
+            onSelect={() => updateNav({ lens: null })}
             className="gap-2 text-ink-muted"
           >
             <Focus className="h-3.5 w-3.5 shrink-0" /> Clear lens

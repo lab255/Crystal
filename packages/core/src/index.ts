@@ -26,6 +26,8 @@ export * from "./surfaces.js";
 export * from "./quality.js";
 export * from "./systems-layout.js";
 export * from "./code-review.js";
+export * from "./endpoint-validation.js";
+export * from "./lens.js";
 export * from "./bridge.js";
 export * from "./deeplink.js";
 export * from "./highlight.js";

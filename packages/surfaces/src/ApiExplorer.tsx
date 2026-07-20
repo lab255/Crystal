@@ -6,12 +6,14 @@ import {
   Copy,
   ExternalLink,
   ListFilter,
+  ShieldCheck,
   TerminalSquare,
   Webhook,
   X,
 } from "lucide-react";
 import {
   endpointKey,
+  type EndpointValidation,
   type SystemEndpoint,
   type SystemModule,
   type SystemOverview,
@@ -26,7 +28,15 @@ import {
 } from "@crystal/client";
 import { EmptyState, Pane as SplitPane, Split, Spinner, Tooltip, cn, useContextMenu } from "@crystal/ui";
 import { ROLE_META } from "@crystal/architect";
-import { DetailSection, copyText, useArchHighlight, useSurfaces } from "./common.js";
+import {
+  DetailSection,
+  LENS_DIM_CLASS,
+  LensHint,
+  copyText,
+  useArchHighlight,
+  useSurfaces,
+  useSurfacesLens,
+} from "./common.js";
 import { TraceSection, useEndpointTrace } from "./trace.js";
 
 /**
@@ -69,6 +79,20 @@ export function MethodChip({ method, className }: { method: string; className?: 
 
 const apiKeyOf = endpointKey;
 
+/** Kind badge palette for validation chips — semantic accents only. */
+const VALIDATION_KIND_CLASS: Record<EndpointValidation["kind"], string> = {
+  zod: "bg-accent-emerald/15 text-accent-emerald",
+  joi: "bg-accent-amber/15 text-accent-amber",
+  celebrate: "bg-accent-violet/15 text-accent-violet",
+  "express-validator": "bg-accent-cyan/15 text-accent-cyan",
+  middleware: "bg-surface-3 text-ink-muted",
+};
+
+/** Distinct validation kinds in chain order — the list row's tooltip. */
+function validationKindsOf(validation: readonly EndpointValidation[]): string {
+  return [...new Set(validation.map((v) => v.kind))].join(", ");
+}
+
 /** `curl -X POST 'http://localhost:3000/api/x'` for the copy menu. */
 function curlOf(ep: { method: string; path: string }, baseUrl: string | null): string {
   const base = baseUrl ?? "http://localhost:3000";
@@ -92,6 +116,7 @@ export function ApiExplorer({ appUrl }: { appUrl: string | null }) {
   const find = (useNav((l) => l.surfaces?.find) ?? "").trim().toLowerCase();
   const menu = useContextMenu();
   const symbolMenu = useSymbolMenu();
+  const lens = useSurfacesLens();
 
   const [overview, setOverview] = useState<SystemOverview | null>(null);
   const [loading, setLoading] = useState(true);
@@ -133,6 +158,12 @@ export function ApiExplorer({ appUrl }: { appUrl: string | null }) {
     }
     return out;
   }, [overview]);
+
+  /** Lens members (null when no lens dims) — non-member rows render dimmed. */
+  const lensMembers = useMemo(
+    () => (lens.active ? new Set(rows.filter((r) => lens.matcher.file(r.ep.file))) : null),
+    [lens, rows],
+  );
 
   const visible = useMemo(() => {
     return rows.filter((r) => {
@@ -244,6 +275,7 @@ export function ApiExplorer({ appUrl }: { appUrl: string | null }) {
             <span className="text-[10px] text-ink-faint">
               {visible.length}/{rows.length}
             </span>
+            <LensHint lens={lens} matched={lensMembers?.size ?? 0} total={rows.length} />
             {filterName ? (
               <span className="ml-auto flex min-w-0 items-center gap-1 rounded-lg border border-edge bg-surface-2 px-1.5 py-0.5">
                 <ListFilter className="h-3 w-3 shrink-0 text-accent-cyan" />
@@ -290,12 +322,18 @@ export function ApiExplorer({ appUrl }: { appUrl: string | null }) {
                         selected === r
                           ? "bg-crystal-500/15 text-ink"
                           : "text-ink-muted hover:bg-surface-2 hover:text-ink",
+                        lensMembers && !lensMembers.has(r) && LENS_DIM_CLASS,
                       )}
                     >
                       <MethodChip method={r.ep.method} />
                       <span className="min-w-0 flex-1 truncate font-mono text-[10.5px]">
                         {r.ep.path}
                       </span>
+                      {r.ep.validation && r.ep.validation.length > 0 ? (
+                        <Tooltip content={`Validated: ${validationKindsOf(r.ep.validation)}`}>
+                          <ShieldCheck className="h-3 w-3 shrink-0 text-accent-emerald" />
+                        </Tooltip>
+                      ) : null}
                     </button>
                   ))}
                 </div>
@@ -327,6 +365,78 @@ export function ApiExplorer({ appUrl }: { appUrl: string | null }) {
       </SplitPane>
       {menu.element}
     </Split>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Validation                                                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * What request validation this route actually enforces — the middleware chain
+ * and in-handler schema parses the analyzer saw at the registration site.
+ * One row per detected check; rows with a known line open the code there.
+ * "None detected" is a result worth showing, not an omission.
+ */
+function ValidationSection({ ep }: { ep: SystemEndpoint }) {
+  const validation = ep.validation ?? [];
+  return (
+    <DetailSection
+      title={validation.length > 0 ? `Validation · ${validation.length}` : "Validation"}
+      hint="what the registration enforces on the request"
+    >
+      {validation.length === 0 ? (
+        <div className="text-[11px] text-ink-faint">
+          No request validation detected at this route's registration.
+        </div>
+      ) : (
+        <div className="space-y-0.5">
+          {validation.map((v, i) => {
+            const openable = v.line != null;
+            const open = () => {
+              if (openable) requestOpenFile(ep.file, v.line);
+            };
+            return (
+              <div
+                key={`${v.kind}:${v.label}:${i}`}
+                role={openable ? "button" : undefined}
+                tabIndex={openable ? 0 : undefined}
+                onClick={open}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") open();
+                }}
+                title={openable ? `Open ${ep.file}:${v.line} in the editor` : undefined}
+                className={cn(
+                  "flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left",
+                  openable && "cursor-pointer hover:bg-surface-2",
+                )}
+              >
+                <ShieldCheck className="h-3 w-3 shrink-0 text-accent-emerald" />
+                <span
+                  className={cn(
+                    "shrink-0 rounded px-1 font-mono text-[9px] font-semibold",
+                    VALIDATION_KIND_CLASS[v.kind],
+                  )}
+                >
+                  {v.kind}
+                </span>
+                {v.target ? (
+                  <span className="shrink-0 rounded bg-surface-3 px-1 text-[8.5px] uppercase text-ink-faint">
+                    {v.target}
+                  </span>
+                ) : null}
+                <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-ink-muted">
+                  {v.label}
+                </span>
+                {openable ? (
+                  <ExternalLink className="h-3 w-3 shrink-0 text-ink-faint" />
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </DetailSection>
   );
 }
 
@@ -510,6 +620,9 @@ function ApiDetail({
           </div>
         )}
       </DetailSection>
+
+      {/* validation — what the registration actually enforces on requests. */}
+      <ValidationSection ep={ep} />
 
       {/* trace — single click highlights the owning system in the
           architecture pane; double click opens the code. */}

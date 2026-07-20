@@ -45,6 +45,7 @@ export {
   type WorkflowState,
   type WorkflowStore,
 } from "./workflow-store.js";
+export { createLensStore, type LensState, type LensStore } from "./lens-store.js";
 export { createNavStore, type NavPatch, type NavState, type NavStore } from "./nav-store.js";
 export { requestOpenFile } from "./open-file.js";
 export {
@@ -78,6 +79,7 @@ export {
   useFleet,
   useHighlight,
   useHighlightUpdate,
+  useLens,
   useNav,
   useNavUpdate,
   useTerminals,

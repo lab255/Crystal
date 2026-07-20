@@ -116,6 +116,12 @@ export interface MapSystemData extends Record<string, unknown>, MapEndpointHandl
   mark?: MapDiffMark;
   /** Ref-review marks for this card's endpoint rows, keyed by epKey. */
   epMarks?: Readonly<Record<string, MapDiffMark>>;
+  /**
+   * Lens dimming for this card's endpoint rows, keyed by epKey. Injected by
+   * the view at render time (like the endpoint handlers) — never set by the
+   * builder, so worker inputs/outputs stay lens-free and structured-clonable.
+   */
+  epDimmed?: Readonly<Record<string, true>>;
 }
 
 /** Aggregated external services across every system (integrations band). */

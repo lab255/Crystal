@@ -4,12 +4,13 @@ import { formatHighlightSel } from "@crystal/core";
 import type {
   ApiTrace,
   ApiTraceCall,
+  LensMatcher,
   SurfaceMapReport,
   SurfacesReport,
   SystemModule,
   SystemOverview,
 } from "@crystal/core";
-import { requestOpenFile, useCrystal, useNavUpdate, useWorkspaces } from "@crystal/client";
+import { requestOpenFile, useCrystal, useLens, useNavUpdate, useWorkspaces } from "@crystal/client";
 import { Tooltip, cn } from "@crystal/ui";
 import { makeSystemAttributor } from "./map/scene.js";
 
@@ -201,6 +202,59 @@ export function useArchHighlight(): ArchHighlight {
       expand: () => nav({ mode: "architect", architect: { view: "systems" } }),
     }),
     [nav, systemOfFile],
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Global lens — dim non-members, same treatment as find-dimming       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The global lens as the surfaces views consume it. `active` means a lens is
+ * set and resolved to a non-empty member set — dim non-members. `empty` means
+ * it resolved to nothing (clean worktree, dangling facet) — render undimmed
+ * but say so, instead of dimming everything to oblivion.
+ */
+export interface SurfacesLens {
+  active: boolean;
+  empty: boolean;
+  matcher: LensMatcher;
+}
+
+export function useSurfacesLens(): SurfacesLens {
+  const spec = useLens((s) => s.spec);
+  const status = useLens((s) => s.status);
+  const matcher = useLens((s) => s.matcher);
+  const ready = spec != null && status === "ready";
+  return useMemo(
+    () => ({ active: ready && !matcher.empty, empty: ready && matcher.empty, matcher }),
+    [ready, matcher],
+  );
+}
+
+/** The dimming applied to lens non-members — same opacity the map's find-dimming uses. */
+export const LENS_DIM_CLASS = "opacity-25";
+
+/** "lens: 12 of 87" (or "lens matches nothing here") next to a list header. */
+export function LensHint({
+  lens,
+  matched,
+  total,
+}: {
+  lens: SurfacesLens;
+  matched: number;
+  total: number;
+}) {
+  if (lens.empty) {
+    return <span className="text-[10px] text-warn">lens matches nothing here</span>;
+  }
+  if (!lens.active) return null;
+  return (
+    <Tooltip content="The global lens — non-members dim">
+      <span className="text-[10px] text-crystal-300">
+        lens: {matched} of {total}
+      </span>
+    </Tooltip>
   );
 }
 

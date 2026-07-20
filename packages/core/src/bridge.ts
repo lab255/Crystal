@@ -4,6 +4,7 @@ import type { ArchitectureGraph } from "./architecture.js";
 import type { AgentRole, AgentRun, RunEvent, RunPurpose, WorkerSpec } from "./agent.js";
 import type { CodeIndex, FacetSuggestion } from "./code-index.js";
 import type { ReviewFinding } from "./code-review.js";
+import type { WorkspaceFacet } from "./lens.js";
 import type {
   ApiTrace,
   CodeFileDetail,
@@ -232,6 +233,12 @@ export interface BridgeMethods {
   /** The workspace's todo list (`.crystal/todos.json`; empty list if the file is absent). */
   "todos.get": { params: WsScope; result: { todos: TodoList } };
   "todos.save": { params: WsScope & { todos: TodoList }; result: { ok: true } };
+  /**
+   * Saved workspace facets (`.crystal/facets.json`; empty when absent) — the
+   * named global lenses every mode can render through (see lens.ts).
+   */
+  "facets.get": { params: WsScope; result: { facets: WorkspaceFacet[] } };
+  "facets.save": { params: WsScope & { facets: WorkspaceFacet[] }; result: { ok: true } };
   /** The agent roster (`.crystal/agents.json`; seeded defaults when absent). */
   "agents.get": { params: WsScope; result: { roster: AgentRoster } };
   "agents.save": { params: WsScope & { roster: AgentRoster }; result: { ok: true } };
@@ -260,7 +267,12 @@ export interface BridgeMethods {
    * for the "base" scope (null when it couldn't be resolved).
    */
   "git.changedFiles": {
-    params: WsScope & { repoPath?: string; scope: ChangeScope };
+    params: WsScope & {
+      repoPath?: string;
+      scope: ChangeScope;
+      /** Diff the working tree against this ref instead (overrides `scope`) — diff lenses. */
+      ref?: string;
+    };
     result: { files: string[]; base: string | null };
   };
   /** Branches / tags / worktrees of a repo — powers ref pickers and the branch switcher. */

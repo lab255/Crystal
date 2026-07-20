@@ -16,9 +16,12 @@ import {
   DetailSection,
   FileLink,
   GroupHeader,
+  LENS_DIM_CLASS,
+  LensHint,
   ListHeader,
   copyText,
   useSurfaces,
+  useSurfacesLens,
 } from "./common.js";
 
 /**
@@ -45,10 +48,20 @@ export function ScreensView() {
   const find = (useNav((l) => l.surfaces?.find) ?? "").trim().toLowerCase();
   const menu = useContextMenu();
   const symbolMenu = useSymbolMenu();
+  const lens = useSurfacesLens();
   const [collapsed, setCollapsed] = useState<ReadonlySet<ScreenSource>>(new Set());
 
   const screens = report?.screens ?? [];
   const appUrl = report?.demo.appUrl ?? null;
+
+  /** Lens members (null when no lens dims) — non-members render dimmed. */
+  const lensMembers = useMemo(
+    () =>
+      lens.active
+        ? new Set(screens.filter((s) => lens.matcher.file(s.file)).map((s) => s.id))
+        : null,
+    [lens, screens],
+  );
 
   const visible = useMemo(
     () =>
@@ -148,7 +161,9 @@ export function ScreensView() {
     <Split storageKey="surfaces:screens" direction="horizontal">
       <SplitPane defaultSize={320} minSize={240} maxSize={520}>
         <aside className="flex h-full flex-col border-r border-edge bg-surface-1">
-          <ListHeader icon={AppWindow} title="Screens" shown={visible.length} total={screens.length} />
+          <ListHeader icon={AppWindow} title="Screens" shown={visible.length} total={screens.length}>
+            <LensHint lens={lens} matched={lensMembers?.size ?? 0} total={screens.length} />
+          </ListHeader>
           <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2">
             {groups.map(({ source, screens: list }) => (
               <div key={source} className="mb-1.5">
@@ -177,6 +192,7 @@ export function ScreensView() {
                           selected?.id === s.id
                             ? "bg-crystal-500/15 text-ink"
                             : "text-ink-muted hover:bg-surface-2 hover:text-ink",
+                          lensMembers && !lensMembers.has(s.id) && LENS_DIM_CLASS,
                         )}
                       >
                         <span className="min-w-0 flex-1 truncate font-mono text-[10.5px]">

@@ -55,7 +55,8 @@ import {
   conceptDisplayName,
   createArchNode,
   indexFacetVisibility,
-  parseLensTags,
+  lensLabel,
+  systemsInLens,
   tagValue,
   uid,
   type ArchEdge,
@@ -97,6 +98,7 @@ import {
 } from "@crystal/ui";
 import { requestOpenFile } from "../codemap/CodeMapView.js";
 import { FacetsPanel } from "../codemap/FacetsPanel.js";
+import { useGlobalLens } from "../use-global-lens.js";
 import { ContractInspector, linkKeyOf } from "./ContractInspector.js";
 import { ROLE_META } from "./role-meta.js";
 
@@ -792,8 +794,11 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
     (g: "modules" | "layers") => nav({ architect: { sysGroup: g === "layers" ? "layers" : null } }),
     [nav],
   );
-  const lensParam = useNav((l) => l.architect?.lens ?? null);
+  const lensParam = useNav((l) => l.lens ?? null);
   const lensCtx = useNav((l) => l.architect?.lensCtx) ?? false;
+  // Diff / saved-facet lenses resolve in the client lens store; tag lenses
+  // keep the in-view pipeline below (code index + this overview).
+  const globalLens = useGlobalLens(lensParam);
 
   const [overview, setOverview] = useState<SystemOverview | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1014,10 +1019,10 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
       const pkg = sys.parts[0]?.pkg;
       if (!activeWs || !pkg) return;
       nav({
+        lens: sys.id,
         architect: {
           view: "codemap",
           codemap: { kind: "module", ws: activeWs, path: pkg },
-          lens: sys.id,
           lensCtx: true,
         },
       });
@@ -1116,7 +1121,7 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
 
   /* ---- code index + facet lens (shares the codemap's `lens` deep link) ---- */
 
-  const lensTags = useMemo(() => (lensParam ? parseLensTags(lensParam) : []), [lensParam]);
+  const lensTags = globalLens.tags;
   // "sys:*" tags are system ids — resolved right here against the overview;
   // everything else is an intent facet resolved through the semantic index.
   const sysTags = useMemo(() => lensTags.filter((t) => t.startsWith("sys:")), [lensTags]);
@@ -1148,17 +1153,17 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
       codeIndex && intentTags.length > 0 ? indexFacetVisibility(codeIndex.index, intentTags) : null,
     [codeIndex, intentTags],
   );
-  const lensName = useMemo(
-    () =>
-      lensTags
-        .map((t) =>
-          t.startsWith("intent:")
-            ? conceptDisplayName(tagValue(t))
-            : (overview?.systems.find((s) => s.id === t)?.name ?? t),
-        )
-        .join(" + "),
-    [lensTags, overview],
-  );
+  const lensName = useMemo(() => {
+    if (globalLens.spec && globalLens.spec.kind !== "tags")
+      return lensLabel(globalLens.spec, globalLens.facets);
+    return lensTags
+      .map((t) =>
+        t.startsWith("intent:")
+          ? conceptDisplayName(tagValue(t))
+          : (overview?.systems.find((s) => s.id === t)?.name ?? t),
+      )
+      .join(" + ");
+  }, [globalLens.spec, globalLens.facets, lensTags, overview]);
 
   const reviewRef = useCallback(
     async (ref: string) => {
@@ -1232,7 +1237,18 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
    * one of its part paths. Null while no lens (or the index hasn't loaded).
    */
   const lensSystems = useMemo(() => {
-    if (!rendered || (!lensVis && sysTags.length === 0)) return null;
+    if (!rendered) return null;
+    // Diff / saved-facet lens: the store resolved membership — a system is in
+    // when any of its parts holds a member. Null while resolving; an errored
+    // or empty resolution matches nothing (the "no matches" dead-end, not an
+    // unfiltered canvas pretending to be filtered).
+    if (globalLens.global) {
+      if (!globalLens.settled) return null;
+      return globalLens.matcher
+        ? systemsInLens(rendered.overview.systems, globalLens.matcher)
+        : new Set<string>();
+    }
+    if (!lensVis && sysTags.length === 0) return null;
     const inLens = new Set<string>(
       sysTags.filter((t) => rendered.overview.systems.some((s) => s.id === t)),
     );
@@ -1244,7 +1260,7 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
       }
     }
     return inLens;
-  }, [lensVis, sysTags, rendered]);
+  }, [lensVis, sysTags, rendered, globalLens.global, globalLens.settled, globalLens.matcher]);
 
   // First-degree neighbors of the lens systems — the "+N connected" context
   // ring (same gesture as the code map's lens context, same deep link).
@@ -2341,7 +2357,7 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
               </button>
             ))}
           </div>
-          {lensTags.length > 0 && (
+          {globalLens.spec != null && (
             <div className="flex w-fit items-center gap-1.5 rounded-lg border border-edge bg-surface-1/95 px-2 py-1 shadow-sm">
               <Sparkles className="h-3 w-3 shrink-0 text-crystal-300" />
               <span className="max-w-40 truncate text-[10px] font-medium text-ink">
@@ -2350,7 +2366,7 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
               <span className="text-[9px] text-ink-faint">
                 {lensSystems
                   ? `${lensSystems.size} systems${lensVis ? ` · ${lensVis.memberCount} members` : ""}`
-                  : "reading index…"}
+                  : "resolving lens…"}
               </span>
               {lensNeighborSystems && lensNeighborSystems.size > 0 ? (
                 <Tooltip content="Also light up first-degree neighbor systems — everything the lens touches">
@@ -2371,7 +2387,7 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
               ) : null}
               <button
                 type="button"
-                onClick={() => nav({ architect: { lens: null, lensCtx: false } })}
+                onClick={() => nav({ lens: null, architect: { lensCtx: false } })}
                 aria-label="Clear facet lens"
               >
                 <X className="h-3 w-3 text-ink-faint hover:text-ink" />
@@ -2576,8 +2592,8 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
             index={codeIndex?.index ?? null}
             staleFiles={codeIndex?.staleFiles ?? EMPTY_STALE_FILES}
             activeTags={lensTags}
-            onSelect={(s) => nav({ architect: { lens: s.tags.join(",") } })}
-            onClear={() => nav({ architect: { lens: null } })}
+            onSelect={(s) => nav({ lens: s.tags.join(",") })}
+            onClear={() => nav({ lens: null })}
             onClose={() => nav({ architect: { facets: null } })}
           />
         </div>

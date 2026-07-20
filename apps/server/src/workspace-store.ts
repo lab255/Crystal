@@ -12,6 +12,7 @@ import {
   TODOS_FILE,
   TodoListSchema,
   WORKSPACE_FILE,
+  WorkspaceFacetsFileSchema,
   createArchitectureGraph,
   createDefaultRoster,
   createProject,
@@ -27,10 +28,14 @@ import {
   type Project,
   type SystemsLayout,
   type TodoList,
+  type WorkspaceFacet,
   type WorkspaceInfo,
   type WorkspaceManifest,
 } from "@crystal/core";
 import { isIgnoredDir, resolveInRoot, toRelPath, workspaceIdFor } from "./paths.js";
+
+/** Saved workspace facets — plain JSON (no crystal envelope), see core's lens.ts. */
+const FACETS_FILE = `${CRYSTAL_DIR}/facets.json`;
 
 async function exists(p: string): Promise<boolean> {
   try {
@@ -182,6 +187,27 @@ export class WorkspaceStore {
     const file = resolveInRoot(this.root, TODOS_FILE);
     await fs.mkdir(path.dirname(file), { recursive: true });
     await fs.writeFile(file, serializeCrystalFile("todos", parsed), "utf8");
+  }
+
+  /** Load saved workspace facets (empty when the file is absent or corrupt). */
+  async loadFacets(): Promise<WorkspaceFacet[]> {
+    const file = resolveInRoot(this.root, FACETS_FILE);
+    if (!(await exists(file))) return [];
+    try {
+      return WorkspaceFacetsFileSchema.parse(JSON.parse(await fs.readFile(file, "utf8"))).facets;
+    } catch {
+      // A corrupt file means no saved facets, not a broken workspace.
+      return [];
+    }
+  }
+
+  async saveFacets(facets: WorkspaceFacet[]): Promise<void> {
+    // Validate before writing — a bad payload must not corrupt the file for
+    // every later read.
+    const parsed = WorkspaceFacetsFileSchema.parse({ facets });
+    const file = resolveInRoot(this.root, FACETS_FILE);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, `${JSON.stringify(parsed, null, 2)}\n`, "utf8");
   }
 
   /** Load the systems-overview arrangement (null until the user first edits it). */

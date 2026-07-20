@@ -254,6 +254,11 @@ export async function startCrystalServer(opts: {
       await registry.get(ws).store.saveSystemsLayout(layout);
       return { ok: true };
     },
+    "facets.get": async ({ ws }) => ({ facets: await registry.get(ws).store.loadFacets() }),
+    "facets.save": async ({ ws, facets }) => {
+      await registry.get(ws).store.saveFacets(facets);
+      return { ok: true };
+    },
     "todos.get": async ({ ws }) => ({ todos: await registry.get(ws).store.loadTodos() }),
     "todos.save": async ({ ws, todos }) => {
       const rt = registry.get(ws);
@@ -283,8 +288,8 @@ export async function startCrystalServer(opts: {
     },
     "git.status": ({ ws, repoPath }) => gitStatus(registry.get(ws).root, repoPath),
     "git.log": ({ ws, repoPath, limit }) => gitLog(registry.get(ws).root, repoPath ?? ".", limit),
-    "git.changedFiles": ({ ws, repoPath, scope }) =>
-      changedFiles(registry.get(ws).root, repoPath ?? ".", scope),
+    "git.changedFiles": ({ ws, repoPath, scope, ref }) =>
+      changedFiles(registry.get(ws).root, repoPath ?? ".", scope, ref),
     "git.refs": ({ ws, repoPath }) => gitRefs(registry.get(ws).root, repoPath ?? "."),
     "git.checkout": ({ ws, repoPath, ref }) =>
       gitCheckout(registry.get(ws).root, repoPath ?? ".", ref),

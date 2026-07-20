@@ -38,8 +38,8 @@ import {
   CODE_LOD_LEVELS,
   conceptDisplayName,
   indexFacetVisibility,
+  lensLabel,
   matchHighlight,
-  parseLensTags,
   tagValue,
   type CodeFileDetail,
   type CodeIndex,
@@ -77,6 +77,7 @@ import {
 } from "@crystal/ui";
 import { useRefactorIntents } from "../refactor-intents.js";
 import { SymbolSnippet } from "../snippets.js";
+import { useGlobalLens } from "../use-global-lens.js";
 import { hlClass, useViewHighlight } from "../use-highlight.js";
 import { CodeNode, SYMBOL_DRAG_MIME, type CodeRfNode, type SymbolDragPayload } from "./CodeNode.js";
 import { ChangesPanel } from "./ChangesPanel.js";
@@ -92,6 +93,7 @@ import {
   fileId,
   groupModulesByRepo,
   memberFootprint,
+  membershipLensCore,
   moduleId,
   moduleOfPath,
   type DropTarget,
@@ -250,8 +252,11 @@ function CodeMapInner({
 
   const lodParam = useNav((l) => l.architect?.lod ?? null);
   const lod: CodeLodLevel = lodParam ?? "packages";
-  const lensParam = useNav((l) => l.architect?.lens ?? null);
+  const lensParam = useNav((l) => l.lens ?? null);
   const lensCtx = useNav((l) => l.architect?.lensCtx) ?? false;
+  // Diff / saved-facet lenses resolve in the client lens store; tag lenses
+  // keep the in-view pipeline below (code index + overview).
+  const globalLens = useGlobalLens(lensParam);
   const [codeIndex, setCodeIndex] = useState<{ index: CodeIndex; staleFiles: string[] } | null>(
     null,
   );
@@ -513,8 +518,8 @@ function CodeMapInner({
 
   /* ---- code index + facet lens ---- */
 
-  const lensTags = useMemo(() => (lensParam ? parseLensTags(lensParam) : []), [lensParam]);
-  const lensKey = lensTags.join(",");
+  const lensTags = globalLens.tags;
+  const lensKey = lensParam ?? "";
   // System lenses ("sys:auth" — a systems-overview cluster id) resolve
   // structurally against the overview; every other tag goes through the
   // semantic index (intent facets).
@@ -571,8 +576,8 @@ function CodeMapInner({
     [wantOverview, overview, sysTags],
   );
 
-  /** Combined lens membership: intent files/modules ∪ system parts (dirs). */
-  const lensCore = useMemo(() => {
+  /** Tag lens membership: intent files/modules ∪ system parts (dirs). */
+  const tagLensCore = useMemo(() => {
     const hasIntent = lensVis != null && lensVis.files.size > 0;
     const hasSys = lensSysModules != null && lensSysModules.length > 0;
     if (!hasIntent && !hasSys) return null;
@@ -594,6 +599,22 @@ function CodeMapInner({
       memberCount: hasIntent ? lensVis.memberCount : null,
     };
   }, [lensVis, lensSysModules]);
+
+  // Diff / saved-facet lens membership, shaped exactly like the tag core so
+  // one downstream (mapLens → scene, prefer, dimming) serves every lens kind.
+  const membershipCore = useMemo(
+    () =>
+      globalLens.membership && summary
+        ? membershipLensCore(globalLens.membership, summary.modules)
+        : null,
+    [globalLens.membership, summary],
+  );
+
+  /** Whichever lens kind is active — the single core the rest of the view reads. */
+  const lensCore = useMemo(
+    () => tagLensCore ?? (membershipCore ? { ...membershipCore, memberCount: null } : null),
+    [tagLensCore, membershipCore],
+  );
 
   // First-degree neighbors of the lens: modules outside it sharing an import
   // edge with a member — the "+N connected" context toggle's candidate set.
@@ -622,17 +643,22 @@ function CodeMapInner({
         : null,
     [lensCore, lensCtx, lensNeighbors],
   );
-  const lensName = useMemo(
-    () =>
-      lensTags
-        .map((t) =>
-          t.startsWith("intent:")
-            ? conceptDisplayName(tagValue(t))
-            : (overview?.systems.find((s) => s.id === t)?.name ?? t),
-        )
-        .join(" + "),
-    [lensTags, overview],
-  );
+  const lensName = useMemo(() => {
+    if (globalLens.spec && globalLens.spec.kind !== "tags")
+      return lensLabel(globalLens.spec, globalLens.facets);
+    return lensTags
+      .map((t) =>
+        t.startsWith("intent:")
+          ? conceptDisplayName(tagValue(t))
+          : (overview?.systems.find((s) => s.id === t)?.name ?? t),
+      )
+      .join(" + ");
+  }, [globalLens.spec, globalLens.facets, lensTags, overview]);
+
+  // Has whichever resolver owns this lens finished? (Chip: spinner vs "no matches".)
+  const lensSettled = globalLens.global
+    ? globalLens.settled
+    : (intentTags.length === 0 || codeIndex != null) && (sysTags.length === 0 || overview != null);
 
   // Lens membership → `prefer` on detail fetches (see lensPreferRef). When the
   // effective membership changes (lens entered/left, overview resolved), the
@@ -667,11 +693,11 @@ function CodeMapInner({
       setSelectedFile(null);
       setModulePositions(new Map());
       setRefitNonce((n) => n + 1);
-    } else if (appliedLens.current != null && lensTags.length === 0) {
+    } else if (appliedLens.current != null && !lensParam) {
       appliedLens.current = null;
       void applyLodExpansion(lod);
     }
-  }, [mapLens, lensKey, lensTags.length, lod, ensureBulk, applyLodExpansion]);
+  }, [mapLens, lensKey, lensParam, lod, ensureBulk, applyLodExpansion]);
 
   // Toggling the connected-context ring re-poses the lens scene — refit.
   const lastLensCtx = useRef(lensCtx);
@@ -1216,7 +1242,7 @@ function CodeMapInner({
                     {lensCore.memberCount != null ? `${lensCore.memberCount} members · ` : ""}
                     {lensCore.fileCount} files
                   </span>
-                ) : (intentTags.length === 0 || codeIndex) && (sysTags.length === 0 || overview) ? (
+                ) : lensSettled ? (
                   <span className="text-warn">no matches</span>
                 ) : (
                   <Spinner className="h-3 w-3" />
@@ -1240,7 +1266,7 @@ function CodeMapInner({
                 ) : null}
                 <button
                   type="button"
-                  onClick={() => nav({ architect: { lens: null } })}
+                  onClick={() => nav({ lens: null })}
                   className="text-crystal-400 hover:text-crystal-200"
                   aria-label="Exit facet lens"
                 >
@@ -1403,8 +1429,8 @@ function CodeMapInner({
               index={codeIndex?.index ?? null}
               staleFiles={codeIndex?.staleFiles ?? []}
               activeTags={lensTags}
-              onSelect={(s) => nav({ architect: { lens: s.tags.join(",") } })}
-              onClear={() => nav({ architect: { lens: null } })}
+              onSelect={(s) => nav({ lens: s.tags.join(",") })}
+              onClear={() => nav({ lens: null })}
               onClose={() => nav({ architect: { facets: null } })}
             />
           </Pane>

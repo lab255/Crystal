@@ -12,7 +12,16 @@ import {
 import type { QualityRun, TestCaseResult, TestFileResult } from "@crystal/core";
 import { requestOpenFile, useNav, useNavUpdate, useSymbolMenu } from "@crystal/client";
 import { Badge, EmptyState, Pane as SplitPane, Split, Tooltip, cn, useContextMenu } from "@crystal/ui";
-import { StatusIcon, copyText, fmtDuration, fmtTime, useQuality } from "./common.js";
+import {
+  LensHint,
+  StatusIcon,
+  copyText,
+  fmtDuration,
+  fmtTime,
+  testFileInLens,
+  useQuality,
+  useQualityLens,
+} from "./common.js";
 
 /**
  * Tests — the workspace's own test suite, run from inside Crystal. The file
@@ -24,6 +33,8 @@ import { StatusIcon, copyText, fmtDuration, fmtTime, useQuality } from "./common
 interface FileRow {
   file: string;
   result: TestFileResult | null;
+  /** In the active lens (direct member, or the lens touches its directory). */
+  inLens: boolean;
 }
 
 export function TestsView() {
@@ -35,6 +46,7 @@ export function TestsView() {
   const find = (useNav((l) => l.quality?.find) ?? "").trim().toLowerCase();
   const menu = useContextMenu();
   const symbolMenu = useSymbolMenu();
+  const lens = useQualityLens();
 
   // The run everything renders against: explicit selection, else live, else latest.
   const shownRun: QualityRun | null =
@@ -46,9 +58,15 @@ export function TestsView() {
     const known = new Set<string>([...(info?.testFiles ?? []), ...byFile.keys()]);
     return [...known]
       .sort()
-      .map((file) => ({ file, result: byFile.get(file) ?? null }))
+      .map((file) => ({
+        file,
+        result: byFile.get(file) ?? null,
+        inLens: testFileInLens(lens.matcher, file),
+      }))
       .filter((r) => !find || r.file.toLowerCase().includes(find));
-  }, [info, shownRun, find]);
+  }, [info, shownRun, find, lens.matcher]);
+
+  const lensMemberCount = useMemo(() => rows.filter((r) => r.inLens).length, [rows]);
 
   const failedFirst = useMemo(
     () =>
@@ -185,6 +203,7 @@ export function TestsView() {
                 Test files
               </span>
               <span className="text-[10px] text-ink-faint">{rows.length}</span>
+              <LensHint lens={lens} member={lensMemberCount} total={rows.length} noun="test files" />
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2">
               {failedFirst.map((r) => {
@@ -201,6 +220,8 @@ export function TestsView() {
                       selected?.file === r.file
                         ? "bg-crystal-500/15 text-ink"
                         : "text-ink-muted hover:bg-surface-2 hover:text-ink",
+                      // Outside the lens: dimmed but present, same as find elsewhere.
+                      lens.dimming && !r.inLens && "opacity-40",
                     )}
                   >
                     <StatusIcon status={r.result?.status ?? null} running={isRunning} className="h-3 w-3" />

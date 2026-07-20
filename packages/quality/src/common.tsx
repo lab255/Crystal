@@ -3,12 +3,13 @@ import { Check, CircleDashed, CircleDot, SkipForward, X } from "lucide-react";
 import type {
   CoverageMetric,
   CoverageReport,
+  LensMatcher,
   QualityRun,
   TestCaseStatus,
   TestRunnerInfo,
 } from "@crystal/core";
-import { coverageBand } from "@crystal/core";
-import { useCrystal, useNavUpdate, useWorkspaces } from "@crystal/client";
+import { coverageBand, lensLabel } from "@crystal/core";
+import { useCrystal, useLens, useNavUpdate, useWorkspaces } from "@crystal/client";
 import { Spinner, Tooltip, cn } from "@crystal/ui";
 
 /* ------------------------------------------------------------------ */
@@ -136,6 +137,76 @@ export function useQuality(): QualityData {
   const ctx = useContext(QualityCtx);
   if (!ctx) throw new Error("useQuality outside QualityProvider");
   return ctx;
+}
+
+/* ------------------------------------------------------------------ */
+/* Lens: the global cross-mode filter, applied here as dimming         */
+/* ------------------------------------------------------------------ */
+
+export interface QualityLens {
+  /** A lens is selected (whatever its resolution state). */
+  active: boolean;
+  /** Resolved with members — dim non-members. */
+  dimming: boolean;
+  /** Resolved to nothing (e.g. a clean worktree diff) — hint, don't dim. */
+  matchesNothing: boolean;
+  matcher: LensMatcher;
+  label: string | null;
+}
+
+export function useQualityLens(): QualityLens {
+  const spec = useLens((s) => s.spec);
+  const matcher = useLens((s) => s.matcher);
+  const status = useLens((s) => s.status);
+  const facets = useLens((s) => s.facets);
+  return useMemo(() => {
+    const ready = spec !== null && status === "ready";
+    return {
+      active: spec !== null,
+      dimming: ready && !matcher.empty,
+      matchesNothing: ready && matcher.empty,
+      matcher,
+      label: spec ? lensLabel(spec, facets) : null,
+    };
+  }, [spec, matcher, status, facets]);
+}
+
+/**
+ * Is this test file in the lens? Direct membership, or the lens touches its
+ * directory — so a review-diff lens keeps the sibling tests of changed
+ * sources actionable.
+ */
+export function testFileInLens(matcher: LensMatcher, path: string): boolean {
+  if (matcher.file(path)) return true;
+  const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+  return dir !== "" && matcher.under(dir);
+}
+
+/** "lens: 4 of 31 test files" (or the matches-nothing notice) for a list header. */
+export function LensHint({
+  lens,
+  member,
+  total,
+  noun,
+}: {
+  lens: QualityLens;
+  member: number;
+  total: number;
+  noun: string;
+}) {
+  if (lens.matchesNothing) {
+    return (
+      <span className="text-[10px] italic text-ink-faint">lens matches nothing here</span>
+    );
+  }
+  if (!lens.dimming) return null; // no lens, or still resolving / errored
+  return (
+    <Tooltip content={lens.label ?? "Active lens"}>
+      <span className="text-[10px] text-crystal-300">
+        lens: {member} of {total} {noun}
+      </span>
+    </Tooltip>
+  );
 }
 
 /* ------------------------------------------------------------------ */

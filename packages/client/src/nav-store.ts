@@ -18,6 +18,8 @@ type SectionPatch<T> = { [K in keyof T]?: T[K] | null };
 
 export interface NavPatch {
   ws?: string | null;
+  /** Global lens param (see @crystal/core lens.ts); null clears it. */
+  lens?: string | null;
   mode?: CrystalModeId;
   architect?: SectionPatch<ArchitectLink>;
   orchestrate?: SectionPatch<OrchestrateLink>;
@@ -83,6 +85,10 @@ export function createNavStore(initial: DeepLink = {}): NavStore {
       if (patch.ws !== undefined) {
         if (patch.ws === null) delete link.ws;
         else link.ws = patch.ws;
+      }
+      if (patch.lens !== undefined) {
+        if (patch.lens === null) delete link.lens;
+        else link.lens = patch.lens;
       }
       if (patch.mode !== undefined) link.mode = patch.mode;
       const architect = mergeSection(cur.architect, patch.architect);

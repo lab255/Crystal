@@ -12,7 +12,17 @@ import {
   useContextMenu,
   type BadgeTone,
 } from "@crystal/ui";
-import { DetailSection, FileLink, GroupHeader, ListHeader, copyText, useSurfaces } from "./common.js";
+import {
+  DetailSection,
+  FileLink,
+  GroupHeader,
+  LENS_DIM_CLASS,
+  LensHint,
+  ListHeader,
+  copyText,
+  useSurfaces,
+  useSurfacesLens,
+} from "./common.js";
 
 /**
  * Schemas — the shapes data takes at the boundaries: zod objects, model
@@ -53,9 +63,18 @@ export function SchemasView() {
   const find = (useNav((l) => l.surfaces?.find) ?? "").trim().toLowerCase();
   const menu = useContextMenu();
   const symbolMenu = useSymbolMenu();
+  const lens = useSurfacesLens();
   const [collapsed, setCollapsed] = useState<ReadonlySet<SchemaKind>>(new Set());
 
   const schemas = report?.schemas ?? [];
+  /** Lens members (null when no lens dims) — non-members render dimmed. */
+  const lensMembers = useMemo(
+    () =>
+      lens.active
+        ? new Set(schemas.filter((s) => lens.matcher.file(s.file)).map((s) => s.id))
+        : null,
+    [lens, schemas],
+  );
   const visible = useMemo(
     () =>
       schemas.filter(
@@ -106,7 +125,9 @@ export function SchemasView() {
     <Split storageKey="surfaces:schemas" direction="horizontal">
       <SplitPane defaultSize={320} minSize={240} maxSize={520}>
         <aside className="flex h-full flex-col border-r border-edge bg-surface-1">
-          <ListHeader icon={Database} title="Schemas" shown={visible.length} total={schemas.length} />
+          <ListHeader icon={Database} title="Schemas" shown={visible.length} total={schemas.length}>
+            <LensHint lens={lens} matched={lensMembers?.size ?? 0} total={schemas.length} />
+          </ListHeader>
           <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2">
             {groups.map(({ kind, list }) => (
               <div key={kind} className="mb-1.5">
@@ -135,6 +156,7 @@ export function SchemasView() {
                           selected?.id === s.id
                             ? "bg-crystal-500/15 text-ink"
                             : "text-ink-muted hover:bg-surface-2 hover:text-ink",
+                          lensMembers && !lensMembers.has(s.id) && LENS_DIM_CLASS,
                         )}
                       >
                         <span className="min-w-0 flex-1 truncate text-[11px] font-medium">

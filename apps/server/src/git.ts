@@ -53,12 +53,27 @@ const MAIN_REFS = ["main", "master"] as const;
  * - "base" — this branch's committed diff against the main branch, via the
  *   merge-base (`git diff --name-only main...HEAD`). `base` echoes the ref that
  *   resolved, or null if neither `main` nor `master` exists.
+ * - `ref` (overrides `scope`) — the working tree diffed against the
+ *   merge-base of `ref` and HEAD (the ref itself when there is no merge-base,
+ *   e.g. detached or unrelated histories). `base` echoes the ref.
  */
 export async function changedFiles(
   root: string,
   repoRel: string,
   scope: ChangeScope,
+  ref?: string,
 ): Promise<{ files: string[]; base: string | null }> {
+  if (ref) {
+    const cwd = resolveInRoot(root, repoRel || ".");
+    let target = ref;
+    try {
+      target = (await runGit(cwd, ["merge-base", ref, "HEAD"])).trim() || ref;
+    } catch {
+      /* no merge-base — diff against the ref itself */
+    }
+    const out = await runGit(cwd, ["diff", "--name-only", target]).catch(() => "");
+    return { files: out.split("\n").filter(Boolean), base: ref };
+  }
   if (scope === "worktree") {
     const { files } = await gitStatus(root, repoRel);
     const out = new Set<string>();

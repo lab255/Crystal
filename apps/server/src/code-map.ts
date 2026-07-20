@@ -5,6 +5,7 @@ import {
   aggregateExternalDeps,
   aggregateExternalLibraries,
   bestServedRoute,
+  detectEndpointValidation,
   routeSegments,
   routesMatchSuffix,
 } from "@crystal/core";
@@ -922,11 +923,26 @@ export function parseSource(fileRel: string, text: string): Omit<ParsedFile, "mt
                   ts.isIdentifier(last.name)
                 ? `${last.expression.text}.${last.name.text}`
                 : undefined;
+            // Request validation, read off the registration itself: the
+            // middleware chain between path and handler, plus the handler
+            // body (inline, or a same-file top-level symbol it names).
+            const middleware = node.arguments
+              .slice(1, -1)
+              .map((a) => ({ text: a.getText(source), line: lineOf(a) }));
+            let handlerSnippet: { text: string; line?: number } | null = null;
+            if (ts.isArrowFunction(last) || ts.isFunctionExpression(last)) {
+              handlerSnippet = { text: last.getText(source), line: lineOf(last) };
+            } else if (ts.isIdentifier(last)) {
+              const sym = symbolByName.get(last.text);
+              if (sym) handlerSnippet = { text: text.slice(sym.start, sym.end), line: sym.line };
+            }
+            const validation = detectEndpointValidation({ middleware, handler: handlerSnippet });
             endpoints.push({
               method,
               path: p,
               line: lineOf(node),
               ...(handlerName ? { handler: handlerName } : {}),
+              ...(validation.length > 0 ? { validation } : {}),
             });
           }
         }

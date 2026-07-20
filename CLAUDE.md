@@ -78,6 +78,21 @@ environment approval → per-arch build/sign/notarize → signed updater `latest
   block below. Never hand-roll pin/open-in-editor/code-map/coverage/copy entries; pass
   view capabilities (`startJourney`, `revealOnDiagram`, `openFile` override…) and `omit`
   groups the view already covers (e.g. `"quality"` inside the quality mode).
+- The global lens is the one cross-tool filter: a top-level `lens` deep-link param (sits
+  beside `ws`, travels across every mode) whose spec is dimensional tags (`intent:auth`,
+  `sys:forms`), a saved workspace facet (`facet:<id>`, persisted in `.crystal/facets.json`),
+  or a review diff (`diff:worktree|base|ref:<ref>`). The model + URL codec are pure in
+  `packages/core/src/lens.ts` (`LensSpec`, `parse/formatLensParam`, `buildLensMatcher`,
+  `systemsInLens`); `packages/client/src/lens-store.ts` resolves a spec to concrete member
+  files (tags → code index + `sys:` parts; diff → `git.changedFiles`; facet → its saved
+  spec) and hands every view one stable `matcher` via `useLens`. The provider re-resolves
+  on lens/workspace change and on `codemap.changed` for diff lenses. Views *dim* non-members
+  (surfaces/quality, same treatment as the find box) or *compact* to them (code map);
+  membership is gated on the store key matching the active param so a half-switched lens
+  never leaks. Don't confuse this with the per-diagram `ArchFacet` (filters one drawing by
+  node ids) — the global lens is workspace-scoped and mode-spanning. Never send the matcher
+  or membership functions into a scene web worker; derive plain id Sets on the main thread
+  and dim at render time (same rule as react-flow node data).
 
 ## Gotchas
 

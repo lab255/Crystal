@@ -131,6 +131,52 @@ map.get("/api/forms", extra);`,
     expect(apiCalls).toEqual([]);
   });
 
+  it("detects celebrate validation middleware on served routes", () => {
+    const { endpoints } = parseSource(
+      "routes.ts",
+      `import express from "express";
+import { celebrate } from "celebrate";
+const app = express();
+app.post("/api/forms", celebrate({ body: createFormSchema }), createForm);`,
+    );
+    expect(endpoints).toHaveLength(1);
+    expect(endpoints[0]!.validation).toEqual([
+      {
+        kind: "celebrate",
+        label: "celebrate({ body: createFormSchema })",
+        target: "request",
+        line: 4,
+      },
+    ]);
+  });
+
+  it("detects zod parses inside inline handlers", () => {
+    const { endpoints } = parseSource(
+      "routes.ts",
+      `import express from "express";
+const app = express();
+app.post("/api/forms", (req, res) => {
+  const data = formSchema.parse(req.body);
+  res.json(data);
+});`,
+    );
+    expect(endpoints).toHaveLength(1);
+    const validation = endpoints[0]!.validation!;
+    expect(validation).toHaveLength(1);
+    expect(validation[0]).toMatchObject({ kind: "zod", target: "body" });
+  });
+
+  it("omits the validation key on unvalidated routes", () => {
+    const { endpoints } = parseSource(
+      "routes.ts",
+      `import express from "express";
+const app = express();
+app.get("/api/forms", (req, res) => res.json([]));`,
+    );
+    expect(endpoints).toHaveLength(1);
+    expect(endpoints[0]).not.toHaveProperty("validation");
+  });
+
   it("detects outgoing HTTP calls: fetch, axios, template holes", () => {
     const { endpoints, apiCalls } = parseSource(
       "client.ts",

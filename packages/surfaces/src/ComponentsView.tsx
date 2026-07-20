@@ -25,10 +25,13 @@ import {
   ApiCallsSection,
   DetailSection,
   FileLink,
+  LENS_DIM_CLASS,
+  LensHint,
   ListHeader,
   copyText,
   useArchHighlight,
   useSurfaces,
+  useSurfacesLens,
 } from "./common.js";
 
 /**
@@ -52,8 +55,19 @@ export function ComponentsView() {
   const find = (useNav((l) => l.surfaces?.find) ?? "").trim().toLowerCase();
   const menu = useContextMenu();
   const symbolMenu = useSymbolMenu();
+  const lens = useSurfacesLens();
 
   const components = report?.components ?? [];
+  /** Lens members (null when no lens dims) — non-members render dimmed. */
+  const lensMembers = useMemo(
+    () =>
+      lens.active
+        ? new Set(
+            components.filter((c) => lens.matcher.file(c.file)).map((c) => componentId(c)),
+          )
+        : null,
+    [lens, components],
+  );
   const visible = useMemo(
     () =>
       components.filter(
@@ -115,7 +129,9 @@ export function ComponentsView() {
             title="Components"
             shown={visible.length}
             total={components.length}
-          />
+          >
+            <LensHint lens={lens} matched={lensMembers?.size ?? 0} total={components.length} />
+          </ListHeader>
           <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2">
             {visible.map((c) => {
               const id = componentId(c);
@@ -130,6 +146,7 @@ export function ComponentsView() {
                     selected === c
                       ? "bg-crystal-500/15 text-ink"
                       : "text-ink-muted hover:bg-surface-2 hover:text-ink",
+                    lensMembers && !lensMembers.has(id) && LENS_DIM_CLASS,
                   )}
                 >
                   <span className="min-w-0 flex-1 truncate text-[11px] font-medium">{c.name}</span>

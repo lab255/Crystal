@@ -29,6 +29,7 @@ import {
   fileId,
   groupModulesByRepo,
   memberFootprint,
+  membershipLensCore,
   moduleId,
   moduleOfPath,
   packGrid,
@@ -494,6 +495,38 @@ describe("buildMapScene — facet lens", () => {
     expect(scene.nodes.some((n) => n.id === fileId(B))).toBe(false);
     // The ui→core edge survives because it touches a lens member.
     expect(scene.edges.map((e) => e.id)).toEqual(["dep:packages/ui->packages/core"]);
+  });
+});
+
+describe("membershipLensCore", () => {
+  const modules = summary().modules;
+
+  it("maps member files to whole-file visibility and their owning modules", () => {
+    const core = membershipLensCore({ files: [A, B], dirs: [] }, modules)!;
+    expect(core.files.get(A)).toBe("all");
+    expect(core.files.get(B)).toBe("all");
+    expect([...core.modules].sort()).toEqual(["packages/core", "packages/ui"]);
+    expect(core.dirs).toEqual([]);
+    expect(core.fileCount).toBe(2);
+  });
+
+  it("dirs own their enclosing module and every module underneath", () => {
+    const inside = membershipLensCore({ files: [], dirs: ["packages/core/src"] }, modules)!;
+    expect([...inside.modules]).toEqual(["packages/core"]);
+    expect(inside.dirs).toEqual(["packages/core/src"]);
+    // A dir above module roots pulls in each module inside it ("." owns the
+    // dir itself via the moduleOfPath fallback).
+    const above = membershipLensCore({ files: [], dirs: ["packages"] }, modules)!;
+    expect([...above.modules].sort()).toEqual([".", "packages/core", "packages/ui"]);
+  });
+
+  it("files outside every module fall back to the root module", () => {
+    const core = membershipLensCore({ files: ["README.md"], dirs: [] }, modules)!;
+    expect([...core.modules]).toEqual(["."]);
+  });
+
+  it("empty membership yields null — a clean diff matches nothing, not everything", () => {
+    expect(membershipLensCore({ files: [], dirs: [] }, modules)).toBeNull();
   });
 });
 

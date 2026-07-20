@@ -7,6 +7,7 @@ import {
   type ConceptDef,
 } from "./code-index.js";
 import type { CodeSymbolKind } from "./codemap.js";
+import type { EndpointValidation } from "./endpoint-validation.js";
 import { classifyExternalPackage, isPlatformImport } from "./external-services.js";
 import { tagDimension, tagValue } from "./tags.js";
 
@@ -92,6 +93,12 @@ export interface HttpEndpoint {
    * "FormController.createForm") — the trace root for served routes.
    */
   handler?: string;
+  /**
+   * Request validation detected at the registration — middleware chain
+   * (celebrate, express-validator, zod wrappers) plus in-handler schema
+   * parses. Absent for outgoing calls; empty means "none detected".
+   */
+  validation?: EndpointValidation[];
 }
 
 /* ------------------------------------------------------------------ */

@@ -179,6 +179,34 @@ export interface MapLens {
   context?: ReadonlySet<string>;
 }
 
+/**
+ * Globally resolved lens membership (a diff or saved facet — plain member
+ * files + directory prefixes from the client lens store) → the same core the
+ * tag pipeline builds: whole-file member map, dir prefixes, and the set of
+ * modules owning any member. Null when the membership is empty (a clean
+ * working tree resolves to nothing, not to "everything").
+ */
+export function membershipLensCore(
+  membership: { files: readonly string[]; dirs: readonly string[] },
+  modules: readonly CodeModule[],
+): { files: Map<string, "all">; dirs: string[]; modules: Set<string>; fileCount: number } | null {
+  if (membership.files.length === 0 && membership.dirs.length === 0) return null;
+  const files = new Map<string, "all">();
+  const owning = new Set<string>();
+  for (const f of membership.files) {
+    files.set(f, "all");
+    owning.add(moduleOfPath(f, modules));
+  }
+  const dirs = [...membership.dirs];
+  for (const d of dirs) {
+    owning.add(moduleOfPath(d, modules));
+    // A membership dir can sit *above* module roots (e.g. "packages") — every
+    // module inside it is owned too.
+    for (const m of modules) if (m.path === d || m.path.startsWith(`${d}/`)) owning.add(m.path);
+  }
+  return { files, dirs, modules: owning, fileCount: membership.files.length };
+}
+
 /** What the lens exposes of one file: everything, some members, or nothing. */
 export function lensFileVisibility(
   lens: MapLens,

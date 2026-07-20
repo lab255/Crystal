@@ -25,6 +25,7 @@ import {
   Webhook,
   X,
 } from "lucide-react";
+import { systemsInLens } from "@crystal/core";
 import type {
   CodeTraceStep,
   ScreenApiCall,
@@ -57,7 +58,13 @@ import {
 } from "@crystal/ui";
 import { ROLE_META } from "@crystal/architect";
 import { MethodChip } from "../ApiExplorer.js";
-import { DetailSection, FileLink, copyText, useSurfaces } from "../common.js";
+import {
+  DetailSection,
+  FileLink,
+  copyText,
+  useSurfaces,
+  useSurfacesLens,
+} from "../common.js";
 import { TraceSection, useEndpointTrace } from "../trace.js";
 import {
   buildSystemMapLayout,
@@ -220,6 +227,7 @@ function MapSystemNode({ data }: NodeProps<MapSystemRfNode>) {
     selectedEndpoint,
     mark,
     epMarks,
+    epDimmed,
     onEndpointClick,
     onEndpointDoubleClick,
   } = data;
@@ -297,6 +305,8 @@ function MapSystemNode({ data }: NodeProps<MapSystemRfNode>) {
                       : epMark === "removed"
                         ? "bg-danger/10 hover:bg-danger/15"
                         : "hover:bg-surface-2",
+                  // Lens dimming for the row — only meaningful on undimmed cards.
+                  !dimmed && epDimmed?.[key] && "opacity-25",
                 )}
               >
                 <MethodChip method={ep.method} className="!text-[8px]" />
@@ -424,6 +434,7 @@ function SystemMapInner() {
   const find = useNav((l) => l.surfaces?.find) ?? "";
   const menu = useContextMenu();
   const symbolMenu = useSymbolMenu();
+  const lens = useSurfacesLens();
 
   const calls = map?.calls ?? EMPTY_CALLS;
   const setSelected = useCallback(
@@ -500,6 +511,26 @@ function SystemMapInner() {
     [layout, selected, find, diff],
   );
 
+  // Lens membership over what the map actually shows — plain id sets computed
+  // on the main thread (the matcher must never ride into the layout worker;
+  // dimming applies at render time below). Null when no lens dims.
+  const lensSets = useMemo(() => {
+    if (!lens.active || !layout) return null;
+    const memberSystems = systemsInLens(layout.ctx.systems, lens.matcher);
+    const memberScreens = new Set<string>();
+    for (const s of layout.ctx.screens) if (lens.matcher.file(s.file)) memberScreens.add(s.id);
+    // Non-member endpoint rows per system card, keyed by epKey.
+    const epDim = new Map<string, Record<string, true>>();
+    for (const sys of layout.ctx.systems) {
+      let rec: Record<string, true> | undefined;
+      for (const ep of sys.endpoints) {
+        if (!lens.matcher.file(ep.file)) (rec ??= {})[epKeyOf(ep)] = true;
+      }
+      if (rec) epDim.set(sys.id, rec);
+    }
+    return { systems: memberSystems, screens: memberScreens, epDim };
+  }, [lens, layout]);
+
   /** The review entry a canvas element anchors (nodes prefer node entries). */
   const focusEntryFor = useCallback(
     (kind: "node" | "edge", id: string): MapDiffEntry | null => {
@@ -525,15 +556,36 @@ function SystemMapInner() {
   );
   const nodes = useMemo<SystemMapNode[]>(
     () =>
-      (scene?.nodes ?? []).map((n) =>
-        n.type === "mapSystem"
-          ? ({
-              ...n,
-              data: { ...n.data, onEndpointClick, onEndpointDoubleClick },
-            } as SystemMapNode)
-          : n,
-      ),
-    [scene, onEndpointClick, onEndpointDoubleClick],
+      (scene?.nodes ?? []).map((n): SystemMapNode => {
+        // Lens dimming folds into the scene's own dimmed flag at render time —
+        // the worker-built layout stays lens-blind.
+        if (n.type === "mapSystem") {
+          const d = (n as MapSystemRfNode).data;
+          const lensDim = lensSets != null && !lensSets.systems.has(n.id);
+          return {
+            ...n,
+            data: {
+              ...d,
+              dimmed: d.dimmed || lensDim,
+              epDimmed: lensSets?.epDim.get(n.id),
+              onEndpointClick,
+              onEndpointDoubleClick,
+            },
+          } as SystemMapNode;
+        }
+        if (n.type === "mapFeGroup" && lensSets && !lensSets.systems.has(n.id)) {
+          const d = (n as MapFeGroupRfNode).data;
+          return { ...n, data: { ...d, dimmed: true } } as SystemMapNode;
+        }
+        if (n.type === "mapScreen" && lensSets) {
+          const d = (n as MapScreenRfNode).data;
+          if (!lensSets.screens.has(d.screen.id)) {
+            return { ...n, data: { ...d, dimmed: true } } as SystemMapNode;
+          }
+        }
+        return n;
+      }),
+    [scene, lensSets, onEndpointClick, onEndpointDoubleClick],
   );
 
   // Esc clears the selection (the context menu consumes its own Escape).
@@ -761,6 +813,16 @@ function SystemMapInner() {
               <Tooltip content="Some call traces hit the traversal cap — screen edges may be missing">
                 <span className="text-warn">capped</span>
               </Tooltip>
+            ) : null}
+            {lensSets ? (
+              <Tooltip content="The global lens — non-members dim">
+                <span className="text-crystal-300">
+                  · lens: {lensSets.screens.size + lensSets.systems.size} of{" "}
+                  {scene.stats.screens + scene.stats.systems}
+                </span>
+              </Tooltip>
+            ) : lens.empty ? (
+              <span className="text-warn">· lens matches nothing here</span>
             ) : null}
           </div>
           {/* Legend — the map's visual language at a glance. */}

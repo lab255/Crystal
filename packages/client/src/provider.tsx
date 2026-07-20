@@ -29,6 +29,7 @@ import {
   type HighlightState,
   type HighlightStore,
 } from "./highlight-store.js";
+import { createLensStore, type LensState, type LensStore } from "./lens-store.js";
 import { createNavStore, type NavPatch, type NavStore } from "./nav-store.js";
 import {
   createTerminalsStore,
@@ -61,6 +62,7 @@ export interface CrystalContextValue {
   workflowStore: WorkflowStore;
   navStore: NavStore;
   highlightStore: HighlightStore;
+  lensStore: LensStore;
 }
 
 const CrystalContext = createContext<CrystalContextValue | null>(null);
@@ -162,6 +164,7 @@ export function CrystalProvider({
       workflowStore: createWorkflowStore(client),
       navStore: createNavStore(),
       highlightStore: createHighlightStore(),
+      lensStore: createLensStore(client),
     };
   }, [url]);
 
@@ -209,11 +212,34 @@ export function CrystalProvider({
         // Focusing a workspace acknowledges its finished agent runs.
         fleetStore.getState().markSeen(s.activeId);
       }
+      // The lens membership is workspace-scoped — re-resolve against the new one.
+      void value.lensStore
+        .getState()
+        .ensure(s.activeId, value.navStore.getState().link.lens);
     });
 
     // Run results landing in the workspace you're already looking at are seen.
     const disposeRunChanged = client.events.on("agent.runChanged", ({ ws }) => {
       if (ws === workspacesStore.getState().activeId) fleetStore.getState().markSeen(ws);
+    });
+
+    // Global lens: resolve whenever the lens param or active workspace moves,
+    // and re-resolve diff lenses when the code map re-analyzes (files changed).
+    const { navStore, lensStore } = value;
+    const ensureLens = () => {
+      void lensStore
+        .getState()
+        .ensure(workspacesStore.getState().activeId, navStore.getState().link.lens);
+    };
+    ensureLens();
+    const unsubNavLens = navStore.subscribe((s, prev) => {
+      if (s.link.lens !== prev.link.lens || s.link.ws !== prev.link.ws) ensureLens();
+    });
+    const disposeCodemapChanged = client.events.on("codemap.changed", ({ ws }) => {
+      const { spec } = lensStore.getState();
+      if (spec?.kind === "diff" && ws === workspacesStore.getState().activeId) {
+        void lensStore.getState().refresh();
+      }
     });
 
     // Questions raised by agent runs are filed onto their board task by the
@@ -235,6 +261,8 @@ export function CrystalProvider({
     return () => {
       dispose();
       disposeRunChanged();
+      disposeCodemapChanged();
+      unsubNavLens();
       unsubActive();
       void workspaceStore.getState().flush();
       void fleetStore.getState().flush();
@@ -330,4 +358,14 @@ export function useHighlight<T>(selector: (s: HighlightState) => T): T {
 export function useHighlightUpdate(): HighlightState["setHover"] {
   const { highlightStore } = useCrystal();
   return highlightStore.getState().setHover;
+}
+
+/**
+ * Select from the resolved global lens (spec, membership, matcher, saved
+ * facets — see `LensState`). The matcher reference is stable per resolution,
+ * so selecting it directly is zustand-v5 safe.
+ */
+export function useLens<T>(selector: (s: LensState) => T): T {
+  const { lensStore } = useCrystal();
+  return useStore(lensStore, selector);
 }

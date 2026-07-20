@@ -61,12 +61,7 @@ export interface ArchitectLink {
    * modules → members ladder is exposed globally (the LoD slider).
    */
   lod?: CodeLodLevel;
-  /**
-   * Active code-map facet lens: comma-separated dimensional tags (e.g.
-   * "intent:auth") filtering the map down to the members that carry them.
-   */
-  lens?: string;
-  /** Show connected modules/systems around the lens (first-degree neighbors). */
+  /** Show connected modules/systems around the global lens (first-degree neighbors). */
   lensCtx?: boolean;
   /** Duplicates panel open. */
   duplicates?: boolean;
@@ -185,6 +180,13 @@ export interface QualityLink {
 export interface DeepLink {
   /** Active workspace id (`workspaceIdFor(root)` — stable across restarts). */
   ws?: string;
+  /**
+   * Active global lens (see lens.ts): dimensional tags ("intent:auth,sys:forms"),
+   * a saved workspace facet ("facet:<id>") or a review diff ("diff:worktree",
+   * "diff:base", "diff:ref:<ref>"). Top-level like `ws` — every mode renders
+   * through it, so it survives mode switches and rides shared links.
+   */
+  lens?: string;
   mode?: CrystalModeId;
   architect?: ArchitectLink;
   orchestrate?: OrchestrateLink;
@@ -211,6 +213,7 @@ export function formatDeepLink(link: DeepLink): string {
   const pairs: string[] = [];
   const add = (key: string, value: string) => pairs.push(`${key}=${enc(value)}`);
   if (link.ws) add("ws", link.ws);
+  if (link.lens) add("lens", link.lens);
 
   let path = `/${mode}`;
   if (mode === "architect") {
@@ -222,8 +225,7 @@ export function formatDeepLink(link: DeepLink): string {
     if (view === "systems") {
       if (a.system) add("system", a.system);
       if (a.sysGroup) add("group", a.sysGroup);
-      if (a.lens) add("lens", a.lens);
-      if (a.lens && a.lensCtx) add("lensctx", "1");
+      if (link.lens && a.lensCtx) add("lensctx", "1");
       if (a.edge) add("edge", a.edge);
       if (a.expanded) add("expand", a.expanded);
       if (a.focus) add("focus", a.focus);
@@ -241,8 +243,7 @@ export function formatDeepLink(link: DeepLink): string {
         }
       }
       if (a.lod) add("lod", a.lod);
-      if (a.lens) add("lens", a.lens);
-      if (a.lens && a.lensCtx) add("lensctx", "1");
+      if (link.lens && a.lensCtx) add("lensctx", "1");
       if (a.duplicates) add("dups", "1");
       if (a.findings) add("findings", "1");
       if (a.changes) add("changes", "1");
@@ -343,6 +344,10 @@ export function parseDeepLink(hash: string): DeepLink {
   const link: DeepLink = {};
   const ws = params.get("ws");
   if (ws) link.ws = ws;
+  // Top-level global lens. Old architect URLs carried `lens=` as a view-local
+  // param with the same tag grammar — they parse into the same lens here.
+  const globalLens = params.get("lens");
+  if (globalLens) link.lens = globalLens;
 
   const aliased = MODE_ALIASES[segments[0] ?? ""];
   if (aliased) {
@@ -411,8 +416,6 @@ export function parseDeepLink(hash: string): DeepLink {
       a.codemap = { kind: at, ws: mws, path };
     const lod = params.get("lod");
     if (lod && (CODE_LOD_LEVELS as readonly string[]).includes(lod)) a.lod = lod as CodeLodLevel;
-    const lens = params.get("lens");
-    if (lens) a.lens = lens;
     if (params.get("lensctx") === "1") a.lensCtx = true;
     if (Object.keys(a).length) link.architect = a;
   } else if (mode === "orchestrate") {
@@ -508,8 +511,8 @@ export function parseDeepLink(hash: string): DeepLink {
  * history navigation.
  */
 const ARCHITECT_VIEW_FIELDS: Record<ArchitectViewId, readonly (keyof ArchitectLink)[]> = {
-  systems: ["view", "system", "sysGroup", "lens", "lensCtx", "edge", "expanded", "focus", "focusSolo", "insights", "contracts", "facets", "sel", "find"],
-  codemap: ["view", "codemap", "lod", "lens", "lensCtx", "duplicates", "findings", "changes", "facets", "file", "sel", "find"],
+  systems: ["view", "system", "sysGroup", "lensCtx", "edge", "expanded", "focus", "focusSolo", "insights", "contracts", "facets", "sel", "find"],
+  codemap: ["view", "codemap", "lod", "lensCtx", "duplicates", "findings", "changes", "facets", "file", "sel", "find"],
   diagrams: ["view", "diagram", "facet", "draft", "review", "journey", "overlay", "sel", "find"],
   infra: ["view", "diagram", "facet", "draft", "review", "journey", "overlay", "sel", "find"],
 };
@@ -560,6 +563,10 @@ export function applyDeepLink(current: DeepLink, next: DeepLink): DeepLink {
   if (next.ws) link.ws = next.ws;
   if (!next.mode) return link;
   link.mode = next.mode;
+  // Every URL encodes the global lens when one is active, so on a real
+  // navigation its absence genuinely means "no lens".
+  if (next.lens) link.lens = next.lens;
+  else delete link.lens;
   if (next.mode === "architect") {
     const view = next.architect?.view ?? "systems";
     const merged = replaceOwned(current.architect, next.architect, ARCHITECT_VIEW_FIELDS[view]);
