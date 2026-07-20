@@ -1,6 +1,6 @@
 {
   "name": "@crystal/desktop",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Crystal desktop app (Tauri shell around the Crystal web UI + bridge server)",
   "private": true,
   "type": "module",

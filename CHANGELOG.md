@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.1 (2026-07-20)
+
+### Bug Fixes
+
+- strip XML comment from macOS entitlements (AMFI parse error) (#1) ([`094933b`](https://github.com/eliotlim/crystal/commit/094933b))
+
 ## v0.1.0 (2026-07-19)
 
 ### Features
