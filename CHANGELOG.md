@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.3.0 (2026-07-25)
+
+### Features
+
+- drag-and-drop template builder with handoffs and board mapping ([`e3baf21`](https://github.com/eliotlim/crystal/commit/e3baf21))
+- cross-project programs dispatched to per-project orchestrators ([`a4ce96d`](https://github.com/eliotlim/crystal/commit/a4ce96d))
+
 ## v0.2.0 (2026-07-20)
 
 ### Features
