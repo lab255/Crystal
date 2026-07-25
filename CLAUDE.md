@@ -69,6 +69,30 @@ environment approval → per-arch build/sign/notarize → signed updater `latest
   is derivable from the run list alone (the UI computes it client-side from the agent
   store). A `WorkerSpec.branch` implies worktree isolation on that named branch (parallel
   tracks); two live workers must never share a track branch.
+- A template stage carries three things beyond its dependencies. `handoff` is the
+  artifact it owes the stages downstream — dependencies say *when* a stage may start,
+  only the handoff says *what its worker is given*, so it goes into both the producing
+  stage's brief and the consuming stage's `Receives:` line. `boardStatus` is the seam to
+  the orchestrator board: the column that stage's tasks occupy while it works, rendered
+  into the manager's prompt by `boardMappingText` so moving a task is a lookup, not a
+  judgement call (`null` = coordination-only, like refine). `x`/`y` are the builder's
+  persisted layout — absent means the layered auto-layout owns that stage, which is what
+  every built-in relies on. The manager's operating protocol is **generated** from the
+  purposes a template actually contains (`stageProtocolLines`), never a fixed script
+  naming standard's stage ids — three built-ins (`simple`, `standard`, `advanced`) and
+  custom graphs don't share a vocabulary of ids, only of purposes.
+- Templates live in three scopes and the *directory decides*, not the record's own
+  `scope` field (a file copied between directories would otherwise keep lying about
+  where it belongs): built-ins in core, the shared library in
+  `~/.crystal/workflow-templates`, and per-project ones under the workspace's app data.
+  `GlobalTemplateStore` is one instance per server, held by the registry and handed to
+  every `WorkflowEngine`, so a save in one workspace is visible *and announced* in the
+  others; `TemplateLibrary` is the per-workspace view over both halves. Saving with a
+  different scope **moves** the template — leaving the old copy would put one id in two
+  directories and make resolution depend on lookup order. Customising is always a full
+  copy (`deriveTemplate`, provenance in `basedOn`), so editing a project's fork can
+  never reach the library; and a one-off graph passed to `workflow.start` as `template`
+  is snapshotted into that run alone, never persisted.
 - The hub (the layer above workflows) is **cross-project**: a `Program` is one
   high-level epic split into per-project `ProgramDelivery`s, each dispatched as
   a workflow inside that project — from there the project's own orchestrator

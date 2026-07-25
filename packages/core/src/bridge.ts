@@ -30,7 +30,7 @@ import type { SystemOverviewDiff } from "./system-insights.js";
 import type { SystemsLayout } from "./systems-layout.js";
 import type { TerminalChunk, TerminalInfo } from "./terminal.js";
 import type { TodoList } from "./todo.js";
-import type { Workflow, WorkflowSpend, WorkflowTemplate } from "./workflow.js";
+import type { TemplateScope, Workflow, WorkflowSpend, WorkflowTemplate } from "./workflow.js";
 import type {
   HubDispatchReport,
   HubProject,
@@ -576,6 +576,13 @@ export interface BridgeMethods {
       goal: string;
       /** Template id (defaults to "standard"). */
       templateId?: string;
+      /**
+       * A graph for this workflow only — "customise for this run" in the
+       * start panel. Snapshotted into the record and never written to the
+       * template library, so a one-off tweak cannot drift the template other
+       * workflows start from. Wins over `templateId` when both are sent.
+       */
+      template?: WorkflowTemplate | null;
       projectId?: string | null;
       cwd?: string;
       /** Agent profile for the manager (model + skills resolve server-side). */
@@ -615,16 +622,27 @@ export interface BridgeMethods {
     params: WsScope & { workflowId: string };
     result: { workflow: Workflow };
   };
-  /** Every selectable template: built-ins first, then custom (builder-authored). */
+  /**
+   * Every selectable template: built-ins first, then the shared global
+   * library, then this project's own (see `TemplateScope`).
+   */
   "workflow.templates": { params: WsScope; result: { templates: WorkflowTemplate[] } };
   /**
    * Create or update a custom template (visual builder). Validated
    * server-side (`validateWorkflowTemplate`); a blank id mints a fresh one;
-   * built-in ids are refused — duplicate them instead. Running workflows are
-   * unaffected: each holds its own snapshot.
+   * built-in ids are refused — derive from them instead. Running workflows
+   * are unaffected: each holds its own snapshot.
    */
   "workflow.saveTemplate": {
-    params: WsScope & { template: WorkflowTemplate };
+    params: WsScope & {
+      template: WorkflowTemplate;
+      /**
+       * Where to store it, overriding the template's own scope. Passing a
+       * different scope than it currently has *moves* it between the global
+       * library and this project.
+       */
+      scope?: Exclude<TemplateScope, "builtin">;
+    };
     result: { template: WorkflowTemplate };
   };
   /** Delete a custom template (built-ins are refused). */

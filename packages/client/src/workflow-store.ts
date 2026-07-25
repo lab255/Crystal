@@ -1,5 +1,5 @@
 import { createStore, type StoreApi } from "zustand/vanilla";
-import type { AgentRun, Workflow, WorkflowTemplate } from "@crystal/core";
+import type { AgentRun, TemplateScope, Workflow, WorkflowTemplate } from "@crystal/core";
 import type { BridgeClient } from "./bridge-client.js";
 
 /**
@@ -13,7 +13,7 @@ import type { BridgeClient } from "./bridge-client.js";
  */
 export interface WorkflowState {
   workflows: Workflow[];
-  /** Selectable templates: built-ins first, then custom (builder-authored). */
+  /** Selectable templates: built-ins first, then global library, then project. */
   templates: WorkflowTemplate[];
 
   refresh(): Promise<void>;
@@ -21,6 +21,8 @@ export interface WorkflowState {
     name: string;
     goal: string;
     templateId?: string;
+    /** A graph for this run only (start panel's "customise for this run"). */
+    template?: WorkflowTemplate | null;
     projectId?: string | null;
     cwd?: string;
     agentId?: string | null;
@@ -31,8 +33,16 @@ export interface WorkflowState {
   setPaused(workflowId: string, paused: boolean, reason?: string | null): Promise<void>;
   setBudget(workflowId: string, budgetUsd: number | null): Promise<void>;
   cancel(workflowId: string): Promise<void>;
-  /** Create/update a custom template (server validates; returns the saved form). */
-  saveTemplate(template: WorkflowTemplate): Promise<WorkflowTemplate>;
+  /**
+   * Create/update a custom template (server validates; returns the saved
+   * form). `scope` overrides where it is stored — passing one that differs
+   * from the template's current scope moves it between the shared global
+   * library and this project.
+   */
+  saveTemplate(
+    template: WorkflowTemplate,
+    scope?: Exclude<TemplateScope, "builtin">,
+  ): Promise<WorkflowTemplate>;
   deleteTemplate(templateId: string): Promise<void>;
 }
 
@@ -95,8 +105,8 @@ export function createWorkflowStore(client: BridgeClient): WorkflowStore {
       upsert(workflow);
     },
 
-    async saveTemplate(template) {
-      const { template: saved } = await client.request("workflow.saveTemplate", { template });
+    async saveTemplate(template, scope) {
+      const { template: saved } = await client.request("workflow.saveTemplate", { template, scope });
       // The templatesChanged push also lands; updating eagerly keeps the
       // builder responsive when the round-trip beats the broadcast.
       set((s) => {

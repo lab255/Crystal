@@ -1,23 +1,37 @@
 import { describe, expect, it } from "vitest";
 import { createAgentRun } from "./agent.js";
 import {
+  ADVANCED_WORKFLOW_TEMPLATE,
+  SIMPLE_WORKFLOW_TEMPLATE,
+  STAGE_ARCHETYPES,
   STANDARD_WORKFLOW_TEMPLATE,
+  WORKFLOW_TEMPLATES,
+  activeBoardStatuses,
   addTrack,
+  boardColumnStages,
   budgetState,
   buildWorkflowManagerPrompt,
   createWorkflow,
+  deriveTemplate,
   duplicateTemplate,
   formatUserMessage,
   isCustomTemplateId,
+  isEditableTemplate,
+  makeTemplate,
   setStageStatus,
+  stageBoardStatus,
+  stageFromArchetype,
   stagePurpose,
   templateOf,
+  templateScope,
+  templateWarnings,
   validateWorkflowTemplate,
   workflowIdOfRun,
   workflowSpend,
   workflowStatusText,
   workflowTag,
   workflowTemplate,
+  type Workflow,
   type WorkflowTemplate,
 } from "./workflow.js";
 
@@ -54,7 +68,7 @@ describe("workflow template", () => {
 
 /** A small custom template: a → b ∥ c → d. */
 function customTemplate(): WorkflowTemplate {
-  return {
+  return makeTemplate({
     id: "wft_custom",
     name: "Docs pass",
     stages: [
@@ -63,7 +77,7 @@ function customTemplate(): WorkflowTemplate {
       { id: "c", name: "Review", purpose: "code-review", dependsOn: ["a"], perTrack: true, description: "check" },
       { id: "d", name: "Publish", purpose: "release", dependsOn: ["b", "c"], perTrack: false, description: "ship" },
     ],
-  };
+  });
 }
 
 describe("template validation and authoring", () => {
@@ -73,7 +87,7 @@ describe("template validation and authoring", () => {
   });
 
   it("flags empty names, missing stages, duplicate ids and unknown deps", () => {
-    expect(validateWorkflowTemplate({ id: "wft_x", name: " ", stages: [] })).toEqual(
+    expect(validateWorkflowTemplate(makeTemplate({ id: "wft_x", name: " ", stages: [] }))).toEqual(
       expect.arrayContaining([expect.stringMatching(/name/), expect.stringMatching(/at least one stage/)]),
     );
     const t = customTemplate();
@@ -273,4 +287,179 @@ describe("manager prompting", () => {
     expect(text).toMatch(/^USER MESSAGE:/);
     expect(text).toContain("Drop the release stage.");
   });
+
+  it("names each stage's handoff, and what its dependents receive", () => {
+    const prompt = buildWorkflowManagerPrompt(makeWorkflow());
+    const plan = STANDARD_WORKFLOW_TEMPLATE.stages.find((s) => s.id === "plan")!;
+    expect(prompt).toContain(`Hands off: ${plan.handoff}`);
+    // develop depends on plan + design, so it is told what both owe it.
+    expect(prompt).toMatch(new RegExp(`Receives:.*plan → ${escapeRe(plan.handoff)}`));
+    expect(prompt).toContain("Every dispatch is a HANDOFF");
+  });
+
+  it("renders the stage → board column mapping the template declares", () => {
+    const prompt = buildWorkflowManagerPrompt(makeWorkflow());
+    expect(prompt).toContain("- backlog: plan, design");
+    expect(prompt).toContain("- in_progress: develop");
+    expect(prompt).toContain("- review: review");
+    expect(prompt).toContain("- done: merge, release");
+    // The coordination-only stage claims no column.
+    expect(prompt).not.toMatch(/^- \w+: .*\brefine\b/m);
+  });
+
+  /**
+   * The protocol used to be a fixed script naming the standard template's
+   * stage ids, which quietly misdirected every other graph.
+   */
+  it("the protocol names the template's own stages, not the standard ones", () => {
+    const simple = createWorkflow({ name: "Small", goal: "g", templateId: "simple" });
+    const prompt = buildWorkflowManagerPrompt(simple);
+    expect(prompt).toContain("build");
+    expect(prompt).toContain("verify");
+    expect(prompt).toContain("ship");
+    // Stage ids the simple template does not have must not be instructed on.
+    expect(prompt).not.toContain("develop");
+    expect(prompt).not.toContain("add_track"); // no per-track stage in this one
+
+    const advanced = createWorkflow({ name: "Big", goal: "g", templateId: "advanced" });
+    const advancedPrompt = buildWorkflowManagerPrompt(advanced);
+    expect(advancedPrompt).toContain("add_track");
+    expect(advancedPrompt).toContain("research");
+    expect(advancedPrompt).toContain("gate");
+  });
 });
+
+function escapeRe(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+describe("built-in template set", () => {
+  it("simple and advanced are valid, warning-free graphs", () => {
+    for (const template of Object.values(WORKFLOW_TEMPLATES)) {
+      expect(validateWorkflowTemplate(template)).toEqual([]);
+      expect(templateWarnings(template)).toEqual([]);
+      expect(templateScope(template)).toBe("builtin");
+      expect(isEditableTemplate(template)).toBe(false);
+    }
+  });
+
+  it("simple is a strictly linear chain; advanced fans out and back in", () => {
+    // Exactly one root and no stage feeding two others: the artifact handed
+    // forward is unambiguous, which is the whole claim of the simple shape.
+    const roots = SIMPLE_WORKFLOW_TEMPLATE.stages.filter((s) => s.dependsOn.length === 0);
+    expect(roots).toHaveLength(1);
+    for (const stage of SIMPLE_WORKFLOW_TEMPLATE.stages) {
+      expect(stage.dependsOn.length).toBeLessThanOrEqual(1);
+    }
+    expect(SIMPLE_WORKFLOW_TEMPLATE.stages.some((s) => s.perTrack)).toBe(false);
+
+    const advanced = ADVANCED_WORKFLOW_TEMPLATE.stages;
+    expect(advanced.some((s) => s.perTrack)).toBe(true);
+    // Three independent checks all gate the release.
+    expect(advanced.find((s) => s.id === "merge")!.dependsOn).toEqual(["review", "security"]);
+    expect(advanced.find((s) => s.id === "release")!.dependsOn).toEqual(["gate"]);
+  });
+
+  it("every stage that feeds another declares a handoff", () => {
+    for (const template of Object.values(WORKFLOW_TEMPLATES)) {
+      const consumed = new Set(template.stages.flatMap((s) => s.dependsOn));
+      for (const stage of template.stages) {
+        if (consumed.has(stage.id)) expect(stage.handoff).not.toBe("");
+      }
+    }
+  });
+});
+
+describe("stage graph ↔ board", () => {
+  it("maps columns to the stages that feed them, both directions", () => {
+    const columns = boardColumnStages(STANDARD_WORKFLOW_TEMPLATE);
+    expect(columns.backlog.map((s) => s.id)).toEqual(["plan", "design"]);
+    expect(columns.done.map((s) => s.id)).toEqual(["merge", "release"]);
+    expect(stageBoardStatus(STANDARD_WORKFLOW_TEMPLATE, "develop")).toBe("in_progress");
+    // Coordination-only stages own no column.
+    expect(stageBoardStatus(STANDARD_WORKFLOW_TEMPLATE, "refine")).toBeNull();
+    expect(stageBoardStatus(STANDARD_WORKFLOW_TEMPLATE, "ghost")).toBeNull();
+  });
+
+  it("active columns follow live stage state, not the template", () => {
+    const wf = makeWorkflow();
+    expect(activeBoardStatuses(wf).size).toBe(0);
+
+    const refining = setStageStatus(wf, "refine", "active");
+    expect(refining.ok).toBe(true);
+    // refine is active but maps to no column — nothing lights up.
+    expect(activeBoardStatuses(refining.ok ? refining.workflow : wf).size).toBe(0);
+
+    let live = refining.ok ? refining.workflow : wf;
+    live = expectOk(setStageStatus(live, "refine", "done"));
+    live = expectOk(setStageStatus(live, "plan", "active"));
+    expect([...activeBoardStatuses(live)]).toEqual(["backlog"]);
+  });
+
+  it("warns about handoff gaps without blocking the save", () => {
+    const t = customTemplate();
+    t.stages[0]!.handoff = "";
+    // a feeds b and c, so its silence is worth flagging — but it is still a
+    // valid graph: half-finished is normal in a visual builder.
+    expect(validateWorkflowTemplate(t)).toEqual([]);
+    expect(templateWarnings(t).join(" ")).toMatch(/feeds another stage but declares no handoff/);
+  });
+});
+
+describe("template scoping and derivation", () => {
+  it("derives an independent project copy, recording provenance", () => {
+    const derived = deriveTemplate(STANDARD_WORKFLOW_TEMPLATE, { scope: "project" });
+    expect(derived.id).toMatch(/^wft_/);
+    expect(derived.scope).toBe("project");
+    expect(derived.basedOn).toBe("standard");
+    expect(isEditableTemplate(derived)).toBe(true);
+
+    // Independent: editing the copy must not reach the built-in.
+    derived.stages[0]!.name = "Renamed";
+    derived.stages[1]!.dependsOn.push("release");
+    expect(STANDARD_WORKFLOW_TEMPLATE.stages[0]!.name).toBe("Refine");
+    expect(STANDARD_WORKFLOW_TEMPLATE.stages[1]!.dependsOn).toEqual(["refine"]);
+  });
+
+  it("scope is read from the built-in registry, not a record's own claim", () => {
+    // A hand-edited file claiming to be built-in must not become read-only.
+    const liar = makeTemplate({ ...customTemplate(), scope: "builtin" });
+    expect(templateScope(liar)).toBe("project");
+    expect(isEditableTemplate(liar)).toBe(true);
+    // ...and a built-in id stays built-in whatever the record says.
+    expect(templateScope(makeTemplate({ ...STANDARD_WORKFLOW_TEMPLATE, scope: "project" }))).toBe(
+      "builtin",
+    );
+  });
+
+  it("archetypes drop as fully-formed stages with unique ids", () => {
+    const review = STAGE_ARCHETYPES.find((a) => a.key === "review")!;
+    const first = stageFromArchetype(review, [], { x: 40, y: 12 });
+    expect(first.id).toBe("review");
+    expect(first.boardStatus).toBe("review");
+    expect(first.handoff).not.toBe("");
+    expect({ x: first.x, y: first.y }).toEqual({ x: 40, y: 12 });
+
+    // A second one of the same kind must not collide — ids are the handle
+    // every dependsOn and the manager's prompt use.
+    const second = stageFromArchetype(review, [first.id]);
+    expect(second.id).toBe("review-2");
+    expect(stageFromArchetype(review, [first.id, second.id]).id).toBe("review-3");
+  });
+
+  it("a custom template's persisted positions survive a round-trip", () => {
+    const t = customTemplate();
+    t.stages[0]!.x = 120;
+    t.stages[0]!.y = -40;
+    const parsed = makeTemplate(JSON.parse(JSON.stringify(t)));
+    expect(parsed.stages[0]!.x).toBe(120);
+    expect(parsed.stages[0]!.y).toBe(-40);
+    // Stages never dragged stay unpositioned, so auto-layout still owns them.
+    expect(parsed.stages[1]!.x ?? null).toBeNull();
+  });
+});
+
+function expectOk(transition: ReturnType<typeof setStageStatus>): Workflow {
+  if (!transition.ok) throw new Error(transition.reason);
+  return transition.workflow;
+}

@@ -7,6 +7,7 @@ import {
   chainRootId,
   createAgentRun,
   createDefaultRoster,
+  makeTemplate,
   workflowTag,
   type AgentRun,
   type RunEvent,
@@ -14,6 +15,7 @@ import {
 } from "@crystal/core";
 import type { AgentManager, AgentStartParams } from "./agent-manager.js";
 import type { WorkspaceStore } from "./workspace-store.js";
+import { GlobalTemplateStore } from "./template-library.js";
 import { WorkflowEngine } from "./workflow-engine.js";
 
 /** In-memory stand-in for AgentManager — just enough surface for the engine. */
@@ -101,8 +103,17 @@ describe("WorkflowEngine", () => {
   function makeEngine() {
     const agents = new FakeAgents();
     const dataDir = path.join(dir, `e${Math.random().toString(36).slice(2)}`);
-    const engine = new WorkflowEngine(dataDir, agents as unknown as AgentManager, fakeStore);
-    return { agents, engine, dataDir };
+    // The global library gets a directory under the test's temp root: the
+    // real one is ~/.crystal/workflow-templates, and a test that writes there
+    // would leave templates in the developer's own Crystal.
+    const globalDir = path.join(dataDir, "global-templates");
+    const engine = new WorkflowEngine(
+      dataDir,
+      agents as unknown as AgentManager,
+      fakeStore,
+      new GlobalTemplateStore(globalDir),
+    );
+    return { agents, engine, dataDir, globalDir };
   }
 
   it("start spawns a tagged manager session and persists the workflow", async () => {
@@ -224,14 +235,16 @@ describe("WorkflowEngine", () => {
     const before = await engine.listTemplates();
     expect(before.map((t) => t.id)).toContain("standard");
 
-    const saved = await engine.saveTemplate({
-      id: "",
-      name: "Docs pass",
-      stages: [
-        { id: "a", name: "Survey", purpose: "survey", dependsOn: [], perTrack: false, description: "" },
-        { id: "b", name: "Write", purpose: "implement", dependsOn: ["a"], perTrack: false, description: "" },
-      ],
-    });
+    const saved = await engine.saveTemplate(
+      makeTemplate({
+        id: "",
+        name: "Docs pass",
+        stages: [
+          { id: "a", name: "Survey", purpose: "survey", dependsOn: [], perTrack: false, description: "" },
+          { id: "b", name: "Write", purpose: "implement", dependsOn: ["a"], perTrack: false, description: "" },
+        ],
+      }),
+    );
     expect(saved.id).toMatch(/^wft_/);
     expect((await engine.listTemplates()).map((t) => t.id)).toContain(saved.id);
 
@@ -260,16 +273,82 @@ describe("WorkflowEngine", () => {
   });
 
   it("custom templates persist across engine restarts on the same data dir", async () => {
-    const { engine, dataDir } = makeEngine();
-    const saved = await engine.saveTemplate({
-      id: "",
-      name: "Persisted",
+    const { engine, dataDir, globalDir } = makeEngine();
+    const saved = await engine.saveTemplate(
+      makeTemplate({
+        id: "",
+        name: "Persisted",
+        stages: [
+          { id: "only", name: "Only", purpose: "implement", dependsOn: [], perTrack: false, description: "" },
+        ],
+      }),
+    );
+    const fresh = new WorkflowEngine(
+      dataDir,
+      new FakeAgents() as unknown as AgentManager,
+      fakeStore,
+      new GlobalTemplateStore(globalDir),
+    );
+    expect((await fresh.listTemplates()).map((t) => t.id)).toContain(saved.id);
+  });
+
+  it("a global template is visible from every workspace sharing the store", async () => {
+    const shared = new GlobalTemplateStore(path.join(dir, `shared${Math.random().toString(36).slice(2)}`));
+    const makeOn = (suffix: string) =>
+      new WorkflowEngine(
+        path.join(dir, `ws-${suffix}`),
+        new FakeAgents() as unknown as AgentManager,
+        fakeStore,
+        shared,
+      );
+    const a = makeOn("a");
+    const b = makeOn("b");
+
+    let notified = 0;
+    b.events.on("templatesChanged", () => {
+      notified += 1;
+    });
+    const saved = await a.saveTemplate(
+      makeTemplate({
+        id: "",
+        name: "Shared shape",
+        stages: [
+          { id: "only", name: "Only", purpose: "implement", dependsOn: [], perTrack: false, description: "" },
+        ],
+      }),
+      "global",
+    );
+    expect(saved.scope).toBe("global");
+    // The other workspace sees it without a reload, and was told.
+    expect((await b.listTemplates()).map((t) => t.id)).toContain(saved.id);
+    expect(notified).toBeGreaterThan(0);
+
+    // A project-scoped one stays put.
+    const local = await a.saveTemplate(
+      makeTemplate({
+        id: "",
+        name: "Local shape",
+        stages: [
+          { id: "only", name: "Only", purpose: "implement", dependsOn: [], perTrack: false, description: "" },
+        ],
+      }),
+      "project",
+    );
+    expect((await b.listTemplates()).map((t) => t.id)).not.toContain(local.id);
+  });
+
+  it("an inline template starts one workflow without touching the library", async () => {
+    const { engine } = makeEngine();
+    const oneOff = makeTemplate({
+      id: "wft_oneoff",
+      name: "Just this once",
       stages: [
-        { id: "only", name: "Only", purpose: "implement", dependsOn: [], perTrack: false, description: "" },
+        { id: "solo", name: "Solo", purpose: "implement", dependsOn: [], perTrack: false, description: "" },
       ],
     });
-    const fresh = new WorkflowEngine(dataDir, new FakeAgents() as unknown as AgentManager, fakeStore);
-    expect((await fresh.listTemplates()).map((t) => t.id)).toContain(saved.id);
+    const { workflow } = await engine.start({ name: "W", goal: "g", template: oneOff });
+    expect(workflow.stages.map((s) => s.id)).toEqual(["solo"]);
+    expect((await engine.listTemplates()).map((t) => t.id)).not.toContain("wft_oneoff");
   });
 
   it("cancel kills live tagged runs and marks the workflow cancelled", async () => {

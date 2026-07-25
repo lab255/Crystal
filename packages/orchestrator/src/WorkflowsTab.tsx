@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   Ban,
+  ChevronRight,
   CircleDollarSign,
   GitBranch,
   LayoutTemplate,
@@ -10,11 +11,16 @@ import {
   Play,
   Plus,
   Send,
+  SlidersHorizontal,
   Workflow as WorkflowIcon,
 } from "lucide-react";
 import {
+  TASK_STATUSES,
+  TASK_STATUS_LABELS,
+  boardColumnStages,
   budgetState,
   templateOf,
+  validateWorkflowTemplate,
   workflowSpend,
   workflowTag,
   type AgentRun,
@@ -22,12 +28,14 @@ import {
   type Workflow,
   type WorkflowSpend,
   type WorkflowStageStatus,
+  type WorkflowTemplate,
 } from "@crystal/core";
 import { useAgents, useWorkflows, useWorkspace } from "@crystal/client";
 import { Badge, Button, EmptyState, Input, Spinner, Textarea, Tooltip, cn } from "@crystal/ui";
 import { formatCost, formatTokens } from "./prompt.js";
 import { RunView } from "./RunView.js";
 import { TemplateBuilder } from "./TemplateBuilder.js";
+import { TemplateEditor } from "./TemplateEditor.js";
 import { WorkflowGraph } from "./WorkflowGraph.js";
 
 const EMPTY_PROJECTS: never[] = [];
@@ -580,11 +588,29 @@ function NewWorkflowPanel({
   const [templateId, setTemplateId] = useState<string>("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * A one-off graph for this run. Held here and passed to `start`, which
+   * snapshots it into the workflow — nothing is written to the library, so
+   * tweaking one run can never drift the template other runs use.
+   */
+  const [tweak, setTweak] = useState<WorkflowTemplate | null>(null);
 
   const template = templates.find((t) => t.id === templateId) ?? templates[0] ?? null;
+  const effective = tweak ?? template;
+  const tweakProblems = useMemo(
+    () => (tweak ? validateWorkflowTemplate(tweak) : []),
+    [tweak],
+  );
+
+  // Switching template abandons a tweak of the *previous* one — keeping it
+  // would silently start a workflow on a graph the picker no longer shows.
+  const selectTemplate = (id: string) => {
+    setTemplateId(id);
+    setTweak(null);
+  };
 
   async function create() {
-    if (!name.trim() || !goal.trim() || busy) return;
+    if (!name.trim() || !goal.trim() || busy || tweakProblems.length) return;
     setBusy(true);
     setError(null);
     try {
@@ -593,6 +619,7 @@ function NewWorkflowPanel({
         name: name.trim(),
         goal: goal.trim(),
         templateId: template?.id,
+        template: tweak,
         projectId: projectId || null,
         budgetUsd: budget.trim() !== "" && Number.isFinite(n) ? n : null,
       });
@@ -629,7 +656,7 @@ function NewWorkflowPanel({
           <select
             className="h-8 flex-1 rounded-lg border border-edge bg-surface-1 px-2 text-[13px] text-ink focus:border-crystal-500/60 focus:outline-none"
             value={template?.id ?? ""}
-            onChange={(e) => setTemplateId(e.target.value)}
+            onChange={(e) => selectTemplate(e.target.value)}
             aria-label="Workflow template"
           >
             {templates.map((t) => (
@@ -638,10 +665,58 @@ function NewWorkflowPanel({
               </option>
             ))}
           </select>
+          <Tooltip content="Change the stages for this run only — the template is untouched">
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={!template}
+              className={cn(tweak && "bg-surface-3 text-ink")}
+              onClick={() =>
+                setTweak((current) =>
+                  current
+                    ? null
+                    : template
+                      ? {
+                          ...template,
+                          stages: template.stages.map((s) => ({
+                            ...s,
+                            dependsOn: [...s.dependsOn],
+                          })),
+                        }
+                      : null,
+                )
+              }
+            >
+              <SlidersHorizontal className="h-3 w-3" /> Customise for this run
+            </Button>
+          </Tooltip>
           <Button variant="ghost" size="sm" onClick={() => onEditTemplates?.()}>
             <LayoutTemplate className="h-3 w-3" /> Edit templates
           </Button>
         </div>
+
+        {tweak ? (
+          <div className="mt-2 overflow-hidden rounded-lg border border-crystal-500/30">
+            <div className="flex items-center gap-2 border-b border-edge bg-surface-2 px-2 py-1">
+              <span className="text-[11px] text-ink-muted">
+                This run only — <span className="text-ink">{template?.name}</span> stays as it is.
+              </span>
+              <Button
+                variant="ghost"
+                size="xs"
+                className="ml-auto"
+                onClick={() => setTweak(null)}
+              >
+                Reset
+              </Button>
+            </div>
+            <TemplateEditor
+              template={tweak}
+              onChange={setTweak}
+              className="h-80"
+            />
+          </div>
+        ) : null}
         <div className="mt-2 flex items-center gap-2">
           <Input
             value={budget}
@@ -666,21 +741,70 @@ function NewWorkflowPanel({
           <Button
             variant="primary"
             size="sm"
-            disabled={busy || !name.trim() || !goal.trim()}
+            disabled={busy || !name.trim() || !goal.trim() || tweakProblems.length > 0}
             onClick={() => void create()}
           >
             <Play className="h-3 w-3" /> Start
           </Button>
         </div>
         {error ? <p className="mt-2 text-[11px] text-danger">{error}</p> : null}
+        {tweakProblems.length ? (
+          <p className="mt-2 text-[11px] text-danger">{tweakProblems.join(" ")}</p>
+        ) : null}
       </div>
 
-      <EmptyState icon={Network} title="Manager → plan + design → develop ∥ review → merge → release">
-        An interactive manager session coordinates the whole flow: it refines requirements with
-        you (message it any time), plans tasks onto the board, dispatches parallel develop
-        tracks on their own branches, reviews each as it lands, then merges and releases —
-        with every token accounted against the budget.
-      </EmptyState>
+      {effective ? <TemplateSummary template={effective} /> : null}
+    </div>
+  );
+}
+
+/**
+ * What the picked template will actually do: the stage chain, and which board
+ * column each stage parks its tasks in. Replaces a fixed description of the
+ * standard flow — with three built-ins and custom templates, a hardcoded
+ * summary is wrong more often than it is right.
+ */
+function TemplateSummary({ template }: { template: WorkflowTemplate }) {
+  const columns = useMemo(() => boardColumnStages(template), [template]);
+  return (
+    <div className="rounded-xl border border-edge bg-surface-1 p-3">
+      <div className="mb-1 flex items-center gap-2">
+        <Network className="h-3.5 w-3.5 text-crystal-300" />
+        <span className="text-[13px] font-semibold text-ink">{template.name}</span>
+      </div>
+      {template.description ? (
+        <p className="mb-2 text-[11px] leading-snug text-ink-muted">{template.description}</p>
+      ) : null}
+
+      <div className="mb-3 flex flex-wrap items-center gap-1">
+        {template.stages.map((stage, i) => (
+          <span key={stage.id} className="flex items-center gap-1">
+            {i > 0 ? <ChevronRight className="h-3 w-3 text-ink-faint" /> : null}
+            <Tooltip content={stage.handoff || stage.description || stage.id}>
+              <span className="rounded-full border border-edge px-2 py-0.5 text-[10px] text-ink">
+                {stage.name}
+                {stage.perTrack ? " ∥" : ""}
+              </span>
+            </Tooltip>
+          </span>
+        ))}
+      </div>
+
+      <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-ink-faint">
+        On the board
+      </div>
+      <div className="grid grid-cols-4 gap-1.5">
+        {TASK_STATUSES.map((status) => (
+          <div key={status} className="rounded-lg border border-edge bg-surface-2 p-1.5">
+            <div className="text-[10px] font-medium text-ink">{TASK_STATUS_LABELS[status]}</div>
+            <div className="mt-0.5 text-[10px] leading-snug text-ink-muted">
+              {columns[status].length
+                ? columns[status].map((s) => s.name).join(", ")
+                : "—"}
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

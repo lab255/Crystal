@@ -1,5 +1,5 @@
 import { useMemo, useState, type DragEvent, type KeyboardEvent } from "react";
-import { Bot, CircleHelp, Lock, Plus, UserRound } from "lucide-react";
+import { Bot, CircleHelp, Lock, Network, Plus, UserRound } from "lucide-react";
 import {
   PRIORITY_RANK,
   TASK_SIZE_POINTS,
@@ -17,13 +17,14 @@ import {
   tagsInDimension,
   taskLiveUsage,
   tasksInColumn,
+  templateOf,
   type AgentRoster,
   type Project,
   type TaskItem,
   type TaskStatus,
 } from "@crystal/core";
-import { useAgents, useNav, useNavUpdate, useWorkspace } from "@crystal/client";
-import { Badge, StatusDot, cn } from "@crystal/ui";
+import { useAgents, useNav, useNavUpdate, useWorkflows, useWorkspace } from "@crystal/client";
+import { Badge, StatusDot, Tooltip, cn } from "@crystal/ui";
 import { formatCost, formatTokens } from "./prompt.js";
 
 const TASK_MIME = "application/crystal-task-id";
@@ -74,6 +75,35 @@ export function Board({
 }) {
   const runs = useAgents((s) => s.runs);
   const roster = useWorkspace((s) => s.roster);
+  const workflows = useWorkflows((s) => s.workflows);
+
+  /**
+   * The stage each status column is currently being driven by, from any live
+   * workflow planning onto this board. This is the board's half of the
+   * stage↔column mapping the template declares: without it, tasks move
+   * between columns with no visible reason, because the thing moving them
+   * lives in another tab.
+   */
+  const stagesByColumn = useMemo(() => {
+    const map = new Map<TaskStatus, string[]>();
+    for (const workflow of workflows) {
+      if (workflow.status !== "running") continue;
+      // A null projectId means the workspace's default board — which is this
+      // one only when it is the board being shown, so match on identity and
+      // let the default case fall through to "no claim".
+      if (workflow.projectId != null && workflow.projectId !== project.id) continue;
+      const template = templateOf(workflow);
+      for (const state of workflow.stages) {
+        if (state.status !== "active") continue;
+        const def = template.stages.find((s) => s.id === state.id);
+        if (!def?.boardStatus) continue;
+        const names = map.get(def.boardStatus) ?? [];
+        if (!names.includes(def.name)) names.push(def.name);
+        map.set(def.boardStatus, names);
+      }
+    }
+    return map;
+  }, [workflows, project.id]);
   const nav = useNavUpdate();
   const group: BoardGroup = useNav((l) => l.orchestrate?.group) ?? "status";
   const sort: BoardSort = useNav((l) => l.orchestrate?.sort) ?? "manual";
@@ -412,6 +442,18 @@ export function Board({
               <div className="flex items-center gap-2 px-3 py-2.5">
                 <span className="h-2 w-2 rounded-full" style={{ background: column.accent }} />
                 <span className="truncate text-xs font-semibold text-ink">{column.label}</span>
+                {group === "status" && stagesByColumn.has(column.key as TaskStatus) ? (
+                  <Tooltip
+                    content={`Driven by the ${stagesByColumn
+                      .get(column.key as TaskStatus)!
+                      .join(", ")} stage of a running workflow`}
+                  >
+                    <span className="flex shrink-0 items-center gap-0.5 rounded-full border border-crystal-500/40 bg-crystal-500/10 px-1.5 py-px text-[9px] text-crystal-200">
+                      <Network className="h-2.5 w-2.5" />
+                      {stagesByColumn.get(column.key as TaskStatus)!.join(", ")}
+                    </span>
+                  </Tooltip>
+                ) : null}
                 <ColumnCount
                   shown={tasks.length}
                   total={total}

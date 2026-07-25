@@ -17,10 +17,11 @@ import { AnalysisBackend, createCodeMapFacade, type CodeMapFacade } from "./anal
 import { CodeIndexService } from "./code-index.js";
 import { type CrossSurface } from "./code-map.js";
 import { OrchestrationService } from "./orchestration.js";
-import { appDataDir, isIgnoredDir, workspaceIdFor } from "./paths.js";
+import { appDataDir, globalTemplatesDir, isIgnoredDir, workspaceIdFor } from "./paths.js";
 import { QualityService } from "./quality-runner.js";
 import { RefactorEngine } from "./refactor.js";
 import { SettledRuns } from "./settled-runs.js";
+import { GlobalTemplateStore } from "./template-library.js";
 import { TerminalManager } from "./terminal-manager.js";
 import { WorkflowEngine } from "./workflow-engine.js";
 import { WorkspaceStore } from "./workspace-store.js";
@@ -74,6 +75,13 @@ export class WorkspaceRuntime {
     readonly root: string,
     /** Base URL of the server's in-process MCP endpoint (enables manager tools). */
     mcpBaseUrl: string | null = null,
+    /**
+     * The machine-wide template library. The registry passes its shared
+     * instance so a template saved in one workspace is visible in every
+     * other; the default is a private store, for a runtime built outside a
+     * registry (tests), where there is nothing to share with.
+     */
+    globalTemplates: GlobalTemplateStore = new GlobalTemplateStore(globalTemplatesDir()),
   ) {
     this.id = workspaceIdFor(root);
     this.name = path.basename(root);
@@ -93,7 +101,7 @@ export class WorkspaceRuntime {
       this.notifyWorkspaceChanged?.(),
     );
     // Installs the dispatch guard (pause/budget veto) and settle hooks.
-    this.workflows = new WorkflowEngine(appDataDir(root), this.agents, this.store);
+    this.workflows = new WorkflowEngine(appDataDir(root), this.agents, this.store, globalTemplates);
     // A worker dispatched against a claimed task inherits the lease, so it is
     // released when the work settles rather than when the manager's turn ends.
     this.agents.onWorkerDispatched = (worker) => {
@@ -228,6 +236,14 @@ export class WorkspaceRegistry {
   private recentsByRoot = new Map<string, RecentWorkspace>();
   private recentsLoad: Promise<void> | null = null;
 
+  /**
+   * One template library for the whole server, shared by every workspace it
+   * opens. Held here rather than per runtime because that is exactly what
+   * "global" means: saving a template in one project must show up in the
+   * next, without a reload.
+   */
+  private readonly globalTemplates = new GlobalTemplateStore(globalTemplatesDir());
+
   constructor(
     private readonly broadcast: Broadcast,
     /** Where to persist the open set; null disables persistence entirely. */
@@ -245,7 +261,7 @@ export class WorkspaceRegistry {
     const existing = this.runtimes.get(id);
     if (existing) return existing;
 
-    const runtime = new WorkspaceRuntime(canonical, this.mcpBaseUrl);
+    const runtime = new WorkspaceRuntime(canonical, this.mcpBaseUrl, this.globalTemplates);
     // Warm the workspace (creates .crystal/ on first run) and pick up its name.
     const info = await runtime.store.load();
     runtime.name = info.manifest.name;

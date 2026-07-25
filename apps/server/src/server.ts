@@ -630,8 +630,8 @@ export async function startCrystalServer(opts: {
     "workflow.templates": async ({ ws }) => ({
       templates: await registry.get(ws).workflows.listTemplates(),
     }),
-    "workflow.saveTemplate": async ({ ws, template }) => ({
-      template: await registry.get(ws).workflows.saveTemplate(template),
+    "workflow.saveTemplate": async ({ ws, template, scope }) => ({
+      template: await registry.get(ws).workflows.saveTemplate(template, scope),
     }),
     "workflow.deleteTemplate": async ({ ws, templateId }) => {
       await registry.get(ws).workflows.deleteTemplate(templateId);

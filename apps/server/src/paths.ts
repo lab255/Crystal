@@ -47,6 +47,16 @@ export function hubDataDir(): string {
   return path.join(os.homedir(), ".crystal", "hub");
 }
 
+/**
+ * The shared workflow-template library. Outside `workspaces/` for the same
+ * reason the hub is: a template describes a *shape of work*, not a repo, and
+ * the hub dispatches one program's deliveries into several projects that
+ * should be able to name the same shape.
+ */
+export function globalTemplatesDir(): string {
+  return path.join(os.homedir(), ".crystal", "workflow-templates");
+}
+
 const IGNORED_DIRS = new Set([
   "node_modules",
   ".git",

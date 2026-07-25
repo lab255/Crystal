@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import {
   Background,
   BackgroundVariant,
@@ -7,22 +7,32 @@ import {
   MarkerType,
   Position,
   ReactFlow,
+  ReactFlowProvider,
+  useReactFlow,
   type Edge,
   type EdgeChange,
   type Node,
   type NodeChange,
   type NodeProps,
 } from "@xyflow/react";
-import { GitBranch } from "lucide-react";
-import type { WorkflowStageDef, WorkflowStageStatus } from "@crystal/core";
+import { ArrowRightLeft, Columns3, GitBranch } from "lucide-react";
+import {
+  TASK_STATUS_LABELS,
+  type WorkflowStageDef,
+  type WorkflowStageStatus,
+} from "@crystal/core";
 import { Tooltip, cn } from "@crystal/ui";
 
 /**
  * The workflow stage graph — one react-flow canvas shared by the template
- * builder (editable: connect/delete dependencies, drag stages) and the live
- * workflow view (read-only, stages colored by status). Layout is a layered
- * DAG computed from `dependsOn` depth; user drags override per stage id, so
- * remount (key by template id) when switching templates.
+ * builder (editable: drop new stages, connect/delete dependencies, drag to
+ * arrange) and the live workflow view (read-only, stages colored by status).
+ *
+ * Layout has three tiers, most specific first: a stage's persisted `x`/`y`
+ * (the builder writes them on drag, so a hand-arranged graph survives a
+ * reload), then the layered DAG computed from `dependsOn` depth, which is
+ * what every built-in relies on. Drags are reported up rather than held
+ * locally — position is template data now, not view state.
  */
 
 const NODE_W = 200;
@@ -30,7 +40,12 @@ const NODE_H = 76;
 const COL_GAP = 260;
 const ROW_GAP = 100;
 
-/** Layered layout: x by dependency depth, y centered within each column. */
+/**
+ * Layered layout: x by dependency depth, y centered within each column.
+ * Stages carrying a persisted position keep it — but they still occupy their
+ * slot in the auto layout, so the stages *without* one are not laid out on
+ * top of each other in the gaps the placed ones left behind.
+ */
 export function layoutStages(stages: WorkflowStageDef[]): Map<string, { x: number; y: number }> {
   const byId = new Map(stages.map((s) => [s.id, s]));
   const depths = new Map<string, number>();
@@ -58,11 +73,24 @@ export function layoutStages(stages: WorkflowStageDef[]): Map<string, { x: numbe
   const positions = new Map<string, { x: number; y: number }>();
   for (const [depth, ids] of columns) {
     ids.forEach((id, i) => {
-      positions.set(id, { x: depth * COL_GAP, y: (i - (ids.length - 1) / 2) * ROW_GAP });
+      const def = byId.get(id);
+      positions.set(
+        id,
+        def?.x != null && def.y != null
+          ? { x: def.x, y: def.y }
+          : { x: depth * COL_GAP, y: (i - (ids.length - 1) / 2) * ROW_GAP },
+      );
     });
   }
   return positions;
 }
+
+/**
+ * The MIME type the stage palette writes on a drag. A private type (rather
+ * than `text/plain`) keeps a stray text drop from the rest of the app — a
+ * task title, a file path — from landing on the canvas as a stage.
+ */
+export const STAGE_DND_MIME = "application/x-crystal-stage";
 
 const STAGE_CARD_CLASSES: Record<WorkflowStageStatus, string> = {
   pending: "border-edge bg-surface-1",
@@ -122,6 +150,14 @@ function StageNode({ data }: NodeProps<StageRfNode>) {
           {def.purpose}
         </span>
         {def.model ? <span className="font-mono">{def.model}</span> : null}
+        {def.boardStatus ? (
+          <Tooltip content={`Its tasks sit in the board's "${TASK_STATUS_LABELS[def.boardStatus]}" column`}>
+            <span className="flex items-center gap-0.5">
+              <Columns3 className="h-2.5 w-2.5" />
+              {TASK_STATUS_LABELS[def.boardStatus]}
+            </span>
+          </Tooltip>
+        ) : null}
         {status && status !== "pending" ? (
           <span
             className={cn(
@@ -139,23 +175,24 @@ function StageNode({ data }: NodeProps<StageRfNode>) {
           {def.description}
         </p>
       ) : null}
+      {def.handoff ? (
+        <p className="mt-1 flex items-start gap-1 border-t border-edge/60 pt-1 text-[10px] leading-snug text-crystal-200/80">
+          <ArrowRightLeft className="mt-px h-2.5 w-2.5 shrink-0" />
+          <span className="line-clamp-2">{def.handoff}</span>
+        </p>
+      ) : null}
     </div>
   );
 }
 
 const nodeTypes = { stage: StageNode };
 
-export function WorkflowGraph({
-  stages,
-  statuses,
-  selectedStageId,
-  onSelectStage,
-  editable = false,
-  onConnectDep,
-  onRemoveDeps,
-  onRemoveStages,
-  className,
-}: {
+function truncate(text: string, max: number): string {
+  const clean = text.trim();
+  return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
+}
+
+export interface WorkflowGraphProps {
   stages: WorkflowStageDef[];
   /** Live stage statuses (workflow view); omit in the builder. */
   statuses?: ReadonlyMap<string, WorkflowStageStatus>;
@@ -166,19 +203,73 @@ export function WorkflowGraph({
   onConnectDep?: (from: string, to: string) => void;
   onRemoveDeps?: (deps: { from: string; to: string }[]) => void;
   onRemoveStages?: (ids: string[]) => void;
+  /** A stage was dragged — persist its position into the template. */
+  onMoveStage?: (id: string, position: { x: number; y: number }) => void;
+  /**
+   * A palette entry was dropped on the canvas at flow coordinates. The
+   * payload is whatever the palette put on the drag under
+   * {@link STAGE_DND_MIME}; the builder decides what stage that makes.
+   */
+  onDropStage?: (payload: string, position: { x: number; y: number }) => void;
   className?: string;
-}) {
+}
+
+/**
+ * Wraps the canvas in its own provider: `screenToFlowPosition` (how a drop
+ * point becomes a stage position) is only available to a component inside
+ * one, and the graph is rendered in several places that shouldn't each have
+ * to remember to supply it.
+ */
+export function WorkflowGraph(props: WorkflowGraphProps) {
+  return (
+    <ReactFlowProvider>
+      <WorkflowGraphCanvas {...props} />
+    </ReactFlowProvider>
+  );
+}
+
+function WorkflowGraphCanvas({
+  stages,
+  statuses,
+  selectedStageId,
+  onSelectStage,
+  editable = false,
+  onConnectDep,
+  onRemoveDeps,
+  onRemoveStages,
+  onMoveStage,
+  onDropStage,
+  className,
+}: WorkflowGraphProps) {
   const auto = useMemo(() => layoutStages(stages), [stages]);
-  // Drag positions survive structural edits; switching templates remounts
-  // (parent keys this component by template id) and clears them.
-  const [dragged, setDragged] = useState<Record<string, { x: number; y: number }>>({});
+  const { screenToFlowPosition, fitView } = useReactFlow();
+  const wrapper = useRef<HTMLDivElement>(null);
+  /**
+   * Whether the user has panned or zoomed themselves. `fitView` only runs on
+   * mount, so the pane getting narrower — the palette appearing when a
+   * read-only template is derived, the inspector opening on a stage click —
+   * would leave the last stages outside the viewport. We refit on resize, but
+   * only until the user takes over: refitting after that would throw away the
+   * view they chose every time a panel toggles.
+   */
+  const userMoved = useRef(false);
+
+  useEffect(() => {
+    const el = wrapper.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      if (!userMoved.current) fitView({ padding: 0.25, maxZoom: 1 });
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [fitView]);
 
   const nodes = useMemo<StageRfNode[]>(
     () =>
       stages.map((def) => ({
         id: def.id,
         type: "stage",
-        position: dragged[def.id] ?? auto.get(def.id) ?? { x: 0, y: 0 },
+        position: auto.get(def.id) ?? { x: 0, y: 0 },
         width: NODE_W,
         data: {
           def,
@@ -189,29 +280,63 @@ export function WorkflowGraph({
         draggable: editable,
         deletable: editable,
       })),
-    [stages, auto, dragged, statuses, selectedStageId, editable],
+    [stages, auto, statuses, selectedStageId, editable],
   );
 
   const edges = useMemo<Edge[]>(
     () =>
-      stages.flatMap((def) =>
-        def.dependsOn
-          .filter((dep) => dep !== def.id && stages.some((s) => s.id === dep))
+      stages.flatMap((def) => {
+        const from = new Map(stages.map((s) => [s.id, s]));
+        return def.dependsOn
+          .filter((dep) => dep !== def.id && from.has(dep))
           .map((dep) => ({
             id: `${dep}->${def.id}`,
             source: dep,
             target: def.id,
+            // The edge *is* the handoff, so it carries its label — reading
+            // the graph should answer "what does this stage get handed?"
+            // without clicking through to an inspector.
+            label: from.get(dep)?.handoff ? truncate(from.get(dep)!.handoff, 44) : undefined,
+            labelShowBg: true,
+            labelBgPadding: [4, 2] as [number, number],
+            labelBgBorderRadius: 4,
+            labelStyle: { fontSize: 9, fill: "currentColor" },
             animated: statuses?.get(def.id) === "active",
             deletable: editable,
             markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16 },
             style: { strokeWidth: 1.5 },
-          })),
-      ),
+          }));
+      }),
     [stages, statuses, editable],
   );
 
+  const onDrop = useCallback(
+    (event: React.DragEvent) => {
+      if (!editable || !onDropStage) return;
+      const payload = event.dataTransfer.getData(STAGE_DND_MIME);
+      if (!payload) return;
+      event.preventDefault();
+      const flow = screenToFlowPosition({ x: event.clientX, y: event.clientY });
+      // Drop point is the cursor; offset so the card lands centered under it.
+      onDropStage(payload, { x: Math.round(flow.x - NODE_W / 2), y: Math.round(flow.y - NODE_H / 2) });
+    },
+    [editable, onDropStage, screenToFlowPosition],
+  );
+
   return (
-    <div className={cn("h-full min-h-0", className)}>
+    <div
+      ref={wrapper}
+      className={cn("h-full min-h-0", className)}
+      onDrop={onDrop}
+      onDragOver={(event) => {
+        if (!editable || !onDropStage) return;
+        // Without preventDefault the browser refuses the drop outright.
+        if (event.dataTransfer.types.includes(STAGE_DND_MIME)) {
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "copy";
+        }
+      }}
+    >
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -219,9 +344,13 @@ export function WorkflowGraph({
         onNodesChange={(changes: NodeChange<StageRfNode>[]) => {
           const removed: string[] = [];
           for (const change of changes) {
-            if (change.type === "position" && change.position) {
-              const position = change.position;
-              setDragged((prev) => ({ ...prev, [change.id]: position }));
+            if (change.type === "position" && change.position && change.dragging === false) {
+              // Only the drop, not every frame of the drag: each one would
+              // otherwise be a template mutation (and a dirty-state flip).
+              onMoveStage?.(change.id, {
+                x: Math.round(change.position.x),
+                y: Math.round(change.position.y),
+              });
             } else if (change.type === "remove") {
               removed.push(change.id);
             }
@@ -243,6 +372,11 @@ export function WorkflowGraph({
           if (editable && conn.source && conn.target && conn.source !== conn.target) {
             onConnectDep?.(conn.source, conn.target);
           }
+        }}
+        onMoveStart={(event) => {
+          // Null event = a programmatic move (our own fitView); anything else
+          // is the user panning or zooming, after which we stop refitting.
+          if (event) userMoved.current = true;
         }}
         onNodeClick={(_evt, n) => onSelectStage?.(n.id === selectedStageId ? null : n.id)}
         onPaneClick={() => onSelectStage?.(null)}

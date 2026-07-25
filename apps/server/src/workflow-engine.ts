@@ -1,10 +1,8 @@
-import fs from "node:fs/promises";
 import path from "node:path";
 import {
   Emitter,
   WORKFLOW_TEMPLATES,
   WorkflowSchema,
-  WorkflowTemplateSchema,
   addTrack,
   budgetState,
   buildWorkflowManagerPrompt,
@@ -30,6 +28,11 @@ import {
 import type { AgentManager } from "./agent-manager.js";
 import { SettledRuns } from "./settled-runs.js";
 import { JsonRecordStore } from "./record-store.js";
+import {
+  TemplateLibrary,
+  type GlobalTemplateStore,
+  type WritableScope,
+} from "./template-library.js";
 import type { WorkspaceStore } from "./workspace-store.js";
 
 /**
@@ -55,25 +58,30 @@ export class WorkflowEngine {
 
   /** Persisted workflows, with the serialized read-modify-write (see JsonRecordStore). */
   private readonly records: JsonRecordStore<Workflow>;
-  /** Custom (builder-authored) templates by id; built-ins stay in core. */
-  private templates = new Map<string, WorkflowTemplate>();
-  private loaded = false;
+  /** Built-in + global + this project's templates (see TemplateLibrary). */
+  private readonly library: TemplateLibrary;
   /** User messages waiting for the manager chain to go idle, per workflow. */
   private pendingMessages = new Map<string, string[]>();
   /** Runs whose settlement was already handled (see SettledRuns). */
   private readonly settledRuns = new SettledRuns();
   private readonly disposeListener: () => void;
+  private readonly disposeLibrary: () => void;
 
   constructor(
     private readonly dataDir: string,
     private readonly agents: AgentManager,
     private readonly store: WorkspaceStore,
+    globalTemplates: GlobalTemplateStore,
   ) {
     this.records = new JsonRecordStore<Workflow>(
       path.join(dataDir, "workflows"),
       (raw) => WorkflowSchema.parse(raw),
       (workflow) => this.events.emit("changed", { workflow }),
       nowIso,
+    );
+    this.library = new TemplateLibrary(path.join(dataDir, "workflows", "templates"), globalTemplates);
+    this.disposeLibrary = this.library.events.on("changed", () =>
+      this.events.emit("templatesChanged", {}),
     );
     agents.dispatchGuard = (manager, _spec) => this.guardDispatch(manager);
     this.disposeListener = agents.events.on("runChanged", ({ run }) => {
@@ -89,32 +97,13 @@ export class WorkflowEngine {
    */
   dispose(): void {
     this.disposeListener();
+    this.disposeLibrary();
+    this.library.dispose();
     if (this.agents.dispatchGuard != null) this.agents.dispatchGuard = null;
-  }
-
-  private dir(): string {
-    return path.join(this.dataDir, "workflows");
-  }
-
-  private templatesDir(): string {
-    return path.join(this.dir(), "templates");
   }
 
   private async ensureLoaded(): Promise<void> {
     await this.records.ensureLoaded();
-    if (this.loaded) return;
-    this.loaded = true;
-    const templateNames = await fs.readdir(this.templatesDir()).catch(() => [] as string[]);
-    for (const name of templateNames) {
-      if (!name.endsWith(".json")) continue;
-      try {
-        const raw = JSON.parse(await fs.readFile(path.join(this.templatesDir(), name), "utf8"));
-        const template = WorkflowTemplateSchema.parse(raw);
-        this.templates.set(template.id, template);
-      } catch {
-        // Same policy as workflow records: a corrupt template is skipped.
-      }
-    }
   }
 
   /** Serialize one read-modify-write against a workflow record. */
@@ -148,50 +137,22 @@ export class WorkflowEngine {
 
   /* ---------------- templates ---------------- */
 
-  /** Built-ins first (stable order), then customs sorted by name. */
-  async listTemplates(): Promise<WorkflowTemplate[]> {
-    await this.ensureLoaded();
-    const custom = [...this.templates.values()].sort((a, b) => a.name.localeCompare(b.name));
-    return [...Object.values(WORKFLOW_TEMPLATES), ...custom];
+  /** Built-ins first, then the global library, then this project's. */
+  listTemplates(): Promise<WorkflowTemplate[]> {
+    return this.library.list();
   }
 
   /**
-   * Create or update a custom template. A blank id mints a fresh one;
-   * built-in ids are read-only (duplicate them client-side instead). Running
-   * workflows are unaffected — each holds its own snapshot.
+   * Create or update a custom template, optionally moving it between the
+   * global library and this project. Running workflows are unaffected — each
+   * holds its own snapshot.
    */
-  async saveTemplate(input: WorkflowTemplate): Promise<WorkflowTemplate> {
-    await this.ensureLoaded();
-    const template = WorkflowTemplateSchema.parse({
-      ...input,
-      id: input.id.trim() || uid("wft"),
-    });
-    if (WORKFLOW_TEMPLATES[template.id]) {
-      throw new Error(`Template "${template.id}" is built-in and read-only — duplicate it instead.`);
-    }
-    const errors = validateWorkflowTemplate(template);
-    if (errors.length) throw new Error(`Invalid template: ${errors.join(" ")}`);
-    await fs.mkdir(this.templatesDir(), { recursive: true });
-    await fs.writeFile(
-      path.join(this.templatesDir(), `${template.id}.json`),
-      JSON.stringify(template, null, 2),
-      "utf8",
-    );
-    this.templates.set(template.id, template);
-    this.events.emit("templatesChanged", {});
-    return template;
+  saveTemplate(input: WorkflowTemplate, scope?: WritableScope): Promise<WorkflowTemplate> {
+    return this.library.save(input, scope);
   }
 
-  async deleteTemplate(templateId: string): Promise<void> {
-    await this.ensureLoaded();
-    if (WORKFLOW_TEMPLATES[templateId]) {
-      throw new Error(`Template "${templateId}" is built-in and cannot be deleted.`);
-    }
-    if (!this.templates.delete(templateId)) {
-      throw new Error(`Unknown template: ${templateId}`);
-    }
-    await fs.rm(path.join(this.templatesDir(), `${templateId}.json`), { force: true });
-    this.events.emit("templatesChanged", {});
+  deleteTemplate(templateId: string): Promise<void> {
+    return this.library.remove(templateId);
   }
 
   /* ---------------- lifecycle ---------------- */
@@ -200,6 +161,12 @@ export class WorkflowEngine {
     name: string;
     goal: string;
     templateId?: string;
+    /**
+     * A one-off graph for this workflow only — the start panel's "customise
+     * for this run". Snapshotted into the record and never persisted to the
+     * library, so tweaking a run cannot drift the template other runs use.
+     */
+    template?: WorkflowTemplate | null;
     projectId?: string | null;
     cwd?: string;
     agentId?: string | null;
@@ -207,12 +174,15 @@ export class WorkflowEngine {
   }): Promise<{ workflow: Workflow; run: AgentRun }> {
     await this.ensureLoaded();
     // A custom template id resolves to its current definition and is
-    // snapshotted into the record; built-ins resolve by id forever.
-    const custom = init.templateId ? this.templates.get(init.templateId) : undefined;
-    if (init.templateId && !custom && !WORKFLOW_TEMPLATES[init.templateId]) {
-      throw new Error(`Unknown workflow template: ${init.templateId}`);
+    // snapshotted into the record; built-ins resolve by id forever. An
+    // inline template wins outright — it is already the tweaked copy.
+    let template = init.template ?? null;
+    if (!template && init.templateId) {
+      const found = await this.library.get(init.templateId);
+      if (!found) throw new Error(`Unknown workflow template: ${init.templateId}`);
+      template = WORKFLOW_TEMPLATES[init.templateId] ? null : found;
     }
-    const workflow = createWorkflow({ ...init, template: custom ?? null });
+    const workflow = createWorkflow({ ...init, template });
 
     // Resolve the manager's model + skills from the roster on disk, like
     // agent.start does. The manager defaults to a heavyweight model — it
