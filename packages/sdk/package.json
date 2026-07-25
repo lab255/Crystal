@@ -17,6 +17,7 @@
     "@crystal/client": "workspace:*",
     "@crystal/core": "workspace:*",
     "@crystal/editor": "workspace:*",
+    "@crystal/hub": "workspace:*",
     "@crystal/orchestrator": "workspace:*",
     "@crystal/quality": "workspace:*",
     "@crystal/surfaces": "workspace:*",

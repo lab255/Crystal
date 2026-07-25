@@ -34,6 +34,12 @@ export interface InstanceInfo {
   port: number | null;
   /** Loopback port of the in-process MCP endpoint. */
   mcpPort: number;
+  /**
+   * Full URL of the cross-project hub's MCP endpoint. Advertised so a central
+   * agent (or a `crystal mcp` helper) can find the live server's hub without
+   * knowing whether its port was pinned.
+   */
+  hubMcpUrl?: string;
   roots: string[];
   /** Bearer token for the TCP listener, present only when auth is enabled. */
   token?: string;

@@ -1,7 +1,8 @@
 # Crystal — notes for Claude Code
 
-Crystal is a pnpm-workspace IDE with seven modes (cross-project overview with traffic-light
-todos, architecture diagrammer, surfaces explorer — screens/components/stories/APIs/schemas,
+Crystal is a pnpm-workspace IDE with eight modes (cross-project overview with traffic-light
+todos, the hub — cross-project programs dispatched to per-project orchestrators,
+architecture diagrammer, surfaces explorer — screens/components/stories/APIs/schemas,
 PM/agent orchestration, Monaco editor, quality — test runner + coverage, jobs hub) plus a
 bottom terminal panel that runs shells and agent consoles in any open workspace. Read
 `README.md` for the product shape; this file is the mechanics.
@@ -25,7 +26,7 @@ environment approval → per-arch build/sign/notarize → signed updater `latest
 ## Architecture rules
 
 - Dependency direction: `core`, `ui` ← `client` ← modes
-  (`architect`/`orchestrator`/`editor`/`surfaces`/`quality`) ← `sdk` ← apps. `core` is
+  (`architect`/`orchestrator`/`editor`/`surfaces`/`quality`/`hub`) ← `sdk` ← apps. `core` is
   pure TS (no React, no Node APIs) — it defines the domain model, the `.crystal` file
   envelope, the bridge protocol (`BridgeMethods` in `packages/core/src/bridge.ts` is the
   single source of truth for both client and server) and the Claude stream-json parser.
@@ -68,6 +69,69 @@ environment approval → per-arch build/sign/notarize → signed updater `latest
   is derivable from the run list alone (the UI computes it client-side from the agent
   store). A `WorkerSpec.branch` implies worktree isolation on that named branch (parallel
   tracks); two live workers must never share a track branch.
+- The hub (the layer above workflows) is **cross-project**: a `Program` is one
+  high-level epic split into per-project `ProgramDelivery`s, each dispatched as
+  a workflow inside that project — from there the project's own orchestrator
+  owns its development flow. Rules are pure in `packages/core/src/hub.ts`
+  (delivery graph + readiness, spend rollup, the program manager's standing
+  prompt, agent-facing rendering); enforcement is registry-scoped in
+  `apps/server/src/hub-engine.ts`, which reaches workspaces only through the
+  `HubProjects` port (`registryProjects` in server.ts is the one adapter, so the
+  whole lifecycle is testable without opening a workspace). Programs persist
+  centrally in `~/.crystal/hub/programs` — they outlive any single project.
+  Invariants: one live delivery per project at a time — checked across the
+  whole *portfolio*, not just one program, since two orchestrators in one repo
+  collide on branches and the board whoever sent them (`deliveryReadiness`
+  takes the other programs; `dispatch` passes them); a delivery follows its
+  workflow's status via `HubEngine.onWorkflowChanged`, routed through the
+  registry's broadcast seam in server.ts (not a per-runtime subscription —
+  workspaces close and reopen with fresh engines); and completing a delivery
+  auto-dispatches whatever it unblocked. Questions are the other feedback edge:
+  they land on a project's *board*, not on its workflow, so `onProjectChanged`
+  rides `workspace.changed`, diffs the open-question id set per program, and
+  wakes the manager with only the new ones (unseen and empty are the same
+  thing — a first board write must not emit "no questions"). Answering goes
+  through `OrchestrationService.answerQuestion`, which records the answer *and*
+  resumes the asking run's session — messaging a delivery steers it but never
+  clears a question. The hub is not purely event-driven: `reconcile()` folds
+  every live delivery's current workflow through the same path at startup, so
+  a workflow that settled while the server was down is still noticed — and when
+  a delivery's stored `ws` no longer resolves (the project came back under a new
+  id) it reopens the project by root and repins the id, because a delivery
+  stuck at `running` holds its project lock against the whole portfolio. Same
+  reasoning behind `retryDelivery`: a terminal delivery goes back to `pending`
+  (reopening the program if it had settled) so a failure is recoverable instead
+  of blocking its dependents forever.
+- Waking an agent goes through `AgentManager.deliver`, never a bare
+  `resumeChain`: a chain that is mid-turn cannot be resumed (two `--resume`s
+  fork the session), so the message is queued and flushed when the turn
+  settles. Every settlement flushes *its own* chain's queue as well as its
+  manager's — a worker that asked a question is the chain the answer is
+  waiting on. Notices carry a kind: only settlement gets the board-keeping
+  tail; a queued message is delivered verbatim.
+- `ProgramSpend.stale` is the difference between "cost nothing" and "could not
+  be read": a live delivery whose project is closed makes the rollup a lower
+  bound, and a budget is never declared exhausted from a number like that.
+- Server-side, the two orchestration engines share their mechanical halves
+  rather than each growing a copy: `record-store.ts` (a directory of JSON
+  records with the serialized read-modify-write — corrupt files are skipped,
+  a rejected mutation must not poison the queue, and the change event fires
+  only after the write lands), `settled-runs.ts` (a run emits several terminal
+  events, so every settle hook needs claim-once + bounded memory) and
+  `mcp/jsonrpc.ts` (the MCP handshake and reply shapes). Their *policies* stay
+  separate — the lifecycles genuinely differ.
+- Two MCP surfaces, both in-process over the loopback HTTP listener: project
+  scope at `POST /mcp/<ws>/<runId>` (dispatch/board/workflow tools, see
+  `mcp/dispatch-mcp.ts`) and hub scope at `POST /mcp/hub[/<runId>]`
+  (`mcp/hub-mcp.ts`). Bare, the hub endpoint is what an **external** central
+  agent points at to dispatch epics into any project; with a run id it is
+  Crystal's own program-manager session, bound to one program (`boundProgramId`
+  — other programs are refused, not silently redirected). The MCP port is
+  ephemeral unless `--mcp-port` pins it; agent runs never care (their
+  mcp-config is written per run), but an external agent's config does — hence
+  the `crystal-mcp` stdio shim (`mcp/stdio-proxy.ts`), which resolves the live
+  endpoint from `~/.crystal/instances` per call so one config line survives
+  restarts (the desktop sidecar takes a fresh port every launch).
 - Deep links: every view is addressable via the URL hash (`#/<mode>/<subview>?…`). The
   codec is `packages/core/src/deeplink.ts`, view/selection state lives in the client nav
   store (`useNav`/`useNavUpdate`), and the SDK's `useDeepLinks` syncs store ↔ URL. New

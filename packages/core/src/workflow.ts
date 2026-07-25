@@ -7,6 +7,7 @@ import {
   type RunPurpose,
 } from "./agent.js";
 import { runCostUsd } from "./orchestration.js";
+import type { TaskItem, TaskQuestion } from "./project.js";
 
 /**
  * Multi-agent workflows — the coordination layer above manager/worker runs.
@@ -627,4 +628,37 @@ export function formatUserMessage(text: string): string {
 export function stagePurpose(workflow: Workflow, stageId: string): RunPurpose {
   const def = templateOf(workflow).stages.find((s) => s.id === stageId);
   return def ? def.purpose : RunPurposeSchema.parse("implement");
+}
+
+/* ------------------------------------------------------------------ */
+/* Board attribution                                                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The board tasks belonging to a workflow: everything under its epic, plus
+ * anything explicitly assigned to one of its tracks. One definition, because
+ * two callers derive real behaviour from it — the workflow view lists a
+ * workflow's open questions, and the hub wakes a program manager for them.
+ */
+export function workflowTasks(
+  workflow: Pick<Workflow, "epicId" | "tracks">,
+  tasks: readonly TaskItem[],
+): TaskItem[] {
+  const trackTaskIds = new Set(workflow.tracks.flatMap((t) => t.taskIds));
+  return tasks.filter(
+    (t) => (workflow.epicId != null && t.epicId === workflow.epicId) || trackTaskIds.has(t.id),
+  );
+}
+
+/**
+ * Every unanswered question on a workflow's tasks, paired with the task it
+ * hangs off — a worker (or the manager) stopped and is waiting on a human.
+ */
+export function openQuestionsOfWorkflow(
+  workflow: Pick<Workflow, "epicId" | "tracks">,
+  tasks: readonly TaskItem[],
+): { task: TaskItem; question: TaskQuestion }[] {
+  return workflowTasks(workflow, tasks).flatMap((task) =>
+    task.questions.filter((q) => q.answer == null).map((question) => ({ task, question })),
+  );
 }

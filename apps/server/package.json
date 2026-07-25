@@ -4,7 +4,8 @@
   "description": "Crystal bridge server: workspace fs, git, .crystal persistence and Claude Code agent sessions over WebSocket",
   "type": "module",
   "bin": {
-    "crystal-server": "./src/index.ts"
+    "crystal-server": "./src/index.ts",
+    "crystal-mcp": "./src/mcp-cli.ts"
   },
   "scripts": {
     "dev": "tsx watch src/index.ts --root ../.. --listen 127.0.0.1:4517",

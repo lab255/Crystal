@@ -5,6 +5,7 @@ import {
   type CodeLink,
   type CrystalModeId,
   type DeepLink,
+  type HubLink,
   type OrchestrateLink,
   type QualityLink,
   type SurfacesLink,
@@ -21,6 +22,7 @@ export interface NavPatch {
   /** Global lens param (see @crystal/core lens.ts); null clears it. */
   lens?: string | null;
   mode?: CrystalModeId;
+  hub?: SectionPatch<HubLink>;
   architect?: SectionPatch<ArchitectLink>;
   orchestrate?: SectionPatch<OrchestrateLink>;
   code?: SectionPatch<CodeLink>;
@@ -91,6 +93,9 @@ export function createNavStore(initial: DeepLink = {}): NavStore {
         else link.lens = patch.lens;
       }
       if (patch.mode !== undefined) link.mode = patch.mode;
+      const hub = mergeSection(cur.hub, patch.hub);
+      if (hub) link.hub = hub;
+      else if (patch.hub) delete link.hub;
       const architect = mergeSection(cur.architect, patch.architect);
       if (architect) link.architect = architect;
       else if (patch.architect) delete link.architect;

@@ -338,6 +338,44 @@ describe("round trips", () => {
     expect(roundTrip(link)).toEqual(link);
   });
 
+  it("hub programs carry the selected program, delivery and manager turn", () => {
+    const link: DeepLink = {
+      ws: "abc",
+      mode: "hub",
+      hub: { view: "programs", program: "prog_1", delivery: "dlv_2", run: "run_3", find: "sso" },
+    };
+    expect(formatDeepLink(link)).toBe(
+      "#/hub/programs?ws=abc&program=prog_1&delivery=dlv_2&run=run_3&find=sso",
+    );
+    expect(roundTrip(link)).toEqual(link);
+  });
+
+  it("carries the project a dispatch was started from", () => {
+    const link: DeepLink = {
+      mode: "hub",
+      hub: { view: "programs", project: "ws-abc", find: "sso" },
+    };
+    expect(formatDeepLink(link)).toBe("#/hub/programs?project=ws-abc&find=sso");
+    expect(roundTrip(link)).toEqual(link);
+  });
+
+  it("the hub projects view carries only the filter", () => {
+    // Program selection belongs to the programs view; a projects URL that
+    // carried it would resurrect a stale selection on back/forward.
+    const link: DeepLink = { mode: "hub", hub: { view: "projects", find: "api" } };
+    expect(formatDeepLink(link)).toBe("#/hub/projects?find=api");
+    expect(roundTrip(link)).toEqual(link);
+    expect(formatDeepLink({ mode: "hub", hub: { view: "projects", program: "prog_1" } })).toBe(
+      "#/hub/projects",
+    );
+  });
+
+  it("defaults the hub to the programs view", () => {
+    expect(formatDeepLink({ mode: "hub" })).toBe("#/hub/programs");
+    expect(parseDeepLink("#/hub").mode).toBe("hub");
+    expect(parseDeepLink("#/hub/bogus").hub).toBeUndefined();
+  });
+
   it("surfaces subviews round-trip their selections", () => {
     const screens: DeepLink = {
       ws: "abc",
@@ -618,6 +656,23 @@ describe("applyDeepLink", () => {
   });
 });
 
+describe("applyDeepLink (hub)", () => {
+  it("keeps the program selection out of the projects view and back on return", () => {
+    const current: DeepLink = {
+      mode: "hub",
+      hub: { view: "programs", program: "prog_1", delivery: "dlv_2" },
+    };
+    const onProjects = applyDeepLink(current, { mode: "hub", hub: { view: "projects" } });
+    // The projects URL owns only view+find, so the program selection survives
+    // untouched underneath it.
+    expect(onProjects.hub).toEqual({ view: "projects", program: "prog_1", delivery: "dlv_2" });
+
+    const back = applyDeepLink(onProjects, { mode: "hub", hub: { view: "programs", program: "prog_1" } });
+    // …and a programs URL without a delivery genuinely means "nothing selected".
+    expect(back.hub).toEqual({ view: "programs", program: "prog_1" });
+  });
+});
+
 describe("deepLinkNavIdentity", () => {
   const base: DeepLink = { mode: "architect", architect: { view: "systems" } };
 
@@ -693,6 +748,26 @@ describe("deepLinkNavIdentity", () => {
       deepLinkNavIdentity({ mode: "orchestrate", orchestrate: { tab: "board", project: "q" } }),
     ).not.toBe(deepLinkNavIdentity(board));
   });
+
+  it("ignores a program selection the projects view does not own", () => {
+    // The selection survives underneath the projects view (HUB_VIEW_FIELDS),
+    // but the URL there never carries it — reading it in the identity made
+    // every keystroke in the find box push a history entry.
+    const a: DeepLink = { mode: "hub", hub: { view: "projects", program: "prog_1" } };
+    const b: DeepLink = { mode: "hub", hub: { view: "projects" } };
+    expect(deepLinkNavIdentity(a)).toBe(deepLinkNavIdentity(b));
+    expect(deepLinkNavIdentity(a)).toBe(deepLinkNavIdentity(parseDeepLink(formatDeepLink(a))));
+  });
+
+  it("treats opening a program as its own place", () => {
+    const portfolio: DeepLink = { mode: "hub", hub: { view: "programs" } };
+    const opened: DeepLink = { mode: "hub", hub: { view: "programs", program: "prog_1" } };
+    expect(deepLinkNavIdentity(portfolio)).not.toBe(deepLinkNavIdentity(opened));
+    // Picking a delivery inside one program is not a new place.
+    expect(
+      deepLinkNavIdentity({ mode: "hub", hub: { view: "programs", program: "prog_1", delivery: "dlv_9" } }),
+    ).toBe(deepLinkNavIdentity(opened));
+  });
 });
 
 describe("mode aliases", () => {
@@ -706,6 +781,12 @@ describe("mode aliases", () => {
     const apis = parseDeepLink("#/apis?api=GET%20/api/v1/keys");
     expect(apis.mode).toBe("surfaces");
     expect(apis.surfaces?.view).toBe("apis");
+  });
+
+  it("maps program vocabulary onto the hub", () => {
+    expect(parseDeepLink("#/programs").mode).toBe("hub");
+    expect(parseDeepLink("#/programs").hub?.view).toBe("programs");
+    expect(parseDeepLink("#/portfolio").mode).toBe("hub");
   });
 
   it("leaves genuinely unknown modes unparsed", () => {

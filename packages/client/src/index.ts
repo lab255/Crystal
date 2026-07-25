@@ -45,6 +45,22 @@ export {
   type WorkflowState,
   type WorkflowStore,
 } from "./workflow-store.js";
+export {
+  EMPTY_HUB_EVENTS,
+  EMPTY_HUB_PROJECTS,
+  EMPTY_HUB_QUESTIONS,
+  EMPTY_HUB_RECENTS,
+  EMPTY_PROGRAMS,
+  createHubStore,
+  type HubState,
+  type HubStore,
+} from "./hub-store.js";
+export {
+  RunTranscript,
+  formatRunCost,
+  formatRunDuration,
+  formatRunTokens,
+} from "./run-transcript.js";
 export { createLensStore, type LensState, type LensStore } from "./lens-store.js";
 export { createNavStore, type NavPatch, type NavState, type NavStore } from "./nav-store.js";
 export { requestOpenFile } from "./open-file.js";
@@ -79,6 +95,7 @@ export {
   useFleet,
   useHighlight,
   useHighlightUpdate,
+  useHub,
   useLens,
   useNav,
   useNavUpdate,

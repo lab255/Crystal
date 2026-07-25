@@ -1,18 +1,5 @@
 import { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
-import {
-  Activity,
-  Boxes,
-  Check,
-  Code2,
-  Gem,
-  KanbanSquare,
-  LayoutGrid,
-  Link2,
-  PanelsTopLeft,
-  ShieldCheck,
-  TerminalSquare,
-  type LucideIcon,
-} from "lucide-react";
+import { Check, Gem, Link2, TerminalSquare } from "lucide-react";
 import { parseDeepLink, workspaceLight, worstLight, type TrafficLight } from "@crystal/core";
 
 import {
@@ -22,6 +9,7 @@ import {
   useConnectionState,
   useCrystal,
   useFleet,
+  useHub,
   useNav,
   useNavUpdate,
   useWorkspace,
@@ -32,7 +20,13 @@ import { BranchSwitcher } from "./BranchSwitcher.js";
 import { CommandPalette } from "./CommandPalette.js";
 import { LensBar } from "./LensBar.js";
 import { useDeepLinks } from "./deeplinks.js";
-import { CRYSTAL_MODES, MODE_LABELS, type CrystalMode } from "./modes.js";
+import {
+  CRYSTAL_MODES,
+  MODE_ICONS,
+  MODE_LABELS,
+  isCrossProjectMode,
+  type CrystalMode,
+} from "./modes.js";
 import { TerminalPanel } from "./TerminalPanel.js";
 import { WorkspaceTabs } from "./WorkspaceTabs.js";
 
@@ -60,9 +54,11 @@ const SurfacesMode = lazy(() =>
 const QualityMode = lazy(() =>
   import("@crystal/quality").then((m) => ({ default: m.QualityMode })),
 );
+const HubMode = lazy(() => import("@crystal/hub").then((m) => ({ default: m.HubMode })));
 
 const MODE_COMPONENTS: Record<CrystalMode, React.LazyExoticComponent<() => React.JSX.Element>> = {
   projects: OverviewMode,
+  hub: HubMode,
   architect: ArchitectMode,
   surfaces: SurfacesMode,
   orchestrate: OrchestratorMode,
@@ -71,15 +67,6 @@ const MODE_COMPONENTS: Record<CrystalMode, React.LazyExoticComponent<() => React
   jobs: JobsMode,
 };
 
-const MODE_ICONS: Record<CrystalMode, LucideIcon> = {
-  projects: LayoutGrid,
-  architect: Boxes,
-  surfaces: PanelsTopLeft,
-  orchestrate: KanbanSquare,
-  code: Code2,
-  quality: ShieldCheck,
-  jobs: Activity,
-};
 
 export interface CrystalShellProps {
   initialMode?: CrystalMode;
@@ -131,6 +118,10 @@ export function CrystalShell({
       ).length,
   );
   const attention = useFleetAttention(activeWsId);
+  // Programs still in flight across every project — the Hub's rail badge.
+  const liveProgramCount = useHub(
+    (s) => s.programs.filter((p) => p.status === "running").length,
+  );
 
   const switchMode = useCallback(
     (next: CrystalMode): void => {
@@ -144,7 +135,7 @@ export function CrystalShell({
   // Overview restores where you were in it.
   const lastFacet = useRef(new Map<string, CrystalMode>());
   useEffect(() => {
-    if (mode !== "projects" && activeWsId) lastFacet.current.set(activeWsId, mode);
+    if (!isCrossProjectMode(mode) && activeWsId) lastFacet.current.set(activeWsId, mode);
   }, [mode, activeWsId]);
 
   const selectWorkspace = useCallback(
@@ -155,7 +146,7 @@ export function CrystalShell({
       // facet, the facet is preserved — flipping between two workspaces'
       // architectures is a single click per flip.
       const current = navStore.getState().link.mode;
-      if (!current || current === "projects") {
+      if (!current || isCrossProjectMode(current)) {
         switchMode(lastFacet.current.get(id) ?? "architect");
       }
     },
@@ -252,7 +243,14 @@ export function CrystalShell({
           <nav className="flex w-12 shrink-0 flex-col items-center gap-1 border-r border-edge bg-surface-1 py-2.5">
             {CRYSTAL_MODES.map((m, i) => {
               const Icon = MODE_ICONS[m];
-              const badge = m === "orchestrate" ? runningRuns : m === "jobs" ? runningJobs : 0;
+              const badge =
+                m === "orchestrate"
+                  ? runningRuns
+                  : m === "jobs"
+                    ? runningJobs
+                    : m === "hub"
+                      ? liveProgramCount
+                      : 0;
               return (
                 <Tooltip key={m} content={MODE_LABELS[m]} shortcut={`Ctrl+${i + 1}`} side="right">
                   <button
@@ -294,10 +292,11 @@ export function CrystalShell({
               }
             >
               {/* Keyed by workspace: switching remounts modes with fresh, correctly-scoped
-                  state. The projects overview is cross-workspace, so it survives switches. */}
+                  state. Cross-project modes (Overview, Hub) span workspaces, so they
+                  survive switches. */}
               {CRYSTAL_MODES.filter((m) => visited.has(m)).map((m) => {
                 const ModeComponent = MODE_COMPONENTS[m];
-                const key = m === "projects" ? m : `${m}:${activeWsId ?? ""}`;
+                const key = isCrossProjectMode(m) ? m : `${m}:${activeWsId ?? ""}`;
                 return (
                   <div key={key} className={cn("h-full", mode !== m && "hidden")}>
                     <ModeComponent />

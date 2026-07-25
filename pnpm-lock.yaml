@@ -237,6 +237,40 @@ importers:
         specifier: ^5.5.4
         version: 5.9.3
 
+  packages/hub:
+    dependencies:
+      '@crystal/client':
+        specifier: workspace:*
+        version: link:../client
+      '@crystal/core':
+        specifier: workspace:*
+        version: link:../core
+      '@crystal/ui':
+        specifier: workspace:*
+        version: link:../ui
+      lucide-react:
+        specifier: ^0.469.0
+        version: 0.469.0(react@19.2.7)
+    devDependencies:
+      '@types/react':
+        specifier: ^19.0.0
+        version: 19.2.17
+      '@types/react-dom':
+        specifier: ^19.0.0
+        version: 19.2.3(@types/react@19.2.17)
+      react:
+        specifier: ^19.1.0
+        version: 19.2.7
+      react-dom:
+        specifier: ^19.1.0
+        version: 19.2.7(react@19.2.7)
+      tsup:
+        specifier: ^8.3.5
+        version: 8.5.1(jiti@2.7.0)(postcss@8.5.16)(tsx@4.23.0)(typescript@5.9.3)
+      typescript:
+        specifier: ^5.5.4
+        version: 5.9.3
+
   packages/orchestrator:
     dependencies:
       '@crystal/client':
@@ -322,6 +356,9 @@ importers:
       '@crystal/editor':
         specifier: workspace:*
         version: link:../editor
+      '@crystal/hub':
+        specifier: workspace:*
+        version: link:../hub
       '@crystal/orchestrator':
         specifier: workspace:*
         version: link:../orchestrator

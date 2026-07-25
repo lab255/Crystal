@@ -1,11 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  Activity,
   AppWindow,
   BookOpenText,
   Bot,
   Boxes,
-  Code2,
   Component,
   Database,
   FlaskConical,
@@ -15,11 +13,9 @@ import {
   History,
   KanbanSquare,
   Layers,
-  LayoutGrid,
-  PanelsTopLeft,
   PencilRuler,
   Plus,
-  ShieldCheck,
+  Target,
   Sparkles,
   TerminalSquare,
   Umbrella,
@@ -28,7 +24,7 @@ import {
 } from "lucide-react";
 import { useNavUpdate, useWorkspace, useWorkspaces } from "@crystal/client";
 import { Dialog, DialogContent, Kbd, cn } from "@crystal/ui";
-import type { CrystalMode } from "./modes.js";
+import { CRYSTAL_MODES, MODE_ICONS, MODE_LABELS, type CrystalMode } from "./modes.js";
 
 export interface Command {
   id: string;
@@ -100,54 +96,33 @@ export function CommandPalette({
         icon: FolderPlus,
         run: () => window.dispatchEvent(new CustomEvent("crystal:open-workspace")),
       },
+      // One entry per mode, straight from the registry — the rail derives its
+      // Ctrl+N shortcuts the same way, so inserting a mode can never leave the
+      // palette advertising the wrong key.
+      ...CRYSTAL_MODES.map((m, i) => ({
+        id: `mode.${m}`,
+        title: `Go to ${MODE_LABELS[m]}`,
+        icon: MODE_ICONS[m],
+        hint: `Ctrl+${i + 1}`,
+        run: () => onSwitchMode(m),
+      })),
       {
-        id: "mode.projects",
-        title: "Go to Overview",
-        icon: LayoutGrid,
-        hint: "Ctrl+1",
-        run: () => onSwitchMode("projects"),
+        id: "view.hub.programs",
+        title: "Hub: Programs across projects",
+        icon: Target,
+        run: () => {
+          onSwitchMode("hub");
+          nav({ hub: { view: "programs" } });
+        },
       },
       {
-        id: "mode.architect",
-        title: "Go to Architecture",
+        id: "view.hub.projects",
+        title: "Hub: Projects and what they carry",
         icon: Boxes,
-        hint: "Ctrl+2",
-        run: () => onSwitchMode("architect"),
-      },
-      {
-        id: "mode.surfaces",
-        title: "Go to Surfaces",
-        icon: PanelsTopLeft,
-        hint: "Ctrl+3",
-        run: () => onSwitchMode("surfaces"),
-      },
-      {
-        id: "mode.orchestrate",
-        title: "Go to Orchestrate",
-        icon: KanbanSquare,
-        hint: "Ctrl+4",
-        run: () => onSwitchMode("orchestrate"),
-      },
-      {
-        id: "mode.code",
-        title: "Go to Code",
-        icon: Code2,
-        hint: "Ctrl+5",
-        run: () => onSwitchMode("code"),
-      },
-      {
-        id: "mode.quality",
-        title: "Go to Quality",
-        icon: ShieldCheck,
-        hint: "Ctrl+6",
-        run: () => onSwitchMode("quality"),
-      },
-      {
-        id: "mode.jobs",
-        title: "Go to Jobs",
-        icon: Activity,
-        hint: "Ctrl+7",
-        run: () => onSwitchMode("jobs"),
+        run: () => {
+          onSwitchMode("hub");
+          nav({ hub: { view: "projects" } });
+        },
       },
       // Views inside a mode are jump targets too — a palette hit lands on the
       // exact screen, not just the mode.

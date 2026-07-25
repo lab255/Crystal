@@ -2,6 +2,7 @@ import { Readable } from "node:stream";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { describe, expect, it, vi } from "vitest";
 import { createAgentRun, type WorkerSpec } from "@crystal/core";
+import type { HubEngine } from "../hub-engine.js";
 import type { WorkspaceRegistry } from "../workspace-registry.js";
 import { handleMcpRequest, isMcpRequest } from "./http.js";
 
@@ -59,10 +60,21 @@ function fakeRegistry(over: { dispatchWorker?: (runId: string, spec: WorkerSpec)
   return { registry, dispatchWorker };
 }
 
-async function post(url: string, message: unknown, reg: WorkspaceRegistry) {
+async function post(url: string, message: unknown, reg: WorkspaceRegistry, hub?: HubEngine) {
   const { res, rec } = mockRes();
-  await handleMcpRequest(mockReq(url, "POST", JSON.stringify(message)), res, reg);
+  await handleMcpRequest(mockReq(url, "POST", JSON.stringify(message)), res, reg, hub ?? null);
   return rec;
+}
+
+/** A hub stub with just the surface the endpoint touches. */
+function fakeHub(over: Partial<HubEngine> = {}) {
+  return {
+    programIdForRun: async (runId: string) => (runId === "mgr1" ? "prog_1" : null),
+    portfolioText: async () => "the portfolio",
+    statusText: async (id: string) => `status of ${id}`,
+    projectList: async () => ({ open: [], recent: [] }),
+    ...over,
+  } as unknown as HubEngine;
 }
 
 describe("isMcpRequest", () => {
@@ -104,6 +116,36 @@ describe("handleMcpRequest", () => {
   it("404s an unknown workspace", async () => {
     const { registry } = fakeRegistry();
     const rec = await post("/mcp/nope/m1", { jsonrpc: "2.0", id: 1, method: "ping" }, registry);
+    expect(rec.status).toBe(404);
+  });
+
+  it("serves the cross-project hub at /mcp/hub, unbound", async () => {
+    const { registry } = fakeRegistry();
+    const rec = await post(
+      "/mcp/hub",
+      { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "program_status" } },
+      registry,
+      fakeHub(),
+    );
+    expect(rec.status).toBe(200);
+    // No program id and no binding: the whole portfolio.
+    expect(JSON.parse(rec.body).result.content[0].text).toBe("the portfolio");
+  });
+
+  it("binds /mcp/hub/<runId> to the program that run manages", async () => {
+    const { registry } = fakeRegistry();
+    const rec = await post(
+      "/mcp/hub/mgr1",
+      { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "program_status" } },
+      registry,
+      fakeHub(),
+    );
+    expect(JSON.parse(rec.body).result.content[0].text).toBe("status of prog_1");
+  });
+
+  it("404s the hub endpoint when no hub is configured", async () => {
+    const { registry } = fakeRegistry();
+    const rec = await post("/mcp/hub", { jsonrpc: "2.0", id: 1, method: "ping" }, registry);
     expect(rec.status).toBe(404);
   });
 

@@ -13,7 +13,7 @@ import {
   TrafficLightDot,
   cn,
 } from "@crystal/ui";
-import type { CrystalMode } from "./modes.js";
+import { isCrossProjectMode, type CrystalMode } from "./modes.js";
 import { OpenWorkspaceDialog } from "./OpenWorkspaceDialog.js";
 
 /**
@@ -57,7 +57,7 @@ export function WorkspaceTabs({
   }, []);
 
   // "Home" = the cross-workspace overview; anything else means a workspace is entered.
-  const entered = mode !== "projects";
+  const entered = !isCrossProjectMode(mode);
   const lightFor = (ws: string) =>
     workspaceLight(todosByWs[ws] ?? EMPTY_TODOS, runsByWs[ws] ?? EMPTY_RUNS, seenAtByWs[ws] ?? null);
   const openRoots = new Set(workspaces.map((w) => w.root));

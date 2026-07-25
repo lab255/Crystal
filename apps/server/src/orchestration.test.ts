@@ -7,8 +7,19 @@ import type { AgentManager } from "./agent-manager.js";
 import { OrchestrationService } from "./orchestration.js";
 import { WorkspaceStore } from "./workspace-store.js";
 
+/** Records what was delivered back to an asking run, and to which run. */
+const delivered: { runId: string; prompt: string }[] = [];
+/** What `deliver` should hand back — null stands in for "queued, not resumed". */
+let deliverResult: AgentRun | null = null;
+
 function fakeAgents(runs: AgentRun[]): AgentManager {
-  return { list: async () => runs } as unknown as AgentManager;
+  return {
+    list: async () => runs,
+    deliver: async (runId: string, prompt: string) => {
+      delivered.push({ runId, prompt });
+      return deliverResult;
+    },
+  } as unknown as AgentManager;
 }
 
 describe("OrchestrationService", () => {
@@ -240,6 +251,60 @@ describe("OrchestrationService", () => {
     // Task wins even when the run carries no (or a wrong) projectId.
     await expect(svc.projectPathForRun({ taskId: task.id, projectId: null })).resolves.toBe(projectPath);
     await expect(svc.projectPathFor("proj_nonexistent")).rejects.toThrow(/Unknown project/);
+  });
+
+  it("answers a question: recorded once, and handed back to the asking run", async () => {
+    const asker = createAgentRun({ prompt: "work" });
+    runs.push(asker);
+    const task = await svc.createTask(projectPath, { title: "needs a decision" });
+    await svc.addQuestion(projectPath, task.id, "Version the payload?", asker.id);
+    const question = (await loadProject()).tasks.find((t) => t.id === task.id)!.questions[0]!;
+
+    const resumed = createAgentRun({ prompt: "answer", resumedFromRunId: asker.id });
+    deliverResult = resumed;
+    const result = await svc.answerQuestion(projectPath, task.id, question.id, "Version it.");
+    expect(result).toEqual({ ok: true, resumedRunId: resumed.id });
+
+    // Recorded on the board…
+    const answered = (await loadProject()).tasks.find((t) => t.id === task.id)!.questions[0]!;
+    expect(answered.answer).toBe("Version it.");
+    expect(answered.answeredAt).not.toBeNull();
+    // …handed to the run that asked, quoting what it asked…
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]!.runId).toBe(asker.id);
+    expect(delivered[0]!.prompt).toContain("Version the payload?");
+    expect(delivered[0]!.prompt).toContain("Version it.");
+    // …and the resumed turn is linked to the task.
+    expect((await loadProject()).tasks.find((t) => t.id === task.id)!.runIds).toContain(resumed.id);
+
+    // Answering twice is refused rather than resuming the agent again.
+    const again = await svc.answerQuestion(projectPath, task.id, question.id, "Again.");
+    expect(again).toEqual({ ok: false, reason: expect.stringContaining("already answered") });
+    expect(delivered).toHaveLength(1);
+  });
+
+  it("records an answer even when the asking run cannot be resumed", async () => {
+    const task = await svc.createTask(projectPath, { title: "asked by a dead run" });
+    await svc.addQuestion(projectPath, task.id, "Still there?", "run_gone");
+    const question = (await loadProject()).tasks.find((t) => t.id === task.id)!.questions[0]!;
+
+    deliverResult = null; // queued, or the chain is gone — either way, no run back
+    const result = await svc.answerQuestion(projectPath, task.id, question.id, "Yes.");
+    expect(result).toEqual({ ok: true, resumedRunId: null });
+    // The board is the durable record; the answer is not lost.
+    expect(
+      (await loadProject()).tasks.find((t) => t.id === task.id)!.questions[0]!.answer,
+    ).toBe("Yes.");
+  });
+
+  it("refuses to answer an unknown task or question", async () => {
+    await expect(
+      svc.answerQuestion(projectPath, "task_nope", "q_1", "x"),
+    ).resolves.toEqual({ ok: false, reason: expect.stringContaining("Unknown task") });
+    const task = (await loadProject()).tasks[0]!;
+    await expect(
+      svc.answerQuestion(projectPath, task.id, "q_nope", "x"),
+    ).resolves.toEqual({ ok: false, reason: expect.stringContaining("Unknown question") });
   });
 
   it("task detail includes acceptance criteria and question state", async () => {

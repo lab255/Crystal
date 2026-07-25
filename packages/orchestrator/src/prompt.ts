@@ -47,22 +47,13 @@ export function buildTaskPrompt(task: TaskItem, info: WorkspaceInfo | null): str
   return lines.join("\n");
 }
 
-export function formatCost(costUsd: number | null | undefined): string {
-  if (costUsd == null) return "—";
-  return costUsd < 0.01 ? "<$0.01" : `$${costUsd.toFixed(2)}`;
-}
-
-export function formatTokens(count: number | null | undefined): string {
-  if (count == null || count === 0) return "—";
-  if (count < 1000) return String(count);
-  if (count < 1_000_000) return `${(count / 1000).toFixed(count < 10_000 ? 1 : 0)}k`;
-  return `${(count / 1_000_000).toFixed(1)}M`;
-}
-
-export function formatDuration(ms: number | null | undefined): string {
-  if (ms == null) return "—";
-  if (ms < 1000) return `${ms}ms`;
-  const s = Math.round(ms / 1000);
-  if (s < 60) return `${s}s`;
-  return `${Math.floor(s / 60)}m ${s % 60}s`;
-}
+/**
+ * Run formatters live in `@crystal/client` beside `RunTranscript`, which
+ * renders through them — re-exported here under their historic names so the
+ * `<$0.01` threshold and the k/M cut-overs have exactly one definition.
+ */
+export {
+  formatRunCost as formatCost,
+  formatRunDuration as formatDuration,
+  formatRunTokens as formatTokens,
+} from "@crystal/client";

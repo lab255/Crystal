@@ -28,10 +28,9 @@ import {
   type WorkflowTrackStatus,
 } from "@crystal/core";
 import type { AgentManager } from "./agent-manager.js";
+import { SettledRuns } from "./settled-runs.js";
+import { JsonRecordStore } from "./record-store.js";
 import type { WorkspaceStore } from "./workspace-store.js";
-
-/** Settled-run ids remembered for settle-once dedup before pruning oldest. */
-const MAX_SETTLED_REMEMBERED = 500;
 
 /**
  * The enforcement half of the workflow layer (rules live in `@crystal/core`
@@ -54,20 +53,15 @@ export class WorkflowEngine {
     templatesChanged: Record<string, never>;
   }>();
 
-  private workflows = new Map<string, Workflow>();
+  /** Persisted workflows, with the serialized read-modify-write (see JsonRecordStore). */
+  private readonly records: JsonRecordStore<Workflow>;
   /** Custom (builder-authored) templates by id; built-ins stay in core. */
   private templates = new Map<string, WorkflowTemplate>();
   private loaded = false;
   /** User messages waiting for the manager chain to go idle, per workflow. */
   private pendingMessages = new Map<string, string[]>();
-  /** Serializes workflow mutations (settle events race user calls). */
-  private queue: Promise<unknown> = Promise.resolve();
-  /**
-   * Runs whose settlement was already handled — a run emits several terminal
-   * runChanged events (result, then finish), and the settle hook must fire
-   * once (same convention as WorkspaceRuntime's settledRuns).
-   */
-  private settledRuns = new Set<string>();
+  /** Runs whose settlement was already handled (see SettledRuns). */
+  private readonly settledRuns = new SettledRuns();
   private readonly disposeListener: () => void;
 
   constructor(
@@ -75,17 +69,15 @@ export class WorkflowEngine {
     private readonly agents: AgentManager,
     private readonly store: WorkspaceStore,
   ) {
+    this.records = new JsonRecordStore<Workflow>(
+      path.join(dataDir, "workflows"),
+      (raw) => WorkflowSchema.parse(raw),
+      (workflow) => this.events.emit("changed", { workflow }),
+      nowIso,
+    );
     agents.dispatchGuard = (manager, _spec) => this.guardDispatch(manager);
     this.disposeListener = agents.events.on("runChanged", ({ run }) => {
-      const terminal =
-        run.status === "completed" || run.status === "failed" || run.status === "cancelled";
-      if (!terminal || !workflowIdOfRun(run) || this.settledRuns.has(run.id)) return;
-      this.settledRuns.add(run.id);
-      while (this.settledRuns.size > MAX_SETTLED_REMEMBERED) {
-        const oldest = this.settledRuns.values().next().value;
-        if (oldest === undefined) break;
-        this.settledRuns.delete(oldest);
-      }
+      if (!workflowIdOfRun(run) || !this.settledRuns.claim(run)) return;
       void this.onRunSettled(run);
     });
   }
@@ -109,19 +101,9 @@ export class WorkflowEngine {
   }
 
   private async ensureLoaded(): Promise<void> {
+    await this.records.ensureLoaded();
     if (this.loaded) return;
     this.loaded = true;
-    const names = await fs.readdir(this.dir()).catch(() => [] as string[]);
-    for (const name of names) {
-      if (!name.endsWith(".json")) continue;
-      try {
-        const raw = JSON.parse(await fs.readFile(path.join(this.dir(), name), "utf8"));
-        const wf = WorkflowSchema.parse(raw);
-        this.workflows.set(wf.id, wf);
-      } catch {
-        // Ignore corrupt records — a bad file must not take the engine down.
-      }
-    }
     const templateNames = await fs.readdir(this.templatesDir()).catch(() => [] as string[]);
     for (const name of templateNames) {
       if (!name.endsWith(".json")) continue;
@@ -135,44 +117,23 @@ export class WorkflowEngine {
     }
   }
 
-  private async persist(workflow: Workflow): Promise<void> {
-    await fs.mkdir(this.dir(), { recursive: true });
-    await fs.writeFile(
-      path.join(this.dir(), `${workflow.id}.json`),
-      JSON.stringify(workflow, null, 2),
-      "utf8",
-    );
-  }
-
   /** Serialize one read-modify-write against a workflow record. */
   private mutate<T>(
     workflowId: string,
     fn: (workflow: Workflow) => { workflow: Workflow; result: T } | Promise<{ workflow: Workflow; result: T }>,
   ): Promise<T> {
-    const step = this.queue.then(async () => {
-      await this.ensureLoaded();
-      const current = this.workflows.get(workflowId);
-      if (!current) throw new Error(`Unknown workflow: ${workflowId}`);
-      const { workflow, result } = await fn(current);
-      workflow.updatedAt = nowIso();
-      this.workflows.set(workflow.id, workflow);
-      await this.persist(workflow);
-      this.events.emit("changed", { workflow: { ...workflow } });
-      return result;
+    return this.records.mutate(workflowId, async (record) => {
+      const { workflow, result } = await fn(record);
+      return { record: workflow, result };
     });
-    this.queue = step.catch(() => {});
-    return step;
   }
 
-  async list(): Promise<Workflow[]> {
-    await this.ensureLoaded();
-    return [...this.workflows.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  list(): Promise<Workflow[]> {
+    return this.records.list();
   }
 
-  async get(workflowId: string): Promise<Workflow | null> {
-    await this.ensureLoaded();
-    const wf = this.workflows.get(workflowId);
-    return wf ? { ...wf } : null;
+  get(workflowId: string): Promise<Workflow | null> {
+    return this.records.get(workflowId);
   }
 
   /** The workflow a run belongs to (via its `workflow:` tag), or null. */
@@ -280,9 +241,7 @@ export class WorkflowEngine {
       skills,
     });
     workflow.managerRunId = run.id;
-    this.workflows.set(workflow.id, workflow);
-    await this.persist(workflow);
-    this.events.emit("changed", { workflow: { ...workflow } });
+    await this.records.put(workflow);
     return { workflow: { ...workflow }, run };
   }
 
@@ -293,7 +252,7 @@ export class WorkflowEngine {
    */
   async message(workflowId: string, text: string): Promise<{ run: AgentRun | null; queued: boolean }> {
     await this.ensureLoaded();
-    const workflow = this.workflows.get(workflowId);
+    const workflow = this.records.peek(workflowId);
     if (!workflow) throw new Error(`Unknown workflow: ${workflowId}`);
     if (!workflow.managerRunId) throw new Error(`Workflow ${workflowId} has no manager session`);
     // resumeChain serializes attempts per chain and re-checks liveness inside
@@ -344,7 +303,7 @@ export class WorkflowEngine {
   /** Cancel: kill every live run of the workflow and mark it cancelled. */
   async cancel(workflowId: string): Promise<Workflow> {
     await this.ensureLoaded();
-    const wf = this.workflows.get(workflowId);
+    const wf = this.records.peek(workflowId);
     if (!wf) throw new Error(`Unknown workflow: ${workflowId}`);
     this.pendingMessages.delete(workflowId);
     const tag = workflowTag(workflowId);
@@ -466,7 +425,7 @@ export class WorkflowEngine {
     const id = workflowIdOfRun(run);
     if (!id) return;
     await this.ensureLoaded();
-    const workflow = this.workflows.get(id);
+    const workflow = this.records.peek(id);
     if (!workflow) return;
 
     try {
@@ -488,7 +447,7 @@ export class WorkflowEngine {
       }
       await this.flushMessages(id);
       // Spend changed even when nothing above did — let UIs refresh.
-      const fresh = this.workflows.get(id);
+      const fresh = this.records.peek(id);
       if (fresh) this.events.emit("changed", { workflow: { ...fresh } });
     } catch (err) {
       console.warn(`[crystal] workflow settle hook failed for ${id}:`, (err as Error).message);
@@ -499,7 +458,7 @@ export class WorkflowEngine {
   private async flushMessages(workflowId: string): Promise<void> {
     const pending = this.pendingMessages.get(workflowId);
     if (!pending?.length) return;
-    const workflow = this.workflows.get(workflowId);
+    const workflow = this.records.peek(workflowId);
     if (!workflow?.managerRunId) return;
     const text =
       pending.length === 1

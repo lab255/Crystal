@@ -1,9 +1,17 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AgentRun } from "@crystal/core";
+import type { HubEngine } from "../hub-engine.js";
 import type { WorkspaceRegistry, WorkspaceRuntime } from "../workspace-registry.js";
 import { McpDispatchServer, type JsonRpcMessage } from "./dispatch-mcp.js";
+import { McpHubServer, type HubToolHost } from "./hub-mcp.js";
 
 const MCP_PREFIX = "/mcp/";
+
+/**
+ * Reserved first path segment for the cross-project hub. Workspace ids are
+ * 12-character hex digests (`workspaceIdFor`), so this can never collide.
+ */
+export const HUB_MCP_ID = "hub";
 
 /** True if a request targets the MCP dispatch endpoint. */
 export function isMcpRequest(url: string | undefined): boolean {
@@ -11,11 +19,18 @@ export function isMcpRequest(url: string | undefined): boolean {
 }
 
 /**
- * In-process MCP endpoint over Streamable HTTP: `POST /mcp/<ws>/<runId>`.
- * Manager runs and task-attached runs are launched with an mcp-config pointing
- * here (see `AgentManager.writeMcpConfig`); the toolset is scoped to the run —
- * managers get dispatch + board tools, task-bound runs get the self-service
- * `my_task` surface — with every call landing parented to `<runId>`.
+ * In-process MCP endpoint over Streamable HTTP. Two families of endpoint hang
+ * off the same handler:
+ *
+ *  - `POST /mcp/<ws>/<runId>` — project scope. Manager runs and task-attached
+ *    runs are launched with an mcp-config pointing here (see
+ *    `AgentManager.writeMcpConfig`); the toolset is scoped to the run —
+ *    managers get dispatch + board tools, task-bound runs get the self-service
+ *    `my_task` surface — with every call landing parented to `<runId>`.
+ *  - `POST /mcp/hub[/<runId>]` — cross-project scope. Bare, it is the endpoint
+ *    an external central agent points at to dispatch epics into any project;
+ *    with a run id it is Crystal's own program-manager session, bound to the
+ *    one program it was spawned for.
  *
  * Stateless: every JSON-RPC request gets a single JSON response (we never open
  * the server→client SSE stream, so GET is rejected). Notifications get 202.
@@ -24,6 +39,7 @@ export async function handleMcpRequest(
   req: IncomingMessage,
   res: ServerResponse,
   registry: WorkspaceRegistry,
+  hub: HubEngine | null = null,
 ): Promise<void> {
   const path = (req.url ?? "").split("?")[0] ?? "";
   const [ws, runId] = path.slice(MCP_PREFIX.length).split("/").filter(Boolean);
@@ -31,6 +47,19 @@ export async function handleMcpRequest(
     res.writeHead(405, { allow: "POST" }).end();
     return;
   }
+
+  if (ws === HUB_MCP_ID) {
+    if (!hub) {
+      res.writeHead(404).end();
+      return;
+    }
+    // A run id binds the endpoint to that manager's program; without one the
+    // caller is external and sees the whole portfolio.
+    const boundProgramId = runId ? await hub.programIdForRun(runId) : null;
+    await serveMcp(req, res, new McpHubServer({ hub: hubToolHost(hub), boundProgramId }));
+    return;
+  }
+
   if (!ws || !runId) {
     res.writeHead(404).end();
     return;
@@ -133,6 +162,20 @@ export async function handleMcpRequest(
         : undefined,
   });
 
+  await serveMcp(req, res, server);
+}
+
+/** One MCP server exposed to one HTTP request/response pair. */
+interface McpHandler {
+  handle(msg: JsonRpcMessage): Promise<JsonRpcMessage | null>;
+}
+
+/** Read the request body, run it through `server`, and write the reply. */
+async function serveMcp(
+  req: IncomingMessage,
+  res: ServerResponse,
+  server: McpHandler,
+): Promise<void> {
   let body = "";
   req.setEncoding("utf8");
   for await (const chunk of req) body += chunk;
@@ -161,6 +204,37 @@ export async function handleMcpRequest(
   }
   const out = Array.isArray(payload) ? replies : replies[0];
   res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(out));
+}
+
+/**
+ * Adapt the engine to the MCP layer's view of it. Kept here rather than on
+ * HubEngine so the engine stays free of any MCP concept — it is equally driven
+ * by the bridge (the Hub UI) and by these tools.
+ */
+export function hubToolHost(hub: HubEngine): HubToolHost {
+  return {
+    listProjects: () => hub.projectList(),
+    resolveProject: (ref) => hub.resolveProject(ref),
+    projectBoard: (ws) => hub.boardSnapshot(ws),
+    createProgram: (init) => hub.create(init),
+    addDelivery: (programId, init) => hub.addDelivery(programId, init),
+    removeDelivery: (programId, deliveryId) => hub.removeDelivery(programId, deliveryId),
+    retryDelivery: (programId, deliveryId) => hub.retryDelivery(programId, deliveryId),
+    dispatch: (programId, deliveryIds) => hub.dispatch(programId, deliveryIds),
+    dispatchEpic: (init) => hub.dispatchEpic(init),
+    status: (programId) => (programId ? hub.statusText(programId) : hub.portfolioText()),
+    answerQuestion: (programId, questionId, answer) =>
+      hub.answerQuestion(programId, questionId, answer),
+    messageDelivery: (programId, deliveryId, text) =>
+      hub.messageDelivery(programId, deliveryId, text),
+    setProgramBudget: (programId, budgetUsd) => hub.setBudget(programId, budgetUsd),
+    setDeliveryBudget: (programId, deliveryId, budgetUsd) =>
+      hub.setDeliveryBudget(programId, deliveryId, budgetUsd),
+    setPaused: (programId, paused, reason) => hub.setPaused(programId, paused, reason),
+    cancel: (programId) => hub.cancel(programId),
+    complete: (programId, outcome, summary) => hub.complete(programId, outcome, summary),
+    programIdForDelivery: (deliveryId) => hub.programIdForDelivery(deliveryId),
+  };
 }
 
 function rpcError(message: string, code: number): string {

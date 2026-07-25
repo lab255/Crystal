@@ -31,6 +31,15 @@ import type { SystemsLayout } from "./systems-layout.js";
 import type { TerminalChunk, TerminalInfo } from "./terminal.js";
 import type { TodoList } from "./todo.js";
 import type { Workflow, WorkflowSpend, WorkflowTemplate } from "./workflow.js";
+import type {
+  HubDispatchReport,
+  HubProject,
+  HubQuestion,
+  HubRecentProject,
+  Program,
+  ProgramDelivery,
+  ProgramSpend,
+} from "./hub.js";
 import type { WorkspaceManifest } from "./workspace.js";
 
 /**
@@ -220,6 +229,16 @@ export interface BridgeMethods {
     result: { ok: true } | { ok: false; reason: string };
   };
   /** Lease-checked task mutation. `force` is the human owner's override. */
+  /**
+   * Answer a question an agent raised on a task: recorded on the board and
+   * handed back to the run that asked, which resumes where it stopped
+   * (queued if that run is still mid-turn). Uncontended — the asker is by
+   * definition waiting — so it needs no claim.
+   */
+  "task.answer": {
+    params: WsScope & { path: string; taskId: string; questionId: string; answer: string };
+    result: { ok: true; resumedRunId: string | null } | { ok: false; reason: string };
+  };
   "task.update": {
     params: WsScope & {
       path: string;
@@ -613,6 +632,139 @@ export interface BridgeMethods {
     params: WsScope & { templateId: string };
     result: { ok: true };
   };
+  /* ---------------- hub: cross-project programs ---------------- */
+
+  /**
+   * Every program the hub knows, newest first, with rolled-up spend. Registry
+   * scoped — programs span workspaces, so this method carries no `ws`.
+   */
+  "hub.list": {
+    params: Record<string, never>;
+    result: { programs: Program[]; spend: Record<string, ProgramSpend> };
+  };
+  "hub.get": {
+    params: { programId: string };
+    result: { program: Program; spend: ProgramSpend };
+  };
+  /** Projects the hub can dispatch to: open workspaces + the reopen list. */
+  "hub.projects": {
+    params: Record<string, never>;
+    result: { open: HubProject[]; recent: HubRecentProject[] };
+  };
+  "hub.createProgram": {
+    params: { name: string; goal: string; budgetUsd?: number | null };
+    result: { program: Program };
+  };
+  /** Add one project's share of a program (opens the project to resolve it). */
+  "hub.addDelivery": {
+    params: {
+      programId: string;
+      projectRoot: string;
+      brief: string;
+      dependsOn?: string[];
+      templateId?: string | null;
+      budgetUsd?: number | null;
+    };
+    result: { delivery: ProgramDelivery };
+  };
+  /** Drop a delivery that has not been dispatched and that nothing depends on. */
+  "hub.removeDelivery": {
+    params: { programId: string; deliveryId: string };
+    result: { ok: true };
+  };
+  /**
+   * Put a finished delivery back in the queue. Its previous attempt stays in
+   * the project; this gives it a fresh workflow — the way out of a failed
+   * delivery that would otherwise block its dependents forever.
+   */
+  "hub.retryDelivery": {
+    params: { programId: string; deliveryId: string };
+    result: { program: Program };
+  };
+  /**
+   * Start every ready delivery (or just `deliveryIds`) as a workflow in its own
+   * project — from here each project's orchestrator owns its development flow.
+   */
+  "hub.dispatch": {
+    params: { programId: string; deliveryIds?: string[] };
+    result: { report: HubDispatchReport };
+  };
+  /** One-shot: create a single-project program and dispatch it immediately. */
+  "hub.dispatchEpic": {
+    params: {
+      projectRoot: string;
+      name: string;
+      goal: string;
+      templateId?: string | null;
+      budgetUsd?: number | null;
+    };
+    result: { program: Program; report: HubDispatchReport };
+  };
+  /** Steer one delivery's project orchestrator (queued when it is mid-turn). */
+  "hub.messageDelivery": {
+    params: { programId: string; deliveryId: string; text: string };
+    result: { queued: boolean };
+  };
+  /** Hold or release a program — every live delivery workflow follows. */
+  "hub.setPaused": {
+    params: { programId: string; paused: boolean; reason?: string | null };
+    result: { program: Program };
+  };
+  "hub.setBudget": {
+    params: { programId: string; budgetUsd: number | null };
+    result: { program: Program };
+  };
+  "hub.setDeliveryBudget": {
+    params: { programId: string; deliveryId: string; budgetUsd: number | null };
+    result: { program: Program };
+  };
+  "hub.cancel": { params: { programId: string }; result: { program: Program } };
+  /**
+   * Forget a finished program (terminal ones only). The project workflows it
+   * dispatched — and their runs — stay where they ran; this drops the hub's
+   * index of them.
+   */
+  "hub.remove": { params: { programId: string }; result: { ok: true } };
+  /**
+   * Spawn the program manager: an interactive session that owns the program
+   * through the hub's MCP tools (splitting, dispatching, sequencing).
+   */
+  "hub.startManager": {
+    params: { programId: string; model?: string | null };
+    result: { program: Program; run: AgentRun };
+  };
+  /** Deliver an owner message into the program manager's session. */
+  "hub.message": {
+    params: { programId: string; text: string };
+    result: { run: AgentRun | null; queued: boolean };
+  };
+  /**
+   * Open questions across every live program, keyed by program id: a project
+   * whose orchestrator stopped to ask something only a human (or the program
+   * owner) can settle.
+   */
+  "hub.questions": {
+    params: Record<string, never>;
+    result: { questions: Record<string, HubQuestion[]> };
+  };
+  /**
+   * Answer a question one of a program's projects raised: recorded on that
+   * project's board and handed back to the run that asked, which resumes.
+   */
+  "hub.answerQuestion": {
+    params: { programId: string; questionId: string; answer: string };
+    result: { ok: true; resumedRunId: string | null } | { ok: false; reason: string };
+  };
+  /** The MCP endpoint a central agent points at to drive the hub. */
+  "hub.endpoint": {
+    params: Record<string, never>;
+    result: { url: string; mcpConfig: string };
+  };
+  /** Program-manager runs (hub-scoped, so they are not in any workspace's list). */
+  "hub.runs": { params: Record<string, never>; result: { runs: AgentRun[] } };
+  "hub.runEvents": { params: { runId: string }; result: { events: RunEvent[] } };
+  "hub.cancelRun": { params: { runId: string }; result: { ok: true } };
+
   /** Dry-run of refactor intents — per-intent engine + change summaries. */
   "refactor.preview": {
     params: WsScope & { intents: RefactorIntent[] };
@@ -634,6 +786,31 @@ export const UNSCOPED_METHODS: readonly BridgeMethodName[] = [
   "workspaces.close",
   "workspaces.browse",
   "codemap.cross",
+  // The hub sits above workspaces: its programs span them, so none of its
+  // methods may have the active workspace injected.
+  "hub.list",
+  "hub.get",
+  "hub.projects",
+  "hub.createProgram",
+  "hub.addDelivery",
+  "hub.removeDelivery",
+  "hub.retryDelivery",
+  "hub.dispatch",
+  "hub.dispatchEpic",
+  "hub.messageDelivery",
+  "hub.setPaused",
+  "hub.setBudget",
+  "hub.setDeliveryBudget",
+  "hub.cancel",
+  "hub.remove",
+  "hub.questions",
+  "hub.answerQuestion",
+  "hub.startManager",
+  "hub.message",
+  "hub.endpoint",
+  "hub.runs",
+  "hub.runEvents",
+  "hub.cancelRun",
 ];
 
 export interface BridgeRequest<M extends BridgeMethodName = BridgeMethodName> {
@@ -675,6 +852,19 @@ export interface BridgeEvents {
   "workflow.templatesChanged": { ws: string };
   /** The set of open workspaces changed (opened/closed/renamed). */
   "workspaces.changed": Record<string, never>;
+  /**
+   * A program was created or changed (delivery dispatched or settled, spend,
+   * pause, completion). Hub events carry no `ws` — programs span workspaces.
+   */
+  "hub.changed": { program: Program };
+  /** A program was forgotten (see `hub.remove`). */
+  "hub.removed": { programId: string };
+  /** A program's set of open project questions changed (raised or answered). */
+  "hub.questionsChanged": { programId: string; questions: HubQuestion[] };
+  /** A program-manager run changed (status, usage, result). */
+  "hub.runChanged": { run: AgentRun };
+  /** A streamed event from a program-manager run. */
+  "hub.event": RunEvent;
 }
 
 export type BridgeEventName = keyof BridgeEvents;

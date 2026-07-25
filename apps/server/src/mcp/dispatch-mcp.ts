@@ -1,5 +1,15 @@
 import { z } from "zod";
 import {
+  McpRpcError,
+  handleHandshake,
+  invalidArgs,
+  rpcFail,
+  rpcOk,
+  toolError,
+  toolText,
+  type JsonRpcMessage,
+} from "./jsonrpc.js";
+import {
   TaskPatchSchema,
   WorkerSpecSchema,
   WORKFLOW_STAGE_STATUSES,
@@ -27,26 +37,12 @@ import {
  * `tools/list`, `tools/call`, plus the `notifications/initialized` no-op.
  */
 
-const PROTOCOL_VERSION = "2024-11-05";
 const SERVER_INFO = { name: "crystal-dispatch", version: "0.1.0" } as const;
 
-/** JSON-RPC error codes we emit (subset of the spec). */
-export const McpRpcError = {
-  ParseError: -32700,
-  InvalidRequest: -32600,
-  MethodNotFound: -32601,
-  InvalidParams: -32602,
-  InternalError: -32603,
-} as const;
-
-export interface JsonRpcMessage {
-  jsonrpc: "2.0";
-  id?: string | number | null;
-  method?: string;
-  params?: unknown;
-  result?: unknown;
-  error?: { code: number; message: string; data?: unknown };
-}
+// The envelope (handshake, reply shapes, error codes) is shared with the hub
+// server — only the toolsets differ. Re-exported for the transport and tests
+// that have always imported them from here.
+export { McpRpcError, type JsonRpcMessage };
 
 /**
  * The tool groups one run's MCP endpoint exposes, scoped by the run's place in
@@ -553,20 +549,11 @@ export class McpDispatchServer {
    * throws — tool failures come back as JSON-RPC errors or `isError` results.
    */
   async handle(msg: JsonRpcMessage): Promise<JsonRpcMessage | null> {
-    const isNotification = msg.id === undefined || msg.id === null;
     const id = msg.id ?? null;
+    const handshake = handleHandshake(msg, SERVER_INFO);
+    if (handshake !== undefined) return handshake;
 
     switch (msg.method) {
-      case "initialize":
-        return this.ok(id, {
-          protocolVersion: PROTOCOL_VERSION,
-          capabilities: { tools: {} },
-          serverInfo: SERVER_INFO,
-        });
-      case "notifications/initialized":
-        return null; // notification — no reply
-      case "ping":
-        return isNotification ? null : this.ok(id, {});
       case "tools/list": {
         const tools = [
           ...(this.tools.dispatch ? DISPATCH_TOOLS : []),
@@ -575,15 +562,16 @@ export class McpDispatchServer {
           ...(this.tools.ownTask ? OWN_TASK_TOOLS : []),
         ];
         // ask_question rides both the board and ownTask groups — list it once.
-        return this.ok(id, {
+        return rpcOk(id, {
           tools: tools.filter((t, i) => tools.findIndex((x) => x.name === t.name) === i),
         });
       }
       case "tools/call":
         return this.callTool(id, msg.params);
       default:
-        if (isNotification) return null;
-        return this.fail(id, McpRpcError.MethodNotFound, `Unknown method: ${msg.method ?? "(none)"}`);
+        return msg.id == null
+          ? null
+          : rpcFail(id, McpRpcError.MethodNotFound, `Unknown method: ${msg.method ?? "(none)"}`);
     }
   }
 
@@ -599,7 +587,7 @@ export class McpDispatchServer {
     if (dispatch && name === "dispatch_worker") {
       const parsed = WorkerSpecSchema.safeParse(args ?? {});
       if (!parsed.success) {
-        return this.fail(
+        return rpcFail(
           id,
           McpRpcError.InvalidParams,
           `Invalid dispatch_worker arguments: ${parsed.error.issues.map((i) => i.message).join("; ")}`,
@@ -608,13 +596,13 @@ export class McpDispatchServer {
       try {
         const run = await dispatch.dispatchWorker(parsed.data);
         return run
-          ? this.toolText(id, `Dispatched worker ${run.id}: ${headline(run.prompt)}`)
-          : this.toolError(
+          ? toolText(id, `Dispatched worker ${run.id}: ${headline(run.prompt)}`)
+          : toolError(
               id,
               "Dispatch rejected — you may not be a manager run, or the worker fan-out cap was reached.",
             );
       } catch (err) {
-        return this.toolError(id, `Dispatch failed: ${(err as Error).message}`);
+        return toolError(id, `Dispatch failed: ${(err as Error).message}`);
       }
     }
     if (dispatch && name === "worker_status") {
@@ -623,21 +611,21 @@ export class McpDispatchServer {
         const text = workers.length
           ? workers.map((w) => `- ${w.id} [${w.status}] ${headline(w.prompt)}`).join("\n")
           : "No workers dispatched yet.";
-        return this.toolText(id, text);
+        return toolText(id, text);
       } catch (err) {
-        return this.toolError(id, `Status failed: ${(err as Error).message}`);
+        return toolError(id, `Status failed: ${(err as Error).message}`);
       }
     }
     if (dispatch && name === "worker_result") {
       const a = WorkerResultArgs.safeParse(args ?? {});
-      if (!a.success) return this.invalidArgs(id, name!, a.error);
+      if (!a.success) return invalidArgs(id, name!, a.error);
       try {
         const text = await dispatch.workerResult(a.data.runId);
         return text
-          ? this.toolText(id, text)
-          : this.toolError(id, `No worker ${a.data.runId} under this manager.`);
+          ? toolText(id, text)
+          : toolError(id, `No worker ${a.data.runId} under this manager.`);
       } catch (err) {
-        return this.toolError(id, `worker_result failed: ${(err as Error).message}`);
+        return toolError(id, `worker_result failed: ${(err as Error).message}`);
       }
     }
     const workflow = this.tools.workflow;
@@ -652,7 +640,7 @@ export class McpDispatchServer {
     if (board && BOARD_TOOLS.some((t) => t.name === name)) {
       return this.callBoardTool(board, id, name!, args);
     }
-    return this.fail(id, McpRpcError.MethodNotFound, `Unknown tool: ${name ?? "(none)"}`);
+    return rpcFail(id, McpRpcError.MethodNotFound, `Unknown tool: ${name ?? "(none)"}`);
   }
 
   private async callWorkflowTool(
@@ -664,20 +652,20 @@ export class McpDispatchServer {
     try {
       switch (name) {
         case "workflow_status":
-          return this.toolText(id, await workflow.status());
+          return toolText(id, await workflow.status());
         case "advance_stage": {
           const a = AdvanceStageArgs.safeParse(args ?? {});
-          if (!a.success) return this.invalidArgs(id, name, a.error);
+          if (!a.success) return invalidArgs(id, name, a.error);
           const result = await workflow.advanceStage(a.data.stageId, a.data.status, a.data.note);
           return result.ok
-            ? this.toolText(id, `Stage ${a.data.stageId} → ${a.data.status}.`)
-            : this.toolError(id, result.reason);
+            ? toolText(id, `Stage ${a.data.stageId} → ${a.data.status}.`)
+            : toolError(id, result.reason);
         }
         case "add_track": {
           const a = AddTrackArgs.safeParse(args ?? {});
-          if (!a.success) return this.invalidArgs(id, name, a.error);
+          if (!a.success) return invalidArgs(id, name, a.error);
           const track = await workflow.addTrack(a.data);
-          return this.toolText(
+          return toolText(
             id,
             `Created track ${track.id} "${track.name}" on branch ${track.branch}. ` +
               `Dispatch its develop workers with branch "${track.branch}".`,
@@ -685,32 +673,32 @@ export class McpDispatchServer {
         }
         case "set_track_status": {
           const a = SetTrackStatusArgs.safeParse(args ?? {});
-          if (!a.success) return this.invalidArgs(id, name, a.error);
+          if (!a.success) return invalidArgs(id, name, a.error);
           const result = await workflow.setTrackStatus(a.data.trackId, a.data.status);
           return result.ok
-            ? this.toolText(id, `Track ${a.data.trackId} → ${a.data.status}.`)
-            : this.toolError(id, result.reason);
+            ? toolText(id, `Track ${a.data.trackId} → ${a.data.status}.`)
+            : toolError(id, result.reason);
         }
         case "bind_epic": {
           const a = BindEpicArgs.safeParse(args ?? {});
-          if (!a.success) return this.invalidArgs(id, name, a.error);
+          if (!a.success) return invalidArgs(id, name, a.error);
           await workflow.bindEpic(a.data.epicId);
-          return this.toolText(id, `Workflow bound to epic ${a.data.epicId}.`);
+          return toolText(id, `Workflow bound to epic ${a.data.epicId}.`);
         }
         case "complete_workflow": {
           const a = CompleteWorkflowArgs.safeParse(args ?? {});
-          if (!a.success) return this.invalidArgs(id, name, a.error);
+          if (!a.success) return invalidArgs(id, name, a.error);
           await workflow.complete(a.data.outcome, a.data.summary);
-          return this.toolText(
+          return toolText(
             id,
             `Workflow marked ${a.data.outcome}. Thank you — end your turn with a short wrap-up for the user.`,
           );
         }
         default:
-          return this.fail(id, McpRpcError.MethodNotFound, `Unknown tool: ${name}`);
+          return rpcFail(id, McpRpcError.MethodNotFound, `Unknown tool: ${name}`);
       }
     } catch (err) {
-      return this.toolError(id, `${name} failed: ${(err as Error).message}`);
+      return toolError(id, `${name} failed: ${(err as Error).message}`);
     }
   }
 
@@ -723,28 +711,28 @@ export class McpDispatchServer {
     try {
       switch (name) {
         case "my_task":
-          return this.toolText(id, await own.detail());
+          return toolText(id, await own.detail());
         case "update_my_task": {
           const a = UpdateMyTaskArgs.safeParse(args ?? {});
-          if (!a.success) return this.invalidArgs(id, name, a.error);
+          if (!a.success) return invalidArgs(id, name, a.error);
           const result = await own.update(a.data.patch);
           return result.ok
-            ? this.toolText(id, `Updated ${result.task.id} [${result.task.status}] ${result.task.title}`)
-            : this.toolError(id, result.reason);
+            ? toolText(id, `Updated ${result.task.id} [${result.task.status}] ${result.task.title}`)
+            : toolError(id, result.reason);
         }
         case "ask_question": {
           const a = AskQuestionArgs.safeParse(args ?? {});
-          if (!a.success) return this.invalidArgs(id, name, a.error);
+          if (!a.success) return invalidArgs(id, name, a.error);
           const result = await own.askQuestion(a.data.question);
           return result.ok
-            ? this.toolText(id, "Question filed for the human owner. Keep working what you can.")
-            : this.toolError(id, result.reason);
+            ? toolText(id, "Question filed for the human owner. Keep working what you can.")
+            : toolError(id, result.reason);
         }
         default:
-          return this.fail(id, McpRpcError.MethodNotFound, `Unknown tool: ${name}`);
+          return rpcFail(id, McpRpcError.MethodNotFound, `Unknown tool: ${name}`);
       }
     } catch (err) {
-      return this.toolError(id, `${name} failed: ${(err as Error).message}`);
+      return toolError(id, `${name} failed: ${(err as Error).message}`);
     }
   }
 
@@ -757,91 +745,70 @@ export class McpDispatchServer {
     try {
       switch (name) {
         case "board_status":
-          return this.toolText(id, await board.snapshot());
+          return toolText(id, await board.snapshot());
         case "create_epic": {
           const a = CreateEpicArgs.safeParse(args ?? {});
-          if (!a.success) return this.invalidArgs(id, name, a.error);
+          if (!a.success) return invalidArgs(id, name, a.error);
           const epic = await board.createEpic(a.data.name, a.data.description);
-          return this.toolText(id, `Created epic ${epic.id}: ${epic.name}`);
+          return toolText(id, `Created epic ${epic.id}: ${epic.name}`);
         }
         case "create_task": {
           const a = CreateTaskArgs.safeParse(args ?? {});
-          if (!a.success) return this.invalidArgs(id, name, a.error);
+          if (!a.success) return invalidArgs(id, name, a.error);
           const task = await board.createTask(a.data);
-          return this.toolText(id, `Created task ${task.id}: ${task.title}`);
+          return toolText(id, `Created task ${task.id}: ${task.title}`);
         }
         case "claim_task": {
           const a = ClaimTaskArgs.safeParse(args ?? {});
-          if (!a.success) return this.invalidArgs(id, name, a.error);
+          if (!a.success) return invalidArgs(id, name, a.error);
           const result = await board.claimTask(a.data.taskId, a.data.ttlSeconds, a.data.claimId);
           return result.ok
-            ? this.toolText(
+            ? toolText(
                 id,
                 `Claimed ${a.data.taskId} until ${result.lease.expiresAt}. claimId: ${result.lease.claimId}` +
                   (result.stolen ? " (healed a stale lease)" : ""),
               )
-            : this.toolError(id, result.reason);
+            : toolError(id, result.reason);
         }
         case "update_task": {
           const a = UpdateTaskArgs.safeParse(args ?? {});
-          if (!a.success) return this.invalidArgs(id, name, a.error);
+          if (!a.success) return invalidArgs(id, name, a.error);
           const result = await board.updateTask(a.data.taskId, a.data.claimId, a.data.patch);
           return result.ok
-            ? this.toolText(id, `Updated ${result.task.id} [${result.task.status}] ${result.task.title}`)
-            : this.toolError(id, result.reason);
+            ? toolText(id, `Updated ${result.task.id} [${result.task.status}] ${result.task.title}`)
+            : toolError(id, result.reason);
         }
         case "release_task": {
           const a = ReleaseTaskArgs.safeParse(args ?? {});
-          if (!a.success) return this.invalidArgs(id, name, a.error);
+          if (!a.success) return invalidArgs(id, name, a.error);
           const result = await board.releaseTask(a.data.taskId, a.data.claimId);
-          return result.ok ? this.toolText(id, `Released ${a.data.taskId}.`) : this.toolError(id, result.reason);
+          return result.ok ? toolText(id, `Released ${a.data.taskId}.`) : toolError(id, result.reason);
         }
         case "get_task": {
           const a = GetTaskArgs.safeParse(args ?? {});
-          if (!a.success) return this.invalidArgs(id, name, a.error);
-          return this.toolText(id, await board.taskDetail(a.data.taskId));
+          if (!a.success) return invalidArgs(id, name, a.error);
+          return toolText(id, await board.taskDetail(a.data.taskId));
         }
         case "ask_question": {
           const a = AskQuestionArgs.safeParse(args ?? {});
-          if (!a.success) return this.invalidArgs(id, name, a.error);
+          if (!a.success) return invalidArgs(id, name, a.error);
           const result = await board.askQuestion(a.data.question, a.data.taskId ?? null);
           return result.ok
-            ? this.toolText(id, "Question filed for the human owner. Keep driving unblocked work.")
-            : this.toolError(id, result.reason);
+            ? toolText(id, "Question filed for the human owner. Keep driving unblocked work.")
+            : toolError(id, result.reason);
         }
         default:
-          return this.fail(id, McpRpcError.MethodNotFound, `Unknown tool: ${name}`);
+          return rpcFail(id, McpRpcError.MethodNotFound, `Unknown tool: ${name}`);
       }
     } catch (err) {
-      return this.toolError(id, `${name} failed: ${(err as Error).message}`);
+      return toolError(id, `${name} failed: ${(err as Error).message}`);
     }
   }
 
-  private invalidArgs(id: string | number | null, tool: string, error: z.ZodError): JsonRpcMessage {
-    return this.fail(
-      id,
-      McpRpcError.InvalidParams,
-      `Invalid ${tool} arguments: ${error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`,
-    );
-  }
 
-  private ok(id: string | number | null, result: unknown): JsonRpcMessage {
-    return { jsonrpc: "2.0", id, result };
-  }
 
-  private fail(id: string | number | null, code: number, message: string): JsonRpcMessage {
-    return { jsonrpc: "2.0", id, error: { code, message } };
-  }
 
-  /** A successful tool result carrying a single text block. */
-  private toolText(id: string | number | null, text: string): JsonRpcMessage {
-    return this.ok(id, { content: [{ type: "text", text }] });
-  }
 
-  /** A tool-level failure: a normal result with `isError` so the model sees it. */
-  private toolError(id: string | number | null, text: string): JsonRpcMessage {
-    return this.ok(id, { content: [{ type: "text", text }], isError: true });
-  }
 }
 
 function headline(prompt: string): string {

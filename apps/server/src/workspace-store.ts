@@ -89,6 +89,23 @@ export class WorkspaceStore {
     return { id: workspaceIdFor(root), root, manifest, architectures, archDrafts, projects };
   }
 
+  /**
+   * Just the boards. `load()` also reads and parses every architecture and
+   * every arch draft — drafts are full graph snapshots, so they usually
+   * dominate its cost — and callers that only want tasks (question sweeps,
+   * board lookups) should not pay for that.
+   */
+  async loadProjects(): Promise<{ path: string; project: Project }[]> {
+    const projects = (await this.loadKindDir<Project>(PROJECTS_DIR, "project")).map((e) => ({
+      path: e.path,
+      project: e.data,
+    }));
+    // `load()` seeds a first board on an empty workspace; mirror that so a
+    // caller never has to special-case "no boards yet".
+    if (projects.length === 0) projects.push(await this.createProject("General"));
+    return projects;
+  }
+
   private async loadOrInitManifest(): Promise<WorkspaceManifest> {
     const file = resolveInRoot(this.root, WORKSPACE_FILE);
     if (await exists(file)) {

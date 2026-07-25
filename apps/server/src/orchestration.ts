@@ -244,6 +244,58 @@ export class OrchestrationService {
     });
   }
 
+  /**
+   * Record the answer to a question and hand it back to whoever asked: the
+   * asking run's session is resumed with the answer so it carries on where it
+   * stopped. Answering is uncontended — it is the human side of the exchange,
+   * and the asker is by definition waiting — so it needs no lease.
+   *
+   * Returns the raising run id when one was resumed, so callers can surface
+   * "the agent is going again" separately from "recorded for later".
+   */
+  async answerQuestion(
+    projectPath: string,
+    taskId: string,
+    questionId: string,
+    answer: string,
+  ): Promise<{ ok: true; resumedRunId: string | null } | { ok: false; reason: string }> {
+    // Record inside the lock; resume *outside* it. `resumeChain` spawns a
+    // Claude process, and `mutate` serializes the whole board — holding the
+    // lock across a spawn would queue every claim/update/release behind it.
+    const recorded = await this.mutate(projectPath, (project) => {
+      const task = project.tasks.find((t) => t.id === taskId);
+      if (!task) return { ok: false as const, reason: `Unknown task: ${taskId}` };
+      const question = task.questions.find((q) => q.id === questionId);
+      if (!question) return { ok: false as const, reason: `Unknown question: ${questionId}` };
+      if (question.answer != null) {
+        return { ok: false as const, reason: `Question ${questionId} was already answered.` };
+      }
+      question.answer = answer;
+      question.answeredAt = nowIso();
+      task.updatedAt = question.answeredAt;
+      return { ok: true as const, runId: question.runId ?? null, text: question.text };
+    });
+    if (!recorded.ok) return recorded;
+    if (!recorded.runId) return { ok: true, resumedRunId: null };
+
+    // Hand the answer back to whoever asked. `deliver`, not `resumeChain`:
+    // agents are told not to block on an answer, so the asker is usually still
+    // working — a bare resume would return null and the answer would be lost.
+    const resumed = await this.agents
+      .deliver(
+        recorded.runId,
+        `Answer to your question "${recorded.text}":\n\n${answer}\n\nContinue the task.`,
+      )
+      .catch(() => null);
+    if (resumed) {
+      await this.mutate(projectPath, (project) => {
+        const task = project.tasks.find((t) => t.id === taskId);
+        if (task && !task.runIds.includes(resumed.id)) task.runIds.push(resumed.id);
+      });
+    }
+    return { ok: true, resumedRunId: resumed?.id ?? null };
+  }
+
   /** Creating a task is uncontended (fresh id) — no lease required. */
   createTask(
     projectPath: string,

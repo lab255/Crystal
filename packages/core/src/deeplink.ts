@@ -15,11 +15,13 @@
  */
 
 import { CODE_LOD_LEVELS, type CodeLodLevel } from "./codemap.js";
+import type { HubViewId } from "./hub.js";
 import type { QualityViewId } from "./quality.js";
 import type { SurfaceViewId } from "./surfaces.js";
 
 export type CrystalModeId =
   | "projects"
+  | "hub"
   | "architect"
   | "orchestrate"
   | "code"
@@ -177,6 +179,30 @@ export interface QualityLink {
   find?: string;
 }
 
+/**
+ * The Hub — cross-project programs. Unlike every other section this one is
+ * *not* scoped to `ws`: a program spans workspaces, so its links stay valid
+ * whichever workspace is active (`ws` still rides along, marking where to
+ * return when the user leaves the Hub).
+ */
+export interface HubLink {
+  view?: HubViewId;
+  /** Selected program id. */
+  program?: string;
+  /**
+   * Workspace id the start panel should dispatch into — set when arriving
+   * from a project card, so "dispatch an epic into this project" actually
+   * carries the project.
+   */
+  project?: string;
+  /** Selected delivery within the program. */
+  delivery?: string;
+  /** Selected program-manager turn (run id); latest when unset. */
+  run?: string;
+  /** Find query across programs / projects. */
+  find?: string;
+}
+
 export interface DeepLink {
   /** Active workspace id (`workspaceIdFor(root)` — stable across restarts). */
   ws?: string;
@@ -188,6 +214,7 @@ export interface DeepLink {
    */
   lens?: string;
   mode?: CrystalModeId;
+  hub?: HubLink;
   architect?: ArchitectLink;
   orchestrate?: OrchestrateLink;
   code?: CodeLink;
@@ -309,6 +336,17 @@ export function formatDeepLink(link: DeepLink): string {
       if (q.covPath) add("path", q.covPath);
     }
     if (q.find) add("find", q.find);
+  } else if (mode === "hub") {
+    const h = link.hub ?? {};
+    const view = h.view ?? "programs";
+    path += `/${view}`;
+    if (view === "programs") {
+      if (h.program) add("program", h.program);
+      if (h.delivery) add("delivery", h.delivery);
+      if (h.run) add("run", h.run);
+      if (h.project) add("project", h.project);
+    }
+    if (h.find) add("find", h.find);
   }
   // "projects" (cross-workspace overview) and "jobs" (agent job hub) are
   // stateless — nothing to encode beyond ws.
@@ -323,6 +361,8 @@ export function formatDeepLink(link: DeepLink): string {
  */
 const MODE_ALIASES: Record<string, [CrystalModeId, string?]> = {
   overview: ["projects"],
+  programs: ["hub", "programs"],
+  portfolio: ["hub", "programs"],
   editor: ["code"],
   arch: ["architect"],
   architecture: ["architect"],
@@ -495,6 +535,22 @@ export function parseDeepLink(hash: string): DeepLink {
     const find = params.get("find");
     if (find) q.find = find;
     if (Object.keys(q).length) link.quality = q;
+  } else if (mode === "hub") {
+    link.mode = "hub";
+    const h: HubLink = {};
+    const view = segments[1];
+    if (view === "programs" || view === "projects") h.view = view;
+    const program = params.get("program");
+    if (program) h.program = program;
+    const delivery = params.get("delivery");
+    if (delivery) h.delivery = delivery;
+    const run = params.get("run");
+    if (run) h.run = run;
+    const project = params.get("project");
+    if (project) h.project = project;
+    const find = params.get("find");
+    if (find) h.find = find;
+    if (Object.keys(h).length) link.hub = h;
   } else if (mode === "projects") {
     link.mode = "projects";
   } else if (mode === "jobs") {
@@ -536,6 +592,11 @@ const SURFACES_VIEW_FIELDS: Record<SurfaceViewId, readonly (keyof SurfacesLink)[
 const QUALITY_VIEW_FIELDS: Record<QualityViewId, readonly (keyof QualityLink)[]> = {
   tests: ["view", "file", "test", "run", "find"],
   coverage: ["view", "covPath", "find"],
+};
+
+const HUB_VIEW_FIELDS: Record<HubViewId, readonly (keyof HubLink)[]> = {
+  programs: ["view", "program", "delivery", "run", "project", "find"],
+  projects: ["view", "find"],
 };
 
 /** Replace the owned fields with the incoming section's; keep everything else. */
@@ -590,6 +651,11 @@ export function applyDeepLink(current: DeepLink, next: DeepLink): DeepLink {
     const merged = replaceOwned(current.quality, next.quality, QUALITY_VIEW_FIELDS[view]);
     if (merged) link.quality = merged;
     else delete link.quality;
+  } else if (next.mode === "hub") {
+    const view = next.hub?.view ?? "programs";
+    const merged = replaceOwned(current.hub, next.hub, HUB_VIEW_FIELDS[view]);
+    if (merged) link.hub = merged;
+    else delete link.hub;
   }
   return link;
 }
@@ -629,5 +695,15 @@ export function deepLinkNavIdentity(link: DeepLink): string {
   if (mode === "code") return `code/${link.code?.file ?? ""}`;
   if (mode === "surfaces") return `surfaces/${link.surfaces?.view ?? "map"}`;
   if (mode === "quality") return `quality/${link.quality?.view ?? "tests"}`;
+  // Opening a program is a place of its own — the back button should walk
+  // portfolio → program, not every delivery click inside one. Only the
+  // programs view owns `program`: reading it on the projects view (where it
+  // survives in the store but never reaches the URL) made every keystroke in
+  // the find box push a history entry.
+  if (mode === "hub") {
+    const h = link.hub ?? {};
+    const view = h.view ?? "programs";
+    return `hub/${view}/${view === "programs" ? (h.program ?? "") : ""}`;
+  }
   return mode;
 }

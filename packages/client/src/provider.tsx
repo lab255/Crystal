@@ -29,6 +29,7 @@ import {
   type HighlightState,
   type HighlightStore,
 } from "./highlight-store.js";
+import { createHubStore, type HubState, type HubStore } from "./hub-store.js";
 import { createLensStore, type LensState, type LensStore } from "./lens-store.js";
 import { createNavStore, type NavPatch, type NavStore } from "./nav-store.js";
 import {
@@ -60,6 +61,7 @@ export interface CrystalContextValue {
   fleetStore: FleetStore;
   terminalsStore: TerminalsStore;
   workflowStore: WorkflowStore;
+  hubStore: HubStore;
   navStore: NavStore;
   highlightStore: HighlightStore;
   lensStore: LensStore;
@@ -162,6 +164,7 @@ export function CrystalProvider({
       fleetStore: createFleetStore(client),
       terminalsStore: createTerminalsStore(client),
       workflowStore: createWorkflowStore(client),
+      hubStore: createHubStore(client),
       navStore: createNavStore(),
       highlightStore: createHighlightStore(),
       lensStore: createLensStore(client),
@@ -190,6 +193,9 @@ export function CrystalProvider({
       if (ids.length === 0) return;
       void fleetStore.getState().refresh(ids);
       void terminalsStore.getState().refresh(ids);
+      // The hub's project list follows the open set; its programs do not, but
+      // one refresh covers both and only fires on workspace-set changes.
+      void value.hubStore.getState().refresh();
     };
 
     // Active-workspace switches re-scope the client and reload scoped stores.
@@ -328,6 +334,12 @@ export function useTerminals<T>(selector: (s: TerminalsState) => T): T {
 export function useWorkflows<T>(selector: (s: WorkflowState) => T): T {
   const { workflowStore } = useCrystal();
   return useStore(workflowStore, selector);
+}
+
+/** Cross-project programs and their deliveries (see `HubState`). Unscoped. */
+export function useHub<T>(selector: (s: HubState) => T): T {
+  const { hubStore } = useCrystal();
+  return useStore(hubStore, selector);
 }
 
 /**

@@ -62,6 +62,17 @@ const pipe = process.argv.includes("--no-pipe")
   ? null
   : (argValue("--pipe") ?? process.env.CRYSTAL_PIPE ?? undefined);
 const token = process.env.CRYSTAL_TOKEN ?? null;
+/**
+ * `--mcp-port <port>` pins the loopback MCP listener. The hub endpoint
+ * (`/mcp/hub`) is configured once in an external agent's MCP config, so a
+ * fresh ephemeral port on every restart would break it.
+ */
+const mcpPortArg = argValue("--mcp-port") ?? process.env.CRYSTAL_MCP_PORT;
+const mcpPort = mcpPortArg !== undefined ? Number(mcpPortArg) : null;
+if (mcpPort !== null && !Number.isInteger(mcpPort)) {
+  console.error(`[crystal] invalid --mcp-port: ${mcpPortArg}`);
+  process.exit(1);
+}
 
 let server: CrystalServer | null = null;
 let shuttingDown = false;
@@ -94,7 +105,7 @@ if (process.env.CRYSTAL_SHUTDOWN_ON_STDIN_END === "1") {
   process.stdin.on("error", () => void shutdown("stdin error"));
 }
 
-startCrystalServer({ root: roots, listen, pipe, token })
+startCrystalServer({ root: roots, listen, pipe, token, mcpPort })
   .then((s) => {
     server = s;
   })

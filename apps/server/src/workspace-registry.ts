@@ -20,6 +20,7 @@ import { OrchestrationService } from "./orchestration.js";
 import { appDataDir, isIgnoredDir, workspaceIdFor } from "./paths.js";
 import { QualityService } from "./quality-runner.js";
 import { RefactorEngine } from "./refactor.js";
+import { SettledRuns } from "./settled-runs.js";
 import { TerminalManager } from "./terminal-manager.js";
 import { WorkflowEngine } from "./workflow-engine.js";
 import { WorkspaceStore } from "./workspace-store.js";
@@ -35,9 +36,6 @@ function openWorkspacesFile(): string {
 
 /** How many recently-opened workspaces the reopen list keeps. */
 const MAX_RECENTS = 12;
-
-/** Settled-run ids remembered for settle-once dedup before pruning oldest. */
-const MAX_SETTLED_REMEMBERED = 500;
 
 /** realpath expands Windows 8.3 short paths, which crash libuv's recursive fs watcher. */
 export function canonicalRoot(p: string): string {
@@ -84,7 +82,7 @@ export class WorkspaceRuntime {
       root,
       appDataDir(root),
       undefined,
-      mcpBaseUrl ? { baseUrl: mcpBaseUrl, wsId: this.id } : null,
+      mcpBaseUrl ? { baseUrl: mcpBaseUrl, scope: this.id } : null,
     );
     this.terminals = new TerminalManager(root);
     this.analysis = new AnalysisBackend(root);
@@ -105,12 +103,8 @@ export class WorkspaceRuntime {
 
   /** Set by start(): board writes announce themselves like manifest edits do. */
   private notifyWorkspaceChanged: (() => void) | null = null;
-  /**
-   * Runs already billed to their task (settlement fires once per run).
-   * Pruned oldest-first past MAX_SETTLED_REMEMBERED — a long-lived server
-   * must not remember every run id forever.
-   */
-  private settledRuns = new Set<string>();
+  /** Runs already billed to their task (settlement fires once per run). */
+  private readonly settledRuns = new SettledRuns();
 
   /** Attach a run's CRYSTAL_QUESTION to its board task. */
   private async fileQuestion(runId: string, text: string): Promise<void> {
@@ -146,19 +140,8 @@ export class WorkspaceRuntime {
       }),
       this.agents.events.on("runChanged", ({ run }) => {
         broadcast("agent.runChanged", { ws: this.id, run });
-        // Terminal states bill the run's task and heal its lease. A run emits
-        // several terminal runChanged events (result, then finish) — settle once.
-        const terminal =
-          run.status === "completed" || run.status === "failed" || run.status === "cancelled";
-        if (terminal && !this.settledRuns.has(run.id)) {
-          this.settledRuns.add(run.id);
-          while (this.settledRuns.size > MAX_SETTLED_REMEMBERED) {
-            const oldest = this.settledRuns.values().next().value;
-            if (oldest === undefined) break;
-            this.settledRuns.delete(oldest);
-          }
-          void this.orchestration.settleRun(run);
-        }
+        // Terminal states bill the run's task and heal its lease — once.
+        if (this.settledRuns.claim(run)) void this.orchestration.settleRun(run);
       }),
       this.terminals.events.on("data", ({ chunk }) =>
         broadcast("terminal.data", { ws: this.id, chunk }),

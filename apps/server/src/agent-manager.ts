@@ -183,6 +183,37 @@ export function planClaudeSpawn(
   return { file: winShellQuote(bin), args: args.map(winShellQuote), shell: true };
 }
 
+/**
+ * The wake-up prompt for a chain's queued notices. Pure so the composition is
+ * testable: it once stringified the notice *objects* (`[object Object]`),
+ * which silently broke every manager wake-up.
+ *
+ * The board-keeping tail belongs to settlement only — a queued message (a
+ * question's answer, owner steering) speaks for itself and must not be
+ * wrapped in "you were resumed because dispatched work settled".
+ */
+export function composeNoticePrompt(notices: readonly PendingNotice[]): string {
+  const settled = notices.filter((n) => n.kind === "worker").length;
+  const head = settled > 1 ? `${settled} workers settled while you were away.\n\n` : "";
+  const tail = settled
+    ? "\n\nYou were resumed because dispatched work settled. Review the results, update the " +
+      "board (claim → update_task → release), dispatch follow-up or review workers for " +
+      "anything done, and start the next READY tasks. If everything is done and the board " +
+      "reflects it, say so briefly and stop. You will be resumed again when more workers " +
+      "settle — do not busy-poll worker_status."
+    : "";
+  return head + notices.map((n) => n.text).join("\n\n---\n\n") + tail;
+}
+
+/**
+ * Something waiting to be said to a session that is mid-turn: a worker's
+ * result, or a message delivered through {@link AgentManager.deliver}.
+ */
+export interface PendingNotice {
+  kind: "worker" | "message";
+  text: string;
+}
+
 interface ActiveProcess {
   child: ChildProcessWithoutNullStreams;
   cancelled: boolean;
@@ -214,7 +245,7 @@ export class AgentManager {
    * what closes the delegation loop: managers end their turn after
    * dispatching and are woken with results instead of busy-polling.
    */
-  private pendingNotices = new Map<string, string[]>();
+  private pendingNotices = new Map<string, PendingNotice[]>();
   /** Per-chain-root serialization of resume attempts (see resumeChain). */
   private resumeLocks = new Map<string, Promise<unknown>>();
   /** Per-branch serialization of track-worktree adopt-or-create (see start). */
@@ -234,11 +265,13 @@ export class AgentManager {
     private readonly claudeBin = process.env.CRYSTAL_CLAUDE_BIN ?? "claude",
     /**
      * In-process MCP endpoint for manager runs. When set, a manager-role run is
-     * launched with an mcp-config pointing at `<baseUrl>/mcp/<wsId>/<runId>`, so
-     * its `dispatch_worker` tool spawns tracked workers. Absent → managers fall
-     * back to the CRYSTAL_DISPATCH marker.
+     * launched with an mcp-config pointing at `<baseUrl>/mcp/<scope>/<runId>`,
+     * so its tools land parented to that run. `scope` is a workspace id for
+     * project runs and the reserved hub segment for program managers — the
+     * router decides which toolset that means. Absent → managers fall back to
+     * the CRYSTAL_DISPATCH marker.
      */
-    private readonly mcp: { baseUrl: string; wsId: string } | null = null,
+    private readonly mcp: { baseUrl: string; scope: string } | null = null,
   ) {}
 
   private runsDir(): string {
@@ -278,7 +311,7 @@ export class AgentManager {
     const file = path.join(dir, `${runId}.json`);
     const config = {
       mcpServers: {
-        crystal: { type: "http", url: `${this.mcp.baseUrl}/mcp/${this.mcp.wsId}/${runId}` },
+        crystal: { type: "http", url: `${this.mcp.baseUrl}/mcp/${this.mcp.scope}/${runId}` },
       },
     };
     await fs.writeFile(file, JSON.stringify(config), "utf8");
@@ -622,6 +655,28 @@ export class AgentManager {
     return attempt;
   }
 
+  /**
+   * Deliver `prompt` into a session, whatever it is doing. Idle chains take it
+   * immediately; a chain mid-turn has it queued and flushed the moment the
+   * turn settles — two concurrent `--resume`s of one session would fork it.
+   *
+   * This is the primitive behind every "tell an agent something" path (worker
+   * results, workflow steering, a question's answer). Using it instead of a
+   * bare `resumeChain` is what keeps a message from being silently dropped
+   * because the agent happened to be busy — agents are explicitly told not to
+   * block waiting for answers, so busy is the *normal* case.
+   */
+  async deliver(runId: string, prompt: string): Promise<AgentRun | null> {
+    await this.ensureLoaded();
+    const rootId = chainRootId(runId, this.runs);
+    const run = await this.resumeChain(rootId, prompt);
+    if (run) return run;
+    const queued = this.pendingNotices.get(rootId) ?? [];
+    queued.push({ kind: "message", text: prompt });
+    this.pendingNotices.set(rootId, queued);
+    return null;
+  }
+
   /** A run record by id (workers hand their results to managers through this). */
   async get(runId: string): Promise<AgentRun | null> {
     await this.ensureLoaded();
@@ -869,16 +924,19 @@ export class AgentManager {
    */
   private notifyOnSettle(run: AgentRun): void {
     if (run.role === "worker" && run.parentRunId) {
-      const rootId = chainRootId(run.parentRunId, this.runs);
-      const notices = this.pendingNotices.get(rootId) ?? [];
-      notices.push(this.workerNotice(run));
-      this.pendingNotices.set(rootId, notices);
-      if (!this.chainLive(rootId)) void this.flushNotices(rootId);
-      return;
+      const managerRoot = chainRootId(run.parentRunId, this.runs);
+      const notices = this.pendingNotices.get(managerRoot) ?? [];
+      notices.push({ kind: "worker", text: this.workerNotice(run) });
+      this.pendingNotices.set(managerRoot, notices);
+      if (!this.chainLive(managerRoot)) void this.flushNotices(managerRoot);
+      // Fall through: a worker has a queue of its own. Anything delivered to
+      // it while it was busy — most often the answer to a question it asked —
+      // would otherwise sit there forever, because a worker's settlement only
+      // ever looked at its *manager's* queue.
     }
-    const rootId = chainRootId(run.id, this.runs);
-    if (this.pendingNotices.get(rootId)?.length && !this.chainLive(rootId)) {
-      void this.flushNotices(rootId);
+    const own = chainRootId(run.id, this.runs);
+    if (this.pendingNotices.get(own)?.length && !this.chainLive(own)) {
+      void this.flushNotices(own);
     }
   }
 
@@ -911,14 +969,20 @@ export class AgentManager {
       this.pendingNotices.delete(rootId);
       return;
     }
+    const settled = notices.filter((n) => n.kind === "worker").length;
     const prompt =
-      `${notices.length > 1 ? `${notices.length} workers settled while you were away.\n\n` : ""}` +
-      notices.join("\n\n---\n\n") +
-      "\n\nYou were resumed because dispatched work settled. Review the results, update the " +
-      "board (claim → update_task → release), dispatch follow-up or review workers for " +
-      "anything done, and start the next READY tasks. If everything is done and the board " +
-      "reflects it, say so briefly and stop. You will be resumed again when more workers " +
-      "settle — do not busy-poll worker_status.";
+      `${settled > 1 ? `${settled} workers settled while you were away.\n\n` : ""}` +
+      notices.map((n) => n.text).join("\n\n---\n\n") +
+      // The board-keeping instructions belong to *settlement*. A queued
+      // message (an answer, a steer) speaks for itself and must not be
+      // wrapped in "you were resumed because dispatched work settled".
+      (settled
+        ? "\n\nYou were resumed because dispatched work settled. Review the results, update the " +
+          "board (claim → update_task → release), dispatch follow-up or review workers for " +
+          "anything done, and start the next READY tasks. If everything is done and the board " +
+          "reflects it, say so briefly and stop. You will be resumed again when more workers " +
+          "settle — do not busy-poll worker_status."
+        : "");
     const delivered = notices.length;
     try {
       const run = await this.resumeChain(rootId, prompt);

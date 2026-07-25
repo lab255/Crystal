@@ -38,6 +38,15 @@ export function appDataDir(root: string): string {
   return path.join(os.homedir(), ".crystal", "workspaces", `${base}-${hash}`);
 }
 
+/**
+ * The hub's own directory: cross-project programs and the program-manager
+ * sessions that drive them. Deliberately outside `workspaces/` — a program
+ * belongs to no single project.
+ */
+export function hubDataDir(): string {
+  return path.join(os.homedir(), ".crystal", "hub");
+}
+
 const IGNORED_DIRS = new Set([
   "node_modules",
   ".git",

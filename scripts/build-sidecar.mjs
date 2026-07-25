@@ -138,6 +138,19 @@ fs.copyFileSync(
 );
 console.log("staged analysis worker");
 
+// 6b. Stage the hub's stdio MCP shim. An *external* agent (Claude Code in a
+//     terminal, Claude Desktop) reaches this app's hub through it, and the
+//     desktop user has no `crystal-mcp` on their PATH — so ship the bundle
+//     and let them point at it:
+//       claude mcp add crystal-hub -- node <Resources>/crystal-mcp.cjs
+//     It is its own small bundle rather than a flag on the sidecar because it
+//     must not pull in node-pty (which only resolves inside this staging).
+fs.copyFileSync(
+  path.resolve("dist", "crystal-mcp.cjs"),
+  path.join(stageBase, "crystal-mcp.cjs"),
+);
+console.log("staged hub mcp shim");
+
 // 7. Developer-ID sign the staged native Mach-O (node-pty's pty.node +
 //    spawn-helper). They ship ad-hoc / linker-signed — no Team ID, no secure
 //    timestamp — and Tauri signs only the app's own executables, never nested

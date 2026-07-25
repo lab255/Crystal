@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import fs from "node:fs/promises";
 import http from "node:http";
 import net from "node:net";
 import path from "node:path";
@@ -14,6 +15,7 @@ import {
   type BridgeMethods,
   type BridgeRequest,
   type BridgeResponse,
+  type ProgramSpend,
 } from "@crystal/core";
 import {
   applyCodeSnapshotToGraph,
@@ -21,6 +23,7 @@ import {
   computeReviewFindings,
   createArchDraft,
   diffSystemOverviews,
+  openQuestionsOfWorkflow,
   suggestFacets,
 } from "@crystal/core";
 import { LineBuffer } from "@crystal/core";
@@ -34,10 +37,12 @@ import {
   unlinkPipe,
   writeInstanceFile,
 } from "./instances.js";
-import { workspaceIdFor } from "./paths.js";
+import { AgentManager } from "./agent-manager.js";
+import { HubEngine, type HubProjects } from "./hub-engine.js";
+import { hubDataDir, workspaceIdFor } from "./paths.js";
 import { deleteAt, listDir, mkdirAt, readFileCapped, renameAt, writeFileAt } from "./fs-api.js";
 import { changedFiles, gitCheckout, gitLog, gitRefs, gitStatus } from "./git.js";
-import { handleMcpRequest, isMcpRequest } from "./mcp/http.js";
+import { HUB_MCP_ID, handleMcpRequest, isMcpRequest } from "./mcp/http.js";
 import { overviewSourcesAtRef, snapshotAtRef, surfacesSnapshotAtRef } from "./ref-snapshot.js";
 import { WorkspaceRegistry } from "./workspace-registry.js";
 
@@ -52,6 +57,8 @@ export interface CrystalServer {
   port: number | null;
   /** Loopback port of the always-on in-process MCP endpoint. */
   mcpPort: number;
+  /** Endpoint a central agent points at to drive the cross-project hub. */
+  hubMcpUrl: string;
   /** IPC endpoint (named pipe / unix socket), null when disabled. */
   pipe: string | null;
   close(): Promise<void>;
@@ -61,6 +68,74 @@ export interface CrystalServer {
 interface RpcClient {
   send(text: string): void;
   close(): void;
+}
+
+/**
+ * The hub's view of the workspace layer. Every cross-project action bottoms
+ * out in an ordinary per-project operation — opening a workspace, starting a
+ * workflow, messaging its manager — so the hub adds coordination without
+ * adding a second execution path.
+ */
+function registryProjects(registry: WorkspaceRegistry): HubProjects {
+  const ref = (rt: { id: string; root: string; name: string }) => ({
+    ws: rt.id,
+    root: rt.root,
+    name: rt.name,
+  });
+  return {
+    open: async (root) => ref(await registry.open(root)),
+    list: () => registry.list().map((w) => ({ ws: w.id, root: w.root, name: w.name })),
+    recents: () => registry.recents(),
+    startWorkflow: async (ws, init) => (await registry.get(ws).workflows.start(init)).workflow,
+    workflow: (ws, workflowId) => registry.get(ws).workflows.get(workflowId),
+    // WorkflowSpend and DeliverySpend are the same four counters — a
+    // delivery's spend IS its workflow's.
+    workflowSpend: async (ws, workflowId) => {
+      const rt = registry.get(ws);
+      return (await rt.workflows.get(workflowId)) ? rt.workflows.spend(workflowId) : null;
+    },
+    messageWorkflow: async (ws, workflowId, text) => {
+      const { queued } = await registry.get(ws).workflows.message(workflowId, text);
+      return { queued };
+    },
+    setWorkflowPaused: async (ws, workflowId, paused, reason) => {
+      await registry.get(ws).workflows.setPaused(workflowId, paused, reason);
+    },
+    setWorkflowBudget: async (ws, workflowId, budgetUsd) => {
+      await registry.get(ws).workflows.setBudget(workflowId, budgetUsd);
+    },
+    cancelWorkflow: async (ws, workflowId) => {
+      await registry.get(ws).workflows.cancel(workflowId);
+    },
+    boardSnapshot: async (ws) => {
+      const rt = registry.get(ws);
+      return rt.orchestration.snapshot(await rt.orchestration.projectPathFor(null));
+    },
+    openQuestions: async (ws, workflowId) => {
+      const rt = registry.get(ws);
+      const workflow = await rt.workflows.get(workflowId);
+      if (!workflow) return [];
+      // Only the boards: `store.load()` would also parse every architecture
+      // and draft, and this runs on every board write.
+      const projects = await rt.store.loadProjects();
+      const project =
+        projects.find((p) => p.project.id === workflow.projectId) ?? projects[0];
+      if (!project) return [];
+      return openQuestionsOfWorkflow(workflow, project.project.tasks).map((q) => ({
+        taskId: q.task.id,
+        taskTitle: q.task.title,
+        questionId: q.question.id,
+        text: q.question.text,
+        createdAt: q.question.createdAt,
+      }));
+    },
+    answerQuestion: async (ws, workflowId, taskId, questionId, answer) => {
+      const rt = registry.get(ws);
+      const workflow = await rt.workflows.get(workflowId);
+      const projectPath = await rt.orchestration.projectPathFor(workflow?.projectId ?? null);
+      return rt.orchestration.answerQuestion(projectPath, taskId, questionId, answer);
+    },
+  };
 }
 
 export async function startCrystalServer(opts: {
@@ -98,6 +173,15 @@ export async function startCrystalServer(opts: {
    * `~/.crystal/instances`); `null` disables discovery.
    */
   instancesDir?: string | null;
+  /**
+   * Pin the loopback MCP port instead of taking an ephemeral one. External
+   * agents configure `POST http://127.0.0.1:<port>/mcp/hub` once and keep it
+   * across restarts — an ephemeral port would move on every boot. Agent runs
+   * spawned by Crystal never need this: their mcp-config is written per run.
+   */
+  mcpPort?: number | null;
+  /** Where hub programs and program-manager runs persist (default `~/.crystal/hub`). */
+  hubDir?: string | null;
 }): Promise<CrystalServer> {
   // Declared ahead of the registry: opening the startup workspaces already
   // broadcasts, and `broadcast` (hoisted) closes over this set.
@@ -109,6 +193,7 @@ export async function startCrystalServer(opts: {
   // resolved port feeds the registry's MCP base URL. It serves nothing but
   // /health and /mcp — no console, no WS upgrade.
   let registryRef: WorkspaceRegistry | null = null;
+  let hubRef: HubEngine | null = null;
   const mcpServer = http.createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     if (url.pathname === "/health") {
@@ -118,7 +203,7 @@ export async function startCrystalServer(opts: {
     }
     if (isMcpRequest(req.url) && registryRef) {
       const registry = registryRef;
-      void handleMcpRequest(req, res, registry).catch((err) => {
+      void handleMcpRequest(req, res, registry, hubRef).catch((err) => {
         if (!res.headersSent) res.writeHead(500, { "content-type": "application/json" });
         res.end(
           JSON.stringify({
@@ -134,14 +219,34 @@ export async function startCrystalServer(opts: {
   });
   await new Promise<void>((resolve, reject) => {
     mcpServer.once("error", reject);
-    mcpServer.listen(0, "127.0.0.1", () => resolve());
+    mcpServer.listen(opts.mcpPort ?? 0, "127.0.0.1", () => resolve());
   });
   const mcpPort = (mcpServer.address() as net.AddressInfo).port;
+  const mcpBaseUrl = `http://127.0.0.1:${mcpPort}`;
+  const hubMcpUrl = `${mcpBaseUrl}/mcp/${HUB_MCP_ID}`;
 
   const registry = new WorkspaceRegistry(
-    (event, payload) => broadcast(event, payload),
+    (event, payload) => {
+      // The hub watches every project's workflows: a delivery follows the
+      // workflow carrying it. Routed through the broadcast seam so the hub
+      // needs no per-runtime subscription lifecycle (workspaces close and
+      // reopen with fresh engines).
+      if (event === "workflow.changed") {
+        const { ws, workflow } = payload as BridgeEvents["workflow.changed"];
+        void hubRef?.onWorkflowChanged(ws, workflow).catch((err) => {
+          console.warn("[crystal] hub workflow hook failed:", (err as Error).message);
+        });
+      }
+      // Questions land on the board, not on the workflow — a board write is
+      // the only signal that a delivery has stopped to ask something.
+      if (event === "workspace.changed") {
+        const { ws } = payload as BridgeEvents["workspace.changed"];
+        hubRef?.scheduleQuestionSweep(ws);
+      }
+      broadcast(event, payload);
+    },
     opts.persistFile,
-    `http://127.0.0.1:${mcpPort}`,
+    mcpBaseUrl,
   );
   registryRef = registry;
 
@@ -150,6 +255,36 @@ export async function startCrystalServer(opts: {
     await registry.open(root);
   }
   if (opts.restorePersisted !== false) await registry.restorePersisted();
+
+  // --- The hub: cross-project programs. Its manager sessions are rooted in
+  // the hub's own directory (they coordinate; they never edit a project), and
+  // reach the hub toolset at /mcp/hub/<runId>.
+  const hubRoot = opts.hubDir === undefined ? hubDataDir() : opts.hubDir;
+  let hub: HubEngine | null = null;
+  if (hubRoot) {
+    await fs.mkdir(hubRoot, { recursive: true }).catch(() => {});
+    const hubAgents = new AgentManager(hubRoot, hubRoot, undefined, {
+      baseUrl: mcpBaseUrl,
+      scope: HUB_MCP_ID,
+    });
+    hubAgents.events.on("runChanged", ({ run }) => broadcast("hub.runChanged", { run }));
+    hubAgents.events.on("event", (event) => broadcast("hub.event", event));
+    hub = new HubEngine(hubRoot, registryProjects(registry), hubAgents);
+    hub.events.on("changed", ({ program }) => broadcast("hub.changed", { program }));
+    // Catch up on anything that settled while this server was down — the hub's
+    // event edges only cover the time it was actually listening.
+    void hub.reconcile().catch((err) => {
+      console.warn("[crystal] hub reconcile failed:", (err as Error).message);
+    });
+    hub.events.on("removed", ({ programId }) => broadcast("hub.removed", { programId }));
+    hub.events.on("questionsChanged", (payload) => broadcast("hub.questionsChanged", payload));
+    hubRef = hub;
+  }
+  /** Narrows "the hub is configured" for the handler map. */
+  const requireHub = (): HubEngine => {
+    if (!hub) throw new Error("The cross-project hub is disabled on this server.");
+    return hub;
+  };
 
   const handlers: Handlers = {
     "workspaces.list": async () => ({
@@ -238,6 +373,8 @@ export async function startCrystalServer(opts: {
       }),
     "task.release": ({ ws, path: p, taskId, claimId, force }) =>
       registry.get(ws).orchestration.releaseTask(p, taskId, { claimId, force }),
+    "task.answer": ({ ws, path: p, taskId, questionId, answer }) =>
+      registry.get(ws).orchestration.answerQuestion(p, taskId, questionId, answer),
     "task.update": ({ ws, path: p, taskId, patch, claimId, force }) =>
       registry.get(ws).orchestration.updateTask(p, taskId, patch, { claimId, force }),
     "agents.get": async ({ ws }) => ({ roster: await registry.get(ws).store.loadAgents() }),
@@ -500,6 +637,78 @@ export async function startCrystalServer(opts: {
       await registry.get(ws).workflows.deleteTemplate(templateId);
       return { ok: true as const };
     },
+    "hub.list": async () => {
+      const engine = requireHub();
+      const [programs, managerRuns] = await Promise.all([engine.list(), engine.managerRuns()]);
+      const spend: Record<string, ProgramSpend> = {};
+      await Promise.all(
+        programs.map(async (p) => {
+          spend[p.id] = await engine.spend(p.id, managerRuns);
+        }),
+      );
+      return { programs, spend };
+    },
+    "hub.get": async ({ programId }) => {
+      const program = await requireHub().get(programId);
+      if (!program) throw new Error(`Unknown program: ${programId}`);
+      return { program, spend: await requireHub().spend(programId) };
+    },
+    "hub.projects": () => requireHub().projectList(),
+    "hub.createProgram": async (params) => ({ program: await requireHub().create(params) }),
+    "hub.addDelivery": async ({ programId, ...init }) => ({
+      delivery: await requireHub().addDelivery(programId, init),
+    }),
+    "hub.removeDelivery": async ({ programId, deliveryId }) => {
+      await requireHub().removeDelivery(programId, deliveryId);
+      return { ok: true as const };
+    },
+    "hub.retryDelivery": async ({ programId, deliveryId }) => ({
+      program: await requireHub().retryDelivery(programId, deliveryId),
+    }),
+    "hub.dispatch": async ({ programId, deliveryIds }) => ({
+      report: await requireHub().dispatch(programId, deliveryIds),
+    }),
+    "hub.dispatchEpic": (params) => requireHub().dispatchEpic(params),
+    "hub.messageDelivery": ({ programId, deliveryId, text }) =>
+      requireHub().messageDelivery(programId, deliveryId, text),
+    "hub.setPaused": async ({ programId, paused, reason }) => ({
+      program: await requireHub().setPaused(programId, paused, reason),
+    }),
+    "hub.setBudget": async ({ programId, budgetUsd }) => ({
+      program: await requireHub().setBudget(programId, budgetUsd),
+    }),
+    "hub.setDeliveryBudget": async ({ programId, deliveryId, budgetUsd }) => ({
+      program: await requireHub().setDeliveryBudget(programId, deliveryId, budgetUsd),
+    }),
+    "hub.cancel": async ({ programId }) => ({ program: await requireHub().cancel(programId) }),
+    "hub.remove": async ({ programId }) => {
+      await requireHub().remove(programId);
+      return { ok: true as const };
+    },
+    "hub.startManager": async ({ programId, model }) => {
+      const run = await requireHub().startManager(programId, model ?? "opus");
+      const program = await requireHub().get(programId);
+      if (!program) throw new Error(`Unknown program: ${programId}`);
+      return { program, run };
+    },
+    "hub.message": ({ programId, text }) => requireHub().message(programId, text),
+    "hub.questions": async () => ({ questions: await requireHub().allQuestions() }),
+    "hub.answerQuestion": ({ programId, questionId, answer }) =>
+      requireHub().answerQuestion(programId, questionId, answer),
+    "hub.endpoint": async () => ({
+      url: hubMcpUrl,
+      mcpConfig: JSON.stringify(
+        { mcpServers: { "crystal-hub": { type: "http", url: hubMcpUrl } } },
+        null,
+        2,
+      ),
+    }),
+    "hub.runs": async () => ({ runs: await requireHub().managerRuns() }),
+    "hub.runEvents": async ({ runId }) => ({ events: await requireHub().managerRunEvents(runId) }),
+    "hub.cancelRun": async ({ runId }) => {
+      await requireHub().cancelManagerRun(runId);
+      return { ok: true as const };
+    },
     "refactor.preview": ({ ws, intents }) => registry.get(ws).refactor().preview(intents),
     "refactor.apply": async ({ ws, intents }) => {
       const rt = registry.get(ws);
@@ -760,6 +969,7 @@ export async function startCrystalServer(opts: {
         pipe: pipePath,
         port: listen?.port ?? null,
         mcpPort,
+        ...(hub ? { hubMcpUrl } : {}),
         roots: registry.list().map((w) => w.root),
         ...(token ? { token } : {}),
         startedAt: new Date().toISOString(),
@@ -773,7 +983,14 @@ export async function startCrystalServer(opts: {
   if (pipePath) {
     console.log(`[crystal] bridge on ipc:${pipePath} (workspaces: ${roots.join(", ")})`);
   }
-  console.log(`[crystal] mcp endpoint on http://127.0.0.1:${mcpPort}/mcp (loopback only)`);
+  console.log(`[crystal] mcp endpoint on ${mcpBaseUrl}/mcp (loopback only)`);
+  if (hub) {
+    console.log(
+      `[crystal] cross-project hub on ${hubMcpUrl} — point a central agent at it:\n` +
+        `    claude mcp add --transport http crystal-hub ${hubMcpUrl}` +
+        (opts.mcpPort ? "" : `\n    (ephemeral port — pass --mcp-port <port> to pin it across restarts)`),
+    );
+  }
   if (listen) {
     console.log(`[crystal] bridge server on ws://${host}:${listen.port}${BRIDGE_PATH}`);
     if (authEnabled && !opts.token) {
@@ -802,8 +1019,10 @@ export async function startCrystalServer(opts: {
   return {
     port: listen?.port ?? null,
     mcpPort,
+    hubMcpUrl,
     pipe: pipePath,
     close: async () => {
+      hub?.dispose();
       registry.closeAll();
       if (instanceFile) await removeInstanceFile(instanceFile);
       // Server .close() waits for open connections — drop live clients first

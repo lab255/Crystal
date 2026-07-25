@@ -2,7 +2,12 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { AgentManager, claudeRunArgs, planClaudeSpawn } from "./agent-manager.js";
+import {
+  AgentManager,
+  claudeRunArgs,
+  composeNoticePrompt,
+  planClaudeSpawn,
+} from "./agent-manager.js";
 
 describe("claudeRunArgs", () => {
   it("pre-allows the crystal MCP server when an mcp-config is attached", () => {
@@ -107,5 +112,42 @@ describe("AgentManager spawn failure resilience", () => {
     const run = await mgr.start({ prompt: "noop" });
     const settled = await mgr.waitForSettled(run.id);
     expect(settled.status).toBe("failed");
+  });
+});
+
+describe("composeNoticePrompt", () => {
+  it("carries each notice's text — not the notice object", () => {
+    // Regression: the notices used to be joined directly, so every manager
+    // wake-up read "[object Object]" and the whole delegation loop was blind.
+    const prompt = composeNoticePrompt([
+      { kind: "worker", text: "Worker run_1 settled: completed" },
+      { kind: "worker", text: "Worker run_2 settled: failed" },
+    ]);
+    expect(prompt).toContain("Worker run_1 settled: completed");
+    expect(prompt).toContain("Worker run_2 settled: failed");
+    expect(prompt).not.toContain("[object Object]");
+    expect(prompt).toContain("2 workers settled while you were away.");
+    expect(prompt).toContain("do not busy-poll worker_status");
+  });
+
+  it("does not frame a queued message as a settlement", () => {
+    // An answer or a steer speaks for itself; telling the agent it was
+    // "resumed because dispatched work settled" would send it to the board.
+    const prompt = composeNoticePrompt([
+      { kind: "message", text: "Answer to your question: ship it behind a flag." },
+    ]);
+    expect(prompt).toBe("Answer to your question: ship it behind a flag.");
+  });
+
+  it("keeps the settlement tail when the two kinds are mixed", () => {
+    const prompt = composeNoticePrompt([
+      { kind: "message", text: "OWNER MESSAGE: reprioritise." },
+      { kind: "worker", text: "Worker run_1 settled: completed" },
+    ]);
+    expect(prompt).toContain("OWNER MESSAGE: reprioritise.");
+    expect(prompt).toContain("Worker run_1 settled: completed");
+    expect(prompt).toContain("You were resumed because dispatched work settled");
+    // One worker, so no "N workers settled" header.
+    expect(prompt).not.toMatch(/^\d+ workers settled/);
   });
 });

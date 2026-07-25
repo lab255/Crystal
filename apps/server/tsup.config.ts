@@ -5,7 +5,15 @@ import { defineConfig } from "tsup";
 // real file, which a SEA can't provide — build-sidecar.mjs stages it next to
 // node-pty and the host resolves it via CRYSTAL_SIDECAR_MODULE_BASE.
 export default defineConfig({
-  entry: { "crystal-server": "src/index.ts", "analysis-worker": "src/analysis-worker.ts" },
+  // `crystal-mcp` is the stdio shim external agents are configured with
+  // (`claude mcp add crystal-hub -- crystal-mcp`). It needs its own bundle:
+  // the `bin` entry points at TypeScript, which plain `node` cannot run, and
+  // an external agent invokes it directly rather than through pnpm/tsx.
+  entry: {
+    "crystal-server": "src/index.ts",
+    "crystal-mcp": "src/mcp-cli.ts",
+    "analysis-worker": "src/analysis-worker.ts",
+  },
   format: ["cjs"],
   platform: "node",
   target: "node20",

@@ -1,3 +1,14 @@
+import {
+  Activity,
+  Boxes,
+  Code2,
+  KanbanSquare,
+  LayoutGrid,
+  PanelsTopLeft,
+  ShieldCheck,
+  Target,
+  type LucideIcon,
+} from "lucide-react";
 import type { CrystalModeId } from "@crystal/core";
 
 // The mode ids double as deep-link route segments — core owns the union.
@@ -5,6 +16,7 @@ export type CrystalMode = CrystalModeId;
 
 export const CRYSTAL_MODES: CrystalMode[] = [
   "projects",
+  "hub",
   "architect",
   "surfaces",
   "orchestrate",
@@ -15,6 +27,7 @@ export const CRYSTAL_MODES: CrystalMode[] = [
 
 export const MODE_LABELS: Record<CrystalMode, string> = {
   projects: "Overview",
+  hub: "Hub",
   architect: "Architecture",
   surfaces: "Surfaces",
   orchestrate: "Orchestrate",
@@ -23,17 +36,36 @@ export const MODE_LABELS: Record<CrystalMode, string> = {
   jobs: "Jobs",
 };
 
+/** The rail icon for each mode — beside the labels, so a new mode fills both in. */
+export const MODE_ICONS: Record<CrystalMode, LucideIcon> = {
+  projects: LayoutGrid,
+  hub: Target,
+  architect: Boxes,
+  surfaces: PanelsTopLeft,
+  orchestrate: KanbanSquare,
+  code: Code2,
+  quality: ShieldCheck,
+  jobs: Activity,
+};
+
+/**
+ * Modes that sit *above* the workspace hierarchy rather than inside it:
+ * `projects` (the cross-workspace overview) and `hub` (cross-project
+ * programs). They neither read nor write the active workspace, so they are
+ * not facets and must not be remounted when it changes.
+ */
+export const CROSS_PROJECT_MODES: CrystalMode[] = ["projects", "hub"];
+
+export function isCrossProjectMode(mode: CrystalMode): boolean {
+  return CROSS_PROJECT_MODES.includes(mode);
+}
+
 /**
  * Navigation is two-level: workspaces are the top level, and these facets are
- * the second — views *into* the active workspace. `projects` sits above the
- * hierarchy as the cross-workspace overview (the "home" tab), so it is not a
- * facet.
+ * the second — views *into* the active workspace. The cross-project modes sit
+ * above the hierarchy (see {@link CROSS_PROJECT_MODES}), so they are not
+ * facets.
  */
-export const WORKSPACE_FACETS: CrystalMode[] = [
-  "architect",
-  "surfaces",
-  "orchestrate",
-  "code",
-  "quality",
-  "jobs",
-];
+export const WORKSPACE_FACETS: CrystalMode[] = CRYSTAL_MODES.filter(
+  (m) => !isCrossProjectMode(m),
+);
