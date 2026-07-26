@@ -1,8 +1,9 @@
 # Releasing the desktop app
 
-Crystal ships a signed, notarized macOS desktop app with in-app auto-update, cut
-by `.github/workflows/release.yml`. This is the OpenBook release shape scoped to
-macOS. Windows/Linux legs come later.
+Crystal ships a desktop app with in-app auto-update for macOS (Apple Silicon,
+signed + notarized) and Windows (x64, NSIS installer), cut by
+`.github/workflows/release.yml`. This is the OpenBook release shape. macOS
+Intel is deliberately not built; a Linux leg comes later.
 
 ## How a release happens
 
@@ -18,10 +19,15 @@ The pipeline is **conventional-commit driven** and **push-to-main + approval**:
 4. `release` bumps the version (`package.json` + `apps/desktop/package.json`),
    writes `CHANGELOG.md`, commits + tags `vX.Y.Z`, pushes, and drafts the GitHub
    release.
-5. `publish-tauri` builds both arches (Apple Silicon on `macos-14`, Intel on
-   `macos-13`), signs + notarizes, and attaches the `.dmg` + updater archive.
-6. `finalize` assembles `latest.json` (the updater manifest) across both arches
-   and flips the release **public**.
+5. `publish-tauri` builds both platforms — Apple Silicon on `macos-14` (signs +
+   notarizes, attaches the `.dmg` + `.app.tar.gz` updater archive) and Windows
+   x64 on `windows-latest` (attaches the NSIS `…_x64-setup.exe`, which doubles
+   as the updater artifact). Both legs minisign their updater artifact with the
+   updater key; the Windows installer carries no Authenticode signature (no
+   cert yet — SmartScreen will warn, the in-app updater doesn't care).
+6. `finalize` assembles `latest.json` (the updater manifest,
+   `darwin-aarch64` + `windows-x86_64`) across both legs and flips the release
+   **public**.
 
 Version bumps (from commits since the last `v*` tag): `feat` → minor, `fix` /
 `perf` → patch, `!` / `BREAKING CHANGE` → major (capped at minor while on 0.x).
@@ -91,13 +97,29 @@ still mandatory — the build errors without it once a pubkey is configured.
 
 Because `createUpdaterArtifacts` + a pubkey are now set, a plain
 `pnpm --filter @crystal/desktop build` **requires the updater signing env** or it
-errors (this is intentional — it mirrors CI). To build a signed bundle locally:
+errors (this is intentional — it mirrors CI, on every platform). To build a
+signed bundle locally:
 
 ```sh
 export TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.crystal/updater/crystal.key)"
 export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(cat ~/.crystal/updater/password.txt)"
 pnpm --filter @crystal/desktop build
 ```
+
+On Windows (PowerShell) the equivalent is (note: it must be
+`TAURI_SIGNING_PRIVATE_KEY` with the key *contents* — the bundler ignores the
+`…_PATH` variant and dies with "A public key has been found, but no private
+key"):
+
+```powershell
+$env:TAURI_SIGNING_PRIVATE_KEY = Get-Content -Raw "$env:USERPROFILE\.crystal\updater\crystal.key"
+$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = Get-Content "$env:USERPROFILE\.crystal\updater\password.txt"
+pnpm --filter @crystal/desktop exec tauri build --target x86_64-pc-windows-msvc
+```
+
+(For a throwaway local test build, generate a scratch key with
+`tauri signer generate -w <path> --password=<pw> --ci` — the produced installer
+just won't be accepted by shipped apps' updaters, which is fine for testing.)
 
 `tauri dev` is unaffected (no updater artifacts are produced in dev).
 

@@ -17,9 +17,10 @@ bottom terminal panel that runs shells and agent consoles in any open workspace.
 Node 24.18 is pinned via `use-node-version` in `.npmrc`; system `node` may be older —
 always run things through pnpm.
 
-Releases are macOS-only, conventional-commit driven, and cut by
-`.github/workflows/release.yml` (push to `main` → `plan` dry-run → `release`
-environment approval → per-arch build/sign/notarize → signed updater `latest.json`).
+Releases ship macOS arm64 + Windows x64 (no macOS Intel), are
+conventional-commit driven, and cut by `.github/workflows/release.yml` (push to
+`main` → `plan` dry-run → `release` environment approval → per-platform
+build/sign (+notarize on macOS) → signed updater `latest.json`).
 `scripts/release.mjs` is the nx-release stand-in (bump/changelog/tag). Full runbook
 + the secret checklist: `docs/releasing.md`.
 
@@ -185,9 +186,12 @@ environment approval → per-arch build/sign/notarize → signed updater `latest
 ## Gotchas
 
 - Agent prompts are piped to the Claude CLI over **stdin**; never pass user text as a
-  shell argument. On Windows the CLI is resolved via `where.exe` and a native `.exe` is
-  spawned with no shell; only `.cmd` shims go through `shell: true`, where cmd.exe
-  CONCATENATES argv unquoted — every arg must pass `planClaudeSpawn`'s quoting.
+  shell argument. The CLI binary is resolved by `claude-bin.ts` (own-PATH scan → known
+  install dirs → POSIX login shell) because the desktop sidecar inherits a GUI launch
+  environment — launchd gives macOS apps a bare PATH, so a bare `spawn("claude")`
+  ENOENTs. A resolved native `.exe` is spawned with no shell; only `.cmd` shims go
+  through `shell: true`, where cmd.exe CONCATENATES argv unquoted — every arg must
+  pass `planClaudeSpawn`'s quoting.
 - Child-process `error` handlers (and one on `stdin`) must be attached **synchronously
   after `spawn()`** — the failure event fires next tick, and with an `await` in between
   it becomes an uncaught exception that kills the whole bridge server.

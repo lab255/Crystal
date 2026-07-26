@@ -1,21 +1,24 @@
 name: Release
 
-# macOS desktop release, modelled on OpenBook's pipeline but scoped to macOS
-# (Windows/Linux come later) and adapted to Crystal's Node-SEA sidecar:
+# Desktop release for macOS (Apple Silicon) + Windows (x64), modelled on
+# OpenBook's pipeline and adapted to Crystal's Node-SEA sidecar:
 #
 #   plan ─▶ preflight ─▶ release (approval gate) ─▶ publish-tauri ─▶ finalize
 #
 # A push to main runs `plan` (a dry-run that asks "do the commits since the last
 # v* tag warrant a release?"). Only when they do is a reviewer asked to approve
 # the `release` environment; `release` bumps + tags + pushes + drafts the GitHub
-# release, the per-arch `publish-tauri` matrix builds/signs/notarizes the bundles
-# and attaches them, and `finalize` assembles the updater's latest.json and flips
-# the release public.
+# release, the per-platform `publish-tauri` matrix builds/signs (and notarizes,
+# on macOS) the bundles and attaches them, and `finalize` assembles the
+# updater's latest.json and flips the release public.
 #
-# Why per-arch runners (not OpenBook's cross-compile-on-arm64): Crystal's bridge
-# sidecar is a Node Single-Executable-Application — build-sidecar.mjs copies the
-# *running* node binary and injects the server blob, so it can only ever emit the
-# host arch. Apple Silicon builds on macos-14, Intel on macos-13; each is native.
+# Why per-platform runners (not cross-compiling): Crystal's bridge sidecar is a
+# Node Single-Executable-Application — build-sidecar.mjs copies the *running*
+# node binary and injects the server blob, so it can only ever emit the host
+# OS/arch. macOS Intel was dropped deliberately (no macos x64 leg); Apple
+# Silicon builds on macos-14, Windows x64 on windows-latest, each native.
+# Windows ships the NSIS installer unsigned (no Authenticode cert yet) — the
+# updater still verifies the minisign .sig, which is what latest.json carries.
 
 on:
   push:
@@ -135,9 +138,10 @@ jobs:
           # `finalize` attaches latest.json and flips it public.
           gh release create "v$ver" --draft --title "Crystal v$ver" --notes-file /tmp/notes.md
 
-  # ── Build, sign, notarize, and attach the per-arch bundles + updater archives.
+  # ── Build, sign, notarize (macOS), and attach the per-platform bundles +
+  # updater artifacts.
   publish-tauri:
-    name: Build & attach (${{ matrix.arch }})
+    name: Build & attach (${{ matrix.os }} ${{ matrix.arch }})
     needs: release
     environment: publish
     permissions:
@@ -146,11 +150,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14 # Apple Silicon
+          - os: macos-14 # Apple Silicon (Intel/x64 deliberately not shipped)
             target: aarch64-apple-darwin
             arch: aarch64
-          - os: macos-13 # Intel
-            target: x86_64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
             arch: x64
     runs-on: ${{ matrix.os }}
     steps:
@@ -183,6 +187,7 @@ jobs:
       # would make `codesign` fail on an ambiguous identity match.
       - name: Import signing certificate into a keychain
         id: keychain
+        if: runner.os == 'macOS'
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -226,6 +231,8 @@ jobs:
           # before Tauri seals the bundle. APPLE_ID + app-specific APPLE_PASSWORD +
           # APPLE_TEAM_ID drive notarytool. The Node-SEA sidecar's hardened-runtime
           # entitlements live in entitlements.plist (via tauri.conf.json).
+          # On Windows the keychain step is skipped, so APPLE_SIGNING_IDENTITY is
+          # empty and the APPLE_* set is inert — only the updater key matters.
           APPLE_SIGNING_IDENTITY: ${{ steps.keychain.outputs.identity }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
@@ -238,20 +245,26 @@ jobs:
         run: pnpm --filter @crystal/desktop exec tauri build --target ${{ matrix.target }}
 
       # Fail loudly if signing was configured but produced no updater signature —
-      # a bundle that can't be verified would ship un-updatable.
+      # a bundle that can't be verified would ship un-updatable. macOS signs the
+      # .app.tar.gz updater archive; Windows (NSIS, Tauri v2) signs the
+      # -setup.exe installer itself.
       - name: Guard — updater signature exists
         shell: bash
         run: |
           base="apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle"
           shopt -s nullglob
-          sigs=("$base"/macos/*.sig)
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            sigs=("$base"/macos/*.sig)
+          else
+            sigs=("$base"/nsis/*.sig)
+          fi
           if [ ${#sigs[@]} -eq 0 ]; then
-            echo "::error::No .sig under $base/macos — updater archive is unsigned (bad TAURI_SIGNING_PRIVATE_KEY or password?)." >&2
+            echo "::error::No updater .sig under $base — updater artifact is unsigned (bad TAURI_SIGNING_PRIVATE_KEY or password?)." >&2
             find "$base" -maxdepth 2 -type f >&2 || true
             exit 1
           fi
 
-      - name: Attach dmg + updater archive to the release
+      - name: Attach bundles + updater artifacts to the release
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -260,24 +273,31 @@ jobs:
           arch="${{ matrix.arch }}"
           base="apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle"
           shopt -s nullglob
-          # Tauri names the updater archive "Crystal.app.tar.gz" with no arch, so
-          # both legs would clobber each other on upload. Rename per-arch (the
-          # .sig signs the archive BYTES, not the filename, so this is safe) to
-          # the exact names finalize/latest.json point at.
-          for archive in "$base"/macos/*.app.tar.gz; do
-            dest="$base/macos/Crystal_${ver}_${arch}.app.tar.gz"
-            [ "$archive" = "$dest" ] && continue
-            mv "$archive" "$dest"
-            [ -f "$archive.sig" ] && mv "$archive.sig" "$dest.sig"
-          done
-          files=( "$base"/dmg/*.dmg "$base"/macos/*.app.tar.gz "$base"/macos/*.sig )
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            # Tauri names the updater archive "Crystal.app.tar.gz" with no arch —
+            # rename to the arch-suffixed name finalize/latest.json points at
+            # (the .sig signs the archive BYTES, not the filename, so this is
+            # safe; it also keeps room for more arches later).
+            for archive in "$base"/macos/*.app.tar.gz; do
+              dest="$base/macos/Crystal_${ver}_${arch}.app.tar.gz"
+              [ "$archive" = "$dest" ] && continue
+              mv "$archive" "$dest"
+              [ -f "$archive.sig" ] && mv "$archive.sig" "$dest.sig"
+            done
+            files=( "$base"/dmg/*.dmg "$base"/macos/*.app.tar.gz "$base"/macos/*.sig )
+          else
+            # NSIS output is already versioned + arch-suffixed
+            # (Crystal_<ver>_x64-setup.exe) and doubles as the updater artifact.
+            files=( "$base"/nsis/*-setup.exe "$base"/nsis/*.sig )
+          fi
           if [ ${#files[@]} -eq 0 ]; then
             echo "No bundles under $base" >&2; find "$base" -maxdepth 2 -type f >&2 || true; exit 1
           fi
           printf 'Uploading:\n'; printf '  %s\n' "${files[@]}"
           gh release upload "v$ver" "${files[@]}" --clobber
 
-  # ── Assemble the updater manifest across both arches, then publish the release.
+  # ── Assemble the updater manifest across both platforms, then publish the
+  # release.
   finalize:
     name: Finalize updater manifest
     needs: [release, publish-tauri]
@@ -285,7 +305,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Build latest.json from both arch signatures and publish
+      - name: Build latest.json from both platform signatures and publish
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -294,21 +314,22 @@ jobs:
           repo="${{ github.repository }}"
           base="https://github.com/$repo/releases/download/v$ver"
           # The .sig files carry the detached minisign signature the Tauri updater
-          # checks against the pubkey baked into the app.
-          gh release download "v$ver" -p '*.app.tar.gz.sig' -D sigs
-          sig_aarch64=$(cat "sigs/Crystal_${ver}_aarch64.app.tar.gz.sig")
-          sig_x64=$(cat "sigs/Crystal_${ver}_x64.app.tar.gz.sig")
+          # checks against the pubkey baked into the app. macOS signs the
+          # .app.tar.gz archive; Windows signs the NSIS -setup.exe itself.
+          gh release download "v$ver" -p '*.sig' -D sigs
+          sig_darwin=$(cat "sigs/Crystal_${ver}_aarch64.app.tar.gz.sig")
+          sig_windows=$(cat "sigs/Crystal_${ver}_x64-setup.exe.sig")
           notes=$(gh release view "v$ver" --json body -q .body)
           jq -n \
             --arg ver "$ver" --arg notes "$notes" --arg base "$base" \
-            --arg sa "$sig_aarch64" --arg sx "$sig_x64" \
+            --arg sd "$sig_darwin" --arg sw "$sig_windows" \
             '{
               version: $ver,
               notes: $notes,
               pub_date: (now | todateiso8601),
               platforms: {
-                "darwin-aarch64": { signature: $sa, url: "\($base)/Crystal_\($ver)_aarch64.app.tar.gz" },
-                "darwin-x86_64":  { signature: $sx, url: "\($base)/Crystal_\($ver)_x64.app.tar.gz" }
+                "darwin-aarch64":  { signature: $sd, url: "\($base)/Crystal_\($ver)_aarch64.app.tar.gz" },
+                "windows-x86_64":  { signature: $sw, url: "\($base)/Crystal_\($ver)_x64-setup.exe" }
               }
             }' > latest.json
           gh release upload "v$ver" latest.json --clobber

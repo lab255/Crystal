@@ -1,7 +1,6 @@
-import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { promisify } from "node:util";
 import {
   Emitter,
   LineBuffer,
@@ -20,6 +19,7 @@ import {
   type RunPurpose,
   type WorkerSpec,
 } from "@crystal/core";
+import { envWithBinDir, resolveClaudeBin } from "./claude-bin.js";
 import { runGit } from "./git.js";
 import { resolveInRoot } from "./paths.js";
 
@@ -72,8 +72,6 @@ const MAX_WORKERS_PER_WORKFLOW = 40;
 
 /** How much of a worker's result text rides along in the manager wake-up prompt. */
 const NOTICE_RESULT_CHARS = 1500;
-
-const execFileAsync = promisify(execFile);
 
 /** How to invoke the Claude CLI: a direct executable, or through cmd.exe. */
 export interface ClaudeSpawnPlan {
@@ -279,23 +277,15 @@ export class AgentManager {
   }
 
   /**
-   * Resolve a bare CLI name to its on-PATH file once (Windows only). Knowing
-   * the real extension lets `planClaudeSpawn` bypass cmd.exe for native .exe
-   * installs; when resolution fails the bare name survives, and the shell
-   * spawn surfaces "not recognized" as a failed run instead of a crash.
+   * Resolve a bare CLI name to a real file once (see claude-bin.ts): PATH,
+   * then well-known install dirs, then the login shell — the desktop
+   * sidecar inherits a GUI launch environment where "claude" isn't on PATH
+   * at all. Knowing the real path/extension also lets `planClaudeSpawn`
+   * bypass cmd.exe for native .exe installs; when every lookup misses the
+   * bare name survives, and the spawn surfaces a failed run, not a crash.
    */
   private async claudePath(): Promise<string> {
-    if (this.resolvedBin) return this.resolvedBin;
-    let bin = this.claudeBin;
-    if (process.platform === "win32" && !/[\\/.]/.test(bin)) {
-      try {
-        const { stdout } = await execFileAsync("where.exe", [bin], { windowsHide: true });
-        bin = stdout.split(/\r?\n/).map((l) => l.trim()).find(Boolean) ?? bin;
-      } catch {
-        /* not on PATH — leave the bare name */
-      }
-    }
-    return (this.resolvedBin = bin);
+    return (this.resolvedBin ??= await resolveClaudeBin(this.claudeBin));
   }
 
   /**
@@ -392,7 +382,8 @@ export class AgentManager {
       mcpConfigPath: mcpConfig,
     });
 
-    const plan = planClaudeSpawn(await this.claudePath(), args);
+    const claudeBin = await this.claudePath();
+    const plan = planClaudeSpawn(claudeBin, args);
     let child: ChildProcessWithoutNullStreams;
     try {
       child = spawn(plan.file, plan.args, {
@@ -401,7 +392,9 @@ export class AgentManager {
         // Under the desktop app the server has no console — an unhidden
         // cmd.exe would open a visible window per run.
         windowsHide: true,
-        env: { ...process.env, FORCE_COLOR: "0" },
+        // A CLI resolved from outside the inherited PATH (GUI-launched
+        // sidecar) must still find its own helpers — put its dir on PATH.
+        env: envWithBinDir({ ...process.env, FORCE_COLOR: "0" }, claudeBin),
         stdio: ["pipe", "pipe", "pipe"],
       });
     } catch (err) {
