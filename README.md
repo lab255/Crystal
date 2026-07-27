@@ -137,6 +137,19 @@ over stdin (never shell-interpolated). The
 NDJSON stream is normalized into a stable `AgentEvent` union, broadcast live over the
 bridge, and persisted for replay. Session ids are captured so runs can be resumed.
 
+Every dispatch also has an **interactive** twin: run the same agent as the native
+Claude TUI on a PTY in the terminal panel (a task's "Terminal" button, a workflow's or
+program's "Start in terminal"). The session keeps its Crystal MCP tools, so decisions
+are still **logged on the board** with `ask_question` — but the agent puts them to you
+natively with AskUserQuestion in the terminal, and closes the board copy with
+`resolve_question` once you answer there. Answers given from the board or hub are typed
+straight into the live terminal; after it closes, the session's pinned id lets the same
+conversation continue headlessly, and its token bill is harvested from the session
+transcript so interactive work costs roll up like any other run. Agents waiting on you
+are surfaced everywhere: yellow traffic lights, a "waiting on you" chip on overview
+cards, question previews on board cards, and a one-click "Start manager" recovery when
+a board has READY work but no live manager.
+
 With **worktree isolation** enabled, the run executes in a disposable
 `git worktree` under `~/.crystal/…/worktrees/<run-id>` instead of the repo itself:
 parallel runs never collide, the run view shows a live diff (tracked and untracked
