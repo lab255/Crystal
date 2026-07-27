@@ -106,33 +106,30 @@ export function createFleetStore(client: BridgeClient): FleetStore {
     async refresh(wsIds) {
       const results = await Promise.all(
         wsIds.map(async (ws) => {
-          const [runs, todos, info] = await Promise.all([
+          const [runs, todos] = await Promise.all([
             client.request("agent.list", { ws }),
             client.request("todos.get", { ws }),
-            // Boards carry the open questions (agents waiting on the human);
-            // a workspace whose info fails to load reads as zero, not broken.
-            client.request("workspace.get", { ws }).catch(() => null),
           ]);
-          return {
-            ws,
-            runs: runs.runs,
-            todos: todos.todos.items,
-            questions: info ? countOpenQuestions(info) : 0,
-          };
+          return { ws, runs: runs.runs, todos: todos.todos.items };
         }),
       );
       set((s) => {
         const runsByWs: Record<string, AgentRun[]> = {};
         const todosByWs: Record<string, TodoItem[]> = {};
         const questionsByWs: Record<string, number> = {};
-        for (const { ws, runs, todos, questions } of results) {
+        for (const { ws, runs, todos } of results) {
           runsByWs[ws] = runs;
-          questionsByWs[ws] = questions;
+          // Carry the recount path's value; closed workspaces drop out.
+          questionsByWs[ws] = s.questionsByWs[ws] ?? 0;
           // A pending local edit is newer than what the server just returned.
           todosByWs[ws] = s.pendingTodoSaves[ws] ? (s.todosByWs[ws] ?? todos) : todos;
         }
         return { runsByWs, todosByWs, questionsByWs };
       });
+      // Question counts have exactly ONE writer — the recount below — so a
+      // slow refresh can never overwrite a fresher event-driven count with
+      // data it read before the event.
+      for (const ws of wsIds) scheduleRecount(ws);
     },
 
     setTodos(ws, items) {
@@ -183,9 +180,11 @@ export function createFleetStore(client: BridgeClient): FleetStore {
   // Questions live on boards, and board writes ride workspace.changed —
   // without this the "waiting on you" chip and yellow light only updated on
   // reconnects and workspace-set changes, going stale the moment an agent
-  // asked (or an answer landed). Debounced per workspace.
+  // asked (or an answer landed). Debounced per workspace, and the single
+  // writer of `questionsByWs` (refresh delegates here); a failed read keeps
+  // the previous count rather than clearing a genuine signal.
   const questionTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  client.events.on("workspace.changed", ({ ws }) => {
+  function scheduleRecount(ws: string): void {
     if (questionTimers.has(ws)) return;
     questionTimers.set(
       ws,
@@ -206,7 +205,8 @@ export function createFleetStore(client: BridgeClient): FleetStore {
           });
       }, QUESTION_RECOUNT_DEBOUNCE_MS),
     );
-  });
+  }
+  client.events.on("workspace.changed", ({ ws }) => scheduleRecount(ws));
 
   return store;
 }

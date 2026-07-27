@@ -1,13 +1,8 @@
 import type { AgentRun, TerminalInfo } from "@crystal/core";
-import type { AgentManager, InteractiveStartParams } from "./agent-manager.js";
+import { INTERACTIVE_PROMPT_DELAY_MS, type AgentManager, type InteractiveStartParams } from "./agent-manager.js";
 import type { TerminalManager } from "./terminal-manager.js";
 
-/**
- * How long after spawning the Claude TUI its opening prompt is typed in. The
- * TUI must have mounted (and enabled bracketed paste) before raw input means
- * anything; too early and the paste markers land as literal escapes.
- */
-export const INTERACTIVE_PROMPT_DELAY_MS = 2500;
+export { INTERACTIVE_PROMPT_DELAY_MS };
 
 export interface InteractiveLaunch {
   run: AgentRun;

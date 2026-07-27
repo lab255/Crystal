@@ -76,6 +76,7 @@ export function TaskDetail({
   const [cwd, setCwd] = useState(".");
   const [isolate, setIsolate] = useState(false);
   const [starting, setStarting] = useState(false);
+  const [dispatchError, setDispatchError] = useState<string | null>(null);
 
   useEffect(() => {
     setTitle(task.title);
@@ -138,6 +139,7 @@ export function TaskDetail({
 
   async function runAgent(): Promise<void> {
     setStarting(true);
+    setDispatchError(null);
     try {
       const repoId = info?.manifest.repos.find((r) => r.path === cwd)?.id ?? null;
       const run = await startRun({
@@ -156,6 +158,8 @@ export function TaskDetail({
         status: task.status === "backlog" ? "in_progress" : task.status,
       });
       onOpenRun(run.id);
+    } catch (err) {
+      setDispatchError((err as Error).message);
     } finally {
       setStarting(false);
     }
@@ -167,6 +171,7 @@ export function TaskDetail({
    */
   async function runInteractive(): Promise<void> {
     setStarting(true);
+    setDispatchError(null);
     try {
       const repoId = info?.manifest.repos.find((r) => r.path === cwd)?.id ?? null;
       const { run, terminal } = await client.request("agent.interactive", {
@@ -184,6 +189,8 @@ export function TaskDetail({
         status: task.status === "backlog" ? "in_progress" : task.status,
       });
       if (activeWs) await focusTerminal(activeWs, terminal.id);
+    } catch (err) {
+      setDispatchError((err as Error).message);
     } finally {
       setStarting(false);
     }
@@ -203,6 +210,16 @@ export function TaskDetail({
       answer,
     });
     if (!result.ok) throw new Error(result.reason);
+    // Reflect the answer locally too: board props don't refetch on
+    // workspace.changed, so without this the row keeps rendering open — and
+    // worse, any later edit from this stale snapshot would whole-project-save
+    // `answer: null` back over the server's record (newest-updatedAt merge),
+    // silently reopening a question whose asker already consumed the answer.
+    patchTask({
+      questions: task.questions.map((q) =>
+        q.id === question.id ? { ...q, answer, answeredAt: nowIso() } : q,
+      ),
+    });
     if (result.resumedRunId) onOpenRun(result.resumedRunId);
   }
 
@@ -571,6 +588,9 @@ export function TaskDetail({
               <TerminalSquare className="h-3 w-3" /> Terminal
             </Button>
           </div>
+          {dispatchError ? (
+            <p className="mt-1.5 text-[11px] text-danger">{dispatchError}</p>
+          ) : null}
           <div className="mt-1.5 flex items-center gap-1 text-[11px] text-ink-muted">
             <Bot className="h-3 w-3 shrink-0" />
             {dispatchAgent

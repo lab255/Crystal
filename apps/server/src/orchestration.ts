@@ -267,17 +267,28 @@ export class OrchestrationService {
    * reading as "waiting on you". By `questionId` when given, else the run's
    * newest open question. No resume — the asker already has the answer.
    */
-  resolveQuestion(
+  async resolveQuestion(
     projectPath: string,
     taskId: string,
     runId: string,
     resolution: string,
     questionId?: string | null,
   ): Promise<{ ok: true } | { ok: false; reason: string }> {
+    // Same chain identity as updateTaskAsRun: a headless resume of an
+    // interactive session must be able to close the question its earlier
+    // turn filed — a fresh run id is the same logical worker.
+    const chainIds = new Set<string>([runId]);
+    try {
+      for (const r of await this.agents.chainRuns(runId)) chainIds.add(r.id);
+    } catch {
+      // run identity alone still works
+    }
     return this.mutate(projectPath, (project) => {
       const task = project.tasks.find((t) => t.id === taskId);
       if (!task) return { ok: false as const, reason: `Unknown task: ${taskId}` };
-      const open = task.questions.filter((q) => q.answer == null && q.runId === runId);
+      const open = task.questions.filter(
+        (q) => q.answer == null && q.runId != null && chainIds.has(q.runId),
+      );
       const question = questionId ? open.find((q) => q.id === questionId) : open.at(-1);
       if (!question) {
         return {

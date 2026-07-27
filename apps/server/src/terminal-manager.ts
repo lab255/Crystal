@@ -88,13 +88,24 @@ export class TerminalManager {
   create(opts: TerminalCreateOptions = {}): TerminalInfo {
     const cwdAbs = resolveInRoot(this.root, opts.cwd ?? ".");
     // A .cmd/.bat command can't be CreateProcess'd directly — route it through
-    // cmd.exe. Argv is joined by node-pty's own quoting; command args here are
-    // internal (paths, flags, ids), never free-form user text (prompts go over
-    // the PTY as input, same as CLAUDE.md's stdin rule for headless runs).
+    // cmd.exe. NOT as argv: node-pty would quote the spaced shim path AND the
+    // spaced args (--allowedTools always has spaces), and with >2 quotes after
+    // /c, cmd strips the first and last quote of the whole tail — executing
+    // `C:\Users\Eliot` instead of the shim. Hand node-pty a verbatim command
+    // line (string args pass through untouched) in the same `/d /s /c "..."`
+    // outer-quote form child_process uses for shell spawns. Args here are
+    // internal (paths, flags, ids) — never free-form user text (prompts go
+    // over the PTY as input, same as CLAUDE.md's stdin rule) — so embedded
+    // quotes are stripped rather than escaped.
     let file = opts.command?.file ?? defaultShell();
-    let args = opts.command ? [...opts.command.args] : [];
+    let args: string[] | string = opts.command ? [...opts.command.args] : [];
     if (opts.command && process.platform === "win32" && /\.(cmd|bat)$/i.test(file)) {
-      args = ["/c", file, ...args];
+      const q = (a: string) => {
+        const clean = a.replace(/"/g, "");
+        return /\s/.test(clean) ? `"${clean}"` : clean;
+      };
+      const tail = [file, ...opts.command.args].map(q).join(" ");
+      args = `/d /s /c "${tail}"`;
       file = process.env.ComSpec ?? "cmd.exe";
     }
     const info: TerminalInfo = {

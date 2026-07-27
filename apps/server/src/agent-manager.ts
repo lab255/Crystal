@@ -125,6 +125,21 @@ const MAX_WORKERS_PER_WORKFLOW = 40;
 /** How much of a worker's result text rides along in the manager wake-up prompt. */
 const NOTICE_RESULT_CHARS = 1500;
 
+/**
+ * How long after spawning the Claude TUI its opening prompt is typed in. The
+ * TUI must have mounted (and enabled bracketed paste) before raw input means
+ * anything; too early and the paste markers land as literal escapes.
+ */
+export const INTERACTIVE_PROMPT_DELAY_MS = 2500;
+
+/**
+ * When an interactive session is considered ready for *deliveries* (answers,
+ * notices typed into the PTY): after the opening prompt has gone in, plus a
+ * margin. Before this, deliveries queue — typing into a mounting TUI mangles
+ * the paste and would still be reported as delivered.
+ */
+const INTERACTIVE_READY_MS = INTERACTIVE_PROMPT_DELAY_MS + 1500;
+
 /** How to invoke the Claude CLI: a direct executable, or through cmd.exe. */
 export interface ClaudeSpawnPlan {
   file: string;
@@ -310,6 +325,8 @@ export class AgentManager {
   private runChangedTimers = new Map<string, NodeJS.Timeout>();
   private procs = new Map<string, ActiveProcess>();
   private loaded = false;
+  /** Set by disposeAll (workspace close): no new spawns from this manager. */
+  private disposed = false;
   private resolvedBin: string | null = null;
   /**
    * Worker-settlement notices queued per manager chain root, delivered by
@@ -338,6 +355,8 @@ export class AgentManager {
   interactiveInput: ((run: AgentRun, text: string) => boolean) | null = null;
   /** Set by the host: kill the PTY hosting an interactive run (cancel path). */
   interactiveKill: ((run: AgentRun) => void) | null = null;
+  /** Mount window before an interactive session takes deliveries (test seam). */
+  interactiveReadyMs = INTERACTIVE_READY_MS;
 
   constructor(
     private readonly root: string,
@@ -438,6 +457,7 @@ export class AgentManager {
   }
 
   async start(params: AgentStartParams): Promise<AgentRun> {
+    if (this.disposed) throw new Error("Workspace is closed — no new agent runs.");
     await this.ensureLoaded();
     const run = createAgentRun(params);
     let cwdAbs = resolveInRoot(this.root, params.cwd ?? ".");
@@ -576,6 +596,7 @@ export class AgentManager {
    * first tool call.
    */
   async prepareInteractive(params: InteractiveStartParams): Promise<InteractiveSpawn> {
+    if (this.disposed) throw new Error("Workspace is closed — no new agent runs.");
     await this.ensureLoaded();
     const run = createAgentRun(params);
     // A known session id (--session-id) keeps the chain resumable headlessly
@@ -630,6 +651,12 @@ export class AgentManager {
     });
     this.emitRunChanged(run);
     await this.persist(run);
+    // Deliveries queued during the TUI's mount window flush once it is ready.
+    const flushTimer = setTimeout(
+      () => void this.flushInteractiveQueue(run.id),
+      this.interactiveReadyMs + 100,
+    );
+    flushTimer.unref?.();
     return { ...run };
   }
 
@@ -643,15 +670,15 @@ export class AgentManager {
     await this.ensureLoaded();
     for (const run of this.runs.values()) {
       if (run.terminalId !== terminalId || run.endedAt) continue;
+      // Harvest BEFORE finish: the terminal runChanged from finish() is what
+      // the settle hooks claim (once) to bill the task/epic — usage arriving
+      // after it would never reach a cost rollup.
+      await this.harvestInteractiveUsage(run);
       await this.finish(
         run,
         exitCode === 0 ? "completed" : "failed",
         `Interactive session ended (exit ${exitCode ?? "?"})`,
       );
-      // The TUI emitted no stream-json, so the run settled with no bill —
-      // harvest it from the session transcript so spend rollups (task cost,
-      // workflow budgets) see interactive work like any other run.
-      await this.harvestInteractiveUsage(run);
     }
   }
 
@@ -679,8 +706,8 @@ export class AgentManager {
       if (!usage.apiCalls) return;
       run.usage = usage;
       run.model ??= model;
-      this.emitRunChanged(run);
-      await this.persist(run);
+      // No emit/persist here — this runs just before finish(), whose terminal
+      // broadcast and persist carry the harvested usage along.
     } catch {
       // No transcript (stub binary in tests, cleaned history) — the run
       // simply reads as costless rather than failing settlement.
@@ -699,9 +726,33 @@ export class AgentManager {
     for (const id of this.chainIds(chainRootId(runId, this.runs))) {
       const run = this.runs.get(id);
       if (!run?.terminalId || run.endedAt || run.status !== "running") continue;
+      // A TUI still mounting would mangle the paste (and swallow it while
+      // claiming delivery) — before the ready gate, callers queue instead;
+      // bindInteractive schedules a flush for the moment the gate opens.
+      if (run.startedAt && Date.now() - Date.parse(run.startedAt) < this.interactiveReadyMs) {
+        return null;
+      }
       if (this.interactiveInput?.({ ...run }, text)) return { ...run };
     }
     return null;
+  }
+
+  /**
+   * Deliver anything queued on an interactive chain the moment its TUI is
+   * ready — messages arriving in the mount window (a hub question sweep fires
+   * on any board write) queue rather than mangle, and without this they would
+   * wait for session end.
+   */
+  private async flushInteractiveQueue(runId: string): Promise<void> {
+    const rootId = chainRootId(runId, this.runs);
+    const notices = this.pendingNotices.get(rootId);
+    if (!notices?.length) return;
+    const delivered = notices.length;
+    if (await this.deliverInteractive(rootId, composeNoticePrompt(notices))) {
+      const rest = (this.pendingNotices.get(rootId) ?? []).slice(delivered);
+      if (rest.length) this.pendingNotices.set(rootId, rest);
+      else this.pendingNotices.delete(rootId);
+    }
   }
 
   /**
@@ -1028,22 +1079,37 @@ export class AgentManager {
   }
 
   /**
-   * Workspace close / server shutdown: cancel every live run. Leaving the
+   * Workspace close / server shutdown: kill every live run. Leaving the
    * Claude CLI children alive was how a "cancelled" delivery could still have
    * an orchestrator committing to the repo — and how a later retry put two
-   * orchestrators in one project. Headless children are tree-killed (their
-   * 'close' handlers settle the runs as cancelled); interactive runs are
-   * settled here and their terminals killed, because the host's terminal
-   * listeners are already gone by the time close() tears things down.
+   * orchestrators in one project.
+   *
+   * Runs settle as FAILED, not cancelled — the same rescue `ensureLoaded`
+   * applies after a server crash, and deliberately so: `resumeChain` refuses
+   * a cancelled chain forever, which would wedge every workflow manager (and
+   * its hub delivery's project lock) the moment its workspace closed. A
+   * failed chain stays resumable after the workspace reopens. The manager
+   * itself stops spawning: `disposed` refuses new starts, so settling
+   * workers can't resurrect their manager into a closed workspace.
    */
   disposeAll(): void {
-    for (const [runId, proc] of this.procs) {
-      proc.cancelled = true;
-      void this.cancel(runId).catch(() => {});
+    this.disposed = true;
+    for (const [, proc] of this.procs) {
+      // Not marked cancelled: the 'close' handler's fallback then reads
+      // failed ("claude exited with code …"), keeping the chain resumable.
+      if (process.platform === "win32" && proc.child.pid) {
+        const killer = spawn("taskkill", ["/pid", String(proc.child.pid), "/T", "/F"], {
+          shell: false,
+          windowsHide: true,
+        });
+        killer.on("error", () => proc.child.kill());
+      } else {
+        proc.child.kill("SIGTERM");
+      }
     }
     for (const run of this.runs.values()) {
       if (!run.terminalId || run.endedAt) continue;
-      void this.finish(run, "cancelled", "Workspace closed").catch(() => {});
+      void this.finish(run, "failed", "Workspace closed").catch(() => {});
       this.interactiveKill?.({ ...run });
     }
   }

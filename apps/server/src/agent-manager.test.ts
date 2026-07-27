@@ -182,6 +182,7 @@ describe("interactive sessions", () => {
 
   it("delivers into the live terminal, then settles on terminal exit", async () => {
     const mgr = await makeManager();
+    mgr.interactiveReadyMs = 0; // no TUI mount window in tests
     const typed: string[] = [];
     mgr.interactiveInput = (run, text) => {
       typed.push(`${run.terminalId}:${text}`);
@@ -217,7 +218,30 @@ describe("interactive sessions", () => {
     mgr.disposeAll();
     await new Promise((r) => setTimeout(r, 20));
     expect(killed).toEqual(["term_3"]);
-    expect((await mgr.get(run.id))?.status).toBe("cancelled");
+    // Failed, not cancelled: resumeChain refuses cancelled chains forever,
+    // which would wedge managers (and their hub locks) on workspace close.
+    expect((await mgr.get(run.id))?.status).toBe("failed");
+    // A disposed manager spawns nothing new into the closed workspace.
+    await expect(mgr.start({ prompt: "nope" })).rejects.toThrow(/closed/);
+  });
+
+  it("queues deliveries during the TUI mount window and flushes them when ready", async () => {
+    const mgr = await makeManager();
+    mgr.interactiveReadyMs = 120;
+    const typed: string[] = [];
+    mgr.interactiveInput = (run, text) => {
+      typed.push(text);
+      return true;
+    };
+    const plan = await mgr.prepareInteractive({ prompt: "Go.", taskId: "task_1" });
+    const run = await mgr.bindInteractive(plan.run.id, "term_4");
+    // Inside the mount window: typing now would mangle the paste — queue it.
+    const delivered = await mgr.deliver(run.id, "Answer: early bird");
+    expect(delivered).toBeNull();
+    expect(typed).toEqual([]);
+    // The bind-time flush timer delivers it once the TUI is ready.
+    await new Promise((r) => setTimeout(r, 400));
+    expect(typed).toEqual(["Answer: early bird"]);
   });
 
   it("cancel kills the terminal and reads cancelled, not failed", async () => {

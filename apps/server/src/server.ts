@@ -327,6 +327,12 @@ export async function startCrystalServer(opts: {
       workspace: (await registry.open(root)).descriptor(),
     }),
     "workspaces.close": async ({ ws }) => {
+      // Interactive program managers hosted on this workspace's PTYs must
+      // settle first — close kills the terminals without an exit broadcast,
+      // and nothing else would ever settle a hub-owned run.
+      await hub?.onWorkspaceClosing(ws).catch((err) => {
+        console.warn("[crystal] hub workspace-close settle failed:", (err as Error).message);
+      });
       await registry.close(ws);
       return { ok: true };
     },

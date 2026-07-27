@@ -90,6 +90,7 @@ export function Board({
   const focusTerminal = useTerminals((s) => s.focusTerminal);
   const { client } = useCrystal();
   const [managerBusy, setManagerBusy] = useState(false);
+  const [managerError, setManagerError] = useState<string | null>(null);
 
   /**
    * The stage each status column is currently being driven by, from any live
@@ -315,6 +316,7 @@ export function Board({
   async function startBoardManager(interactive: boolean): Promise<void> {
     if (managerBusy) return;
     setManagerBusy(true);
+    setManagerError(null);
     try {
       const prompt = MANAGER_PREAMBLE + buildBoardManagerGoal(project.name, ready);
       if (interactive) {
@@ -335,6 +337,9 @@ export function Board({
           tags: ["role:manager"],
         });
       }
+    } catch (err) {
+      // A silent no-op here reads as a dead button — say why nothing started.
+      setManagerError((err as Error).message);
     } finally {
       setManagerBusy(false);
     }
@@ -475,6 +480,11 @@ export function Board({
                 <TerminalSquare className="h-3 w-3" />
               </Button>
             </Tooltip>
+            {managerError ? (
+              <span className="max-w-64 truncate text-[10px] text-danger" title={managerError}>
+                {managerError}
+              </span>
+            ) : null}
           </span>
         ) : null}
       </div>

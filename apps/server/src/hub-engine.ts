@@ -858,6 +858,22 @@ export class HubEngine {
   }
 
   /**
+   * A workspace is about to close, taking its PTYs with it — silently
+   * (`TerminalManager.disposeAll` never broadcasts), so the exit hook above
+   * will not fire. Settle any interactive manager hosted there now, as
+   * failed: the chain stays resumable via its pinned session id, so queued
+   * notices continue the manager headlessly instead of wedging the program.
+   */
+  async onWorkspaceClosing(ws: string): Promise<void> {
+    if (!this.agents) return;
+    for (const run of await this.agents.list()) {
+      if (run.terminalWs !== ws || !run.terminalId || run.endedAt) continue;
+      if (run.status !== "running" && run.status !== "queued") continue;
+      await this.agents.settleInteractive(run.terminalId, null).catch(() => {});
+    }
+  }
+
+  /**
    * Every program-manager run, newest first. These live in the hub's own
    * agent host, so they never appear in a workspace's run list.
    */
