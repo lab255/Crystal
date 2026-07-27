@@ -156,6 +156,12 @@ export interface OrchestrateLink {
   template?: string;
   /** Board grouping: "status" (default), "epic", or "tag:<dimension>". */
   group?: string;
+  /**
+   * Board swimlanes: unset (no lanes), "epic", "agent" (agent owner) or
+   * "human" (human owner). Orthogonal to `group` — lanes stack rows of the
+   * same columns; an epic-lanes/epic-columns combination is ignored.
+   */
+  swim?: string;
   /** Board sort key: "manual" (default), "priority", "size", "tokens" or "cost". */
   sort?: string;
   /** Board text filter (matches title, description and labels). */
@@ -335,6 +341,7 @@ export function formatDeepLink(link: DeepLink): string {
     if (o.project) add("project", o.project);
     if (tab === "board" && o.task) add("task", o.task);
     if (tab === "board" && o.group) add("group", o.group);
+    if (tab === "board" && o.swim) add("swim", o.swim);
     if (tab === "board" && o.sort) add("sort", o.sort);
     if (tab === "board" && o.filter) add("filter", o.filter);
     if (tab === "board" && o.owner) add("owner", o.owner);
@@ -513,6 +520,8 @@ export function parseDeepLink(hash: string): DeepLink {
     if (task) o.task = task;
     const group = params.get("group");
     if (group) o.group = group;
+    const swim = params.get("swim");
+    if (swim === "epic" || swim === "agent" || swim === "human") o.swim = swim;
     const sort = params.get("sort");
     if (sort) o.sort = sort;
     const filter = params.get("filter");
@@ -586,7 +595,7 @@ export function parseDeepLink(hash: string): DeepLink {
     link.mode = "hub";
     const h: HubLink = {};
     const view = segments[1];
-    if (view === "programs" || view === "projects") h.view = view;
+    if (view === "programs" || view === "projects" || view === "questions") h.view = view;
     const program = params.get("program");
     if (program) h.program = program;
     const delivery = params.get("delivery");
@@ -621,7 +630,7 @@ const ARCHITECT_VIEW_FIELDS: Record<ArchitectViewId, readonly (keyof ArchitectLi
 };
 
 const ORCHESTRATE_TAB_FIELDS: Record<OrchestratorTabId, readonly (keyof OrchestrateLink)[]> = {
-  board: ["tab", "project", "task", "group", "sort"],
+  board: ["tab", "project", "task", "group", "swim", "sort"],
   runs: ["tab", "project", "run", "purpose"],
   agents: ["tab", "project", "run"],
   workflows: ["tab", "project", "workflow", "builder", "template"],
@@ -644,6 +653,7 @@ const QUALITY_VIEW_FIELDS: Record<QualityViewId, readonly (keyof QualityLink)[]>
 const HUB_VIEW_FIELDS: Record<HubViewId, readonly (keyof HubLink)[]> = {
   programs: ["view", "program", "delivery", "run", "project", "find"],
   projects: ["view", "find"],
+  questions: ["view", "find"],
 };
 
 /** Replace the owned fields with the incoming section's; keep everything else. */

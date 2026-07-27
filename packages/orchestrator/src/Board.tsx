@@ -56,6 +56,8 @@ const COLUMN_ACCENTS: Record<TaskStatus, string> = {
 
 /** "status" | "epic" | "tag:<dimension>" — mirrors the deep-link `group` param. */
 type BoardGroup = string;
+/** "" (no lanes) | "epic" | "agent" | "human" — deep-link `swim` param. */
+type BoardLane = string;
 /** "manual" | "priority" | "size" | "tokens" | "cost" — deep-link `sort` param. */
 type BoardSort = string;
 
@@ -71,6 +73,11 @@ interface ColumnDef {
   key: string;
   label: string;
   accent: string;
+}
+
+interface LaneDef {
+  key: string;
+  label: string;
 }
 
 export function Board({
@@ -126,6 +133,7 @@ export function Board({
   const sort: BoardSort = useNav((l) => l.orchestrate?.sort) ?? "manual";
   const filter = useNav((l) => l.orchestrate?.filter) ?? "";
   const owner = useNav((l) => l.orchestrate?.owner) ?? "";
+  const swim = useNav((l) => l.orchestrate?.swim) ?? "";
   const [dragOver, setDragOver] = useState<string | null>(null);
   const [dragOverCard, setDragOverCard] = useState<string | null>(null);
   const [epicDraft, setEpicDraft] = useState<string | null>(null);
@@ -160,6 +168,40 @@ export function Board({
     () => tagDimensions(project.tasks.flatMap((t) => t.labels)),
     [project.tasks],
   );
+
+  const humans = [
+    ...new Set(
+      [roster?.defaultHuman, ...project.tasks.map((t) => t.owners.human)].filter(
+        (h): h is string => !!h,
+      ),
+    ),
+  ].sort();
+
+  // Epic lanes over epic columns would put every task on a diagonal — treat
+  // that combination as "no lanes" rather than rendering a useless grid.
+  const lane: BoardLane = swim === "epic" && group === "epic" ? "" : swim;
+
+  const lanes: LaneDef[] | null = !lane
+    ? null
+    : lane === "epic"
+      ? [
+          ...project.epics.map((e) => ({ key: e.id, label: e.name })),
+          { key: "", label: "No epic" },
+        ]
+      : lane === "agent"
+        ? [
+            ...(roster?.agents ?? []).map((a) => ({ key: a.id, label: a.name })),
+            { key: "", label: "Unassigned" },
+          ]
+        : [...humans.map((h) => ({ key: h, label: h })), { key: "", label: "Unassigned" }];
+
+  /** The lane a task currently sits in along the active swimlane axis. */
+  function laneKeyOf(task: TaskItem): string {
+    if (lane === "epic") return task.epicId ?? "";
+    if (lane === "agent") return task.owners.agentId ?? "";
+    if (lane === "human") return task.owners.human ?? "";
+    return "";
+  }
 
   const columns: ColumnDef[] =
     group === "epic"
@@ -205,11 +247,15 @@ export function Board({
     );
   }
 
-  /** Every member of a column (unfiltered), in stable manual order. */
-  function groupMembers(key: string): TaskItem[] {
+  /**
+   * Every member of a column (unfiltered), in stable manual order — scoped to
+   * one swimlane when `laneKey` is given.
+   */
+  function groupMembers(key: string, laneKey?: string): TaskItem[] {
+    const inLane = (t: TaskItem) => laneKey === undefined || laneKeyOf(t) === laneKey;
     if (group === "epic") {
       return project.tasks
-        .filter((t) => (t.epicId ?? "") === key)
+        .filter((t) => (t.epicId ?? "") === key && inLane(t))
         .sort((a, b) => a.order - b.order || b.updatedAt.localeCompare(a.updatedAt));
     }
     if (group.startsWith("tag:")) {
@@ -217,15 +263,15 @@ export function Board({
       return project.tasks
         .filter((t) => {
           const values = tagsInDimension(t.labels, dim);
-          return key === "" ? values.length === 0 : values.includes(key);
+          return (key === "" ? values.length === 0 : values.includes(key)) && inLane(t);
         })
         .sort((a, b) => a.order - b.order || b.updatedAt.localeCompare(a.updatedAt));
     }
-    return tasksInColumn(project, key as TaskStatus);
+    return tasksInColumn(project, key as TaskStatus).filter(inLane);
   }
 
-  function tasksInGroup(key: string): TaskItem[] {
-    return sortTasks(groupMembers(key).filter((t) => matchesFilters(t)), sort, usageByTask);
+  function tasksInGroup(key: string, laneKey?: string): TaskItem[] {
+    return sortTasks(groupMembers(key, laneKey).filter((t) => matchesFilters(t)), sort, usageByTask);
   }
 
   /** The column a task currently sits in along the active grouping axis. */
@@ -236,12 +282,12 @@ export function Board({
   }
 
   /**
-   * Dropping a card re-homes it along the active grouping axis; with a
-   * `beforeId` (dropped onto a card, manual sort) it also lands at that spot —
-   * the target column is renumbered so hidden/filtered tasks keep their
-   * relative order.
+   * Dropping a card re-homes it along the active grouping axis — and, with
+   * swimlanes on, along the lane axis too; with a `beforeId` (dropped onto a
+   * card, manual sort) it also lands at that spot — the target cell is
+   * renumbered so hidden/filtered tasks keep their relative order.
    */
-  function dropTask(taskId: string, columnKey: string, beforeId?: string): void {
+  function dropTask(taskId: string, columnKey: string, laneKey?: string, beforeId?: string): void {
     const task = project.tasks.find((t) => t.id === taskId);
     if (!task) return;
     let axisPatch: Partial<TaskItem> = {};
@@ -254,7 +300,20 @@ export function Board({
     } else {
       axisPatch = { status: columnKey as TaskStatus };
     }
-    const members = groupMembers(columnKey).filter((t) => t.id !== taskId);
+    if (lane && laneKey !== undefined) {
+      if (lane === "epic") {
+        axisPatch = { ...axisPatch, epicId: laneKey || null };
+      } else if (lane === "agent") {
+        axisPatch = { ...axisPatch, owners: { ...task.owners, agentId: laneKey || null } };
+      } else if (lane === "human") {
+        axisPatch = { ...axisPatch, owners: { ...task.owners, human: laneKey || null } };
+      }
+    }
+    // Renumber only the target cell (column ∩ lane) — ordering elsewhere is
+    // untouched, so cross-lane siblings keep their relative positions.
+    const members = groupMembers(columnKey, lane ? laneKey : undefined).filter(
+      (t) => t.id !== taskId,
+    );
     const beforeIdx = beforeId && sort === "manual" ? members.findIndex((t) => t.id === beforeId) : -1;
     members.splice(beforeIdx >= 0 ? beforeIdx : members.length, 0, task);
     const orderById = new Map(members.map((t, i) => [t.id, i + 1]));
@@ -276,21 +335,22 @@ export function Board({
   function moveTask(task: TaskItem, delta: -1 | 1): void {
     const idx = columns.findIndex((c) => c.key === columnKeyOf(task));
     const target = columns[idx + delta];
-    if (target) dropTask(task.id, target.key);
+    if (target) dropTask(task.id, target.key, lane ? laneKeyOf(task) : undefined);
   }
 
-  /** Keyboard: nudge a card up/down within its column (manual sort only). */
+  /** Keyboard: nudge a card up/down within its cell (manual sort only). */
   function nudgeTask(task: TaskItem, delta: -1 | 1): void {
     if (sort !== "manual") return;
     const key = columnKeyOf(task);
-    const members = groupMembers(key);
+    const laneKey = lane ? laneKeyOf(task) : undefined;
+    const members = groupMembers(key, laneKey);
     const idx = members.findIndex((t) => t.id === task.id);
     const targetIdx = delta === -1 ? idx - 1 : idx + 2;
     if (idx < 0 || (delta === -1 && idx === 0) || (delta === 1 && idx >= members.length - 1)) return;
-    dropTask(task.id, key, members[targetIdx]?.id);
+    dropTask(task.id, key, laneKey, members[targetIdx]?.id);
   }
 
-  function addTask(status: TaskStatus, title: string): void {
+  function addTask(status: TaskStatus, title: string, laneKey?: string): void {
     const task = createTask(title, status);
     task.order = Math.max(0, ...tasksInColumn(project, status).map((t) => t.order)) + 1;
     // Every task is owned by an agent and a human from birth: tag-matched
@@ -300,6 +360,12 @@ export function Board({
         agentId: matchAgent(task.labels, roster)?.id ?? null,
         human: roster.defaultHuman || null,
       };
+    }
+    // Born inside a swimlane, born into that lane's epic/owner.
+    if (lane && laneKey !== undefined) {
+      if (lane === "epic") task.epicId = laneKey || null;
+      else if (lane === "agent") task.owners = { ...task.owners, agentId: laneKey || null };
+      else if (lane === "human") task.owners = { ...task.owners, human: laneKey || null };
     }
     onProjectChange({ ...project, tasks: [...project.tasks, task] });
     onSelectTask(task.id);
@@ -360,13 +426,6 @@ export function Board({
   const agentDriven = project.tasks.some((t) => t.runIds.length > 0);
   const stalled = agentDriven && !managerLive && ready.length > 0;
 
-  const humans = [
-    ...new Set(
-      [roster?.defaultHuman, ...project.tasks.map((t) => t.owners.human)].filter(
-        (h): h is string => !!h,
-      ),
-    ),
-  ].sort();
   const filtering = !!filter.trim() || !!owner;
 
   return (
@@ -387,6 +446,22 @@ export function Board({
                 Tag: {d}
               </option>
             ))}
+          </select>
+        </label>
+        <label className="flex items-center gap-1.5 text-[11px] text-ink-muted">
+          Lanes
+          <select
+            className="h-6 rounded-md border border-edge bg-surface-1 px-1.5 text-[11px] text-ink focus:border-crystal-500/60 focus:outline-none"
+            value={swim}
+            onChange={(e) => nav({ orchestrate: { swim: e.target.value || null } })}
+            aria-label="Swimlanes by"
+          >
+            <option value="">None</option>
+            <option value="epic" disabled={group === "epic"}>
+              Epic
+            </option>
+            <option value="agent">Agent owner</option>
+            <option value="human">Human owner</option>
           </select>
         </label>
         <label className="flex items-center gap-1.5 text-[11px] text-ink-muted">
@@ -429,7 +504,7 @@ export function Board({
             </option>
           ))}
         </select>
-        {group === "epic" ? (
+        {group === "epic" || lane === "epic" ? (
           epicDraft === null ? (
             <button
               type="button"
@@ -491,113 +566,153 @@ export function Board({
         ) : null}
       </div>
 
-      <div className="flex min-h-0 flex-1 gap-3 overflow-x-auto p-3">
-        {columns.map((column) => {
-          const tasks = tasksInGroup(column.key);
-          const total = filtering ? groupMembers(column.key).length : tasks.length;
-          const wipLimit = group === "status" ? project.wipLimits[column.key] : undefined;
-          return (
-            <div
-              key={`${group}:${column.key}`}
-              className={cn(
-                "flex h-full w-64 shrink-0 flex-col rounded-xl border bg-surface-1/60 transition-colors",
-                dragOver === column.key
-                  ? "border-crystal-500/50 bg-crystal-500/5"
-                  : "border-edge",
-              )}
-              onDragOver={(e: DragEvent) => {
-                e.preventDefault();
-                setDragOver(column.key);
-              }}
-              onDragLeave={() => setDragOver((s) => (s === column.key ? null : s))}
-              onDrop={(e: DragEvent) => {
-                e.preventDefault();
-                setDragOver(null);
-                setDragOverCard(null);
-                const id = e.dataTransfer.getData(TASK_MIME);
-                if (id) dropTask(id, column.key);
-              }}
-            >
-              <div className="flex items-center gap-2 px-3 py-2.5">
-                <span className="h-2 w-2 rounded-full" style={{ background: column.accent }} />
-                <span className="truncate text-xs font-semibold text-ink">{column.label}</span>
-                {group === "status" && stagesByColumn.has(column.key as TaskStatus) ? (
-                  <Tooltip
-                    content={`Driven by the ${stagesByColumn
-                      .get(column.key as TaskStatus)!
-                      .join(", ")} stage of a running workflow`}
-                  >
-                    <span className="flex shrink-0 items-center gap-0.5 rounded-full border border-crystal-500/40 bg-crystal-500/10 px-1.5 py-px text-[9px] text-crystal-200">
-                      <Network className="h-2.5 w-2.5" />
-                      {stagesByColumn.get(column.key as TaskStatus)!.join(", ")}
-                    </span>
-                  </Tooltip>
-                ) : null}
-                <ColumnCount
-                  shown={tasks.length}
-                  total={total}
-                  filtering={filtering}
-                  limit={wipLimit}
-                  onSetLimit={
-                    group === "status"
-                      ? (limit) => {
-                          const wipLimits = { ...project.wipLimits };
-                          if (limit == null) delete wipLimits[column.key];
-                          else wipLimits[column.key] = limit;
-                          onProjectChange({ ...project, wipLimits });
-                        }
-                      : undefined
-                  }
-                />
-              </div>
-              <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-2 pb-2">
-                {tasks.map((task) => (
-                  <TaskCard
-                    key={task.id}
-                    task={task}
-                    roster={roster}
-                    usage={usageByTask.get(task.id) ?? null}
-                    selected={task.id === selectedTaskId}
-                    agentRunning={running.has(task.id)}
-                    blocked={blockedTasks.has(task.id)}
-                    dropBefore={dragOverCard === task.id}
-                    onClick={() => onSelectTask(task.id)}
-                    onDragOverCard={(over) => setDragOverCard(over ? task.id : null)}
-                    onDropBefore={(draggedId) => {
-                      setDragOver(null);
-                      setDragOverCard(null);
-                      dropTask(draggedId, column.key, task.id);
-                    }}
-                    onKeyCommand={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        onSelectTask(task.id);
-                      } else if (e.key === "[" || (e.key === "ArrowLeft" && e.altKey)) {
-                        e.preventDefault();
-                        moveTask(task, -1);
-                      } else if (e.key === "]" || (e.key === "ArrowRight" && e.altKey)) {
-                        e.preventDefault();
-                        moveTask(task, 1);
-                      } else if (e.key === "ArrowUp" && e.altKey) {
-                        e.preventDefault();
-                        nudgeTask(task, -1);
-                      } else if (e.key === "ArrowDown" && e.altKey) {
-                        e.preventDefault();
-                        nudgeTask(task, 1);
-                      }
-                    }}
-                  />
-                ))}
-                {group === "status" ? (
-                  <AddTask onAdd={(title) => addTask(column.key as TaskStatus, title)} />
-                ) : null}
-              </div>
-            </div>
-          );
-        })}
-      </div>
+      {lanes ? (
+        <div className="min-h-0 flex-1 overflow-auto p-3">
+          <div className="w-max min-w-full space-y-4">
+            {lanes.map((ln) => {
+              const count = project.tasks.filter((t) => laneKeyOf(t) === ln.key).length;
+              return (
+                <section key={`${lane}:${ln.key}`} aria-label={`Lane: ${ln.label}`}>
+                  <div className="mb-1.5 flex items-center gap-1.5 px-1">
+                    {lane === "agent" ? (
+                      <Bot className="h-3.5 w-3.5 text-ink-faint" />
+                    ) : lane === "human" ? (
+                      <UserRound className="h-3.5 w-3.5 text-ink-faint" />
+                    ) : null}
+                    <span className="truncate text-xs font-semibold text-ink">{ln.label}</span>
+                    <span className="text-[11px] text-ink-faint">{count}</span>
+                  </div>
+                  <div className="flex gap-3">
+                    {columns.map((column) => renderColumn(column, ln.key))}
+                  </div>
+                </section>
+              );
+            })}
+          </div>
+        </div>
+      ) : (
+        <div className="flex min-h-0 flex-1 gap-3 overflow-x-auto p-3">
+          {columns.map((column) => renderColumn(column))}
+        </div>
+      )}
     </div>
   );
+
+  /**
+   * One kanban column, rendered either as a full-height strip (no lanes) or
+   * as an intrinsic-height cell inside a swimlane row.
+   */
+  function renderColumn(column: ColumnDef, laneKey?: string) {
+    const inLane = laneKey !== undefined;
+    const tasks = tasksInGroup(column.key, laneKey);
+    const total = filtering ? groupMembers(column.key, laneKey).length : tasks.length;
+    // WIP limits are per-status and board-global — inside lanes the count
+    // stays informational so a lane can't edit a limit it only partly sees.
+    const wipLimit = group === "status" && !inLane ? project.wipLimits[column.key] : undefined;
+    const cellKey = inLane ? `${laneKey} ${column.key}` : column.key;
+    return (
+      <div
+        key={`${group}:${cellKey}`}
+        className={cn(
+          "flex w-64 shrink-0 flex-col rounded-xl border bg-surface-1/60 transition-colors",
+          inLane ? "min-h-24" : "h-full",
+          dragOver === cellKey ? "border-crystal-500/50 bg-crystal-500/5" : "border-edge",
+        )}
+        onDragOver={(e: DragEvent) => {
+          e.preventDefault();
+          setDragOver(cellKey);
+        }}
+        onDragLeave={() => setDragOver((s) => (s === cellKey ? null : s))}
+        onDrop={(e: DragEvent) => {
+          e.preventDefault();
+          setDragOver(null);
+          setDragOverCard(null);
+          const id = e.dataTransfer.getData(TASK_MIME);
+          if (id) dropTask(id, column.key, laneKey);
+        }}
+      >
+        <div className="flex items-center gap-2 px-3 py-2.5">
+          <span className="h-2 w-2 rounded-full" style={{ background: column.accent }} />
+          <span className="truncate text-xs font-semibold text-ink">{column.label}</span>
+          {!inLane && group === "status" && stagesByColumn.has(column.key as TaskStatus) ? (
+            <Tooltip
+              content={`Driven by the ${stagesByColumn
+                .get(column.key as TaskStatus)!
+                .join(", ")} stage of a running workflow`}
+            >
+              <span className="flex shrink-0 items-center gap-0.5 rounded-full border border-crystal-500/40 bg-crystal-500/10 px-1.5 py-px text-[9px] text-crystal-200">
+                <Network className="h-2.5 w-2.5" />
+                {stagesByColumn.get(column.key as TaskStatus)!.join(", ")}
+              </span>
+            </Tooltip>
+          ) : null}
+          <ColumnCount
+            shown={tasks.length}
+            total={total}
+            filtering={filtering}
+            limit={wipLimit}
+            onSetLimit={
+              group === "status" && !inLane
+                ? (limit) => {
+                    const wipLimits = { ...project.wipLimits };
+                    if (limit == null) delete wipLimits[column.key];
+                    else wipLimits[column.key] = limit;
+                    onProjectChange({ ...project, wipLimits });
+                  }
+                : undefined
+            }
+          />
+        </div>
+        <div
+          className={cn(
+            "min-h-0 space-y-2 px-2 pb-2",
+            inLane ? "" : "flex-1 overflow-y-auto",
+          )}
+        >
+          {tasks.map((task) => (
+            <TaskCard
+              key={task.id}
+              task={task}
+              roster={roster}
+              usage={usageByTask.get(task.id) ?? null}
+              selected={task.id === selectedTaskId}
+              agentRunning={running.has(task.id)}
+              blocked={blockedTasks.has(task.id)}
+              dropBefore={dragOverCard === task.id}
+              onClick={() => onSelectTask(task.id)}
+              onDragOverCard={(over) => setDragOverCard(over ? task.id : null)}
+              onDropBefore={(draggedId) => {
+                setDragOver(null);
+                setDragOverCard(null);
+                dropTask(draggedId, column.key, laneKey, task.id);
+              }}
+              onKeyCommand={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  onSelectTask(task.id);
+                } else if (e.key === "[" || (e.key === "ArrowLeft" && e.altKey)) {
+                  e.preventDefault();
+                  moveTask(task, -1);
+                } else if (e.key === "]" || (e.key === "ArrowRight" && e.altKey)) {
+                  e.preventDefault();
+                  moveTask(task, 1);
+                } else if (e.key === "ArrowUp" && e.altKey) {
+                  e.preventDefault();
+                  nudgeTask(task, -1);
+                } else if (e.key === "ArrowDown" && e.altKey) {
+                  e.preventDefault();
+                  nudgeTask(task, 1);
+                }
+              }}
+            />
+          ))}
+          {group === "status" ? (
+            <AddTask onAdd={(title) => addTask(column.key as TaskStatus, title, laneKey)} />
+          ) : null}
+        </div>
+      </div>
+    );
+  }
 }
 
 /**

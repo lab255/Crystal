@@ -114,6 +114,16 @@ describe("formatDeepLink", () => {
       formatDeepLink({ mode: "orchestrate", orchestrate: { tab: "runs", task: "t1", run: "r1" } }),
     ).toBe("#/orchestrate/runs?run=r1");
   });
+
+  it("round-trips board swimlanes and rejects unknown lane axes", () => {
+    const url = formatDeepLink({
+      mode: "orchestrate",
+      orchestrate: { tab: "board", group: "status", swim: "agent" },
+    });
+    expect(url).toBe("#/orchestrate/board?group=status&swim=agent");
+    expect(parseDeepLink(url).orchestrate?.swim).toBe("agent");
+    expect(parseDeepLink("#/orchestrate/board?swim=bogus").orchestrate?.swim).toBeUndefined();
+  });
 });
 
 describe("parseDeepLink", () => {
