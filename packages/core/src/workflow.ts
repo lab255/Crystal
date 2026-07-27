@@ -970,7 +970,9 @@ export function isWorkflowTag(tag: string): boolean {
 
 /** The workflow id a run belongs to (from its tags), or null. */
 export function workflowIdOfRun(run: Pick<AgentRun, "tags">): string | null {
-  for (const tag of run.tags) {
+  // Tolerate records predating the tags field — spend must degrade to
+  // "unattributed", never crash the manager's workflow_status.
+  for (const tag of run.tags ?? []) {
     if (isWorkflowTag(tag)) return tag.slice("workflow:".length) || null;
   }
   return null;
@@ -979,7 +981,7 @@ export function workflowIdOfRun(run: Pick<AgentRun, "tags">): string | null {
 /** Every run attributed to the workflow (manager chain + workers), any status. */
 export function runsForWorkflow(workflowId: string, runs: readonly AgentRun[]): AgentRun[] {
   const tag = workflowTag(workflowId);
-  return runs.filter((r) => r.tags.includes(tag));
+  return runs.filter((r) => (r.tags ?? []).includes(tag));
 }
 
 /* ------------------------------------------------------------------ */

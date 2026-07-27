@@ -195,17 +195,34 @@ export class OrchestrationService {
    * if the task's lease names this run (claimed by it, or handed over at
    * dispatch), the write goes through without a claim id. An unleased task is
    * auto-claimed for the run first; a task leased to someone else is refused.
+   *
+   * "This run" spans the whole resume chain: a run resumed to continue a task
+   * (a queued answer, a follow-up turn) is a fresh record of the *same*
+   * logical session, and the lease its predecessor held must not lock its
+   * successor out — that stranded workers unable to move their task to
+   * review. The lease is re-pointed at the current run on the way through.
    */
-  updateTaskAsRun(
+  async updateTaskAsRun(
     projectPath: string,
     taskId: string,
     run: { id: string; holder?: string | null },
     patch: TaskPatch,
   ): Promise<{ ok: true; task: TaskItem } | { ok: false; reason: string }> {
     const parsed = TaskPatchSchema.parse(patch);
+    // Resolve the chain outside the board lock (it reads run history). A
+    // history that cannot be read degrades to "just this run id".
+    const chainIds = new Set<string>([run.id]);
+    try {
+      for (const r of await this.agents.chainRuns(run.id)) chainIds.add(r.id);
+    } catch {
+      // run identity alone still works
+    }
     return this.mutate(projectPath, (project) => {
       const task = this.taskIn(project, taskId);
-      const mine = leaseValid(task.lease) && task.lease!.holderRunId === run.id;
+      const mine =
+        leaseValid(task.lease) &&
+        task.lease!.holderRunId != null &&
+        chainIds.has(task.lease!.holderRunId);
       if (leaseValid(task.lease) && !mine) {
         return {
           ok: false as const,

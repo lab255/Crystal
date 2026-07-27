@@ -735,9 +735,9 @@ export class HubEngine {
       );
       for (const run of live) await this.agents.cancel(run.id).catch(() => {});
     }
-    return this.mutate(programId, (program) => {
+    const cancelled = await this.mutate(programId, (program) => {
       if (isProgramTerminal(program.status)) return { program, result: program };
-      const cancelled: Program = {
+      const next: Program = {
         ...program,
         status: "cancelled",
         pausedBy: null,
@@ -746,8 +746,11 @@ export class HubEngine {
           isDeliveryTerminal(d.status) ? d : { ...d, status: "cancelled" as const, endedAt: nowIso() },
         ),
       };
-      return { program: cancelled, result: cancelled };
+      return { program: next, result: next };
     });
+    // Every project this program held is now free — dispatch whoever waited.
+    await this.sweepPortfolioDispatch(programId);
+    return cancelled;
   }
 
   /** The program manager (or the owner) declares the program finished. */
@@ -1013,6 +1016,36 @@ export class HubEngine {
       });
     }
     await this.settleProgram(program.id);
+    // ANY terminal delivery frees its project lock for the rest of the
+    // portfolio — not just completed ones, and not just for this program.
+    await this.sweepPortfolioDispatch(program.id);
+  }
+
+  /**
+   * Dispatch deliveries across the whole portfolio that just became ready —
+   * typically because another program's delivery settled and freed the
+   * project lock. Without this, a program blocked only by a cross-program
+   * lock showed "Ready to dispatch" and stalled silently until a human (or
+   * agent) asked again. Oldest program first, so the longest wait wins the
+   * freed project.
+   */
+  private async sweepPortfolioDispatch(excludeProgramId: string | null = null): Promise<void> {
+    const live = this.store
+      .all()
+      .filter((p) => p.id !== excludeProgramId && p.status === "running")
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    for (const program of live) {
+      const others = this.store.all().filter((p) => p.id !== program.id);
+      const current = this.store.peek(program.id);
+      if (!current || current.status !== "running") continue;
+      if (!readyDeliveries(current, others).length) continue;
+      await this.dispatch(program.id).catch((err) => {
+        console.warn(
+          `[crystal] portfolio auto-dispatch failed for ${program.id}:`,
+          (err as Error).message,
+        );
+      });
+    }
   }
 
   /**

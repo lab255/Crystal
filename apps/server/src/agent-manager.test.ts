@@ -204,6 +204,22 @@ describe("interactive sessions", () => {
     expect((await mgr.get(run.id))?.status).toBe("completed");
   });
 
+  it("disposeAll cancels a live interactive run and kills its terminal", async () => {
+    // Regression target: closing a workspace used to leave agent children
+    // alive — a "cancelled" delivery with a live orchestrator still in it.
+    const mgr = await makeManager();
+    const killed: string[] = [];
+    mgr.interactiveKill = (run) => {
+      killed.push(run.terminalId!);
+    };
+    const plan = await mgr.prepareInteractive({ prompt: "Go.", taskId: "task_1" });
+    const run = await mgr.bindInteractive(plan.run.id, "term_3");
+    mgr.disposeAll();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(killed).toEqual(["term_3"]);
+    expect((await mgr.get(run.id))?.status).toBe("cancelled");
+  });
+
   it("cancel kills the terminal and reads cancelled, not failed", async () => {
     const mgr = await makeManager();
     const killed: string[] = [];

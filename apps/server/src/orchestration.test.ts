@@ -11,10 +11,14 @@ import { WorkspaceStore } from "./workspace-store.js";
 const delivered: { runId: string; prompt: string }[] = [];
 /** What `deliver` should hand back — null stands in for "queued, not resumed". */
 let deliverResult: AgentRun | null = null;
+/** Chain membership for updateTaskAsRun (run id → the runs of its chain). */
+const chainsByRun = new Map<string, AgentRun[]>();
 
 function fakeAgents(runs: AgentRun[]): AgentManager {
   return {
     list: async () => runs,
+    chainRuns: async (runId: string) =>
+      chainsByRun.get(runId) ?? runs.filter((r) => r.id === runId),
     deliver: async (runId: string, prompt: string) => {
       delivered.push({ runId, prompt });
       return deliverResult;
@@ -305,6 +309,26 @@ describe("OrchestrationService", () => {
     await expect(
       svc.answerQuestion(projectPath, task.id, "q_nope", "x"),
     ).resolves.toEqual({ ok: false, reason: expect.stringContaining("Unknown question") });
+  });
+
+  it("lets a resumed chain run update the task its predecessor leased", async () => {
+    const task = await svc.createTask(projectPath, { title: "Chain lease" });
+    // Run A auto-claims the task by updating it.
+    const a = await svc.updateTaskAsRun(projectPath, task.id, { id: "run_a" }, { status: "in_progress" });
+    expect(a.ok).toBe(true);
+    // Run B is a later turn of the same logical session (chain A → B). The
+    // lease pinned to A must not lock B out — that stranded workers resumed
+    // with an answer, unable to move their own task to review.
+    chainsByRun.set("run_b", [{ id: "run_a" }, { id: "run_b" }] as AgentRun[]);
+    const b = await svc.updateTaskAsRun(projectPath, task.id, { id: "run_b" }, { status: "review" });
+    expect(b.ok).toBe(true);
+    const t = (await loadProject()).tasks.find((x) => x.id === task.id)!;
+    expect(t.status).toBe("review");
+    // The lease follows the live run, so settlement releases it correctly.
+    expect(t.lease?.holderRunId).toBe("run_b");
+    // A run outside the chain is still refused.
+    const c = await svc.updateTaskAsRun(projectPath, task.id, { id: "run_c" }, { status: "done" });
+    expect(c.ok).toBe(false);
   });
 
   it("resolve_question closes the run's own open question without resuming anyone", async () => {

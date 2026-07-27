@@ -398,6 +398,10 @@ export class AgentManager {
       try {
         const run = JSON.parse(await fs.readFile(path.join(dir, name), "utf8")) as AgentRun;
         run.filesTouched ??= []; // records predating the field
+        // Same vintage problem: a missing tags array crashed every workflow
+        // spend computation (`r.tags.includes` in runsForWorkflow), which
+        // took workflow_status down with it — the manager lost its meter.
+        run.tags ??= [];
         // A run that was live when the server died can never complete.
         if (run.status === "running" || run.status === "queued") {
           run.status = "failed";
@@ -981,6 +985,27 @@ export class AgentManager {
       killer.on("error", () => proc.child.kill());
     } else {
       proc.child.kill("SIGTERM");
+    }
+  }
+
+  /**
+   * Workspace close / server shutdown: cancel every live run. Leaving the
+   * Claude CLI children alive was how a "cancelled" delivery could still have
+   * an orchestrator committing to the repo — and how a later retry put two
+   * orchestrators in one project. Headless children are tree-killed (their
+   * 'close' handlers settle the runs as cancelled); interactive runs are
+   * settled here and their terminals killed, because the host's terminal
+   * listeners are already gone by the time close() tears things down.
+   */
+  disposeAll(): void {
+    for (const [runId, proc] of this.procs) {
+      proc.cancelled = true;
+      void this.cancel(runId).catch(() => {});
+    }
+    for (const run of this.runs.values()) {
+      if (!run.terminalId || run.endedAt) continue;
+      void this.finish(run, "cancelled", "Workspace closed").catch(() => {});
+      this.interactiveKill?.({ ...run });
     }
   }
 

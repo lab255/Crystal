@@ -538,7 +538,8 @@ export function isProgramTag(tag: string): boolean {
 
 /** The program id a run belongs to (from its tags), or null. */
 export function programIdOfRun(run: Pick<AgentRun, "tags">): string | null {
-  for (const tag of run.tags) {
+  // Records predating the tags field must read as "no program", not crash.
+  for (const tag of run.tags ?? []) {
     if (isProgramTag(tag)) return tag.slice(PROGRAM_TAG_PREFIX.length) || null;
   }
   return null;
@@ -549,7 +550,7 @@ export function managerSpend(programId: string, runs: readonly AgentRun[]): Deli
   const tag = programTag(programId);
   const spend = emptyDeliverySpend();
   for (const run of runs) {
-    if (!run.tags.includes(tag)) continue;
+    if (!(run.tags ?? []).includes(tag)) continue;
     spend.totalTokens += usageTotalTokens(run.usage);
     spend.costUsd += runCostUsd(run);
     spend.runCount += 1;

@@ -340,10 +340,35 @@ describe("HubEngine", () => {
     expect(report.dispatched).toEqual([]);
     expect(report.skipped[0]!.reason).toMatch(/already running .* of program "First"/);
 
-    // Once the first program's delivery lands, the project frees up.
+    // Once the first program's delivery lands, the freed project is handed to
+    // the waiting program *automatically* — a delivery blocked only by a
+    // cross-program lock used to stall silently until someone asked again.
     const wf = (await hub.get(first.id))!.deliveries[0]!.workflowId!;
     await hub.onWorkflowChanged("ws-auth", projects.settle(wf, "completed"));
-    expect((await hub.dispatch(second.id)).dispatched).toHaveLength(1);
+    expect((await hub.get(second.id))!.deliveries[0]!.status).toBe("running");
+  });
+
+  it("frees the project for other programs on failure and on cancel, not just success", async () => {
+    const { hub, projects } = await fresh("portfolio-sweep");
+    const first = await hub.create({ name: "First", goal: "g" });
+    await hub.addDelivery(first.id, { projectRoot: "/repos/auth-service", brief: "a" });
+    await hub.dispatch(first.id);
+    const second = await hub.create({ name: "Second", goal: "g" });
+    await hub.addDelivery(second.id, { projectRoot: "/repos/auth-service", brief: "b" });
+    await hub.dispatch(second.id); // refused — lock held by First
+
+    // A FAILED delivery is just as terminal: the lock frees, Second starts.
+    const wf = (await hub.get(first.id))!.deliveries[0]!.workflowId!;
+    await hub.onWorkflowChanged("ws-auth", projects.settle(wf, "failed"));
+    expect((await hub.get(second.id))!.deliveries[0]!.status).toBe("running");
+
+    // And a cancelled program hands its projects over on the way out.
+    const third = await hub.create({ name: "Third", goal: "g" });
+    await hub.addDelivery(third.id, { projectRoot: "/repos/auth-service", brief: "c" });
+    await hub.dispatch(third.id); // refused — Second holds the lock now
+    expect((await hub.get(third.id))!.deliveries[0]!.status).toBe("pending");
+    await hub.cancel(second.id);
+    expect((await hub.get(third.id))!.deliveries[0]!.status).toBe("running");
   });
 
   it("settles the program once every delivery is terminal", async () => {

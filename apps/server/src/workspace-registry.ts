@@ -240,6 +240,10 @@ export class WorkspaceRuntime {
     // A replaced engine must not keep settling runs into the same app-data
     // files after the workspace reopens with a fresh one.
     this.workflows.dispose();
+    // Kill live agent runs BEFORE their terminals: a closed workspace with
+    // its orchestrator still running is how the hub's one-per-project
+    // invariant broke (cancel recorded, orchestrator alive, retry doubled).
+    this.agents.disposeAll();
     this.terminals.disposeAll();
     this.quality.dispose();
     this.refactorEngine?.dispose();

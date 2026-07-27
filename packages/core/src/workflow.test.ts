@@ -240,6 +240,17 @@ describe("workflow cost accounting", () => {
     expect(spend.costUsd).toBeCloseTo(0.6105, 4);
   });
 
+  it("tolerates run records predating the tags field", () => {
+    // Regression: a single legacy run without `tags` crashed workflowSpend
+    // (`r.tags.includes`), which took workflow_status down with it — a
+    // manager mid-workflow lost its spend meter entirely.
+    const legacy = run(0.5, "completed");
+    (legacy as { tags?: string[] }).tags = undefined;
+    const spend = workflowSpend(wf.id, [legacy, run(0.6, "completed")]);
+    expect(spend.runCount).toBe(1); // the legacy run reads as unattributed
+    expect(workflowIdOfRun(legacy)).toBeNull();
+  });
+
   it("budget state flags exhaustion", () => {
     const under = budgetState(wf, { totalTokens: 0, costUsd: 0.5, runCount: 1, liveRunCount: 0 });
     expect(under.exhausted).toBe(false);
