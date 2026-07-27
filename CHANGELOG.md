@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.8.0 (2026-07-27)
+
+### Features
+
+- model presets unified with the profile/dispatch system ([`5f578ea`](https://github.com/eliotlim/crystal/commit/5f578ea))
+- front-and-center question inboxes in hub and board ([`483005c`](https://github.com/eliotlim/crystal/commit/483005c))
+- epic and owner swimlanes ([`a79d44b`](https://github.com/eliotlim/crystal/commit/a79d44b))
+- remote sync — pull/push/fetch with ahead/behind tracking ([`1ccc306`](https://github.com/eliotlim/crystal/commit/1ccc306))
+
+### Bug Fixes
+
+- put the project toolchain on every spawned process's PATH ([`c1a869f`](https://github.com/eliotlim/crystal/commit/c1a869f))
+- answer questions whose delivery already settled ([`05aa129`](https://github.com/eliotlim/crystal/commit/05aa129))
+
 ## v0.7.0 (2026-07-27)
 
 ### Features
