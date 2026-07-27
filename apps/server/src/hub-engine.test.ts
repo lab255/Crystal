@@ -217,6 +217,11 @@ class FakeAgents {
     if (run) run.status = "cancelled";
   }
 
+  /** No interactive terminals in these tests — the engine falls back to resumeChain. */
+  async deliverInteractive(_runId: string, _text: string): Promise<AgentRun | null> {
+    return null;
+  }
+
   async resumeChain(fromRunId: string, prompt: string): Promise<AgentRun | null> {
     const byId = new Map(this.runs.map((r) => [r.id, r]));
     const root = chainRootId(fromRunId, byId);

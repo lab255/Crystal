@@ -143,6 +143,19 @@ export async function handleMcpRequest(
             }
             return rt.orchestration.addQuestion((await boardCtx()).projectPath, target, text, runId);
           },
+          resolveQuestion: async (resolution, questionId, taskId) => {
+            const target = taskId ?? run?.taskId;
+            if (!target) {
+              return { ok: false as const, reason: "No task to resolve the question on — pass taskId." };
+            }
+            return rt.orchestration.resolveQuestion(
+              (await boardCtx()).projectPath,
+              target,
+              runId,
+              resolution,
+              questionId,
+            );
+          },
         }
       : undefined,
     ownTask:
@@ -158,6 +171,14 @@ export async function handleMcpRequest(
               ),
             askQuestion: async (text) =>
               rt.orchestration.addQuestion((await boardCtx()).projectPath, run.taskId!, text, runId),
+            resolveQuestion: async (resolution, questionId) =>
+              rt.orchestration.resolveQuestion(
+                (await boardCtx()).projectPath,
+                run.taskId!,
+                runId,
+                resolution,
+                questionId,
+              ),
           }
         : undefined,
   });

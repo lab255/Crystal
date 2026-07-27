@@ -111,6 +111,16 @@ export const AgentRunSchema = z.object({
   role: AgentRoleSchema.nullish(),
   /** Why this run touched the task (see RUN_PURPOSES). */
   purpose: RunPurposeSchema.nullish(),
+  /**
+   * PTY terminal hosting this run when it is an *interactive* session (the
+   * native Claude TUI in the terminal panel) rather than a headless `-p`
+   * process. While the terminal is live, messages for the session (question
+   * answers, steering) are typed into the PTY; once it exits, the chain is
+   * resumable headlessly via the session id the terminal was launched with.
+   */
+  terminalId: z.string().nullish(),
+  /** Workspace hosting the terminal when it is not this run's own host (hub managers). */
+  terminalWs: z.string().nullish(),
   /** Dimensional tags for attribution (see tags.ts). */
   tags: z.array(z.string()).default([]),
   status: AgentRunStatusSchema.default("queued"),

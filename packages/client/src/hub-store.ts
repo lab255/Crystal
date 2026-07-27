@@ -97,8 +97,12 @@ export interface HubState {
   cancel(programId: string): Promise<void>;
   /** Forget a finished program (terminal ones only). */
   remove(programId: string): Promise<void>;
-  /** Spawn the program-manager session that owns this program. */
-  startManager(programId: string): Promise<AgentRun>;
+  /**
+   * Spawn the program-manager session that owns this program. Pass a
+   * `terminal` workspace to run it as a native interactive Claude session on
+   * that workspace's PTY (surfaced in the terminal panel) instead of headless.
+   */
+  startManager(programId: string, terminal?: { ws: string } | null): Promise<AgentRun>;
   /** Deliver an owner message into the program-manager session. */
   message(programId: string, text: string): Promise<{ queued: boolean }>;
   loadRunEvents(runId: string): Promise<void>;
@@ -272,8 +276,8 @@ export function createHubStore(client: BridgeClient): HubStore {
       set((s) => ({ programs: s.programs.filter((p) => p.id !== programId) }));
     },
 
-    async startManager(programId) {
-      const { program, run } = await client.request("hub.startManager", { programId });
+    async startManager(programId, terminal = null) {
+      const { program, run } = await client.request("hub.startManager", { programId, terminal });
       upsert(program);
       set((s) => ({ runs: [run, ...s.runs] }));
       return run;

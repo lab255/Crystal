@@ -307,6 +307,31 @@ describe("OrchestrationService", () => {
     ).resolves.toEqual({ ok: false, reason: expect.stringContaining("Unknown question") });
   });
 
+  it("resolve_question closes the run's own open question without resuming anyone", async () => {
+    const task = await svc.createTask(projectPath, { title: "Interactive task" });
+    await svc.addQuestion(projectPath, task.id, "Ship now?", "run_int");
+    await svc.addQuestion(projectPath, task.id, "Also this?", "run_int");
+    const before = delivered.length;
+
+    const missing = await svc.resolveQuestion(projectPath, task.id, "run_int", "yes", "q_nope");
+    expect(missing.ok).toBe(false);
+
+    // Without a questionId it closes the run's *newest* open question.
+    const ok = await svc.resolveQuestion(projectPath, task.id, "run_int", "ship it");
+    expect(ok).toEqual({ ok: true });
+    const t = (await loadProject()).tasks.find((x) => x.id === task.id)!;
+    expect(t.questions.filter((q) => q.answer == null).map((q) => q.text)).toEqual(["Ship now?"]);
+    const closed = t.questions.find((q) => q.text === "Also this?")!;
+    expect(closed.answer).toContain("answered interactively");
+    expect(closed.answer).toContain("ship it");
+    // The asker already has the answer — nothing is delivered or resumed.
+    expect(delivered.length).toBe(before);
+
+    // A run cannot close a question it didn't raise.
+    const foreign = await svc.resolveQuestion(projectPath, task.id, "run_other", "nope");
+    expect(foreign.ok).toBe(false);
+  });
+
   it("task detail includes acceptance criteria and question state", async () => {
     const task = await svc.createTask(projectPath, {
       title: "detailed",

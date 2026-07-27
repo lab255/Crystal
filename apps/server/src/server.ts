@@ -44,7 +44,15 @@ import { deleteAt, listDir, mkdirAt, readFileCapped, renameAt, writeFileAt } fro
 import { changedFiles, gitCheckout, gitLog, gitRefs, gitStatus } from "./git.js";
 import { HUB_MCP_ID, handleMcpRequest, isMcpRequest } from "./mcp/http.js";
 import { overviewSourcesAtRef, snapshotAtRef, surfacesSnapshotAtRef } from "./ref-snapshot.js";
+import { pasteInput } from "./terminal-manager.js";
 import { WorkspaceRegistry } from "./workspace-registry.js";
+
+/**
+ * How long after spawning the Claude TUI its opening prompt is typed in. The
+ * TUI must have mounted (and enabled bracketed paste) before raw input means
+ * anything; too early and the paste markers land as literal escapes.
+ */
+const INTERACTIVE_PROMPT_DELAY_MS = 2500;
 
 type Handlers = {
   [M in BridgeMethodName]: (
@@ -243,6 +251,16 @@ export async function startCrystalServer(opts: {
         const { ws } = payload as BridgeEvents["workspace.changed"];
         hubRef?.scheduleQuestionSweep(ws);
       }
+      // Interactive program managers run on workspace PTYs but their runs live
+      // in the hub's agent host — no runtime would settle them on exit.
+      if (event === "terminal.changed") {
+        const { terminal } = payload as BridgeEvents["terminal.changed"];
+        if (terminal.status === "exited") {
+          void hubRef?.settleInteractiveManager(terminal.id, terminal.exitCode).catch((err) => {
+            console.warn("[crystal] hub terminal settle failed:", (err as Error).message);
+          });
+        }
+      }
       broadcast(event, payload);
     },
     opts.persistFile,
@@ -269,6 +287,25 @@ export async function startCrystalServer(opts: {
     });
     hubAgents.events.on("runChanged", ({ run }) => broadcast("hub.runChanged", { run }));
     hubAgents.events.on("event", (event) => broadcast("hub.event", event));
+    // Interactive managers live on a workspace PTY (`terminalWs`) — the hub's
+    // agent host reaches it through the registry.
+    hubAgents.interactiveInput = (run, text) => {
+      if (!run.terminalId || !run.terminalWs) return false;
+      try {
+        registry.get(run.terminalWs).terminals.input(run.terminalId, pasteInput(text));
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    hubAgents.interactiveKill = (run) => {
+      if (!run.terminalId || !run.terminalWs) return;
+      try {
+        registry.get(run.terminalWs).terminals.kill(run.terminalId);
+      } catch {
+        // workspace closed or terminal already gone
+      }
+    };
     hub = new HubEngine(hubRoot, registryProjects(registry), hubAgents);
     hub.events.on("changed", ({ program }) => broadcast("hub.changed", { program }));
     // Catch up on anything that settled while this server was down — the hub's
@@ -446,6 +483,35 @@ export async function startCrystalServer(opts: {
       }
       return { run: await rt.agents.start({ ...params, model, skills }) };
     },
+    "agent.interactive": async ({ ws, cols, rows, ...params }) => {
+      const rt = registry.get(ws);
+      let model: string | null = null;
+      let skills: string[] = [];
+      if (params.agentId) {
+        const roster = await rt.store.loadAgents();
+        const profile = roster.agents.find((a) => a.id === params.agentId);
+        if (profile) {
+          model = profile.model;
+          skills = profile.skills;
+        }
+      }
+      const plan = await rt.agents.prepareInteractive({ ...params, model, skills });
+      const terminal = rt.terminals.create({
+        cwd: plan.cwd,
+        cols,
+        rows,
+        command: { file: plan.file, args: plan.args, env: plan.env },
+        title: ["claude", params.purpose ?? null].filter(Boolean).join(" · "),
+      });
+      const run = await rt.agents.bindInteractive(plan.run.id, terminal.id);
+      if (terminal.status === "exited") {
+        // Spawn failed before the exit event could see a bound run.
+        await rt.agents.settleInteractive(terminal.id, terminal.exitCode);
+        return { run: (await rt.agents.get(run.id)) ?? run, terminal };
+      }
+      rt.terminals.writeWhenReady(terminal.id, plan.prompt, INTERACTIVE_PROMPT_DELAY_MS);
+      return { run, terminal };
+    },
     "agent.dispatchWorker": async ({ ws, managerRunId, spec }) => {
       const run = await registry.get(ws).agents.dispatchWorker(managerRunId, spec);
       return { run };
@@ -464,7 +530,7 @@ export async function startCrystalServer(opts: {
       return { ok: true };
     },
     "terminal.create": async ({ ws, cwd, cols, rows }) => ({
-      terminal: registry.get(ws).terminals.create(cwd, cols, rows),
+      terminal: registry.get(ws).terminals.create({ cwd, cols, rows }),
     }),
     "terminal.list": async ({ ws }) => ({ terminals: registry.get(ws).terminals.list() }),
     "terminal.input": async ({ ws, terminalId, data }) => {
@@ -685,9 +751,29 @@ export async function startCrystalServer(opts: {
       await requireHub().remove(programId);
       return { ok: true as const };
     },
-    "hub.startManager": async ({ programId, model }) => {
-      const run = await requireHub().startManager(programId, model ?? "opus");
-      const program = await requireHub().get(programId);
+    "hub.startManager": async ({ programId, model, terminal }) => {
+      const engine = requireHub();
+      let run;
+      if (terminal) {
+        // Interactive manager: the hub owns the run, a workspace hosts the PTY.
+        const rt = registry.get(terminal.ws);
+        const plan = await engine.prepareInteractiveManager(programId, model ?? "opus");
+        const term = rt.terminals.create({
+          cols: terminal.cols,
+          rows: terminal.rows,
+          command: { file: plan.file, args: plan.args, env: plan.env },
+          title: "program manager",
+        });
+        run = await engine.bindManagerTerminal(plan.run.id, term.id, rt.id);
+        if (term.status === "exited") {
+          await engine.settleInteractiveManager(term.id, term.exitCode);
+        } else {
+          rt.terminals.writeWhenReady(term.id, plan.prompt, INTERACTIVE_PROMPT_DELAY_MS);
+        }
+      } else {
+        run = await engine.startManager(programId, model ?? "opus");
+      }
+      const program = await engine.get(programId);
       if (!program) throw new Error(`Unknown program: ${programId}`);
       return { program, run };
     },

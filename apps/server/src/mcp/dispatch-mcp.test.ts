@@ -192,6 +192,10 @@ describe("McpDispatchServer board tools", () => {
             ? { ok: true as const }
             : { ok: false as const, reason: "No task to attach the question to — pass taskId." };
         },
+        resolveQuestion: async (resolution, questionId, taskId) => {
+          log("resolveQuestion", resolution, questionId, taskId);
+          return { ok: true as const };
+        },
       },
     };
     return { server: new McpDispatchServer(tools), tools };
@@ -213,6 +217,7 @@ describe("McpDispatchServer board tools", () => {
       "update_task",
       "release_task",
       "ask_question",
+      "resolve_question",
     ]);
   });
 
@@ -326,6 +331,10 @@ describe("McpDispatchServer own-task tools (workers)", () => {
           log("askQuestion", text);
           return { ok: true as const };
         },
+        resolveQuestion: async (resolution, questionId) => {
+          log("resolveQuestion", resolution, questionId);
+          return { ok: true as const };
+        },
       },
     };
     return { server: new McpDispatchServer(tools), calls };
@@ -335,7 +344,22 @@ describe("McpDispatchServer own-task tools (workers)", () => {
     const { server } = workerHarness();
     const res = await server.handle({ jsonrpc: "2.0", id: 1, method: "tools/list" });
     const names = (res?.result as { tools: { name: string }[] }).tools.map((t) => t.name);
-    expect(names).toEqual(["my_task", "update_my_task", "ask_question"]);
+    expect(names).toEqual(["my_task", "update_my_task", "ask_question", "resolve_question"]);
+  });
+
+  it("resolve_question closes the run's own logged question", async () => {
+    const { server, calls } = workerHarness();
+    const res = await server.handle({
+      jsonrpc: "2.0",
+      id: 9,
+      method: "tools/call",
+      params: {
+        name: "resolve_question",
+        arguments: { resolution: "Owner said ship it", questionId: "q_1" },
+      },
+    });
+    expect(JSON.stringify(res?.result)).toContain("closed");
+    expect(calls.resolveQuestion).toEqual([["Owner said ship it", "q_1"]]);
   });
 
   it("updates the run's own task without a claim id", async () => {

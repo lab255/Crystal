@@ -119,6 +119,12 @@ export interface BoardTools {
     text: string,
     taskId?: string | null,
   ): Promise<{ ok: true } | { ok: false; reason: string }>;
+  /** Close the run's own open question after an out-of-band (interactive) answer. */
+  resolveQuestion(
+    resolution: string,
+    questionId?: string | null,
+    taskId?: string | null,
+  ): Promise<{ ok: true } | { ok: false; reason: string }>;
 }
 
 /**
@@ -130,6 +136,11 @@ export interface OwnTaskTools {
   detail(): Promise<string>;
   update(patch: TaskPatch): Promise<{ ok: true; task: TaskItem } | { ok: false; reason: string }>;
   askQuestion(text: string): Promise<{ ok: true } | { ok: false; reason: string }>;
+  /** Close the run's own open question after an out-of-band (interactive) answer. */
+  resolveQuestion(
+    resolution: string,
+    questionId?: string | null,
+  ): Promise<{ ok: true } | { ok: false; reason: string }>;
 }
 
 const CreateEpicArgs = z.object({ name: z.string().min(1), description: z.string().optional() });
@@ -159,6 +170,11 @@ const AskQuestionArgs = z.object({
   taskId: z.string().optional(),
 });
 const UpdateMyTaskArgs = z.object({ patch: TaskPatchSchema });
+const ResolveQuestionArgs = z.object({
+  resolution: z.string().min(1),
+  questionId: z.string().optional(),
+  taskId: z.string().optional(),
+});
 
 const DISPATCH_WORKER_TOOL = {
   name: "dispatch_worker",
@@ -365,6 +381,25 @@ const ASK_QUESTION_TOOL = {
   },
 } as const;
 
+const RESOLVE_QUESTION_TOOL = {
+  name: "resolve_question",
+  description:
+    "Close a question you filed with ask_question after the owner answered it " +
+    "out-of-band (e.g. interactively via AskUserQuestion). Records the outcome " +
+    "as the question's answer so the board stops showing it as waiting. Without " +
+    "questionId it closes your newest open question.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      resolution: { type: "string", description: "The decision the owner made." },
+      questionId: { type: "string", description: "Question to close (defaults to your newest open one)." },
+      taskId: { type: "string", description: "Task the question is on (defaults to your task)." },
+    },
+    required: ["resolution"],
+    additionalProperties: false,
+  },
+} as const;
+
 const MY_TASK_TOOL = {
   name: "my_task",
   description:
@@ -536,9 +571,15 @@ const BOARD_TOOLS = [
   UPDATE_TASK_TOOL,
   RELEASE_TASK_TOOL,
   ASK_QUESTION_TOOL,
+  RESOLVE_QUESTION_TOOL,
 ] as const;
 
-const OWN_TASK_TOOLS = [MY_TASK_TOOL, UPDATE_MY_TASK_TOOL, ASK_QUESTION_TOOL] as const;
+const OWN_TASK_TOOLS = [
+  MY_TASK_TOOL,
+  UPDATE_MY_TASK_TOOL,
+  ASK_QUESTION_TOOL,
+  RESOLVE_QUESTION_TOOL,
+] as const;
 
 export class McpDispatchServer {
   constructor(private readonly tools: DispatchTools) {}
@@ -728,6 +769,14 @@ export class McpDispatchServer {
             ? toolText(id, "Question filed for the human owner. Keep working what you can.")
             : toolError(id, result.reason);
         }
+        case "resolve_question": {
+          const a = ResolveQuestionArgs.safeParse(args ?? {});
+          if (!a.success) return invalidArgs(id, name, a.error);
+          const result = await own.resolveQuestion(a.data.resolution, a.data.questionId ?? null);
+          return result.ok
+            ? toolText(id, "Question closed with the interactive answer.")
+            : toolError(id, result.reason);
+        }
         default:
           return rpcFail(id, McpRpcError.MethodNotFound, `Unknown tool: ${name}`);
       }
@@ -795,6 +844,18 @@ export class McpDispatchServer {
           const result = await board.askQuestion(a.data.question, a.data.taskId ?? null);
           return result.ok
             ? toolText(id, "Question filed for the human owner. Keep driving unblocked work.")
+            : toolError(id, result.reason);
+        }
+        case "resolve_question": {
+          const a = ResolveQuestionArgs.safeParse(args ?? {});
+          if (!a.success) return invalidArgs(id, name, a.error);
+          const result = await board.resolveQuestion(
+            a.data.resolution,
+            a.data.questionId ?? null,
+            a.data.taskId ?? null,
+          );
+          return result.ok
+            ? toolText(id, "Question closed with the interactive answer.")
             : toolError(id, result.reason);
         }
         default:

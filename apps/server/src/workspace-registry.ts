@@ -22,7 +22,7 @@ import { QualityService } from "./quality-runner.js";
 import { RefactorEngine } from "./refactor.js";
 import { SettledRuns } from "./settled-runs.js";
 import { GlobalTemplateStore } from "./template-library.js";
-import { TerminalManager } from "./terminal-manager.js";
+import { TerminalManager, pasteInput } from "./terminal-manager.js";
 import { WorkflowEngine } from "./workflow-engine.js";
 import { WorkspaceStore } from "./workspace-store.js";
 
@@ -107,6 +107,25 @@ export class WorkspaceRuntime {
     this.agents.onWorkerDispatched = (worker) => {
       void this.orchestration.transferLeaseToRun(worker);
     };
+    // Interactive runs live on this workspace's PTYs: messages for them are
+    // typed into the terminal, and cancel kills it.
+    this.agents.interactiveInput = (run, text) => {
+      if (!run.terminalId) return false;
+      try {
+        this.terminals.input(run.terminalId, pasteInput(text));
+        return true;
+      } catch {
+        return false; // terminal gone — caller falls back to queue/resume
+      }
+    };
+    this.agents.interactiveKill = (run) => {
+      if (!run.terminalId) return;
+      try {
+        this.terminals.kill(run.terminalId);
+      } catch {
+        // already gone
+      }
+    };
   }
 
   /** Set by start(): board writes announce themselves like manifest edits do. */
@@ -154,9 +173,14 @@ export class WorkspaceRuntime {
       this.terminals.events.on("data", ({ chunk }) =>
         broadcast("terminal.data", { ws: this.id, chunk }),
       ),
-      this.terminals.events.on("changed", ({ terminal }) =>
-        broadcast("terminal.changed", { ws: this.id, terminal }),
-      ),
+      this.terminals.events.on("changed", ({ terminal }) => {
+        broadcast("terminal.changed", { ws: this.id, terminal });
+        // A dying terminal settles any interactive run it hosted — that is
+        // what flushes the chain's queued answers into a headless resume.
+        if (terminal.status === "exited") {
+          void this.agents.settleInteractive(terminal.id, terminal.exitCode);
+        }
+      }),
       this.quality.events.on("runChanged", ({ run }) =>
         broadcast("quality.runChanged", { ws: this.id, run }),
       ),

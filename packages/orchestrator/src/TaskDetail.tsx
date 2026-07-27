@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Bot, CircleHelp, ExternalLink, Lock, Play, Send, Trash2, X } from "lucide-react";
+import { Bot, CircleHelp, ExternalLink, Lock, Play, Send, TerminalSquare, Trash2, X } from "lucide-react";
 import {
   RUN_PURPOSES,
   TASK_SIZES,
@@ -21,7 +21,7 @@ import {
   type TaskSize,
   type TaskStatus,
 } from "@crystal/core";
-import { useAgents, useCrystal, useWorkspace } from "@crystal/client";
+import { useAgents, useCrystal, useTerminals, useWorkspace, useWorkspaces } from "@crystal/client";
 import { Badge, Button, StatusDot, Textarea, cn } from "@crystal/ui";
 import { buildTaskPrompt, formatCost, formatTokens } from "./prompt.js";
 
@@ -61,6 +61,8 @@ export function TaskDetail({
   const roster = useWorkspace((s) => s.roster);
   const runs = useAgents((s) => s.runs);
   const startRun = useAgents((s) => s.start);
+  const activeWs = useWorkspaces((s) => s.activeId);
+  const focusTerminal = useTerminals((s) => s.focusTerminal);
   const { client } = useCrystal();
 
   const [title, setTitle] = useState(task.title);
@@ -159,30 +161,49 @@ export function TaskDetail({
     }
   }
 
-  /** Record the answer, then resume the asking session as a "question" turn. */
-  async function answerQuestion(question: TaskQuestion, answer: string): Promise<void> {
-    const answered = task.questions.map((q) =>
-      q.id === question.id ? { ...q, answer, answeredAt: nowIso() } : q,
-    );
-    const originRun = runs.find((r) => r.id === question.runId);
-    if (!originRun?.sessionId) {
-      patchTask({ questions: answered });
-      return;
+  /**
+   * Dispatch into the terminal panel instead: a native interactive Claude
+   * session (AskUserQuestion works, decisions still logged via ask_question).
+   */
+  async function runInteractive(): Promise<void> {
+    setStarting(true);
+    try {
+      const repoId = info?.manifest.repos.find((r) => r.path === cwd)?.id ?? null;
+      const { run, terminal } = await client.request("agent.interactive", {
+        prompt: effectivePrompt,
+        cwd,
+        taskId: task.id,
+        projectId: project.id,
+        repoId,
+        agentId: dispatchAgent?.id ?? null,
+        purpose,
+        tags: task.labels,
+      });
+      patchTask({
+        runIds: [...task.runIds, run.id],
+        status: task.status === "backlog" ? "in_progress" : task.status,
+      });
+      if (activeWs) await focusTerminal(activeWs, terminal.id);
+    } finally {
+      setStarting(false);
     }
-    const run = await startRun({
-      prompt: `Answer to your question "${question.text}":\n\n${answer}\n\nContinue the task.`,
-      cwd: originRun.cwd,
+  }
+
+  /**
+   * Record the answer server-side and hand it back to the asking session via
+   * `deliver`: an idle chain resumes, a busy one gets it queued, and an
+   * interactive terminal session has it typed in — resuming the session here
+   * directly (the old path) would fork it whenever the asker was mid-turn.
+   */
+  async function answerQuestion(question: TaskQuestion, answer: string): Promise<void> {
+    const result = await client.request("task.answer", {
+      path: projectPath,
       taskId: task.id,
-      projectId: project.id,
-      repoId: originRun.repoId,
-      resumeSessionId: originRun.sessionId,
-      isolation: "none",
-      agentId: originRun.agentId ?? dispatchAgent?.id ?? null,
-      purpose: "question",
-      tags: task.labels,
+      questionId: question.id,
+      answer,
     });
-    patchTask({ questions: answered, runIds: [...task.runIds, run.id] });
-    onOpenRun(run.id);
+    if (!result.ok) throw new Error(result.reason);
+    if (result.resumedRunId) onOpenRun(result.resumedRunId);
   }
 
   return (
@@ -540,6 +561,15 @@ export function TaskDetail({
             >
               <Play className="h-3 w-3" /> Run
             </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={starting || !effectivePrompt.trim()}
+              onClick={() => void runInteractive()}
+              title="Run as a native interactive Claude session in the terminal panel — answer its questions there (or later from the board, where they are still logged)"
+            >
+              <TerminalSquare className="h-3 w-3" /> Terminal
+            </Button>
           </div>
           <div className="mt-1.5 flex items-center gap-1 text-[11px] text-ink-muted">
             <Bot className="h-3 w-3 shrink-0" />
@@ -622,6 +652,7 @@ function QuestionRow({
 }) {
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const answered = question.answer != null;
 
   return (
@@ -653,7 +684,10 @@ function QuestionRow({
             disabled={sending || !draft.trim()}
             onClick={() => {
               setSending(true);
-              void onAnswer(question, draft.trim()).finally(() => setSending(false));
+              setError(null);
+              void onAnswer(question, draft.trim())
+                .catch((err: Error) => setError(err.message))
+                .finally(() => setSending(false));
             }}
             aria-label="Send answer and resume the agent"
           >
@@ -661,6 +695,7 @@ function QuestionRow({
           </Button>
         </div>
       )}
+      {error ? <p className="mt-1 pl-4.5 text-[10px] text-danger">{error}</p> : null}
     </div>
   );
 }

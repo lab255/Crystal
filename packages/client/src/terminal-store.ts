@@ -29,6 +29,8 @@ export interface TerminalTab {
   ws: string;
   kind: TerminalTabKind;
   status: "running" | "exited";
+  /** Tab label override (interactive agent sessions); null = derive from ws/cwd. */
+  title: string | null;
   /** Workspace-relative working directory (shells). */
   cwd: string;
   /** Server-side PTY size (shells) — shared across clients, last resizer wins. */
@@ -44,7 +46,15 @@ export interface TerminalsState {
   tabs: TerminalTab[];
   activeTabId: string | null;
   chunksByTab: Record<string, TermChunk[]>;
+  /**
+   * Whether the bottom panel is visible. Lives here (not component state) so
+   * dispatching an interactive agent session can reveal its terminal.
+   */
+  panelOpen: boolean;
 
+  setPanelOpen(open: boolean): void;
+  /** Reveal the panel and focus a (possibly not-yet-synced) server terminal. */
+  focusTerminal(ws: string, terminalId: string): Promise<void>;
   /** Sync shell tabs with the server's terminals for the given workspaces. */
   refresh(wsIds: string[]): Promise<void>;
   openShell(ws: string, cwd?: string, cols?: number, rows?: number): Promise<string>;
@@ -135,6 +145,21 @@ export function createTerminalsStore(client: BridgeClient): TerminalsStore {
     tabs: [],
     activeTabId: null,
     chunksByTab: {},
+    panelOpen: false,
+
+    setPanelOpen(open) {
+      set({ panelOpen: open });
+    },
+
+    async focusTerminal(ws, terminalId) {
+      // The terminal.changed broadcast usually lands before the caller gets
+      // here; refresh covers the race (and hydrates the replay buffer).
+      if (!get().tabs.some((t) => t.id === terminalId)) {
+        await get().refresh([...new Set([...get().tabs.map((t) => t.ws), ws])]);
+      }
+      set({ panelOpen: true });
+      if (get().tabs.some((t) => t.id === terminalId)) set({ activeTabId: terminalId });
+    },
 
     async refresh(wsIds) {
       const lists = await Promise.all(
@@ -155,6 +180,7 @@ export function createTerminalsStore(client: BridgeClient): TerminalsStore {
             ws,
             kind: "shell" as const,
             status: info.status,
+            title: info.title ?? null,
             cwd: info.cwd,
             cols: info.cols,
             rows: info.rows,
@@ -218,6 +244,7 @@ export function createTerminalsStore(client: BridgeClient): TerminalsStore {
                 ws,
                 kind: "shell",
                 status: terminal.status,
+                title: terminal.title ?? null,
                 cwd: terminal.cwd,
                 cols: terminal.cols,
                 rows: terminal.rows,
@@ -240,6 +267,7 @@ export function createTerminalsStore(client: BridgeClient): TerminalsStore {
             ws,
             kind: "agent",
             status: "running",
+            title: null,
             cwd: ".",
             cols: null,
             rows: null,
@@ -355,6 +383,7 @@ export function createTerminalsStore(client: BridgeClient): TerminalsStore {
               ws,
               kind: "shell" as const,
               status: terminal.status,
+              title: terminal.title ?? null,
               cwd: terminal.cwd,
               cols: terminal.cols,
               rows: terminal.rows,

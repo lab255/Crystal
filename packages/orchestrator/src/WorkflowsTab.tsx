@@ -454,8 +454,8 @@ function WorkflowDetail({
                 key={`${q.taskId}-${i}`}
                 type="button"
                 onClick={() => onOpenTask?.(q.taskId)}
-                className="block w-full truncate text-left text-[11px] text-ink hover:underline"
-                title="Answer on the board"
+                className="block w-full text-left text-[11px] leading-snug text-ink hover:underline line-clamp-2"
+                title={`${q.text}\n\n(answer on the board)`}
               >
                 <span className="font-semibold text-warn">Q</span> {q.text}
                 <span className="text-ink-faint"> — {q.taskTitle}</span>

@@ -13,6 +13,7 @@ import {
   RotateCcw,
   Send,
   Target,
+  TerminalSquare,
   Trash2,
 } from "lucide-react";
 import {
@@ -38,6 +39,8 @@ import {
   useHub,
   useNav,
   useNavUpdate,
+  useTerminals,
+  useWorkspaces,
 } from "@crystal/client";
 import {
   Badge,
@@ -407,12 +410,19 @@ function QuestionRow({ programId, question }: { programId: string; question: Hub
   return (
     <div className="mt-1">
       <div className="flex items-start gap-1.5">
+        {/* Collapsed rows clamp, never single-line truncate — and answering
+            shows the whole question: you can't answer what you can't read. */}
         <button
           type="button"
           onClick={() => setAnswering((v) => !v)}
-          className="min-w-0 flex-1 truncate text-left text-[11px] text-ink hover:underline"
+          title={answering ? undefined : question.text}
+          className={cn(
+            "min-w-0 flex-1 text-left text-[11px] leading-snug text-ink hover:underline",
+            !answering && "line-clamp-2",
+          )}
         >
-          <span className="font-medium text-warn">{question.projectName}</span> {question.text}
+          <span className="font-medium text-warn">{question.projectName}</span>{" "}
+          <span className={cn(answering && "whitespace-pre-wrap")}>{question.text}</span>
           <span className="text-ink-faint"> — {question.taskTitle}</span>
         </button>
         <Tooltip content="Open the task on that project's board">
@@ -703,8 +713,24 @@ function ManagerSession({ program }: { program: Program }) {
   const startManager = useHub((s) => s.startManager);
   const message = useHub((s) => s.message);
   const cancelRun = useHub((s) => s.cancelRun);
+  const activeWs = useWorkspaces((s) => s.activeId);
+  const openWsIds = useWorkspaces((s) => s.workspaces);
+  const focusTerminal = useTerminals((s) => s.focusTerminal);
   const nav = useNavUpdate();
   const selectedRun = useNav((l) => l.hub?.run) ?? null;
+
+  // Where an interactive manager's PTY would live: prefer a workspace this
+  // program is already delivering into, else whatever is active.
+  const hostWs =
+    program.deliveries
+      .map((d) => d.ws)
+      .find((ws) => ws && openWsIds.some((w) => w.id === ws)) ?? activeWs;
+
+  async function startInteractive(): Promise<void> {
+    if (!hostWs) return;
+    const run = await startManager(program.id, { ws: hostWs });
+    if (run.terminalId) await focusTerminal(hostWs, run.terminalId);
+  }
 
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
@@ -754,19 +780,38 @@ function ManagerSession({ program }: { program: Program }) {
           title="No program manager"
           action={
             terminal ? undefined : (
-              <Button
-                variant="secondary"
-                size="sm"
-                disabled={busy}
-                onClick={() => {
-                  setBusy(true);
-                  void startManager(program.id)
-                    .catch((err: Error) => setNotice(err.message))
-                    .finally(() => setBusy(false));
-                }}
-              >
-                <Bot className="h-3 w-3" /> Start one
-              </Button>
+              <div className="flex items-center gap-2">
+                <Tooltip content="A native interactive Claude session in the terminal panel — it asks you decisions directly (AskUserQuestion); notices and answers are typed into it live.">
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    disabled={busy || !hostWs}
+                    onClick={() => {
+                      setBusy(true);
+                      void startInteractive()
+                        .catch((err: Error) => setNotice(err.message))
+                        .finally(() => setBusy(false));
+                    }}
+                  >
+                    <TerminalSquare className="h-3 w-3" /> Start in terminal
+                  </Button>
+                </Tooltip>
+                <Tooltip content="A headless session driven from this pane — it wakes on settlements and questions, and you steer it with messages here.">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={busy}
+                    onClick={() => {
+                      setBusy(true);
+                      void startManager(program.id)
+                        .catch((err: Error) => setNotice(err.message))
+                        .finally(() => setBusy(false));
+                    }}
+                  >
+                    <Bot className="h-3 w-3" /> Start headless
+                  </Button>
+                </Tooltip>
+              </div>
             )
           }
         >
@@ -812,6 +857,22 @@ function ManagerSession({ program }: { program: Program }) {
           </div>
         ) : null}
       </div>
+      {viewed?.terminalId ? (
+        <div className="flex items-center gap-2 border-t border-edge bg-surface-2/50 px-4 py-1.5 text-[11px] text-ink-muted">
+          <TerminalSquare className="h-3 w-3 shrink-0 text-crystal-300" />
+          This manager runs interactively — talk to it in its terminal.
+          <Button
+            variant="ghost"
+            size="xs"
+            onClick={() => {
+              const ws = viewed.terminalWs ?? hostWs;
+              if (ws && viewed.terminalId) void focusTerminal(ws, viewed.terminalId);
+            }}
+          >
+            Open its terminal →
+          </Button>
+        </div>
+      ) : null}
       <div className="flex h-80 flex-col border-t border-edge">
         <RunTranscript events={events} runId={viewedId} starting={viewed?.status === "running"} />
       </div>

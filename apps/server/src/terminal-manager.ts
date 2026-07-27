@@ -37,6 +37,33 @@ function clampDim(value: number | undefined, fallback: number): number {
 }
 
 /**
+ * Wrap text for injection into a TUI's input as one paste: bracketed-paste
+ * markers keep embedded newlines from submitting line-by-line, the trailing
+ * \r submits. This is exactly what a terminal emulator sends when a user
+ * pastes and hits Enter.
+ */
+export function pasteInput(text: string): string {
+  return `\x1b[200~${text}\x1b[201~\r`;
+}
+
+/** A program (argv, not a shell line) for a terminal to run instead of a bare shell. */
+export interface TerminalCommand {
+  file: string;
+  args: string[];
+  env?: Record<string, string | undefined>;
+}
+
+export interface TerminalCreateOptions {
+  cwd?: string;
+  cols?: number;
+  rows?: number;
+  /** Run this program on the PTY instead of the default shell. */
+  command?: TerminalCommand;
+  /** Tab label override (command terminals — interactive agent sessions). */
+  title?: string | null;
+}
+
+/**
  * PTY terminals for one workspace: a persistent shell per terminal running on
  * a real pseudo-terminal (ConPTY on Windows), so interactive CLIs and TUIs
  * work. Raw output (ANSI included, input echoed by the PTY) is buffered for
@@ -58,33 +85,46 @@ export class TerminalManager {
     return [...this.terminals.values()].map((r) => ({ ...r.info }));
   }
 
-  create(cwd = ".", cols?: number, rows?: number): TerminalInfo {
-    const cwdAbs = resolveInRoot(this.root, cwd);
-    const shell = defaultShell();
+  create(opts: TerminalCreateOptions = {}): TerminalInfo {
+    const cwdAbs = resolveInRoot(this.root, opts.cwd ?? ".");
+    // A .cmd/.bat command can't be CreateProcess'd directly — route it through
+    // cmd.exe. Argv is joined by node-pty's own quoting; command args here are
+    // internal (paths, flags, ids), never free-form user text (prompts go over
+    // the PTY as input, same as CLAUDE.md's stdin rule for headless runs).
+    let file = opts.command?.file ?? defaultShell();
+    let args = opts.command ? [...opts.command.args] : [];
+    if (opts.command && process.platform === "win32" && /\.(cmd|bat)$/i.test(file)) {
+      args = ["/c", file, ...args];
+      file = process.env.ComSpec ?? "cmd.exe";
+    }
     const info: TerminalInfo = {
       id: uid("term"),
       cwd: toRelPath(this.root, cwdAbs) || ".",
-      shell,
+      shell: file,
+      title: opts.title ?? null,
       status: "running",
       exitCode: null,
       createdAt: nowIso(),
-      cols: clampDim(cols, DEFAULT_COLS),
-      rows: clampDim(rows, DEFAULT_ROWS),
+      cols: clampDim(opts.cols, DEFAULT_COLS),
+      rows: clampDim(opts.rows, DEFAULT_ROWS),
     };
     const record: TerminalRecord = { info, pty: null, chunks: [], seq: 0 };
     this.terminals.set(info.id, record);
 
     let pty: IPty;
     try {
-      pty = spawnPty(shell, [], {
+      pty = spawnPty(file, args, {
         name: "xterm-256color",
         cols: info.cols,
         rows: info.rows,
         cwd: cwdAbs,
-        env: process.env as Record<string, string>,
+        env: { ...(process.env as Record<string, string>), ...(opts.command?.env ?? {}) } as Record<
+          string,
+          string
+        >,
       });
     } catch (err) {
-      this.exit(record, null, `Failed to spawn ${shell}: ${(err as Error).message}`);
+      this.exit(record, null, `Failed to spawn ${file}: ${(err as Error).message}`);
       return { ...info };
     }
     record.pty = pty;
@@ -105,6 +145,25 @@ export class TerminalManager {
       throw new Error(`Terminal ${terminalId} is not running`);
     }
     record.pty.write(data);
+  }
+
+  /**
+   * Type `text` into the terminal as one paste after `delayMs` — the seam for
+   * feeding an interactive agent session its opening prompt. A TUI isn't
+   * reading raw input the instant it spawns; the delay gives it time to mount
+   * and enable bracketed paste. Best-effort: a terminal that died (or was
+   * killed) before the timer fires just drops the write.
+   */
+  writeWhenReady(terminalId: string, text: string, delayMs: number): void {
+    const timer = setTimeout(() => {
+      try {
+        this.input(terminalId, pasteInput(text));
+      } catch {
+        // Terminal exited before it could take the prompt — visible in its
+        // scrollback, nothing further to do.
+      }
+    }, delayMs);
+    timer.unref?.();
   }
 
   /** Resize the PTY. Last writer wins; the new size broadcasts via `changed`. */

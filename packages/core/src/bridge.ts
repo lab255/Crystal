@@ -340,6 +340,30 @@ export interface BridgeMethods {
     params: WsScope & { managerRunId: string; spec: WorkerSpec };
     result: { run: AgentRun | null };
   };
+  /**
+   * Dispatch a run as a native *interactive* Claude session: a PTY terminal
+   * (surfaced in the terminal panel) running the Claude TUI with the same
+   * per-run MCP config a headless run would get, so board tools (my_task,
+   * ask_question…) still work while the owner answers questions natively —
+   * AskUserQuestion in the terminal, with ask_question logging each decision
+   * on the board for a later answer if the owner steps away.
+   */
+  "agent.interactive": {
+    params: WsScope & {
+      prompt: string;
+      cwd?: string;
+      taskId?: string | null;
+      projectId?: string | null;
+      repoId?: string | null;
+      /** Agent profile to dispatch to — the server resolves model + skills from the roster. */
+      agentId?: string | null;
+      purpose?: RunPurpose | null;
+      tags?: string[];
+      cols?: number;
+      rows?: number;
+    };
+    result: { run: AgentRun; terminal: TerminalInfo };
+  };
   "agent.cancel": { params: WsScope & { runId: string }; result: { ok: true } };
   "agent.list": { params: WsScope; result: { runs: AgentRun[] } };
   "agent.events": { params: WsScope & { runId: string }; result: { events: RunEvent[] } };
@@ -748,7 +772,17 @@ export interface BridgeMethods {
    * through the hub's MCP tools (splitting, dispatching, sequencing).
    */
   "hub.startManager": {
-    params: { programId: string; model?: string | null };
+    params: {
+      programId: string;
+      model?: string | null;
+      /**
+       * Run the manager as a native interactive Claude session in a PTY
+       * terminal hosted by workspace `ws` (the manager still coordinates via
+       * the hub MCP endpoint; the terminal is just where it lives). Omit for
+       * the classic headless resume-chained session.
+       */
+      terminal?: { ws: string; cols?: number; rows?: number } | null;
+    };
     result: { program: Program; run: AgentRun };
   };
   /** Deliver an owner message into the program manager's session. */

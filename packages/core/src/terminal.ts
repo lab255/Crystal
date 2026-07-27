@@ -18,6 +18,8 @@ export interface TerminalInfo {
   cwd: string;
   /** Shell binary the terminal runs. */
   shell: string;
+  /** Tab label override — set for command terminals (interactive agent sessions). */
+  title?: string | null;
   status: TerminalStatus;
   exitCode: number | null;
   createdAt: string;

@@ -12,6 +12,7 @@ import {
   useHub,
   useNav,
   useNavUpdate,
+  useTerminals,
   useWorkspace,
   useWorkspaces,
 } from "@crystal/client";
@@ -100,7 +101,10 @@ export function CrystalShell({
     setVisited((v) => (v.has(mode) ? v : new Set(v).add(mode)));
   }, [mode]);
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [terminalOpen, setTerminalOpen] = useState(false);
+  // Panel visibility lives in the terminals store so anything dispatching an
+  // interactive agent session can reveal the panel (see focusTerminal).
+  const terminalOpen = useTerminals((s) => s.panelOpen);
+  const setTerminalOpen = useTerminals((s) => s.setPanelOpen);
 
   const { terminalsStore, workspacesStore, navStore } = useCrystal();
   const connection = useConnectionState();
@@ -178,7 +182,7 @@ export function CrystalShell({
         switchMode(CRYSTAL_MODES[Number(e.key) - 1]!);
       } else if ((e.ctrlKey || e.metaKey) && e.key === "`") {
         e.preventDefault();
-        setTerminalOpen((open) => !open);
+        terminalsStore.getState().setPanelOpen(!terminalsStore.getState().panelOpen);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -207,7 +211,7 @@ export function CrystalShell({
       const detail = (e as CustomEvent<{ ws?: string; kind?: "shell" | "agent" }>).detail;
       const ws = detail?.ws ?? workspacesStore.getState().activeId;
       if (!ws) return;
-      setTerminalOpen(true);
+      terminalsStore.getState().setPanelOpen(true);
       if (detail?.kind === "agent") terminalsStore.getState().openAgentConsole(ws);
       else void terminalsStore.getState().openShell(ws);
     };
@@ -324,7 +328,7 @@ export function CrystalShell({
                 type="button"
                 aria-label="Toggle terminal panel"
                 aria-pressed={terminalOpen}
-                onClick={() => setTerminalOpen((open) => !open)}
+                onClick={() => setTerminalOpen(!terminalOpen)}
                 className={cn(
                   "flex items-center gap-1 rounded px-1 hover:bg-surface-3 hover:text-ink",
                   terminalOpen ? "text-ink" : "text-ink-muted",

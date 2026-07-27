@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   AgentManager,
+  claudeInteractiveArgs,
   claudeRunArgs,
   composeNoticePrompt,
   planClaudeSpawn,
@@ -37,6 +38,33 @@ describe("claudeRunArgs", () => {
     expect(allowed).toContain("Bash(git commit *)");
     expect(args[args.indexOf("--model") + 1]).toBe("opus");
     expect(args[args.indexOf("--resume") + 1]).toBe("sess_1");
+  });
+});
+
+describe("claudeInteractiveArgs", () => {
+  it("plans a TUI session, not a headless print run", () => {
+    const args = claudeInteractiveArgs({
+      model: "opus",
+      sessionId: "11111111-2222-3333-4444-555555555555",
+      mcpConfigPath: "C:\\data\\mcp\\run_1.json",
+    });
+    // No -p / stream-json — the TUI renders itself on the PTY.
+    expect(args).not.toContain("-p");
+    expect(args).not.toContain("stream-json");
+    // The pinned session id is what keeps the chain resumable after the
+    // terminal closes (the TUI never tells us its session id otherwise).
+    expect(args[args.indexOf("--session-id") + 1]).toBe("11111111-2222-3333-4444-555555555555");
+    expect(args[args.indexOf("--model") + 1]).toBe("opus");
+    const allowed = args[args.indexOf("--allowedTools") + 1]!;
+    expect(allowed.startsWith("mcp__crystal,")).toBe(true);
+    expect(allowed).toContain("Bash(git commit *)");
+  });
+
+  it("drops the mcp pre-allow when no config rides along", () => {
+    const args = claudeInteractiveArgs({});
+    expect(args).not.toContain("--mcp-config");
+    expect(args).not.toContain("--session-id");
+    expect(args[args.indexOf("--allowedTools") + 1]).not.toContain("mcp__crystal");
   });
 });
 
@@ -112,6 +140,83 @@ describe("AgentManager spawn failure resilience", () => {
     const run = await mgr.start({ prompt: "noop" });
     const settled = await mgr.waitForSettled(run.id);
     expect(settled.status).toBe("failed");
+  });
+});
+
+describe("interactive sessions", () => {
+  let tmp: string | null = null;
+
+  afterEach(async () => {
+    if (tmp) await fs.rm(tmp, { recursive: true, force: true });
+    tmp = null;
+  });
+
+  async function makeManager(): Promise<AgentManager> {
+    tmp = await fs.mkdtemp(path.join(os.tmpdir(), "crystal-interactive-test-"));
+    const root = path.join(tmp, "root");
+    await fs.mkdir(root, { recursive: true });
+    // "node" resolves everywhere without the login-shell fallback; no process
+    // is ever spawned by these tests (the host owns the PTY).
+    return new AgentManager(root, path.join(tmp, "data"), "node", {
+      baseUrl: "http://127.0.0.1:9",
+      scope: "ws_test",
+    });
+  }
+
+  it("prepares a task session: pinned session id, mcp config, interactive protocol", async () => {
+    const mgr = await makeManager();
+    const plan = await mgr.prepareInteractive({ prompt: "Fix the bug.", taskId: "task_1" });
+    expect(plan.run.sessionId).toMatch(/[0-9a-f-]{36}/);
+    expect(plan.args[plan.args.indexOf("--session-id") + 1]).toBe(plan.run.sessionId);
+    // Task-bound → per-run mcp config on disk, endpoint carrying the run id.
+    const cfgPath = plan.args[plan.args.indexOf("--mcp-config") + 1]!;
+    const cfg = JSON.parse(await fs.readFile(cfgPath, "utf8"));
+    expect(cfg.mcpServers.crystal.url).toContain(plan.run.id);
+    // The typed-in prompt carries the paired ask flow, never as argv.
+    expect(plan.args.join(" ")).not.toContain("Fix the bug.");
+    expect(plan.prompt).toContain("Fix the bug.");
+    expect(plan.prompt).toContain("ask_question");
+    expect(plan.prompt).toContain("AskUserQuestion");
+    expect(plan.prompt).toContain("resolve_question");
+  });
+
+  it("delivers into the live terminal, then settles on terminal exit", async () => {
+    const mgr = await makeManager();
+    const typed: string[] = [];
+    mgr.interactiveInput = (run, text) => {
+      typed.push(`${run.terminalId}:${text}`);
+      return true;
+    };
+    const plan = await mgr.prepareInteractive({ prompt: "Go.", taskId: "task_1" });
+    const run = await mgr.bindInteractive(plan.run.id, "term_1");
+    expect(run.status).toBe("running");
+    expect(run.terminalId).toBe("term_1");
+
+    // deliver() types into the PTY instead of queueing/resuming.
+    const delivered = await mgr.deliver(run.id, "Answer: yes, ship it.");
+    expect(delivered?.id).toBe(run.id);
+    expect(typed).toEqual(["term_1:Answer: yes, ship it."]);
+
+    await mgr.settleInteractive("term_1", 0);
+    expect((await mgr.get(run.id))?.status).toBe("completed");
+    // Settling twice (kill + exit event) must not double-finish.
+    await mgr.settleInteractive("term_1", 1);
+    expect((await mgr.get(run.id))?.status).toBe("completed");
+  });
+
+  it("cancel kills the terminal and reads cancelled, not failed", async () => {
+    const mgr = await makeManager();
+    const killed: string[] = [];
+    mgr.interactiveKill = (run) => {
+      killed.push(run.terminalId!);
+      // The host's kill surfaces as a terminal exit next.
+      void mgr.settleInteractive(run.terminalId!, null);
+    };
+    const plan = await mgr.prepareInteractive({ prompt: "Go.", taskId: "task_1" });
+    const run = await mgr.bindInteractive(plan.run.id, "term_2");
+    await mgr.cancel(run.id);
+    expect(killed).toEqual(["term_2"]);
+    expect((await mgr.get(run.id))?.status).toBe("cancelled");
   });
 });
 

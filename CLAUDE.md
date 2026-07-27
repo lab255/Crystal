@@ -130,7 +130,14 @@ build/sign (+notarize on macOS) → signed updater `latest.json`).
 - Waking an agent goes through `AgentManager.deliver`, never a bare
   `resumeChain`: a chain that is mid-turn cannot be resumed (two `--resume`s
   fork the session), so the message is queued and flushed when the turn
-  settles. Every settlement flushes *its own* chain's queue as well as its
+  settles. Interactive runs (the native Claude TUI on a workspace PTY,
+  `run.terminalId` set; `terminalWs` when the hub owns the run but a workspace
+  hosts the terminal) are the exception `deliver` handles first: the message
+  is typed into the terminal as one bracketed paste — the TUI queues mid-turn
+  input itself, so it can never fork. Prompts still never ride argv; they are
+  typed in after `INTERACTIVE_PROMPT_DELAY_MS`. The pinned `--session-id`
+  is what lets the chain resume *headlessly* after the terminal exits (exit
+  settles the run via `settleInteractive`, which flushes queued answers). Every settlement flushes *its own* chain's queue as well as its
   manager's — a worker that asked a question is the chain the answer is
   waiting on. Notices carry a kind: only settlement gets the board-keeping
   tail; a queued message is delivered verbatim.

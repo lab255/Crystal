@@ -245,6 +245,39 @@ export class OrchestrationService {
   }
 
   /**
+   * A run closes its own open question: the owner answered it out-of-band
+   * (interactively, in the run's terminal), so the board copy must stop
+   * reading as "waiting on you". By `questionId` when given, else the run's
+   * newest open question. No resume — the asker already has the answer.
+   */
+  resolveQuestion(
+    projectPath: string,
+    taskId: string,
+    runId: string,
+    resolution: string,
+    questionId?: string | null,
+  ): Promise<{ ok: true } | { ok: false; reason: string }> {
+    return this.mutate(projectPath, (project) => {
+      const task = project.tasks.find((t) => t.id === taskId);
+      if (!task) return { ok: false as const, reason: `Unknown task: ${taskId}` };
+      const open = task.questions.filter((q) => q.answer == null && q.runId === runId);
+      const question = questionId ? open.find((q) => q.id === questionId) : open.at(-1);
+      if (!question) {
+        return {
+          ok: false as const,
+          reason: questionId
+            ? `No open question ${questionId} raised by this run.`
+            : "You have no open question to resolve.",
+        };
+      }
+      question.answer = `(answered interactively) ${resolution}`;
+      question.answeredAt = nowIso();
+      task.updatedAt = question.answeredAt;
+      return { ok: true as const };
+    });
+  }
+
+  /**
    * Record the answer to a question and hand it back to whoever asked: the
    * asking run's session is resumed with the answer so it carries on where it
    * stopped. Answering is uncontended — it is the human side of the exchange,

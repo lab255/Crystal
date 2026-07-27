@@ -41,7 +41,7 @@ import {
   type RunEvent,
   type Workflow,
 } from "@crystal/core";
-import type { AgentManager } from "./agent-manager.js";
+import type { AgentManager, InteractiveSpawn } from "./agent-manager.js";
 import { JsonRecordStore } from "./record-store.js";
 import { SettledRuns } from "./settled-runs.js";
 
@@ -66,6 +66,19 @@ import { SettledRuns } from "./settled-runs.js";
  * Programs are stored centrally (`~/.crystal/hub/programs`), not per workspace:
  * a program outlives any single project and routinely spans several.
  */
+
+/**
+ * Trailing protocol for an interactive program manager (a native Claude TUI
+ * in a workspace terminal, owner present). The headless prompt already covers
+ * the MCP protocol; this adds the terminal-native question etiquette.
+ */
+const INTERACTIVE_MANAGER_NOTE =
+  "\n\nYou are running interactively, in a terminal the program owner can see. When a " +
+  "decision needs the owner, put it to them directly with your AskUserQuestion tool — " +
+  "they answer right here (or from their phone). Project questions listed under NEEDS AN " +
+  "ANSWER still close only via answer_question; relay the owner's decision through it so " +
+  "the asking project resumes. Notices (settlements, new questions, owner messages) are " +
+  "typed into this session as they happen.";
 
 /** One project the hub can address (the protocol type lives in core). */
 export type HubProjectRef = HubProject;
@@ -754,6 +767,19 @@ export class HubEngine {
   /* ---------------- program manager ---------------- */
 
   /**
+   * Type text into the manager's live interactive terminal, if it has one.
+   * True = delivered; false = not interactive / terminal gone, use the
+   * headless resume/queue path.
+   */
+  private async interactiveNotify(program: Program, text: string): Promise<boolean> {
+    if (!this.agents || !program.managerRunId) return false;
+    const run = await this.agents
+      .deliverInteractive(program.managerRunId, text)
+      .catch(() => null);
+    return run != null;
+  }
+
+  /**
    * Spawn the interactive program-manager session: a resume-chained run,
    * rooted in the hub's own directory (it coordinates, it does not edit code),
    * carrying the `program:<id>` tag that scopes its MCP toolset and attributes
@@ -761,11 +787,7 @@ export class HubEngine {
    */
   async startManager(programId: string, model: string | null = "opus"): Promise<AgentRun> {
     if (!this.agents) throw new Error("Program manager sessions are not available on this server.");
-    const program = await this.get(programId);
-    if (!program) throw new Error(`Unknown program: ${programId}`);
-    if (program.managerRunId) {
-      throw new Error(`Program ${programId} already has a manager session.`);
-    }
+    const program = await this.requireManagerless(programId);
     const run = await this.agents.start({
       prompt: buildProgramManagerPrompt(program),
       role: "manager",
@@ -778,6 +800,58 @@ export class HubEngine {
       result: undefined,
     }));
     return run;
+  }
+
+  private async requireManagerless(programId: string): Promise<Program> {
+    const program = await this.get(programId);
+    if (!program) throw new Error(`Unknown program: ${programId}`);
+    if (program.managerRunId) {
+      throw new Error(`Program ${programId} already has a manager session.`);
+    }
+    return program;
+  }
+
+  /**
+   * Plan an *interactive* program-manager session: the native Claude TUI on a
+   * PTY, instead of a headless resume-chained run. The server hosts the
+   * terminal in whichever workspace the owner asked for (the hub has no PTYs
+   * of its own) and binds it back via {@link bindManagerTerminal}; question
+   * notices and owner messages are then typed straight into the session,
+   * where the manager can put decisions to the owner with AskUserQuestion.
+   */
+  async prepareInteractiveManager(
+    programId: string,
+    model: string | null = "opus",
+  ): Promise<InteractiveSpawn> {
+    if (!this.agents) throw new Error("Program manager sessions are not available on this server.");
+    const program = await this.requireManagerless(programId);
+    const spawn = await this.agents.prepareInteractive({
+      prompt: buildProgramManagerPrompt(program) + INTERACTIVE_MANAGER_NOTE,
+      role: "manager",
+      purpose: "manage",
+      tags: [programTag(programId)],
+      model,
+    });
+    await this.mutate(programId, (current) => ({
+      program: { ...current, managerRunId: spawn.run.id },
+      result: undefined,
+    }));
+    return spawn;
+  }
+
+  /** Attach a prepared interactive manager to the workspace terminal hosting it. */
+  async bindManagerTerminal(runId: string, terminalId: string, ws: string): Promise<AgentRun> {
+    if (!this.agents) throw new Error("Program manager sessions are not available on this server.");
+    return this.agents.bindInteractive(runId, terminalId, ws);
+  }
+
+  /**
+   * A workspace terminal exited — settle any interactive manager it hosted.
+   * Routed through the registry's broadcast seam (like onWorkflowChanged):
+   * the hub's runs live outside every workspace, so no runtime settles them.
+   */
+  async settleInteractiveManager(terminalId: string, exitCode: number | null): Promise<void> {
+    await this.agents?.settleInteractive(terminalId, exitCode);
   }
 
   /**
@@ -804,6 +878,11 @@ export class HubEngine {
     if (!this.agents || !program.managerRunId) {
       throw new Error(`Program ${programId} has no manager session — start one first.`);
     }
+    // An interactive manager takes the message in its terminal, mid-turn or not.
+    const interactive = await this.agents
+      .deliverInteractive(program.managerRunId, formatProgramMessage(text))
+      .catch(() => null);
+    if (interactive) return { run: interactive, queued: false };
     const run = await this.agents.resumeChain(program.managerRunId, formatProgramMessage(text));
     if (!run) {
       this.queueNotice(programId, formatProgramMessage(text));
@@ -825,6 +904,7 @@ export class HubEngine {
    */
   private async notifyManager(program: Program, text: string): Promise<void> {
     if (!this.agents || !program.managerRunId) return;
+    if (await this.interactiveNotify(program, text)) return;
     const run = await this.agents.resumeChain(program.managerRunId, text).catch(() => null);
     if (!run) this.queueNotice(program.id, text);
   }
@@ -840,7 +920,9 @@ export class HubEngine {
         ? pending[0]!
         : `${pending.length} updates arrived while you were working.\n\n${pending.join("\n\n---\n\n")}`;
     const delivered = pending.length;
-    const run = await this.agents.resumeChain(program.managerRunId, text);
+    const run = (await this.interactiveNotify(program, text))
+      ? await this.agents.get(program.managerRunId)
+      : await this.agents.resumeChain(program.managerRunId, text);
     if (run) {
       const rest = (this.pendingNotices.get(programId) ?? []).slice(delivered);
       if (rest.length) this.pendingNotices.set(programId, rest);

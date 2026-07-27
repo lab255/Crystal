@@ -50,8 +50,9 @@ export function TerminalPanel({ onClose }: { onClose: () => void }) {
               >
                 <Icon className="h-3 w-3" />
                 <span className="max-w-40 truncate">
-                  {wsName(t.ws)}
-                  {t.kind === "shell" && t.cwd !== "." ? `/${t.cwd}` : ""}
+                  {t.title
+                    ? `${t.title} — ${wsName(t.ws)}`
+                    : `${wsName(t.ws)}${t.kind === "shell" && t.cwd !== "." ? `/${t.cwd}` : ""}`}
                 </span>
                 {t.kind === "agent" && t.activeRunId ? (
                   <StatusDot status="running" />

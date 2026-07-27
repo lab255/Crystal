@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import {
@@ -48,6 +49,54 @@ export interface AgentStartParams {
   /** Git branch for the run's worktree (implies worktree isolation). */
   branch?: string | null;
 }
+
+/** What an interactive dispatch needs from the caller (no resume, no worktrees). */
+export interface InteractiveStartParams {
+  prompt: string;
+  cwd?: string;
+  taskId?: string | null;
+  projectId?: string | null;
+  repoId?: string | null;
+  agentId?: string | null;
+  role?: AgentRole | null;
+  purpose?: RunPurpose | null;
+  tags?: string[];
+  model?: string | null;
+  skills?: string[];
+}
+
+/**
+ * Everything needed to host a prepared interactive run on a PTY: the program
+ * to spawn, and the opening prompt to type into it (prompts travel as PTY
+ * input, never argv — same rule as stdin on headless runs).
+ */
+export interface InteractiveSpawn {
+  run: AgentRun;
+  file: string;
+  args: string[];
+  env: Record<string, string | undefined>;
+  /** Workspace-relative cwd for the hosting terminal. */
+  cwd: string;
+  prompt: string;
+}
+
+/**
+ * The trailing protocol for an interactive task session. On top of the
+ * headless board tools, it pairs the native AskUserQuestion flow with the
+ * board's question log — ask_question first so the decision is answerable
+ * later from the hub/board, AskUserQuestion for the owner at the terminal,
+ * resolve_question to close the board copy once the interactive answer lands.
+ */
+const INTERACTIVE_TASK_NOTE =
+  "\n\nYour work is tracked on a Crystal board task. Use your mcp__crystal__* tools: " +
+  "my_task (its details and acceptance criteria) and update_my_task (move its status as " +
+  "you progress — in_progress when you start, review when done and green).\n\n" +
+  "You are running interactively, with the task's owner at the terminal. When you need " +
+  "their decision: first file it with ask_question (that logs it on the board, where the " +
+  "owner can answer later if they step away), then ask the same thing natively with your " +
+  "AskUserQuestion tool. When the interactive answer arrives, act on it and call " +
+  "resolve_question with the outcome so the board copy closes. If no answer comes, keep " +
+  "working everything not gated on it — board answers are typed into this session.";
 
 const MAX_DIFF_BYTES = 1024 * 1024;
 
@@ -172,6 +221,28 @@ export function claudeRunArgs(opts: {
   return args;
 }
 
+/**
+ * Argv for an *interactive* Claude session (the native TUI on a PTY). No
+ * `-p`/stream-json — the TUI renders itself; the PTY's raw byte stream is the
+ * transcript. `--session-id` pins a known id so the chain stays resumable
+ * headlessly after the terminal closes (a queued answer can still reach the
+ * session). The MCP + dev-loop pre-allows mirror headless runs: the owner is
+ * present, but routine git/test/board calls shouldn't nag them either.
+ */
+export function claudeInteractiveArgs(opts: {
+  model?: string | null;
+  sessionId?: string | null;
+  mcpConfigPath?: string | null;
+}): string[] {
+  const args = ["--permission-mode", "acceptEdits"];
+  if (opts.sessionId) args.push("--session-id", opts.sessionId);
+  if (opts.model) args.push("--model", opts.model);
+  if (opts.mcpConfigPath) args.push("--mcp-config", opts.mcpConfigPath);
+  const allowed = [...(opts.mcpConfigPath ? ["mcp__crystal"] : []), ...ALLOWED_RUN_TOOLS];
+  args.push("--allowedTools", allowed.join(","));
+  return args;
+}
+
 export function planClaudeSpawn(
   bin: string,
   args: string[],
@@ -256,6 +327,14 @@ export class AgentManager {
    * allow. Rejections surface to the manager as thrown dispatch errors.
    */
   dispatchGuard: ((manager: AgentRun, spec: WorkerSpec) => Promise<string | null>) | null = null;
+  /**
+   * Set by the host: type `text` into the PTY hosting an interactive run
+   * (bracketed paste + Enter). Returns false when the terminal is gone —
+   * delivery then falls back to the headless queue/resume path.
+   */
+  interactiveInput: ((run: AgentRun, text: string) => boolean) | null = null;
+  /** Set by the host: kill the PTY hosting an interactive run (cancel path). */
+  interactiveKill: ((run: AgentRun) => void) | null = null;
 
   constructor(
     private readonly root: string,
@@ -482,6 +561,107 @@ export class AgentManager {
   }
 
   /**
+   * Register an interactive run and plan its spawn — the native Claude TUI on
+   * a PTY instead of a headless `-p` process. The caller (server.ts) creates
+   * the hosting terminal from the returned plan, binds it with
+   * {@link bindInteractive}, and types the returned prompt into it. The run
+   * record exists before the TUI boots so its MCP endpoint resolves from the
+   * first tool call.
+   */
+  async prepareInteractive(params: InteractiveStartParams): Promise<InteractiveSpawn> {
+    await this.ensureLoaded();
+    const run = createAgentRun(params);
+    // A known session id (--session-id) keeps the chain resumable headlessly
+    // once the terminal closes — the TUI emits no stream-json to learn it from.
+    run.sessionId = randomUUID();
+    run.model = params.model ?? null;
+    this.runs.set(run.id, run);
+    this.runEvents.set(run.id, []);
+
+    const mcpConfig =
+      run.role === "manager" || run.taskId ? await this.writeMcpConfig(run.id) : null;
+    const args = claudeInteractiveArgs({
+      model: params.model,
+      sessionId: run.sessionId,
+      mcpConfigPath: mcpConfig,
+    });
+    const claudeBin = await this.claudePath();
+
+    let prompt = params.prompt;
+    if (params.skills?.length) {
+      prompt += `\n\nUse these skills where relevant: ${params.skills.map((s) => `/${s}`).join(", ")}.`;
+    }
+    if (mcpConfig && run.role !== "manager" && run.taskId) prompt += INTERACTIVE_TASK_NOTE;
+
+    return {
+      run: { ...run },
+      file: claudeBin,
+      args,
+      env: envWithBinDir({ ...process.env }, claudeBin),
+      cwd: run.cwd,
+      prompt,
+    };
+  }
+
+  /** Attach a prepared interactive run to the terminal now hosting it. */
+  async bindInteractive(
+    runId: string,
+    terminalId: string,
+    terminalWs: string | null = null,
+  ): Promise<AgentRun> {
+    await this.ensureLoaded();
+    const run = this.runs.get(runId);
+    if (!run) throw new Error(`Unknown run: ${runId}`);
+    run.terminalId = terminalId;
+    run.terminalWs = terminalWs;
+    run.status = "running";
+    run.startedAt = nowIso();
+    this.record(run, {
+      type: "status",
+      status: "running",
+      message: `Interactive session in terminal ${terminalId}`,
+    });
+    this.emitRunChanged(run);
+    await this.persist(run);
+    return { ...run };
+  }
+
+  /**
+   * A terminal hosting an interactive run exited — settle the run. Exit code 0
+   * (the owner ended the session) completes it; anything else failed. Settling
+   * flushes the chain's queued notices, which now resume it *headlessly* via
+   * the session id the terminal was launched with.
+   */
+  async settleInteractive(terminalId: string, exitCode: number | null): Promise<void> {
+    await this.ensureLoaded();
+    for (const run of this.runs.values()) {
+      if (run.terminalId !== terminalId || run.endedAt) continue;
+      await this.finish(
+        run,
+        exitCode === 0 ? "completed" : "failed",
+        `Interactive session ended (exit ${exitCode ?? "?"})`,
+      );
+    }
+  }
+
+  /**
+   * Type `text` into the live interactive terminal of the chain containing
+   * `runId`, if there is one. Returns that run on success, null otherwise —
+   * the caller falls back to queue/resume delivery. Landing input in the TUI
+   * is the whole point of interactive sessions: the TUI queues input arriving
+   * mid-turn itself, so unlike `--resume` this can never fork the session.
+   */
+  async deliverInteractive(runId: string, text: string): Promise<AgentRun | null> {
+    await this.ensureLoaded();
+    for (const id of this.chainIds(chainRootId(runId, this.runs))) {
+      const run = this.runs.get(id);
+      if (!run?.terminalId || run.endedAt || run.status !== "running") continue;
+      if (this.interactiveInput?.({ ...run }, text)) return { ...run };
+    }
+    return null;
+  }
+
+  /**
    * Give a worktree-isolated run its working directory. Branchless runs get
    * a fresh detached worktree. Branch-bound runs (workflow tracks) treat the
    * branch as an identity: successive workers on the same branch
@@ -662,6 +842,10 @@ export class AgentManager {
   async deliver(runId: string, prompt: string): Promise<AgentRun | null> {
     await this.ensureLoaded();
     const rootId = chainRootId(runId, this.runs);
+    // A live interactive terminal takes the message directly — typed into the
+    // TUI, which handles mid-turn input by queueing it natively.
+    const interactive = await this.deliverInteractive(rootId, prompt);
+    if (interactive) return interactive;
     const run = await this.resumeChain(rootId, prompt);
     if (run) return run;
     const queued = this.pendingNotices.get(rootId) ?? [];
@@ -777,6 +961,14 @@ export class AgentManager {
   async cancel(runId: string): Promise<void> {
     const proc = this.procs.get(runId);
     const run = this.runs.get(runId);
+    // Interactive runs have no child process of ours — kill their terminal.
+    // Settle first: the terminal's exit event must find `endedAt` set, so the
+    // run reads cancelled rather than failed.
+    if (!proc && run?.terminalId && !run.endedAt) {
+      await this.finish(run, "cancelled", "Interactive session cancelled");
+      this.interactiveKill?.({ ...run });
+      return;
+    }
     if (!proc || !run) throw new Error(`No active run ${runId}`);
     proc.cancelled = true;
     // On Windows kill the whole tree (a shell spawn puts claude under cmd.exe).
