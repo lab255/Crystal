@@ -102,7 +102,11 @@ export interface HubState {
    * `terminal` workspace to run it as a native interactive Claude session on
    * that workspace's PTY (surfaced in the terminal panel) instead of headless.
    */
-  startManager(programId: string, terminal?: { ws: string } | null): Promise<AgentRun>;
+  startManager(
+    programId: string,
+    terminal?: { ws: string } | null,
+    opts?: { model?: string | null; agentId?: string | null },
+  ): Promise<AgentRun>;
   /** Deliver an owner message into the program-manager session. */
   message(programId: string, text: string): Promise<{ queued: boolean }>;
   loadRunEvents(runId: string): Promise<void>;
@@ -231,7 +235,19 @@ export function createHubStore(client: BridgeClient): HubStore {
     },
 
     async answerQuestion(programId, questionId, answer) {
-      const result = await client.request("hub.answerQuestion", { programId, questionId, answer });
+      // Send where we saw the question (delivery + task): the server then
+      // answers that exact board task even when the delivery has settled —
+      // the live-deliveries re-derivation alone refuses those as "unknown".
+      const seen = (get().questions[programId] ?? []).find(
+        (q) => q.questionId === questionId,
+      );
+      const result = await client.request("hub.answerQuestion", {
+        programId,
+        questionId,
+        answer,
+        deliveryId: seen?.deliveryId ?? null,
+        taskId: seen?.taskId ?? null,
+      });
       // The server re-sweeps and pushes hub.questionsChanged; dropping it here
       // too means the row disappears the moment the answer lands.
       if (result.ok) {
@@ -276,8 +292,15 @@ export function createHubStore(client: BridgeClient): HubStore {
       set((s) => ({ programs: s.programs.filter((p) => p.id !== programId) }));
     },
 
-    async startManager(programId, terminal = null) {
-      const { program, run } = await client.request("hub.startManager", { programId, terminal });
+    async startManager(programId, terminal = null, opts = {}) {
+      // The bridge accepts model/agentId here — dropping them silently was
+      // why no caller could ever pick the manager's model.
+      const { program, run } = await client.request("hub.startManager", {
+        programId,
+        terminal,
+        model: opts.model ?? null,
+        agentId: opts.agentId ?? null,
+      });
       upsert(program);
       set((s) => ({ runs: [run, ...s.runs] }));
       return run;

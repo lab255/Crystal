@@ -771,6 +771,35 @@ describe("HubEngine", () => {
     expect(again).toEqual({ ok: false, reason: expect.stringContaining("already answered") });
   });
 
+  it("answers a question whose delivery already settled — the board, not the live derivation, decides", async () => {
+    const { hub, projects } = await fresh("answer-settled");
+    const program = await hub.create({ name: "P", goal: "g" });
+    await hub.addDelivery(program.id, { projectRoot: "/repos/auth-service", brief: "b" });
+    const report = await hub.dispatch(program.id);
+    const workflowId = report.dispatched[0]!.workflowId;
+    const deliveryId = report.dispatched[0]!.deliveryId;
+    projects.ask(workflowId, "q1", "Still waiting on this.");
+    await hub.onProjectChanged("ws-auth");
+
+    // The workflow fails with its question still open on the board: the live
+    // derivation stops seeing it, but the human still owes the answer.
+    await hub.onWorkflowChanged("ws-auth", projects.settle(workflowId, "failed"));
+    expect(await hub.questions(program.id)).toEqual([]);
+
+    // No context (external MCP caller): the board-scan fallback finds it.
+    const result = await hub.answerQuestion(program.id, "q1", "Here you go.");
+    expect(result).toEqual({ ok: true, resumedRunId: "run_resumed" });
+    expect(projects.answered).toEqual([{ questionId: "q1", answer: "Here you go." }]);
+
+    // With context (what the UI sends from its HubQuestion): a direct hit.
+    projects.ask(workflowId, "q2", "One more.");
+    const direct = await hub.answerQuestion(program.id, "q2", "Answered.", {
+      deliveryId,
+      taskId: "task_q2",
+    });
+    expect(direct).toEqual({ ok: true, resumedRunId: "run_resumed" });
+  });
+
   it("renders open questions into the agent-facing status", async () => {
     const { hub, projects } = await fresh("question-text");
     const program = await hub.create({ name: "P", goal: "g" });

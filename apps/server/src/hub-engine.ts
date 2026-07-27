@@ -28,6 +28,7 @@ import {
   programTag,
   readyDeliveries,
   applyProfileOverlay,
+  presetById,
   profileOverlay,
   type AgentProfile,
   type AgentProfileOverlay,
@@ -693,25 +694,65 @@ export class HubEngine {
     programId: string,
     questionId: string,
     answer: string,
+    /**
+     * Where the caller saw the question (the UI holds the full HubQuestion).
+     * Trusted first: the derived set below only covers *live* deliveries and
+     * current workflow membership, so a question still open on the board
+     * reads "unknown" here the moment its delivery settles — the board
+     * itself stays the validator (an answered question is refused there).
+     */
+    context?: { deliveryId?: string | null; taskId?: string | null },
   ): Promise<{ ok: true; resumedRunId: string | null } | { ok: false; reason: string }> {
-    const question = (await this.questions(programId)).find((q) => q.questionId === questionId);
-    if (!question) return { ok: false, reason: `Unknown (or already answered) question: ${questionId}` };
     const program = await this.get(programId);
-    const delivery = program ? deliveryById(program, question.deliveryId) : null;
+    if (!program) return { ok: false, reason: `Unknown program: ${programId}` };
+
+    const send = async (delivery: ProgramDelivery, taskId: string) => {
+      const result = await this.projects.answerQuestion(
+        delivery.ws!,
+        delivery.workflowId!,
+        taskId,
+        questionId,
+        answer,
+      );
+      // The board write broadcasts, which re-sweeps — but doing it here means
+      // the caller's own refetch already sees the question gone.
+      if (result.ok) await this.onProjectChanged(delivery.ws!);
+      return result;
+    };
+
+    if (context?.deliveryId && context.taskId) {
+      const delivery = deliveryById(program, context.deliveryId);
+      if (delivery?.ws && delivery.workflowId) return send(delivery, context.taskId);
+    }
+
+    let question = (await this.questions(programId)).find((q) => q.questionId === questionId);
+    if (!question) {
+      // Not in the live derivation — scan every dispatched delivery's board,
+      // terminal ones included: a delivery that settled can still owe answers
+      // for questions asked before it settled.
+      for (const delivery of program.deliveries) {
+        if (!delivery.ws || !delivery.workflowId) continue;
+        const raw = await this.projects
+          .openQuestions(delivery.ws, delivery.workflowId)
+          .catch(() => [] as ProjectQuestion[]);
+        const hit = raw.find((q) => q.questionId === questionId);
+        if (hit) {
+          question = {
+            ...hit,
+            deliveryId: delivery.id,
+            projectName: delivery.projectName,
+            ws: delivery.ws,
+          };
+          break;
+        }
+      }
+    }
+    if (!question) return { ok: false, reason: `Unknown (or already answered) question: ${questionId}` };
+    const delivery = deliveryById(program, question.deliveryId);
     if (!delivery?.ws || !delivery.workflowId) {
       return { ok: false, reason: `Delivery ${question.deliveryId} is no longer live.` };
     }
-    const result = await this.projects.answerQuestion(
-      delivery.ws,
-      delivery.workflowId,
-      question.taskId,
-      questionId,
-      answer,
-    );
-    // The board write broadcasts, which re-sweeps — but doing it here means
-    // the caller's own refetch already sees the question gone.
-    if (result.ok) await this.onProjectChanged(delivery.ws);
-    return result;
+    return send(delivery, question.taskId);
   }
 
   /** Steer one project's orchestrator without leaving the program. */
@@ -833,7 +874,7 @@ export class HubEngine {
     if (agentId && this.profiles) {
       const profile = await this.profiles.get(agentId);
       if (!profile) throw new Error(`Unknown agent profile: ${agentId}`);
-      overlay = profileOverlay(profile);
+      overlay = profileOverlay(profile, presetById(null), "manager");
     }
     const params = applyProfileOverlay(
       {
@@ -846,7 +887,10 @@ export class HubEngine {
       },
       overlay,
     );
-    params.model ??= "opus";
+    // The hub sits above any one project's roster, so the default preset
+    // (not a project's) names its orchestrator model; an explicit `model`
+    // on hub.startManager still wins above.
+    params.model ??= presetById(null).manager;
     // A manager coordinates in place — a profile's worktree default is for
     // workers, and the hub's own directory is not even a repo.
     (params as { isolation?: unknown }).isolation = undefined;
@@ -1059,6 +1103,11 @@ export class HubEngine {
       console.warn(`[crystal] budget check failed for ${program.id}:`, (err as Error).message);
     });
     if (!settled) return;
+
+    // A settled delivery leaves the questions derivation (it only covers live
+    // ones) — re-sweep so its rows leave the UI too instead of lingering as
+    // stale "waiting on you" entries that an answer round-trip then refuses.
+    this.scheduleQuestionSweep(ws);
 
     const delivery = deliveryById(program, before.id)!;
     await this.notifyManager(program, deliverySettledNotice(program, delivery)).catch(() => {});
