@@ -84,6 +84,9 @@ export interface WorkflowTools {
     trackId: string,
     status: WorkflowTrackStatus,
   ): Promise<{ ok: true } | { ok: false; reason: string }>;
+  mergeTrack(
+    trackId: string,
+  ): Promise<{ ok: true; summary: string } | { ok: false; reason: string; conflicts?: string[] }>;
   /** Record the board epic this workflow's tasks live under. */
   bindEpic(epicId: string): Promise<void>;
   complete(outcome: "completed" | "failed", summary: string): Promise<void>;
@@ -500,6 +503,24 @@ const SET_TRACK_STATUS_TOOL = {
   },
 } as const;
 
+const MERGE_TRACK_TOOL = {
+  name: "merge_track",
+  description:
+    "Deterministically merge a track's branch into the line checked out at " +
+    "the workspace root (git merge --no-ff) and mark the track merged. On " +
+    "conflict nothing is left half-merged: the merge aborts and the " +
+    "conflicted files come back — dispatch a resolution worker for exactly " +
+    "those. Prefer this over prompting a worker to run the merge itself.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      trackId: { type: "string", description: "Track id from workflow_status." },
+    },
+    required: ["trackId"],
+    additionalProperties: false,
+  },
+} as const;
+
 const BIND_EPIC_TOOL = {
   name: "bind_epic",
   description:
@@ -536,6 +557,7 @@ const WORKFLOW_TOOLS = [
   ADVANCE_STAGE_TOOL,
   ADD_TRACK_TOOL,
   SET_TRACK_STATUS_TOOL,
+  MERGE_TRACK_TOOL,
   BIND_EPIC_TOOL,
   COMPLETE_WORKFLOW_TOOL,
 ] as const;
@@ -554,6 +576,7 @@ const SetTrackStatusArgs = z.object({
   trackId: z.string().min(1),
   status: z.enum(WORKFLOW_TRACK_STATUSES),
 });
+const MergeTrackArgs = z.object({ trackId: z.string().min(1) });
 const BindEpicArgs = z.object({ epicId: z.string().min(1) });
 const CompleteWorkflowArgs = z.object({
   outcome: z.enum(["completed", "failed"]),
@@ -719,6 +742,19 @@ export class McpDispatchServer {
           return result.ok
             ? toolText(id, `Track ${a.data.trackId} → ${a.data.status}.`)
             : toolError(id, result.reason);
+        }
+        case "merge_track": {
+          const a = MergeTrackArgs.safeParse(args ?? {});
+          if (!a.success) return invalidArgs(id, name, a.error);
+          const result = await workflow.mergeTrack(a.data.trackId);
+          if (result.ok) return toolText(id, result.summary);
+          return toolError(
+            id,
+            result.reason +
+              (result.conflicts?.length
+                ? `\nConflicted files:\n${result.conflicts.join("\n")}`
+                : ""),
+          );
         }
         case "bind_epic": {
           const a = BindEpicArgs.safeParse(args ?? {});

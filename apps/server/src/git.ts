@@ -62,7 +62,16 @@ export async function changedFiles(
   repoRel: string,
   scope: ChangeScope,
   ref?: string,
+  ofRef?: string,
 ): Promise<{ files: string[]; base: string | null }> {
+  if (ofRef) {
+    // The committed changes `ofRef` itself introduced since forking from
+    // HEAD — three-dot, so files only the main line touched stay out. This
+    // is "what would this track branch merge", the other diffs' opposite.
+    const cwd = resolveInRoot(root, repoRel || ".");
+    const out = await runGit(cwd, ["diff", "--name-only", `HEAD...${ofRef}`]).catch(() => "");
+    return { files: out.split("\n").filter(Boolean), base: ofRef };
+  }
   if (ref) {
     const cwd = resolveInRoot(root, repoRel || ".");
     let target = ref;

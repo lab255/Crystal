@@ -420,6 +420,15 @@ describe("workflow tools", () => {
         createdAt: "2026-01-01T00:00:00.000Z",
       })),
       setTrackStatus: vi.fn(async () => ({ ok: true as const })),
+      mergeTrack: vi.fn(async (trackId: string) =>
+        trackId === "track_conflicted"
+          ? {
+              ok: false as const,
+              reason: "Merging wf/ship/api hit conflicts (merge aborted, the tree is clean again).",
+              conflicts: ["src/app.ts", "src/api.ts"],
+            }
+          : { ok: true as const, summary: "Merged wf/ship/api into the main line." },
+      ),
       bindEpic: vi.fn(async () => {}),
       complete: vi.fn(async (...args: unknown[]) => {
         note("complete", args);
@@ -437,9 +446,37 @@ describe("workflow tools", () => {
       "advance_stage",
       "add_track",
       "set_track_status",
+      "merge_track",
       "bind_epic",
       "complete_workflow",
     ]);
+  });
+
+  it("merge_track returns the summary, or the conflict list as a tool error", async () => {
+    const { server, workflow } = workflowHarness();
+    const merged = await server.handle({
+      jsonrpc: "2.0",
+      id: 8,
+      method: "tools/call",
+      params: { name: "merge_track", arguments: { trackId: "track_1" } },
+    });
+    expect((merged?.result as { content: { text: string }[] }).content[0]!.text).toContain(
+      "Merged wf/ship/api",
+    );
+    expect(workflow.mergeTrack).toHaveBeenCalledWith("track_1");
+
+    const conflicted = await server.handle({
+      jsonrpc: "2.0",
+      id: 9,
+      method: "tools/call",
+      params: { name: "merge_track", arguments: { trackId: "track_conflicted" } },
+    });
+    expect((conflicted?.result as { isError?: boolean }).isError).toBe(true);
+    const text = (conflicted?.result as { content: { text: string }[] }).content[0]!.text;
+    // The conflicted files ARE the handoff — the manager dispatches a
+    // resolution worker scoped to exactly these.
+    expect(text).toContain("Conflicted files:");
+    expect(text).toContain("src/app.ts");
   });
 
   it("routes workflow_status, advance_stage and add_track", async () => {

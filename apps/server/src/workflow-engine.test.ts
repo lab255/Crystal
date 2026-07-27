@@ -14,6 +14,7 @@ import {
   type WorkerSpec,
 } from "@crystal/core";
 import type { AgentManager, AgentStartParams } from "./agent-manager.js";
+import { runGit } from "./git.js";
 import type { WorkspaceStore } from "./workspace-store.js";
 import { GlobalTemplateStore } from "./template-library.js";
 import { WorkflowEngine } from "./workflow-engine.js";
@@ -24,9 +25,16 @@ class FakeAgents {
   dispatchGuard: ((manager: AgentRun, spec: WorkerSpec) => Promise<string | null>) | null = null;
   runs: AgentRun[] = [];
   started: AgentStartParams[] = [];
+  /** mergeTrack runs real git here — tests that use it point this at a repo. */
+  workspaceRoot = "";
 
   async list(): Promise<AgentRun[]> {
     return [...this.runs];
+  }
+
+  /** Mirrors the AgentManager tag index the engine's spend path reads. */
+  async runsWithTag(tag: string): Promise<AgentRun[]> {
+    return this.runs.filter((r) => r.tags.includes(tag));
   }
 
   async start(params: AgentStartParams): Promise<AgentRun> {
@@ -137,6 +145,87 @@ describe("WorkflowEngine", () => {
     expect(agents.started).toHaveLength(1);
     // The manager defaults to the heavyweight model when no profile overrides.
     expect(agents.started[0]!.model).toBe("opus");
+  });
+
+  async function makeRepo(): Promise<string> {
+    const repo = path.join(dir, `repo${Math.random().toString(36).slice(2)}`);
+    await fs.mkdir(repo, { recursive: true });
+    await runGit(repo, ["init", "-b", "main"]);
+    // The engine's merge commits with the repo's identity — configure one.
+    await runGit(repo, ["config", "user.email", "test@crystal.local"]);
+    await runGit(repo, ["config", "user.name", "Crystal Test"]);
+    // Keep file bytes as written — a Windows autocrlf checkout would turn
+    // the \n fixtures into \r\n and fail exact-content assertions.
+    await runGit(repo, ["config", "core.autocrlf", "false"]);
+    await fs.writeFile(path.join(repo, "app.txt"), "base\n");
+    await runGit(repo, ["add", "."]);
+    await runGit(repo, ["commit", "-m", "base"]);
+    return repo;
+  }
+
+  it("mergeTrack lands a track branch with --no-ff and marks the track merged", async () => {
+    const { agents, engine } = makeEngine();
+    const repo = (agents.workspaceRoot = await makeRepo());
+    await runGit(repo, ["checkout", "-b", "wf/x/api"]);
+    await fs.writeFile(path.join(repo, "api.txt"), "api\n");
+    await runGit(repo, ["add", "."]);
+    await runGit(repo, ["commit", "-m", "api work"]);
+    await runGit(repo, ["checkout", "main"]);
+
+    const { workflow } = await engine.start({ name: "X", goal: "g" });
+    const track = await engine.addTrack(workflow.id, { name: "API", branch: "wf/x/api" });
+
+    // A live worker on the branch means uncommitted work in flight — refuse.
+    const worker = await agents.start({
+      prompt: "w",
+      tags: [workflowTag(workflow.id)],
+      branch: "wf/x/api",
+    });
+    const blocked = await engine.mergeTrack(workflow.id, track.id);
+    expect(blocked.ok).toBe(false);
+    if (!blocked.ok) expect(blocked.reason).toContain("live worker");
+    agents.settle(worker);
+
+    const merged = await engine.mergeTrack(workflow.id, track.id);
+    expect(merged.ok).toBe(true);
+    // A real --no-ff merge commit, with the branch's file on the main line.
+    expect((await runGit(repo, ["log", "--oneline", "--merges"])).trim()).not.toBe("");
+    await expect(fs.readFile(path.join(repo, "api.txt"), "utf8")).resolves.toBe("api\n");
+    const wf = (await engine.get(workflow.id))!;
+    expect(wf.tracks.find((t) => t.id === track.id)?.status).toBe("merged");
+    // Merging twice is refused, not re-run.
+    expect((await engine.mergeTrack(workflow.id, track.id)).ok).toBe(false);
+  });
+
+  it("mergeTrack aborts on conflict and returns the conflicted files", async () => {
+    const { agents, engine } = makeEngine();
+    const repo = (agents.workspaceRoot = await makeRepo());
+    await runGit(repo, ["checkout", "-b", "wf/x/ui"]);
+    await fs.writeFile(path.join(repo, "app.txt"), "branch change\n");
+    await runGit(repo, ["commit", "-am", "branch side"]);
+    await runGit(repo, ["checkout", "main"]);
+    await fs.writeFile(path.join(repo, "app.txt"), "main change\n");
+    await runGit(repo, ["commit", "-am", "main side"]);
+
+    const { workflow } = await engine.start({ name: "X", goal: "g" });
+    const track = await engine.addTrack(workflow.id, { name: "UI", branch: "wf/x/ui" });
+    const result = await engine.mergeTrack(workflow.id, track.id);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      // The conflicted files are the handoff to a resolution worker.
+      expect(result.conflicts).toEqual(["app.txt"]);
+      expect(result.reason).toContain("conflict");
+    }
+    // Nothing half-merged: clean tree, track untouched.
+    expect((await runGit(repo, ["status", "--porcelain"])).trim()).toBe("");
+    const wf = (await engine.get(workflow.id))!;
+    expect(wf.tracks.find((t) => t.id === track.id)?.status).toBe("active");
+
+    // A track whose branch never materialized is a clear refusal, not a git error.
+    const ghost = await engine.addTrack(workflow.id, { name: "Ghost" });
+    const missing = await engine.mergeTrack(workflow.id, ghost.id);
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) expect(missing.reason).toContain("does not exist");
   });
 
   it("interactive start goes through the injected launcher with the terminal protocol", async () => {

@@ -291,6 +291,12 @@ export interface BridgeMethods {
       scope: ChangeScope;
       /** Diff the working tree against this ref instead (overrides `scope`) — diff lenses. */
       ref?: string;
+      /**
+       * The opposite direction (overrides both): committed changes the ref
+       * itself introduced since it forked from HEAD (`git diff HEAD...ref`) —
+       * what a workflow track branch would merge.
+       */
+      ofRef?: string;
     };
     result: { files: string[]; base: string | null };
   };

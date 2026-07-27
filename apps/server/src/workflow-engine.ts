@@ -34,6 +34,8 @@ import {
   type WritableScope,
 } from "./template-library.js";
 import type { WorkspaceStore } from "./workspace-store.js";
+import { PendingQueue } from "./pending-queue.js";
+import { runGit } from "./git.js";
 
 /**
  * The enforcement half of the workflow layer (rules live in `@crystal/core`
@@ -95,7 +97,7 @@ export class WorkflowEngine {
   /** Built-in + global + this project's templates (see TemplateLibrary). */
   private readonly library: TemplateLibrary;
   /** User messages waiting for the manager chain to go idle, per workflow. */
-  private pendingMessages = new Map<string, string[]>();
+  private pendingMessages = new PendingQueue<string>();
   /** Runs whose settlement was already handled (see SettledRuns). */
   private readonly settledRuns = new SettledRuns();
   private readonly disposeListener: () => void;
@@ -166,7 +168,9 @@ export class WorkflowEngine {
   }
 
   async spend(workflowId: string): Promise<WorkflowSpend> {
-    return workflowSpend(workflowId, await this.agents.list());
+    // The tag index, not a full-history scan — this runs on every dispatch
+    // (budget guard) and every settlement.
+    return workflowSpend(workflowId, await this.agents.runsWithTag(workflowTag(workflowId)));
   }
 
   /* ---------------- templates ---------------- */
@@ -292,9 +296,7 @@ export class WorkflowEngine {
     // its lock — a null (turn live, or no session yet) means queue-and-retry.
     const run = await this.agents.resumeChain(workflow.managerRunId, formatUserMessage(text));
     if (!run) {
-      const queued = this.pendingMessages.get(workflowId) ?? [];
-      queued.push(text);
-      this.pendingMessages.set(workflowId, queued);
+      this.pendingMessages.push(workflowId, text);
       return { run: null, queued: true };
     }
     return { run, queued: false };
@@ -338,10 +340,10 @@ export class WorkflowEngine {
     await this.ensureLoaded();
     const wf = this.records.peek(workflowId);
     if (!wf) throw new Error(`Unknown workflow: ${workflowId}`);
-    this.pendingMessages.delete(workflowId);
+    this.pendingMessages.clear(workflowId);
     const tag = workflowTag(workflowId);
-    const live = (await this.agents.list()).filter(
-      (r) => r.tags.includes(tag) && (r.status === "running" || r.status === "queued"),
+    const live = (await this.agents.runsWithTag(tag)).filter(
+      (r) => r.status === "running" || r.status === "queued",
     );
     for (const run of live) {
       await this.agents.cancel(run.id).catch(() => {
@@ -403,6 +405,71 @@ export class WorkflowEngine {
       if (!result.ok) return { workflow: wf, result };
       return { workflow: result.workflow, result: { ok: true } };
     });
+  }
+
+  /**
+   * Deterministically merge a track's branch into the line checked out at the
+   * workspace root (`git merge --no-ff`) and mark the track merged. The merge
+   * stage used to be prompt-driven git — the least reliable step of every
+   * workflow; this makes the happy path a lookup. On conflict nothing is left
+   * half-merged: the merge is aborted and the conflicted paths returned, so
+   * the manager dispatches a resolution worker for exactly those files
+   * instead of redoing the whole merge by prompt.
+   */
+  async mergeTrack(
+    workflowId: string,
+    trackId: string,
+  ): Promise<{ ok: true; summary: string } | { ok: false; reason: string; conflicts?: string[] }> {
+    await this.ensureLoaded();
+    const wf = this.records.peek(workflowId);
+    if (!wf) throw new Error(`Unknown workflow: ${workflowId}`);
+    const track = wf.tracks.find((t) => t.id === trackId);
+    if (!track) return { ok: false, reason: `Unknown track: ${trackId}` };
+    if (!track.branch) return { ok: false, reason: `Track ${trackId} has no branch to merge.` };
+    if (track.status === "merged") return { ok: false, reason: `Track ${trackId} is already merged.` };
+    const branch = track.branch;
+    // A live worker on the branch has uncommitted work in flight — merging
+    // under it would land a torso and race its later commits.
+    const live = (await this.agents.runsWithTag(workflowTag(workflowId))).find(
+      (r) => r.branch === branch && (r.status === "running" || r.status === "queued"),
+    );
+    if (live) {
+      return {
+        ok: false,
+        reason: `Branch ${branch} has a live worker (${live.id}) — wait for it to settle (or cancel it) before merging.`,
+      };
+    }
+    const cwd = this.agents.workspaceRoot;
+    try {
+      await runGit(cwd, ["rev-parse", "--verify", "--quiet", branch]);
+    } catch {
+      return { ok: false, reason: `Branch ${branch} does not exist — nothing to merge.` };
+    }
+    try {
+      const out = await runGit(cwd, ["merge", "--no-ff", "--no-edit", branch]);
+      const set = await this.setTrackStatus(workflowId, trackId, "merged");
+      if (!set.ok) return set;
+      const stat = out.trim().split("\n").at(-1) ?? "";
+      return { ok: true, summary: `Merged ${branch} into the main line. ${stat}`.trim() };
+    } catch (err) {
+      const conflicts = (
+        await runGit(cwd, ["diff", "--name-only", "--diff-filter=U"]).catch(() => "")
+      )
+        .split("\n")
+        .filter(Boolean);
+      if (conflicts.length) {
+        await runGit(cwd, ["merge", "--abort"]).catch(() => {
+          // Nothing in progress to abort — the tree is already clean.
+        });
+        return {
+          ok: false,
+          reason: `Merging ${branch} hit conflicts (merge aborted, the tree is clean again).`,
+          conflicts,
+        };
+      }
+      const stderr = (err as { stderr?: string }).stderr?.trim();
+      return { ok: false, reason: `git merge ${branch} failed: ${stderr || (err as Error).message}` };
+    }
   }
 
   /** Record the epic the manager created for this workflow. */
@@ -489,23 +556,16 @@ export class WorkflowEngine {
 
   /** Deliver queued (raw) user messages once no chain run is live. */
   private async flushMessages(workflowId: string): Promise<void> {
-    const pending = this.pendingMessages.get(workflowId);
-    if (!pending?.length) return;
     const workflow = this.records.peek(workflowId);
     if (!workflow?.managerRunId) return;
-    const text =
-      pending.length === 1
-        ? formatUserMessage(pending[0]!)
-        : `${pending.length} user messages arrived while you were working.\n\n` +
-          pending.map((m) => formatUserMessage(m)).join("\n\n---\n\n");
-    const delivered = pending.length;
-    const run = await this.agents.resumeChain(workflow.managerRunId, text);
-    // Delivered — drop exactly what the prompt carried (messages queued while
-    // resuming survive). A null keeps everything queued for the next settle.
-    if (run) {
-      const rest = (this.pendingMessages.get(workflowId) ?? []).slice(delivered);
-      if (rest.length) this.pendingMessages.set(workflowId, rest);
-      else this.pendingMessages.delete(workflowId);
-    }
+    const managerRunId = workflow.managerRunId;
+    await this.pendingMessages.drain(workflowId, (pending) => {
+      const text =
+        pending.length === 1
+          ? formatUserMessage(pending[0]!)
+          : `${pending.length} user messages arrived while you were working.\n\n` +
+            pending.map((m) => formatUserMessage(m)).join("\n\n---\n\n");
+      return this.agents.resumeChain(managerRunId, text);
+    });
   }
 }

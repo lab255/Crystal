@@ -44,6 +44,7 @@ import {
 import type { AgentManager, InteractiveSpawn } from "./agent-manager.js";
 import { JsonRecordStore } from "./record-store.js";
 import { SettledRuns } from "./settled-runs.js";
+import { PendingQueue } from "./pending-queue.js";
 
 /**
  * The cross-project half of the orchestration stack (rules live in
@@ -155,7 +156,7 @@ export class HubEngine {
   }>();
 
   /** Notices waiting for a program manager chain to go idle, per program. */
-  private pendingNotices = new Map<string, string[]>();
+  private pendingNotices = new PendingQueue<string>();
   private readonly settledRuns = new SettledRuns();
   /**
    * The open-question id set last seen per program, joined — the cheap diff
@@ -413,7 +414,7 @@ export class HubEngine {
         `Program is ${program.status} — cancel or complete it before removing it.`,
       );
     }
-    this.pendingNotices.delete(programId);
+    this.pendingNotices.clear(programId);
     this.questionSets.delete(programId);
     await this.store.remove(programId);
     this.events.emit("removed", { programId });
@@ -721,7 +722,7 @@ export class HubEngine {
   async cancel(programId: string): Promise<Program> {
     const current = await this.get(programId);
     if (!current) throw new Error(`Unknown program: ${programId}`);
-    this.pendingNotices.delete(programId);
+    this.pendingNotices.clear(programId);
     for (const delivery of current.deliveries) {
       if (!delivery.ws || !delivery.workflowId || isDeliveryTerminal(delivery.status)) continue;
       await this.projects.cancelWorkflow(delivery.ws, delivery.workflowId).catch(() => {
@@ -911,9 +912,7 @@ export class HubEngine {
   }
 
   private queueNotice(programId: string, text: string): void {
-    const queued = this.pendingNotices.get(programId) ?? [];
-    queued.push(text);
-    this.pendingNotices.set(programId, queued);
+    this.pendingNotices.push(programId, text);
   }
 
   /**
@@ -930,23 +929,20 @@ export class HubEngine {
 
   /** Deliver queued notices once no run of the manager chain is live. */
   private async flushNotices(programId: string): Promise<void> {
-    const pending = this.pendingNotices.get(programId);
-    if (!pending?.length || !this.agents) return;
+    const agents = this.agents;
+    if (!agents) return;
     const program = this.store.peek(programId);
     if (!program?.managerRunId) return;
-    const text =
-      pending.length === 1
-        ? pending[0]!
-        : `${pending.length} updates arrived while you were working.\n\n${pending.join("\n\n---\n\n")}`;
-    const delivered = pending.length;
-    const run = (await this.interactiveNotify(program, text))
-      ? await this.agents.get(program.managerRunId)
-      : await this.agents.resumeChain(program.managerRunId, text);
-    if (run) {
-      const rest = (this.pendingNotices.get(programId) ?? []).slice(delivered);
-      if (rest.length) this.pendingNotices.set(programId, rest);
-      else this.pendingNotices.delete(programId);
-    }
+    const managerRunId = program.managerRunId;
+    await this.pendingNotices.drain(programId, async (pending) => {
+      const text =
+        pending.length === 1
+          ? pending[0]!
+          : `${pending.length} updates arrived while you were working.\n\n${pending.join("\n\n---\n\n")}`;
+      return (await this.interactiveNotify(program, text))
+        ? await agents.get(managerRunId)
+        : await agents.resumeChain(managerRunId, text);
+    });
   }
 
   /** A manager turn settled: flush anything queued while it ran. */

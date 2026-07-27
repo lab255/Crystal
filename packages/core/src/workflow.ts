@@ -1298,7 +1298,9 @@ function stageProtocolLines(template: WorkflowTemplate): string[] {
   const merge = ids((s) => s.purpose === "merge");
   if (merge.length) {
     lines.push(
-      `- ${list(merge)}: dispatch once the checks are clean, to merge into the main line, resolve conflicts and get the suite green${perTrack.length ? ", then mark the tracks merged" : ""}.`,
+      perTrack.length
+        ? `- ${list(merge)}: once the checks are clean, merge each reviewed track with the merge_track tool — a deterministic --no-ff merge that marks the track merged, and on conflict aborts and returns the conflicted files. Dispatch a resolution worker only for those genuine conflicts, then get the suite green.`
+        : `- ${list(merge)}: dispatch once the checks are clean, to merge into the main line, resolve conflicts and get the suite green.`,
     );
   }
   const ci = ids((s) => s.purpose === "ci");

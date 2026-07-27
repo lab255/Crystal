@@ -462,8 +462,8 @@ export async function startCrystalServer(opts: {
     },
     "git.status": ({ ws, repoPath }) => gitStatus(registry.get(ws).root, repoPath),
     "git.log": ({ ws, repoPath, limit }) => gitLog(registry.get(ws).root, repoPath ?? ".", limit),
-    "git.changedFiles": ({ ws, repoPath, scope, ref }) =>
-      changedFiles(registry.get(ws).root, repoPath ?? ".", scope, ref),
+    "git.changedFiles": ({ ws, repoPath, scope, ref, ofRef }) =>
+      changedFiles(registry.get(ws).root, repoPath ?? ".", scope, ref, ofRef),
     "git.refs": ({ ws, repoPath }) => gitRefs(registry.get(ws).root, repoPath ?? "."),
     "git.checkout": ({ ws, repoPath, ref }) =>
       gitCheckout(registry.get(ws).root, repoPath ?? ".", ref),

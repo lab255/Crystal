@@ -94,6 +94,7 @@ export async function handleMcpRequest(
           addTrack: (init) => rt.workflows.addTrack(workflow.id, init),
           setTrackStatus: (trackId, status) =>
             rt.workflows.setTrackStatus(workflow.id, trackId, status),
+          mergeTrack: (trackId) => rt.workflows.mergeTrack(workflow.id, trackId),
           bindEpic: async (epicId) => {
             await rt.workflows.bindEpic(workflow.id, epicId);
           },

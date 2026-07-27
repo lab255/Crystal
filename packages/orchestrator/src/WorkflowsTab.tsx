@@ -34,6 +34,7 @@ import {
 import {
   InteractiveRunBanner,
   useAgents,
+  useCrystal,
   useTerminals,
   useWorkflows,
   useWorkspace,
@@ -297,8 +298,13 @@ function WorkflowDetail({
   const [turnId, setTurnId] = useState<string | null>(null);
   const latestTurn = managerTurns[managerTurns.length - 1] ?? null;
   const viewedTurn = managerTurns.find((r) => r.id === turnId) ?? latestTurn;
+  const [openTrackId, setOpenTrackId] = useState<string | null>(null);
+  const openTrack = workflow.tracks.find((t) => t.id === openTrackId) ?? null;
   // Follow the live conversation unless an older turn was explicitly picked.
-  useEffect(() => setTurnId(null), [workflow.id]);
+  useEffect(() => {
+    setTurnId(null);
+    setOpenTrackId(null);
+  }, [workflow.id]);
 
   const [editingBudget, setEditingBudget] = useState(false);
   const [budgetInput, setBudgetInput] = useState("");
@@ -440,20 +446,30 @@ function WorkflowDetail({
             </Button>
           )}
           {workflow.tracks.map((t) => (
-            <Tooltip key={t.id} content={`${t.name} — ${t.taskIds.length} tasks`}>
-              <span
+            <Tooltip
+              key={t.id}
+              content={`${t.name} — ${t.taskIds.length} tasks. Click for the files this branch changes.`}
+            >
+              <button
+                type="button"
+                onClick={() => setOpenTrackId((id) => (id === t.id ? null : t.id))}
                 className={cn(
                   "flex items-center gap-1 rounded-full border border-edge px-2 py-0.5 font-mono text-[10px]",
                   t.status === "merged" && "text-ok",
                   t.status === "abandoned" && "line-through text-ink-faint",
+                  openTrackId === t.id && "bg-surface-3 text-ink",
                 )}
               >
                 <GitBranch className="h-3 w-3" />
                 {t.branch}
-              </span>
+              </button>
             </Tooltip>
           ))}
         </div>
+
+        {openTrack?.branch ? (
+          <TrackFilesPanel key={openTrack.id} branch={openTrack.branch} />
+        ) : null}
 
         {openQuestions.length > 0 ? (
           <div className="mt-2 rounded-lg border border-warn/30 bg-warn/10 px-2.5 py-1.5">
@@ -536,6 +552,68 @@ function WorkflowDetail({
 }
 
 /** Remote control: send the manager a message (delivered/queued server-side). */
+/**
+ * The committed changes a track branch would merge (`git diff HEAD...branch`),
+ * fetched when its chip is opened — the merge preview that pairs with the
+ * manager's merge_track tool.
+ */
+function TrackFilesPanel({ branch }: { branch: string }) {
+  const { client } = useCrystal();
+  const [result, setResult] = useState<{ files: string[] } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    setResult(null);
+    setError(null);
+    client
+      .request("git.changedFiles", { scope: "base", ofRef: branch })
+      .then((r) => {
+        if (alive) setResult(r);
+      })
+      .catch((err) => {
+        if (alive) setError((err as Error).message);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [client, branch]);
+
+  return (
+    <div className="mt-2 rounded-lg border border-edge bg-surface-0 px-2.5 py-1.5">
+      <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-ink-faint">
+        <GitBranch className="h-3 w-3" />
+        <span className="font-mono normal-case">{branch}</span>
+        {result ? (
+          <span>
+            {result.files.length} file{result.files.length === 1 ? "" : "s"} vs the main line
+          </span>
+        ) : null}
+      </div>
+      {error ? (
+        <p className="mt-1 text-[11px] text-danger">{error}</p>
+      ) : result == null ? (
+        <div className="mt-1 flex items-center gap-1.5 text-[11px] text-ink-faint">
+          <Spinner className="h-3 w-3" /> Diffing…
+        </div>
+      ) : result.files.length === 0 ? (
+        <p className="mt-1 text-[11px] text-ink-faint">
+          No committed changes beyond the main line — the track's work is still uncommitted in
+          its worktree, or already merged.
+        </p>
+      ) : (
+        <ul className="mt-1 max-h-32 overflow-y-auto font-mono text-[11px] leading-relaxed text-ink-muted">
+          {result.files.map((f) => (
+            <li key={f} className="truncate">
+              {f}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 function ManagerComposer({ workflowId }: { workflowId: string }) {
   const message = useWorkflows((s) => s.message);
   const [text, setText] = useState("");

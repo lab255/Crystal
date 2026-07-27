@@ -26,6 +26,7 @@ import {
 import { envWithBinDir, resolveClaudeBin } from "./claude-bin.js";
 import { runGit } from "./git.js";
 import { resolveInRoot } from "./paths.js";
+import { PendingQueue } from "./pending-queue.js";
 
 export interface AgentStartParams {
   prompt: string;
@@ -333,6 +334,8 @@ export class AgentManager {
   }>();
 
   private runs = new Map<string, AgentRun>();
+  /** tag → run ids carrying it (see indexTags). */
+  private runsByTag = new Map<string, Set<string>>();
   private runEvents = new Map<string, RunEvent[]>();
   /** Monotonic per-run event seq — survives the replay buffer being trimmed. */
   private runSeqs = new Map<string, number>();
@@ -349,7 +352,7 @@ export class AgentManager {
    * what closes the delegation loop: managers end their turn after
    * dispatching and are woken with results instead of busy-polling.
    */
-  private pendingNotices = new Map<string, PendingNotice[]>();
+  private pendingNotices = new PendingQueue<PendingNotice>();
   /** Per-chain-root serialization of resume attempts (see resumeChain). */
   private resumeLocks = new Map<string, Promise<unknown>>();
   /** Per-branch serialization of track-worktree adopt-or-create (see start). */
@@ -372,6 +375,11 @@ export class AgentManager {
   interactiveKill: ((run: AgentRun) => void) | null = null;
   /** Mount window before an interactive session takes deliveries (test seam). */
   interactiveReadyMs = INTERACTIVE_READY_MS;
+
+  /** Absolute workspace root — engines run deterministic git against it. */
+  get workspaceRoot(): string {
+    return this.root;
+  }
 
   constructor(
     private readonly root: string,
@@ -445,10 +453,37 @@ export class AgentManager {
           run.resultText = run.resultText ?? "Server stopped while run was active";
         }
         this.runs.set(run.id, run);
+        this.indexTags(run);
       } catch {
         // Ignore corrupt history entries.
       }
     }
+  }
+
+  /**
+   * Tags are set once at creation and never mutated, so this index is
+   * maintained only where a run enters `this.runs` and can never go stale.
+   * It exists for the spend hot path: budget guards run on *every* dispatch
+   * and settlement, and a full-history scan there grows with the workspace's
+   * lifetime, not with the workflow being metered.
+   */
+  private indexTags(run: AgentRun): void {
+    for (const tag of run.tags) {
+      let ids = this.runsByTag.get(tag);
+      if (!ids) this.runsByTag.set(tag, (ids = new Set()));
+      ids.add(run.id);
+    }
+  }
+
+  /** Runs carrying `tag`, newest first. */
+  async runsWithTag(tag: string): Promise<AgentRun[]> {
+    await this.ensureLoaded();
+    const ids = this.runsByTag.get(tag);
+    if (!ids?.size) return [];
+    return [...ids]
+      .map((id) => this.runs.get(id))
+      .filter((r): r is AgentRun => !!r)
+      .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
   }
 
   async list(): Promise<AgentRun[]> {
@@ -480,6 +515,7 @@ export class AgentManager {
     let cwdAbs = resolveInRoot(this.root, params.cwd ?? ".");
 
     this.runs.set(run.id, run);
+    this.indexTags(run);
     this.runEvents.set(run.id, []);
 
     if (run.isolation === "worktree") {
@@ -621,6 +657,7 @@ export class AgentManager {
     run.sessionId = randomUUID();
     run.model = params.model ?? null;
     this.runs.set(run.id, run);
+    this.indexTags(run);
     this.runEvents.set(run.id, []);
 
     const mcpConfig =
@@ -776,14 +813,9 @@ export class AgentManager {
    */
   private async flushInteractiveQueue(runId: string): Promise<void> {
     const rootId = chainRootId(runId, this.runs);
-    const notices = this.pendingNotices.get(rootId);
-    if (!notices?.length) return;
-    const delivered = notices.length;
-    if (await this.deliverInteractive(rootId, composeNoticePrompt(notices))) {
-      const rest = (this.pendingNotices.get(rootId) ?? []).slice(delivered);
-      if (rest.length) this.pendingNotices.set(rootId, rest);
-      else this.pendingNotices.delete(rootId);
-    }
+    await this.pendingNotices.drain(rootId, (notices) =>
+      this.deliverInteractive(rootId, composeNoticePrompt(notices)),
+    );
   }
 
   /**
@@ -973,9 +1005,7 @@ export class AgentManager {
     if (interactive) return interactive;
     const run = await this.resumeChain(rootId, prompt);
     if (run) return run;
-    const queued = this.pendingNotices.get(rootId) ?? [];
-    queued.push({ kind: "message", text: prompt });
-    this.pendingNotices.set(rootId, queued);
+    this.pendingNotices.push(rootId, { kind: "message", text: prompt });
     return null;
   }
 
@@ -1325,9 +1355,7 @@ export class AgentManager {
   private notifyOnSettle(run: AgentRun): void {
     if (run.role === "worker" && run.parentRunId) {
       const managerRoot = chainRootId(run.parentRunId, this.runs);
-      const notices = this.pendingNotices.get(managerRoot) ?? [];
-      notices.push({ kind: "worker", text: this.workerNotice(run) });
-      this.pendingNotices.set(managerRoot, notices);
+      this.pendingNotices.push(managerRoot, { kind: "worker", text: this.workerNotice(run) });
       if (!this.chainLive(managerRoot)) void this.flushNotices(managerRoot);
       // An interactive manager stays live for its whole TUI session, so the
       // gate above would hold every worker result until the terminal closes.
@@ -1339,7 +1367,7 @@ export class AgentManager {
       // ever looked at its *manager's* queue.
     }
     const own = chainRootId(run.id, this.runs);
-    if (this.pendingNotices.get(own)?.length) {
+    if (this.pendingNotices.size(own)) {
       if (!this.chainLive(own)) void this.flushNotices(own);
       else void this.flushInteractiveQueue(own);
     }
@@ -1366,27 +1394,20 @@ export class AgentManager {
    * the user cancelled — a killed manager must stay dead.
    */
   private async flushNotices(rootId: string): Promise<void> {
-    const notices = this.pendingNotices.get(rootId);
-    if (!notices?.length) return;
+    if (!this.pendingNotices.size(rootId)) return;
     // A killed manager must stay dead — drop its notices instead of retrying.
     const latest = this.orderedChain(rootId).at(-1);
     if (latest?.status === "cancelled") {
-      this.pendingNotices.delete(rootId);
+      this.pendingNotices.clear(rootId);
       return;
     }
-    const prompt = composeNoticePrompt(notices);
-    const delivered = notices.length;
     try {
-      const run = await this.resumeChain(rootId, prompt);
-      // A null means something else resumed the chain first (or no session
-      // yet): the notices stay queued and flush on the next settlement
-      // instead of forking the session. On delivery, drop exactly what the
-      // prompt carried — notices appended while resuming must survive.
-      if (run) {
-        const rest = (this.pendingNotices.get(rootId) ?? []).slice(delivered);
-        if (rest.length) this.pendingNotices.set(rootId, rest);
-        else this.pendingNotices.delete(rootId);
-      }
+      // A null from resumeChain means something else resumed the chain first
+      // (or no session yet): the queue keeps everything for the next settle
+      // instead of forking the session.
+      await this.pendingNotices.drain(rootId, (notices) =>
+        this.resumeChain(rootId, composeNoticePrompt(notices)),
+      );
     } catch (err) {
       console.warn(`[crystal] could not wake manager ${rootId}:`, (err as Error).message);
     }

@@ -143,6 +143,40 @@ describe("AgentManager spawn failure resilience", () => {
   });
 });
 
+describe("runsWithTag", () => {
+  let tmp: string | null = null;
+
+  afterEach(async () => {
+    if (tmp) await fs.rm(tmp, { recursive: true, force: true });
+    tmp = null;
+  });
+
+  it("serves tagged runs from the index, at creation and after a reload", async () => {
+    tmp = await fs.mkdtemp(path.join(os.tmpdir(), "crystal-tag-test-"));
+    const root = path.join(tmp, "root");
+    await fs.mkdir(root, { recursive: true });
+    const data = path.join(tmp, "data");
+    // A missing binary settles every run instantly — tags persist regardless.
+    const missing = path.join(tmp, "missing-claude.exe");
+    const mgr = new AgentManager(root, data, missing);
+
+    const a = await mgr.start({ prompt: "one", tags: ["workflow:wf_1"] });
+    const b = await mgr.start({ prompt: "two", tags: ["workflow:wf_1", "team:x"] });
+    const other = await mgr.start({ prompt: "three", tags: ["team:x"] });
+    await Promise.all([a, b, other].map((r) => mgr.waitForSettled(r.id)));
+
+    const tagged = await mgr.runsWithTag("workflow:wf_1");
+    expect(tagged.map((r) => r.id).sort()).toEqual([a.id, b.id].sort());
+    expect(await mgr.runsWithTag("no-such-tag")).toEqual([]);
+
+    // A fresh manager over the same app data rebuilds the index from disk —
+    // spend metering must survive a server restart.
+    const reloaded = new AgentManager(root, data, missing);
+    const again = await reloaded.runsWithTag("workflow:wf_1");
+    expect(again.map((r) => r.id).sort()).toEqual([a.id, b.id].sort());
+  });
+});
+
 describe("interactive sessions", () => {
   let tmp: string | null = null;
 

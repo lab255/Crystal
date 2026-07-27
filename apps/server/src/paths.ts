@@ -29,13 +29,8 @@ export function workspaceIdFor(root: string): string {
 
 /** Per-workspace app-data directory (run history, ephemeral state). */
 export function appDataDir(root: string): string {
-  const hash = crypto
-    .createHash("sha1")
-    .update(path.resolve(root).toLowerCase())
-    .digest("hex")
-    .slice(0, 12);
   const base = path.basename(path.resolve(root)).replace(/[^a-zA-Z0-9-_]/g, "-");
-  return path.join(os.homedir(), ".crystal", "workspaces", `${base}-${hash}`);
+  return path.join(os.homedir(), ".crystal", "workspaces", `${base}-${workspaceIdFor(root)}`);
 }
 
 /**
