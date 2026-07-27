@@ -298,8 +298,9 @@ export class WorkspaceRuntime {
 
 /**
  * The set of workspaces a bridge server is hosting. Every workspace-scoped
- * bridge method resolves through `get(ws)`; the open set persists to
- * `~/.crystal/open-workspaces.json` so a restarted server reopens them.
+ * bridge method resolves through `get(ws)`; the open set persists under
+ * `~/.crystal/open-workspaces*.json` (per server flavor when a `persistKey`
+ * is given — see the constructor) so a restarted server reopens them.
  */
 export class WorkspaceRegistry {
   private runtimes = new Map<string, WorkspaceRuntime>();
@@ -325,11 +326,29 @@ export class WorkspaceRegistry {
 
   constructor(
     private readonly broadcast: Broadcast,
-    /** Where to persist the open set; null disables persistence entirely. */
+    /** The shared persist file (recents + legacy open set); null disables persistence. */
     private readonly persistFile: string | null = openWorkspacesFile(),
     /** Base URL of the in-process MCP endpoint, forwarded to each runtime. */
     private readonly mcpBaseUrl: string | null = null,
+    /**
+     * Server-flavor key for the persisted open set. Two concurrent servers
+     * (a pipe-only desktop sidecar and a `--listen` dev server, say) used to
+     * clobber each other's `roots` in the one shared file; with a key, each
+     * flavor keeps its open set in `open-workspaces.<key>.json` beside the
+     * shared file, while `recents` stay merged in the shared file (the reopen
+     * list is genuinely machine-global). null keeps the legacy single-file
+     * layout (tests, embedders).
+     */
+    private readonly persistKey: string | null = null,
   ) {}
+
+  /** Per-flavor open-set file, `<shared-basename>.<key>.json` beside the shared file. */
+  private flavorFile(): string | null {
+    if (!this.persistFile || !this.persistKey) return null;
+    const safe = this.persistKey.replace(/[^a-zA-Z0-9_-]/g, "-");
+    const base = path.basename(this.persistFile).replace(/\.json$/, "");
+    return path.join(path.dirname(this.persistFile), `${base}.${safe}.json`);
+  }
 
   /** Open (or return the already-open) workspace at `root`. */
   async open(root: string): Promise<WorkspaceRuntime> {
@@ -432,13 +451,21 @@ export class WorkspaceRegistry {
   /** Reopen workspaces persisted by a previous run (silently skips gone dirs). */
   async restorePersisted(): Promise<void> {
     if (!this.persistFile) return;
-    let roots: string[] = [];
-    try {
-      const parsed = JSON.parse(await fs.readFile(this.persistFile, "utf8"));
-      if (Array.isArray(parsed?.roots)) roots = parsed.roots.filter((r: unknown) => typeof r === "string");
-    } catch {
-      return;
-    }
+    const readRoots = async (file: string): Promise<string[] | null> => {
+      try {
+        const parsed = JSON.parse(await fs.readFile(file, "utf8"));
+        if (!Array.isArray(parsed?.roots)) return null;
+        return parsed.roots.filter((r: unknown) => typeof r === "string");
+      } catch {
+        return null;
+      }
+    };
+    // The per-flavor file wins; the shared legacy file only seeds the first
+    // boot after migration (once this flavor persists, its own file exists —
+    // and an empty list there is a statement, not an absence).
+    const flavor = this.flavorFile();
+    const roots =
+      (flavor ? await readRoots(flavor) : null) ?? (await readRoots(this.persistFile)) ?? [];
     for (const root of roots) {
       try {
         await this.open(root);
@@ -466,25 +493,73 @@ export class WorkspaceRegistry {
     })());
   }
 
+  /**
+   * Merge this server's in-memory reopen list with whatever is on disk
+   * (read-modify-write): two servers appending recents must not drop each
+   * other's entries. Newest `lastOpenedAt` wins per root; stored oldest-first
+   * (map insertion order convention), trimmed to MAX_RECENTS.
+   */
+  private mergeRecentsWith(shared: Record<string, unknown>): RecentWorkspace[] {
+    const byRoot = new Map<string, RecentWorkspace>();
+    const consider = (r: RecentWorkspace) => {
+      const prev = byRoot.get(r.root);
+      if (!prev || prev.lastOpenedAt < r.lastOpenedAt) byRoot.set(r.root, r);
+    };
+    if (Array.isArray(shared.recents)) {
+      for (const r of shared.recents) {
+        if (typeof r?.root === "string" && typeof r?.name === "string" && typeof r?.lastOpenedAt === "string") {
+          consider({ root: r.root, name: r.name, lastOpenedAt: r.lastOpenedAt });
+        }
+      }
+    }
+    for (const r of this.recentsByRoot.values()) consider(r);
+    // ISO-8601 compares lexicographically; a stable sort keeps insertion order on ties.
+    const merged = [...byRoot.values()].sort((a, b) =>
+      a.lastOpenedAt < b.lastOpenedAt ? -1 : a.lastOpenedAt > b.lastOpenedAt ? 1 : 0,
+    );
+    return merged.slice(Math.max(0, merged.length - MAX_RECENTS));
+  }
+
   private async persist(): Promise<void> {
     const file = this.persistFile;
     if (!file) return;
     // Loading first means a close() before any open() can't clobber stored recents.
     await this.ensureRecentsLoaded();
+    const roots = [...this.runtimes.values()].map((r) => r.root);
     try {
       await fs.mkdir(path.dirname(file), { recursive: true });
-      await fs.writeFile(
-        file,
-        JSON.stringify(
-          {
-            roots: [...this.runtimes.values()].map((r) => r.root),
-            recents: [...this.recentsByRoot.values()],
-          },
-          null,
-          2,
-        ),
-        "utf8",
-      );
+      const readShared = async (): Promise<Record<string, unknown>> => {
+        try {
+          const parsed = JSON.parse(await fs.readFile(file, "utf8"));
+          return parsed && typeof parsed === "object" ? parsed : {};
+        } catch {
+          return {}; // first run or unreadable — start fresh
+        }
+      };
+      const flavor = this.flavorFile();
+      if (flavor) {
+        // This flavor's open set lives in its own file — a concurrent server
+        // of another flavor never touches it.
+        await fs.writeFile(flavor, JSON.stringify({ roots }, null, 2), "utf8");
+        // Recents stay shared; the legacy `roots` field (and anything else in
+        // the shared file) is preserved untouched for servers still reading it.
+        const shared = await readShared();
+        await fs.writeFile(
+          file,
+          JSON.stringify({ ...shared, recents: this.mergeRecentsWith(shared) }, null, 2),
+          "utf8",
+        );
+      } else {
+        // Legacy single-file layout: roots and recents together. Recents still
+        // merge read-modify-write so even two legacy servers don't drop each
+        // other's entries (roots remain last-writer, which the flavor key fixes).
+        const shared = await readShared();
+        await fs.writeFile(
+          file,
+          JSON.stringify({ ...shared, roots, recents: this.mergeRecentsWith(shared) }, null, 2),
+          "utf8",
+        );
+      }
     } catch (err) {
       console.warn("[crystal] could not persist open workspaces:", (err as Error).message);
     }

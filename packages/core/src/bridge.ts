@@ -170,6 +170,13 @@ export interface BridgeMethods {
       defaultWs: string;
       /** Most-recently-opened first; includes currently-open workspaces. */
       recents: RecentWorkspace[];
+      /**
+       * Identity of the answering server: `serverId` is minted per boot (the
+       * fleet layer keys per-server state on it), `name` is human-readable
+       * (hostname + primary root basename). Optional so responses from older
+       * servers still typecheck.
+       */
+      server?: { serverId: string; name: string };
     };
   };
   "workspaces.open": { params: { root: string }; result: { workspace: WorkspaceDescriptor } };

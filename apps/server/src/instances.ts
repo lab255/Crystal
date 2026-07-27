@@ -28,6 +28,14 @@ export function defaultPipePath(id: string): string {
 
 export interface InstanceInfo {
   pid: number;
+  /**
+   * Server identity, minted fresh every boot. Optional because files written
+   * by older servers lack it; readers must stay lenient (the desktop shell's
+   * `list_bridge_instances` already passes unknown fields through).
+   */
+  serverId?: string;
+  /** Human-readable server name (hostname + primary root basename). */
+  name?: string;
   /** IPC endpoint (named pipe / unix socket), null when disabled. */
   pipe: string | null;
   /** Opt-in TCP bridge port, null when the network listener is off. */
@@ -41,14 +49,25 @@ export interface InstanceInfo {
    */
   hubMcpUrl?: string;
   roots: string[];
+  /**
+   * Live workspace list, rewritten on every `workspaces.changed` — unlike
+   * `roots` (kept for older readers) this never serves a boot-time snapshot.
+   */
+  workspaces?: { id: string; root: string; name: string }[];
   /** Bearer token for the TCP listener, present only when auth is enabled. */
   token?: string;
   startedAt: string;
 }
 
-/** Write this server's discovery file; returns its path for cleanup. */
+/**
+ * Write this server's discovery file; returns its path for cleanup. Every
+ * write also sweeps dead entries, so stale files from crashed servers are
+ * cleaned up by the servers that keep running — hygiene no longer depends on
+ * a discovery *read* (the stdio proxy, a pipe claim) ever happening.
+ */
 export async function writeInstanceFile(dir: string, info: InstanceInfo): Promise<string> {
   await fs.mkdir(dir, { recursive: true });
+  await sweepInstances(dir);
   const file = path.join(dir, `${info.pid}.json`);
   // 0600: the file may carry the bearer token (no-op on Windows, where the
   // profile directory ACL covers it).

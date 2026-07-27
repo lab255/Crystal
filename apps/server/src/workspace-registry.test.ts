@@ -155,6 +155,87 @@ describe("WorkspaceRegistry recents", () => {
   });
 });
 
+describe("WorkspaceRegistry per-flavor persistence", () => {
+  const cleanups: (() => Promise<void> | void)[] = [];
+  afterEach(async () => {
+    for (const cleanup of cleanups.splice(0)) await cleanup();
+  });
+
+  async function tmpDir(): Promise<string> {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "crystal-flavor-"));
+    cleanups.push(() => fs.rm(dir, { recursive: true, force: true }));
+    return dir;
+  }
+
+  it("keeps each flavor's open set in its own file while recents stay shared", async () => {
+    const tmp = await tmpDir();
+    const wsA = path.join(tmp, "alpha");
+    const wsB = path.join(tmp, "beta");
+    await fs.mkdir(wsA);
+    await fs.mkdir(wsB);
+    const shared = path.join(tmp, "open-workspaces.json");
+
+    const regA = new WorkspaceRegistry(() => {}, shared, null, "flav-a");
+    const regB = new WorkspaceRegistry(() => {}, shared, null, "flav-b");
+    cleanups.push(() => regA.closeAll());
+    cleanups.push(() => regB.closeAll());
+    await regA.open(wsA);
+    await regB.open(wsB);
+
+    // Each flavor owns its file — B persisting did not clobber A's open set.
+    const fileA = JSON.parse(await fs.readFile(path.join(tmp, "open-workspaces.flav-a.json"), "utf8"));
+    const fileB = JSON.parse(await fs.readFile(path.join(tmp, "open-workspaces.flav-b.json"), "utf8"));
+    expect(fileA.roots).toEqual(regA.list().map((w) => w.root));
+    expect(fileB.roots).toEqual(regB.list().map((w) => w.root));
+
+    // Recents merged in the shared file, which carries no flavored roots.
+    const sharedParsed = JSON.parse(await fs.readFile(shared, "utf8"));
+    expect(sharedParsed.roots).toBeUndefined();
+    expect(sharedParsed.recents.map((r: { name: string }) => r.name)).toEqual(["alpha", "beta"]);
+
+    // A later persist from A (which never saw beta) must not drop B's recent.
+    const wsC = path.join(tmp, "gamma");
+    await fs.mkdir(wsC);
+    await regA.open(wsC);
+    const merged = JSON.parse(await fs.readFile(shared, "utf8"));
+    expect(merged.recents.map((r: { name: string }) => r.name).sort()).toEqual([
+      "alpha",
+      "beta",
+      "gamma",
+    ]);
+  });
+
+  it("migrates from the legacy shared file, then prefers its own flavor file", async () => {
+    const tmp = await tmpDir();
+    const wsA = path.join(tmp, "alpha");
+    const wsB = path.join(tmp, "beta");
+    await fs.mkdir(wsA);
+    await fs.mkdir(wsB);
+    const shared = path.join(tmp, "open-workspaces.json");
+    // Legacy layout: a pre-flavor server persisted its open set here.
+    await fs.writeFile(shared, JSON.stringify({ roots: [wsA] }), "utf8");
+
+    const reg = new WorkspaceRegistry(() => {}, shared, null, "flav-a");
+    cleanups.push(() => reg.closeAll());
+    await reg.restorePersisted();
+    expect(reg.list().map((w) => w.name)).toEqual(["alpha"]);
+    // Restoring persisted the migrated set into the flavor file.
+    const flavorFile = path.join(tmp, "open-workspaces.flav-a.json");
+    expect(JSON.parse(await fs.readFile(flavorFile, "utf8")).roots).toEqual(
+      reg.list().map((w) => w.root),
+    );
+    reg.closeAll();
+
+    // Once the flavor file exists it wins — a stale legacy `roots` (say from
+    // a still-running legacy server) is no longer consulted.
+    await fs.writeFile(shared, JSON.stringify({ roots: [wsB] }), "utf8");
+    const reg2 = new WorkspaceRegistry(() => {}, shared, null, "flav-a");
+    cleanups.push(() => reg2.closeAll());
+    await reg2.restorePersisted();
+    expect(reg2.list().map((w) => w.name)).toEqual(["alpha"]);
+  });
+});
+
 describe("browseDirs", () => {
   it("lists sub-directories with workspace markers, skipping noise", async () => {
     const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "crystal-browse-"));

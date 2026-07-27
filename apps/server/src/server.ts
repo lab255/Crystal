@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import http from "node:http";
 import net from "node:net";
+import os from "node:os";
 import path from "node:path";
 import { WebSocketServer, WebSocket } from "ws";
 import {
@@ -38,6 +39,7 @@ import {
   removeInstanceFile,
   unlinkPipe,
   writeInstanceFile,
+  type InstanceInfo,
 } from "./instances.js";
 import { AgentManager } from "./agent-manager.js";
 import { HubEngine, type HubProjects } from "./hub-engine.js";
@@ -56,7 +58,12 @@ type Handlers = {
   ) => Promise<BridgeMethods[M]["result"]>;
 };
 
+/** Trailing debounce for instance-file rewrites (a burst of opens collapses to one write). */
+const INSTANCE_REWRITE_DEBOUNCE_MS = 100;
+
 export interface CrystalServer {
+  /** Per-boot server identity (also stamped into the instance file). */
+  serverId: string;
   /** TCP port of the opt-in network listener, null when IPC-only. */
   port: number | null;
   /** Loopback port of the always-on in-process MCP endpoint. */
@@ -191,6 +198,24 @@ export async function startCrystalServer(opts: {
   // broadcasts, and `broadcast` (hoisted) closes over this set.
   const clients = new Set<RpcClient>();
 
+  // --- Server identity: a fresh id every boot plus a human-readable name, so
+  // a fleet client can tell N local bridges apart. Both are stamped into the
+  // instance file and returned by `workspaces.list`.
+  const serverId = crypto.randomUUID();
+  const primaryRoot = path.resolve(Array.isArray(opts.root) ? opts.root[0]! : opts.root);
+  const serverName = `${os.hostname()}:${path.basename(primaryRoot)}`;
+
+  // Instance-file state, also ahead of the registry: the startup opens already
+  // broadcast `workspaces.changed`, which schedules a rewrite (a no-op until
+  // the initial write further down has happened).
+  const instDir = opts.instancesDir === undefined ? defaultInstancesDir() : opts.instancesDir;
+  const startedAt = new Date().toISOString();
+  let instanceFile: string | null = null;
+  let instanceTimer: NodeJS.Timeout | null = null;
+  /** Rewrites chain onto this promise so close() can await the tail. */
+  let instanceWrites: Promise<void> = Promise.resolve();
+  let instanceClosed = false;
+
   // --- MCP loopback listener, started first. Agent runs reach the in-process
   // MCP endpoint over plain HTTP (the Claude CLI can't dial a pipe), so a
   // small loopback-only server on an ephemeral port always exists; its
@@ -261,6 +286,14 @@ export async function startCrystalServer(opts: {
     },
     opts.persistFile,
     mcpBaseUrl,
+    // Persisted-open-set flavor key: it must be stable across restarts of the
+    // same logical server yet distinct between concurrently-running ones. The
+    // primary root's workspace id is exactly the claimed pipe's base name
+    // (`crystal-<id>`), and a `--listen` port distinguishes a TCP-serving dev
+    // server from a pipe-only sidecar on the same root. The pid-suffixed pipe
+    // *fallback* is deliberately not used: a pid changes every boot, and a key
+    // that changes every boot would orphan its open set on restart.
+    `${workspaceIdFor(primaryRoot)}${opts.listen ? `-p${opts.listen.port}` : ""}`,
   );
   registryRef = registry;
 
@@ -330,6 +363,7 @@ export async function startCrystalServer(opts: {
       workspaces: registry.list(),
       defaultWs: registry.defaultWs,
       recents: await registry.recents(),
+      server: { serverId, name: serverName },
     }),
     "workspaces.open": async ({ root }) => ({
       workspace: (await registry.open(root)).descriptor(),
@@ -921,6 +955,10 @@ export async function startCrystalServer(opts: {
   });
 
   function broadcast<E extends BridgeEventName>(event: E, payload: BridgeEvents[E]): void {
+    // The instance file mirrors the live workspace set. Every open, close and
+    // rename funnels through here as `workspaces.changed` (registry and
+    // handlers alike), making this the one seam a rewrite can watch.
+    if (event === "workspaces.changed") scheduleInstanceRewrite();
     const msg: BridgeEventMessage<E> = { type: "evt", event, payload };
     const text = JSON.stringify(msg);
     for (const client of clients) client.send(text);
@@ -993,11 +1031,9 @@ export async function startCrystalServer(opts: {
   // frames as the WebSocket, newline-delimited (JSON.stringify never emits a
   // raw newline, so line framing is safe). Native clients — the desktop
   // shell's relay, CLI tools — connect here; browsers use the TCP listener.
-  const instDir = opts.instancesDir === undefined ? defaultInstancesDir() : opts.instancesDir;
   let pipePath: string | null = null;
   let pipeServer: net.Server | null = null;
   if (opts.pipe !== null) {
-    const primaryRoot = Array.isArray(opts.root) ? opts.root[0]! : opts.root;
     const primaryId = workspaceIdFor(primaryRoot);
     pipePath =
       opts.pipe ??
@@ -1046,20 +1082,50 @@ export async function startCrystalServer(opts: {
     });
   }
 
+  /** Current discovery info, recomputed per write so the workspace set never goes stale. */
+  function instanceInfo(): InstanceInfo {
+    return {
+      pid: process.pid,
+      serverId,
+      name: serverName,
+      pipe: pipePath,
+      port: listen?.port ?? null,
+      mcpPort,
+      ...(hub ? { hubMcpUrl } : {}),
+      roots: registry.list().map((w) => w.root),
+      workspaces: registry.list(),
+      ...(token ? { token } : {}),
+      startedAt,
+    };
+  }
+
+  /**
+   * Debounced instance-file rewrite on `workspaces.changed`. A trailing timer
+   * absorbs bursts of opens; writes chain onto `instanceWrites` and re-check
+   * `instanceClosed`, so a late rewrite can never recreate the file after the
+   * shutdown unlink. No-op until the initial write below has happened —
+   * startup opens land in that write anyway.
+   */
+  function scheduleInstanceRewrite(): void {
+    if (!instDir || !instanceFile || instanceClosed) return;
+    if (instanceTimer) clearTimeout(instanceTimer);
+    instanceTimer = setTimeout(() => {
+      instanceTimer = null;
+      instanceWrites = instanceWrites.then(async () => {
+        if (instanceClosed) return;
+        try {
+          await writeInstanceFile(instDir, instanceInfo());
+        } catch (err) {
+          console.warn("[crystal] could not rewrite instance file:", (err as Error).message);
+        }
+      });
+    }, INSTANCE_REWRITE_DEBOUNCE_MS);
+  }
+
   // Advertise the endpoints for local discovery (desktop shell, CLI tools).
-  let instanceFile: string | null = null;
   if (instDir) {
     try {
-      instanceFile = await writeInstanceFile(instDir, {
-        pid: process.pid,
-        pipe: pipePath,
-        port: listen?.port ?? null,
-        mcpPort,
-        ...(hub ? { hubMcpUrl } : {}),
-        roots: registry.list().map((w) => w.root),
-        ...(token ? { token } : {}),
-        startedAt: new Date().toISOString(),
-      });
+      instanceFile = await writeInstanceFile(instDir, instanceInfo());
     } catch (err) {
       console.warn("[crystal] could not write instance file:", (err as Error).message);
     }
@@ -1103,13 +1169,22 @@ export async function startCrystalServer(opts: {
   }
 
   return {
+    serverId,
     port: listen?.port ?? null,
     mcpPort,
     hubMcpUrl,
     pipe: pipePath,
     close: async () => {
+      // Stop instance-file rewrites first: cancel the pending timer, then
+      // await the in-flight chain so nothing lands after the unlink below.
+      instanceClosed = true;
+      if (instanceTimer) {
+        clearTimeout(instanceTimer);
+        instanceTimer = null;
+      }
       hub?.dispose();
       registry.closeAll();
+      await instanceWrites;
       if (instanceFile) await removeInstanceFile(instanceFile);
       // Server .close() waits for open connections — drop live clients first
       // so shutdown can't hang on an idle browser tab or a wedged pipe.
