@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.7.0 (2026-07-27)
+
+### Features
+
+- fleet client — one client, many bridges ([`ca1f008`](https://github.com/eliotlim/crystal/commit/ca1f008))
+
 ## v0.6.0 (2026-07-27)
 
 ### Features
