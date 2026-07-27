@@ -67,6 +67,8 @@ export class BridgeClient {
   private transport: BridgeTransport | null = null;
   private pending = new Map<string, Pending>();
   private closedByUser = false;
+  /** Scheduled reconnect attempt — tracked so close() can cancel it. */
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private retryDelay = 500;
   private _state: ConnectionState = "closed";
   private scopeWs: string | null = null;
@@ -106,11 +108,18 @@ export class BridgeClient {
   }
 
   private scheduleRetry(): void {
-    setTimeout(() => this.open(), this.retryDelay);
+    if (this.closedByUser || this.retryTimer) return;
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      this.open();
+    }, this.retryDelay);
     this.retryDelay = Math.min(this.retryDelay * 2, 5_000);
   }
 
   private open(): void {
+    // A client closed during backoff must stay closed — without this guard a
+    // still-pending retry timer resurrects it after close().
+    if (this.closedByUser) return;
     if (this.transport) return; // already connecting or open
     this.setState("connecting");
     let transport: BridgeTransport;
@@ -167,6 +176,10 @@ export class BridgeClient {
 
   close(): void {
     this.closedByUser = true;
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
     this.transport?.close();
     this.transport = null;
     this.setState("closed");

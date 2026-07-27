@@ -32,7 +32,6 @@ export {
   type FleetStore,
 } from "./fleet-store.js";
 export {
-  agentEventToChunk,
   createTerminalsStore,
   type TermChunk,
   type TerminalTab,
@@ -40,6 +39,7 @@ export {
   type TerminalsState,
   type TerminalsStore,
 } from "./terminal-store.js";
+export { agentEventToChunk, type AgentEventChunk } from "./agent-event-chunk.js";
 export {
   createWorkflowStore,
   type WorkflowState,
@@ -61,7 +61,26 @@ export {
   formatRunCost,
   formatRunDuration,
   formatRunTokens,
+  type TranscriptDensity,
 } from "./run-transcript.js";
+export {
+  parseUnifiedDiff,
+  type DiffHunk,
+  type DiffLine,
+  type FileDiff,
+  type FileDiffStatus,
+} from "./diff.js";
+export { chainOf } from "./chain.js";
+export { ChainTurns } from "./chain-turns.js";
+export { MessageComposer, type ComposerSendResult } from "./message-composer.js";
+export {
+  RunSurface,
+  branchNameError,
+  useRunSurface,
+  type ApplyBranchOutcome,
+  type RunSurfaceDiff,
+  type RunSurfaceProps,
+} from "./run-surface.js";
 export { createLensStore, type LensState, type LensStore } from "./lens-store.js";
 export { createNavStore, type NavPatch, type NavState, type NavStore } from "./nav-store.js";
 export { requestOpenFile } from "./open-file.js";

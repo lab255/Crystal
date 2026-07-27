@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Activity, ArrowUpRight, Bot, Landmark, ScanSearch, Sparkles, X } from "lucide-react";
+import { Activity, ArrowUpRight, Bot, Landmark, ScanSearch, Sparkles } from "lucide-react";
 import {
   SURVEYS_DIR,
   parseCrystalFile,
@@ -10,7 +10,8 @@ import {
 } from "@crystal/core";
 import { autoLayout, buildSurveyPrompt, type SurveyKind } from "@crystal/architect";
 import { useAgents, useCrystal, useNavUpdate, useWorkspace } from "@crystal/client";
-import { Button, Spinner, StatusDot, Tooltip, cn } from "@crystal/ui";
+import { RunList } from "@crystal/orchestrator";
+import { Spinner, StatusDot, cn } from "@crystal/ui";
 import { ScopedActionButton, type JobScope } from "./ScopedActionButton.js";
 
 const EMPTY_RUNS: AgentRun[] = [];
@@ -27,7 +28,7 @@ interface Scoped {
  * The Jobs mode: a home for Crystal's interactive/synchronous *agent* jobs —
  * intent indexing and architecture surveys. Each job dispatches through a
  * scope-aware split button (working-tree diff by default, "vs main" or a full
- * scan on the caret) and its live run is tracked in the shared active-jobs list.
+ * scan on the caret) and its runs land in the shared run list below.
  */
 export function JobsMode() {
   const { client } = useCrystal();
@@ -75,7 +76,7 @@ export function JobsMode() {
       <div className="mx-auto flex w-full max-w-2xl flex-col gap-4 p-5">
         <IndexSection scoped={scoped} runs={runs} refresh={refresh} />
         <SurveySection scoped={scoped} runs={runs} />
-        <ActiveJobs runs={runs} />
+        <JobRuns runs={runs} />
       </div>
     </div>
   );
@@ -387,72 +388,25 @@ function SurveyChoice({
   );
 }
 
-function ActiveJobs({ runs }: { runs: AgentRun[] }) {
-  const cancel = useAgents((s) => s.cancel);
+/**
+ * The shared run-list treatment over this mode's jobs. Selecting a run
+ * deep-links to its full detail in Orchestrate — transcript, cancel and the
+ * worktree diff all live on that one surface.
+ */
+function JobRuns({ runs }: { runs: AgentRun[] }) {
   const updateNav = useNavUpdate();
   const jobs = runs.filter((r) => r.purpose === "index" || r.purpose === "survey");
 
-  if (jobs.length === 0) {
-    return (
-      <p className="px-1 text-[11px] text-ink-faint">
-        No jobs yet — dispatch an index or survey above.
-      </p>
-    );
-  }
-
   return (
-    <section>
-      <h2 className="mb-1.5 px-1 text-[11px] font-semibold uppercase tracking-wider text-ink-faint">
-        Recent jobs
-      </h2>
-      <div className="flex flex-col gap-0.5">
-        {jobs.map((r) => (
-          <div
-            key={r.id}
-            className="group flex items-center gap-2 rounded-lg px-2 py-1.5 text-[12px] hover:bg-surface-2"
-          >
-            <StatusDot status={r.status} />
-            <span className="font-medium text-ink capitalize">{r.purpose}</span>
-            {r.model ? <span className="text-[10px] text-ink-faint">{r.model}</span> : null}
-            <span className="text-[10px] text-ink-faint">{elapsed(r)}</span>
-            <span className="ml-auto flex items-center gap-1.5">
-              {r.status === "running" || r.status === "queued" ? (
-                <Tooltip content="Cancel run">
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    aria-label="Cancel run"
-                    onClick={() => void cancel(r.id)}
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </Button>
-                </Tooltip>
-              ) : null}
-              <Tooltip content="Open run detail">
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  aria-label="Open run detail"
-                  onClick={() => updateNav({ mode: "orchestrate", orchestrate: { tab: "runs", run: r.id } })}
-                >
-                  <ArrowUpRight className="h-3.5 w-3.5" />
-                </Button>
-              </Tooltip>
-            </span>
-          </div>
-        ))}
-      </div>
-    </section>
+    <RunList
+      runs={jobs}
+      selectedRunId={null}
+      onSelect={(id) =>
+        updateNav({ mode: "orchestrate", orchestrate: { tab: "runs", run: id } })
+      }
+      title="Recent jobs"
+      emptyHint="No jobs yet — dispatch an index or survey above."
+      className="w-full rounded-xl border border-edge"
+    />
   );
-}
-
-/** Human-readable run duration (settled runs show total, live runs show elapsed). */
-function elapsed(r: AgentRun): string {
-  const start = r.startedAt ?? r.createdAt;
-  const end = r.endedAt ?? new Date().toISOString();
-  const ms = new Date(end).getTime() - new Date(start).getTime();
-  if (!Number.isFinite(ms) || ms < 0) return "";
-  const s = Math.round(ms / 1000);
-  if (s < 60) return `${s}s`;
-  return `${Math.floor(s / 60)}m ${s % 60}s`;
 }

@@ -10,8 +10,12 @@ import {
   Terminal,
   Wrench,
 } from "lucide-react";
-import type { RunEvent } from "@crystal/core";
+import type { RunEvent, TerminalStream } from "@crystal/core";
 import { Badge, Spinner, cn } from "@crystal/ui";
+import { agentEventToChunk } from "./agent-event-chunk.js";
+
+/** How much of each event a transcript shows. */
+export type TranscriptDensity = "comfortable" | "compact";
 
 /**
  * The streamed transcript of one agent run, as a pure presentational
@@ -30,11 +34,18 @@ export function RunTranscript({
   runId,
   /** Show the "starting…" spinner while a live run has not emitted anything yet. */
   starting = false,
+  /**
+   * "comfortable" renders each event as a full block; "compact" flattens the
+   * stream to the terminal console's one-line chunks (`agentEventToChunk`) —
+   * the same model, so the two densities never drift.
+   */
+  density = "comfortable",
   className,
 }: {
   events: readonly RunEvent[];
   runId?: string | null;
   starting?: boolean;
+  density?: TranscriptDensity;
   className?: string;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -67,9 +78,32 @@ export function RunTranscript({
           <Spinner className="h-3.5 w-3.5" /> Starting Claude Code…
         </div>
       ) : null}
-      {events.map((e) => (
-        <RunEventRow key={e.seq} runEvent={e} />
-      ))}
+      {density === "compact"
+        ? events.map((e) => <CompactEventRow key={e.seq} runEvent={e} />)
+        : events.map((e) => <RunEventRow key={e.seq} runEvent={e} />)}
+    </div>
+  );
+}
+
+const COMPACT_STREAM_CLASSES: Record<TerminalStream, string> = {
+  stdout: "text-ink",
+  stderr: "text-warn",
+  system: "text-ink-faint",
+  input: "text-crystal-300",
+};
+
+/** One event as its flattened one-line console chunk (null = hidden). */
+function CompactEventRow({ runEvent }: { runEvent: RunEvent }) {
+  const chunk = agentEventToChunk(runEvent.event);
+  if (!chunk) return null;
+  return (
+    <div
+      className={cn(
+        "whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed",
+        COMPACT_STREAM_CLASSES[chunk.stream],
+      )}
+    >
+      {chunk.text.replace(/\n$/, "")}
     </div>
   );
 }

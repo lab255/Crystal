@@ -24,7 +24,7 @@ import {
   isProgramTerminal,
   programBudgetState,
   programSpend,
-  programTag,
+  type AgentRun,
   type HubQuestion,
   type Program,
   type ProgramDelivery,
@@ -33,8 +33,9 @@ import {
 import {
   EMPTY_HUB_EVENTS,
   EMPTY_HUB_QUESTIONS,
-  InteractiveRunBanner,
-  RunTranscript,
+  MessageComposer,
+  RunSurface,
+  chainOf,
   formatRunCost,
   formatRunTokens,
   useHub,
@@ -44,7 +45,6 @@ import {
   useWorkspaces,
 } from "@crystal/client";
 import {
-  Badge,
   Button,
   EmptyState,
   Input,
@@ -65,6 +65,9 @@ import {
 } from "./common.js";
 import { AddDeliveryForm } from "./AddDeliveryForm.js";
 import { deliveryHint, deliveryMenuEntries, programMenuEntries } from "./menus.js";
+
+/** Stable empty chain — a fresh [] per render would defeat the memo below. */
+const EMPTY_TURNS: AgentRun[] = [];
 
 /**
  * One program: what each project was asked for, where its orchestrator has
@@ -609,31 +612,8 @@ function DeliveryDetail({ program, delivery }: { program: Program; delivery: Pro
   const messageDelivery = useHub((s) => s.messageDelivery);
   const setDeliveryBudget = useHub((s) => s.setDeliveryBudget);
   const goToProject = useCrossWorkspaceNav();
-  const [text, setText] = useState("");
-  const [notice, setNotice] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
 
   const live = !isDeliveryTerminal(delivery.status) && !!delivery.workflowId;
-
-  async function send() {
-    const t = text.trim();
-    if (!t || busy) return;
-    setBusy(true);
-    setNotice(null);
-    try {
-      const { queued } = await messageDelivery(program.id, delivery.id, t);
-      setText("");
-      setNotice(
-        queued
-          ? "Queued — delivered when its orchestrator finishes the current turn."
-          : "Delivered to its orchestrator.",
-      );
-    } catch (err) {
-      setNotice((err as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
 
   return (
     <div className="border-t border-edge/70 px-2.5 py-2">
@@ -680,24 +660,13 @@ function DeliveryDetail({ program, delivery }: { program: Program; delivery: Pro
         </Button>
       </div>
       {live ? (
-        <div className="mt-2 flex items-end gap-2">
-          <Textarea
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            onKeyDown={(e) => {
-              if ((e.metaKey || e.ctrlKey) && e.key === "Enter") void send();
-            }}
-            rows={2}
-            placeholder={`Message ${delivery.projectName}'s orchestrator — a decision from another project, a changed contract… (Ctrl+Enter)`}
-            aria-label="Message this delivery's orchestrator"
-            className="min-h-0 flex-1"
-          />
-          <Button variant="secondary" size="sm" disabled={busy || !text.trim()} onClick={() => void send()}>
-            <Send className="h-3 w-3" /> Send
-          </Button>
-        </div>
+        <MessageComposer
+          onSend={(t) => messageDelivery(program.id, delivery.id, t)}
+          placeholder={`Message ${delivery.projectName}'s orchestrator — a decision from another project, a changed contract… (Ctrl+Enter)`}
+          ariaLabel="Message this delivery's orchestrator"
+          className="mt-1 bg-transparent p-0"
+        />
       ) : null}
-      {notice ? <p className="mt-1 text-[10px] text-ink-faint">{notice}</p> : null}
     </div>
   );
 }
@@ -733,19 +702,17 @@ function ManagerSession({ program }: { program: Program }) {
     if (run.terminalId) await focusTerminal(hostWs, run.terminalId);
   }
 
-  const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
-  // The manager's chain: every turn of the session, oldest first.
-  const turns = useMemo(
-    () =>
-      runs
-        .filter((r) => r.tags.includes(programTag(program.id)))
-        .sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
-    [runs, program.id],
-  );
-  const viewed = turns.find((r) => r.id === selectedRun) ?? turns[turns.length - 1] ?? null;
+  // The manager's chain: every turn of the session, oldest first — the shared
+  // resume-lineage walk anchored on the run the program record points at.
+  const chain = useMemo(() => {
+    const anchor = runs.find((r) => r.id === program.managerRunId);
+    return anchor ? chainOf(runs, anchor) : EMPTY_TURNS;
+  }, [runs, program.managerRunId]);
+  const latest = chain[chain.length - 1] ?? null;
+  const viewed = chain.find((r) => r.id === selectedRun) ?? latest;
   const events = viewed ? (eventsByRun[viewed.id] ?? EMPTY_HUB_EVENTS) : EMPTY_HUB_EVENTS;
 
   // Keyed on the id: `viewed` is a fresh object on every run event, and
@@ -756,22 +723,6 @@ function ManagerSession({ program }: { program: Program }) {
   }, [viewedId, loadRunEvents]);
 
   const terminal = isProgramTerminal(program.status);
-
-  async function send() {
-    const t = text.trim();
-    if (!t || busy) return;
-    setBusy(true);
-    setNotice(null);
-    try {
-      const { queued } = await message(program.id, t);
-      setText("");
-      setNotice(queued ? "Queued — delivered when the manager's turn ends." : null);
-    } catch (err) {
-      setNotice((err as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
 
   if (!program.managerRunId) {
     return (
@@ -831,57 +782,20 @@ function ManagerSession({ program }: { program: Program }) {
       <div className="flex items-center gap-2 px-4 py-2">
         <MessageSquare className="h-3.5 w-3.5 text-crystal-300" />
         <SectionLabel>Program manager</SectionLabel>
-        {viewed ? <Badge tone="violet">{viewed.status}</Badge> : null}
-        {viewed?.status === "running" ? (
-          <Tooltip content="Stop this turn. The program stays as it is; message the manager to pick it up again.">
-            <Button variant="danger" size="xs" onClick={() => void cancelRun(viewed.id)}>
-              <Ban className="h-3 w-3" /> Stop turn
-            </Button>
-          </Tooltip>
-        ) : null}
-        {turns.length > 1 ? (
-          <div className="ml-auto flex items-center gap-1 overflow-x-auto">
-            <span className="text-[10px] uppercase tracking-wider text-ink-faint">Turns</span>
-            {turns.map((r, i) => (
-              <button
-                key={r.id}
-                type="button"
-                onClick={() => nav({ hub: { run: r.id === turns[turns.length - 1]?.id ? null : r.id } })}
-                className={cn(
-                  "rounded-md px-1.5 py-0.5 text-[10px] font-medium",
-                  viewed?.id === r.id ? "bg-surface-3 text-ink" : "text-ink-muted hover:text-ink",
-                )}
-              >
-                {i + 1}
-              </button>
-            ))}
-          </div>
-        ) : null}
       </div>
-      {viewed ? <InteractiveRunBanner run={viewed} className="border-t border-edge" /> : null}
-      <div className="flex h-80 flex-col border-t border-edge">
-        <RunTranscript events={events} runId={viewedId} starting={viewed?.status === "running"} />
-      </div>
-      {!terminal ? (
-        <div className="border-t border-edge bg-surface-1 p-2">
-          <div className="flex items-end gap-2">
-            <Textarea
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              onKeyDown={(e) => {
-                if ((e.metaKey || e.ctrlKey) && e.key === "Enter") void send();
-              }}
-              rows={2}
-              placeholder="Message the program manager — change scope, re-prioritise a project, answer a question… (Ctrl+Enter)"
-              aria-label="Message the program manager"
-              className="min-h-0 flex-1"
-            />
-            <Button variant="primary" size="sm" disabled={busy || !text.trim()} onClick={() => void send()}>
-              <Send className="h-3 w-3" /> Send
-            </Button>
-          </div>
-          {notice ? <p className="mt-1 text-[10px] text-ink-faint">{notice}</p> : null}
-        </div>
+      {viewed ? (
+        <RunSurface
+          run={viewed}
+          events={events}
+          chain={chain}
+          diff={null}
+          onCancel={() => cancelRun(viewed.id)}
+          onSend={terminal ? undefined : (t) => message(program.id, t)}
+          onSelectTurn={(id) => nav({ hub: { run: id === latest?.id ? null : id } })}
+          // An interactive turn collapses to its PTY banner; a headless one
+          // keeps the transcript to a bounded pane inside the scrolling view.
+          className={cn("border-t border-edge", !viewed.terminalId && "h-[28rem]")}
+        />
       ) : null}
     </div>
   );
