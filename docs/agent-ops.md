@@ -10,6 +10,32 @@ without reshaping anything below.
 Three tracks, ordered. A and B are independent of each other; C rides on both
 being stable. Each track ships standalone.
 
+## Status (2026-07-27)
+
+Tracks A, B, and C1 are **shipped** (commits `feat(agents)`, `feat(client)`,
+`feat(orchestrator)`, `feat(server)`, `feat(desktop)` on main); C2 is in
+progress. Deviations that stuck, recorded here so the sections below read as
+design rationale rather than literal file truth:
+
+- The `agent:<id>` tag is stamped centrally in `createAgentRun`, not per call
+  site, so every run-creation path gets attribution.
+- `agentTag` lives in `agent.ts` (an agent-profile.ts home would cycle imports).
+- `AgentManager.profileResolver` exists alongside the runtime's
+  `resolveProfile`: resumed turns must re-apply `--append-system-prompt`/tool
+  flags (per-invocation flags fall off turn 2 otherwise), and `dispatchWorker`
+  resolves `WorkerSpec.agentId` from inside the manager. Workspace runtimes
+  back it with the AgentLibrary, the hub with the global store.
+- Manager spawns strip a profile's `defaults.isolation` — worktree default is
+  worker policy; an isolated manager can't keep the board honest.
+- The hub manager resolves agentIds against the global library only (project
+  rosters don't apply cross-project); `"opus"` survives as the last fallback.
+- RunList's ws badge is `wsNameOf?: (run) => string | null` — `AgentRun`
+  carries no workspace id, so the cross-workspace caller supplies the name.
+- The open-set persistence flavor key is the primary root's workspace id plus
+  the listen port (pipe base name is that id; pid was rejected as unstable).
+- The Runs-tab purpose filter deep-links via `OrchestrateLink.purpose`, and
+  `agent.start`/`agent.interactive` formally declare the `model` override.
+
 ---
 
 ## Track A — Agent profiles: durable named agents
