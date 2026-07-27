@@ -10,7 +10,6 @@ import {
   Pause,
   Play,
   Plus,
-  Send,
   SlidersHorizontal,
   TerminalSquare,
   Workflow as WorkflowIcon,
@@ -32,17 +31,18 @@ import {
   type WorkflowTemplate,
 } from "@crystal/core";
 import {
-  InteractiveRunBanner,
+  RunSurface,
+  formatRunCost,
+  formatRunTokens,
   useAgents,
   useCrystal,
+  useRunSurface,
   useTerminals,
   useWorkflows,
   useWorkspace,
   useWorkspaces,
 } from "@crystal/client";
 import { Badge, Button, EmptyState, Input, Spinner, Textarea, Tooltip, cn } from "@crystal/ui";
-import { formatCost, formatTokens } from "./prompt.js";
-import { RunView } from "./RunView.js";
 import { TemplateBuilder } from "./TemplateBuilder.js";
 import { TemplateEditor } from "./TemplateEditor.js";
 import { WorkflowGraph } from "./WorkflowGraph.js";
@@ -202,10 +202,10 @@ function WorkflowListItem({
       </div>
       <div className="mt-1 flex items-center gap-2 text-[10px] text-ink-faint">
         <span>
-          {formatCost(spend.costUsd)}
+          {formatRunCost(spend.costUsd)}
           {workflow.budgetUsd != null ? ` / $${workflow.budgetUsd.toFixed(2)}` : ""}
         </span>
-        <span>{formatTokens(spend.totalTokens)} tok</span>
+        <span>{formatRunTokens(spend.totalTokens)} tok</span>
         <span>{spend.runCount} runs</span>
         {spend.liveRunCount > 0 ? <Spinner className="h-2.5 w-2.5" /> : null}
       </div>
@@ -295,9 +295,13 @@ function WorkflowDetail({
           .map((q) => ({ taskId: t.id, taskTitle: t.title, text: q.text })),
       );
   }, [projects, workflow.projectId, workflow.epicId, workflow.tracks]);
+  const message = useWorkflows((s) => s.message);
   const [turnId, setTurnId] = useState<string | null>(null);
   const latestTurn = managerTurns[managerTurns.length - 1] ?? null;
   const viewedTurn = managerTurns.find((r) => r.id === turnId) ?? latestTurn;
+  // The shared run surface renders the viewed turn: transcript or PTY
+  // handoff, the resume-chain turn strip, composer and worktree changes.
+  const surface = useRunSurface(viewedTurn?.id ?? null);
   const [openTrackId, setOpenTrackId] = useState<string | null>(null);
   const openTrack = workflow.tracks.find((t) => t.id === openTrackId) ?? null;
   // Follow the live conversation unless an older turn was explicitly picked.
@@ -400,7 +404,7 @@ function WorkflowDetail({
         <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] text-ink-muted">
           <span className="flex items-center gap-1">
             <CircleDollarSign className="h-3.5 w-3.5 text-crystal-300" />
-            {formatCost(spend.costUsd)}
+            {formatRunCost(spend.costUsd)}
             {budget.budgetUsd != null ? (
               <span className={cn(budget.exhausted && "text-danger")}>
                 {" "}
@@ -409,7 +413,7 @@ function WorkflowDetail({
             ) : (
               <span className="text-ink-faint"> (no budget)</span>
             )}
-            · {formatTokens(spend.totalTokens)} tok · {spend.runCount} runs
+            · {formatRunTokens(spend.totalTokens)} tok · {spend.runCount} runs
           </span>
           {editingBudget ? (
             <form
@@ -503,7 +507,7 @@ function WorkflowDetail({
                   {w.status === "running" ? <Spinner className="h-2.5 w-2.5" /> : null}
                   {w.purpose ?? "worker"}
                   {w.branch ? <span className="font-mono text-ink-faint">{w.branch.split("/").pop()}</span> : null}
-                  {w.costUsd != null ? <span className="text-ink-faint">{formatCost(w.costUsd)}</span> : null}
+                  {w.costUsd != null ? <span className="text-ink-faint">{formatRunCost(w.costUsd)}</span> : null}
                 </button>
               </Tooltip>
             ))}
@@ -511,47 +515,32 @@ function WorkflowDetail({
         ) : null}
       </header>
 
-      {/* Manager conversation */}
-      <div className="flex min-h-0 flex-1 flex-col">
-        {managerTurns.length > 1 ? (
-          <div className="flex items-center gap-1 overflow-x-auto border-b border-edge px-3 py-1.5">
-            <span className="text-[10px] uppercase tracking-wider text-ink-faint">Turns</span>
-            {managerTurns.map((r, i) => (
-              <button
-                key={r.id}
-                type="button"
-                onClick={() => setTurnId(r.id === latestTurn?.id ? null : r.id)}
-                className={cn(
-                  "rounded-md px-1.5 py-0.5 text-[10px] font-medium",
-                  viewedTurn?.id === r.id
-                    ? "bg-surface-3 text-ink"
-                    : "text-ink-muted hover:text-ink",
-                )}
-              >
-                {i + 1}
-              </button>
-            ))}
-          </div>
-        ) : null}
-        <div className="min-h-0 flex-1">
-          {viewedTurn ? (
-            <RunView run={viewedTurn} />
-          ) : (
-            <EmptyState icon={MessageSquare} title="Manager session">
-              The manager's turns stream here as it refines, plans and dispatches.
-            </EmptyState>
-          )}
-        </div>
-        {viewedTurn ? (
-          <InteractiveRunBanner run={viewedTurn} className="border-t border-edge" />
-        ) : null}
-        {!terminal ? <ManagerComposer workflowId={workflow.id} /> : null}
+      {/* Manager conversation — the shared run surface (its turn strip walks
+          the resume chain; its composer routes to workflow.message). */}
+      <div className="min-h-0 flex-1">
+        {surface.run ? (
+          <RunSurface
+            run={surface.run}
+            events={surface.events}
+            chain={surface.chain}
+            diff={surface.diff}
+            onRefreshDiff={surface.onRefreshDiff}
+            onApplyBranch={surface.onApplyBranch}
+            onDiscard={surface.onDiscard}
+            onCancel={surface.onCancel}
+            onSelectTurn={(id) => setTurnId(id === latestTurn?.id ? null : id)}
+            onSend={terminal ? undefined : (text) => message(workflow.id, text)}
+          />
+        ) : (
+          <EmptyState icon={MessageSquare} title="Manager session">
+            The manager's turns stream here as it refines, plans and dispatches.
+          </EmptyState>
+        )}
       </div>
     </div>
   );
 }
 
-/** Remote control: send the manager a message (delivered/queued server-side). */
 /**
  * The committed changes a track branch would merge (`git diff HEAD...branch`),
  * fetched when its chip is opened — the merge preview that pairs with the
@@ -610,51 +599,6 @@ function TrackFilesPanel({ branch }: { branch: string }) {
           ))}
         </ul>
       )}
-    </div>
-  );
-}
-
-function ManagerComposer({ workflowId }: { workflowId: string }) {
-  const message = useWorkflows((s) => s.message);
-  const [text, setText] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
-
-  async function send() {
-    const t = text.trim();
-    if (!t || busy) return;
-    setBusy(true);
-    setNotice(null);
-    try {
-      const { queued } = await message(workflowId, t);
-      setText("");
-      setNotice(queued ? "Queued — delivered when the manager finishes its current turn." : null);
-    } catch (err) {
-      setNotice((err as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <div className="shrink-0 border-t border-edge bg-surface-1 p-2">
-      <div className="flex items-end gap-2">
-        <Textarea
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => {
-            if ((e.metaKey || e.ctrlKey) && e.key === "Enter") void send();
-          }}
-          rows={2}
-          placeholder="Message the manager — steer scope, answer questions, change priorities… (Ctrl+Enter)"
-          aria-label="Message the workflow manager"
-          className="min-h-0 flex-1"
-        />
-        <Button variant="primary" size="sm" disabled={busy || !text.trim()} onClick={() => void send()}>
-          <Send className="h-3 w-3" /> Send
-        </Button>
-      </div>
-      {notice ? <p className="mt-1 text-[10px] text-ink-faint">{notice}</p> : null}
     </div>
   );
 }

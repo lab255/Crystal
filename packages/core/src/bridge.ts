@@ -352,6 +352,8 @@ export interface BridgeMethods {
       isolation?: "none" | "worktree";
       /** Agent profile to dispatch to — the server resolves model + skills from the roster. */
       agentId?: string | null;
+      /** Model override — an explicit model wins over the profile's. */
+      model?: string | null;
       /** Manager run that dispatched this worker (sets role to "worker"). */
       parentRunId?: string | null;
       /** Place in the manager/worker hierarchy (unset = standalone run). */
@@ -392,6 +394,8 @@ export interface BridgeMethods {
       repoId?: string | null;
       /** Agent profile to dispatch to — the server resolves model + skills from the roster. */
       agentId?: string | null;
+      /** Model override — an explicit model wins over the profile's. */
+      model?: string | null;
       /** "manager" scopes the run's MCP endpoint to the board/dispatch toolset. */
       role?: AgentRole | null;
       purpose?: RunPurpose | null;

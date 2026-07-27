@@ -111,14 +111,3 @@ export function buildBoardManagerGoal(projectName: string, ready: readonly TaskI
     (ready.length > shown.length ? `\n… +${ready.length - shown.length} more` : "")
   );
 }
-
-/**
- * Run formatters live in `@crystal/client` beside `RunTranscript`, which
- * renders through them — re-exported here under their historic names so the
- * `<$0.01` threshold and the k/M cut-overs have exactly one definition.
- */
-export {
-  formatRunCost as formatCost,
-  formatRunDuration as formatDuration,
-  formatRunTokens as formatTokens,
-} from "@crystal/client";

@@ -1,22 +1,49 @@
-import { useState } from "react";
-import { Bot, Play, Plus, Sparkles, UserCog, Wand2 } from "lucide-react";
-import { RUN_PURPOSES, type RunPurpose } from "@crystal/core";
-import { useAgents, useCrystal, useWorkspace } from "@crystal/client";
-import { Button, EmptyState, Textarea, cn } from "@crystal/ui";
+import { useMemo, useState } from "react";
+import {
+  ArrowLeft,
+  Bot,
+  Play,
+  Plus,
+  Sparkles,
+  Trash2,
+  UserCog,
+  Wand2,
+} from "lucide-react";
+import {
+  AGENT_PERMISSION_MODES,
+  AGENT_PROFILE_KINDS,
+  AGENT_PROFILE_SCOPES,
+  RUN_PURPOSES,
+  agentTag,
+  createAgentProfile,
+  isAgentTag,
+  type AgentPermissionMode,
+  type AgentProfile,
+  type AgentProfileScope,
+  type RunPurpose,
+} from "@crystal/core";
+import { formatRunCost, useAgents, useCrystal, useWorkspace } from "@crystal/client";
+import { Badge, Button, EmptyState, Input, Textarea, cn } from "@crystal/ui";
 import { MANAGER_PREAMBLE } from "./prompt.js";
-import { RunList } from "./RunList.js";
-import { RunView } from "./RunView.js";
+import { RunsPane } from "./RunsPane.js";
 
 const selectClasses =
   "h-8 rounded-lg border border-edge bg-surface-1 px-2 text-[13px] text-ink " +
   "focus:border-crystal-500/60 focus:outline-none";
 
+// Same model hints as the template builder's stage datalist — free text stays
+// allowed (any Claude model alias/id the CLI accepts).
+const MODEL_HINTS = ["opus", "sonnet", "haiku"] as const;
+
+const EMPTY_PROFILES: AgentProfile[] = [];
+
 /**
- * The unified agent dispatch surface: a manager/worker composer plus one-click
- * job templates on the left of the run tree, the reusable {@link RunList}
- * sidepane in the middle, and live run output on the right. Every path in —
- * a typed prompt, a manager delegation, or a predefined template — produces an
- * {@link AgentRun} that streams into the same list.
+ * The roster surface: durable named agents, not just a dispatch form. Left,
+ * the workspace's profiles (project + library sections, spend-per-profile
+ * from the `agent:<id>` tag) plus the roster-level defaults; right, the
+ * profile editor with the dispatch composer beneath it. Selecting a run
+ * (e.g. right after dispatching) swaps the whole surface for the shared
+ * {@link RunsPane} until the user returns to the roster.
  */
 export function AgentsTab({
   selectedRunId,
@@ -26,36 +53,530 @@ export function AgentsTab({
   onSelectRun: (id: string | null) => void;
 }) {
   const runs = useAgents((s) => s.runs);
-  const selectedRun = runs.find((r) => r.id === selectedRunId) ?? null;
+  const roster = useWorkspace((s) => s.roster);
+  const updateRoster = useWorkspace((s) => s.updateRoster);
+
+  const profiles = roster?.agents ?? EMPTY_PROFILES;
+  const [profileId, setProfileId] = useState<string | null>(null);
+  /** Unsaved profile being created — becomes real on first Save. */
+  const [draftNew, setDraftNew] = useState<AgentProfile | null>(null);
+  const selectedProfile = draftNew ?? profiles.find((p) => p.id === profileId) ?? null;
+
+  // Spend per profile off the `agent:<id>` tag — one pass over the run list
+  // per change (same reasoning as the workflow list's spendById): `runs`
+  // gets a new reference on every usage tick of any live agent.
+  const spendByTag = useMemo(() => {
+    const byTag = new Map<string, number>();
+    for (const r of runs) {
+      if (r.costUsd == null) continue;
+      for (const t of r.tags) {
+        if (isAgentTag(t)) byTag.set(t, (byTag.get(t) ?? 0) + r.costUsd);
+      }
+    }
+    return byTag;
+  }, [runs]);
+
+  // Watching a run replaces the roster surface with the shared runs pane.
+  if (selectedRunId) {
+    return (
+      <div className="flex h-full min-h-0 flex-col">
+        <div className="flex items-center gap-2 border-b border-edge px-3 py-1.5">
+          <Button variant="ghost" size="sm" onClick={() => onSelectRun(null)}>
+            <ArrowLeft className="h-3.5 w-3.5" /> Roster
+          </Button>
+          <span className="truncate text-[11px] text-ink-faint">
+            Dispatched runs — every path in streams into the same tree
+          </span>
+        </div>
+        <div className="min-h-0 flex-1">
+          <RunsPane
+            runs={runs}
+            selectedRunId={selectedRunId}
+            onSelect={onSelectRun}
+            title="Agents"
+            emptyHint="No agents dispatched yet."
+          />
+        </div>
+      </div>
+    );
+  }
+
+  const sections: { scope: AgentProfileScope; label: string }[] = [
+    { scope: "project", label: "Project" },
+    { scope: "library", label: "Library" },
+  ];
 
   return (
     <div className="flex h-full min-h-0">
-      <RunList
-        runs={runs}
-        selectedRunId={selectedRunId}
-        onSelect={onSelectRun}
-        title="Agents"
-        emptyHint="No agents dispatched yet. Start one on the right."
-      />
-      <main className="flex min-w-0 flex-1 flex-col">
-        <div className="flex items-center gap-2 border-b border-edge px-3 py-1.5">
-          <Button variant="ghost" size="sm" onClick={() => onSelectRun(null)}>
-            <Plus className="h-3.5 w-3.5" /> New dispatch
+      <aside className="flex w-72 shrink-0 flex-col border-r border-edge bg-surface-1">
+        <div className="flex items-center gap-2 px-3 py-2.5">
+          <Sparkles className="h-3.5 w-3.5 text-crystal-300" />
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-faint">
+            Agents
+          </span>
+          <Button
+            variant="ghost"
+            size="xs"
+            className="ml-auto"
+            onClick={() => {
+              setDraftNew(createAgentProfile("New agent", "generic", "sonnet"));
+              setProfileId(null);
+            }}
+          >
+            <Plus className="h-3 w-3" /> New agent
           </Button>
-          {selectedRun ? (
-            <span className="truncate text-[11px] text-ink-faint">
-              Viewing run · {selectedRun.status}
-            </span>
+        </div>
+        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-1.5 pb-2">
+          {sections.map(({ scope, label }) => {
+            const inScope = profiles.filter((p) => p.scope === scope);
+            if (!inScope.length && scope === "library") return null;
+            return (
+              <div key={scope}>
+                <div className="px-2 pb-1 text-[10px] font-medium uppercase tracking-wider text-ink-faint">
+                  {label}
+                </div>
+                {inScope.length === 0 ? (
+                  <p className="px-2 py-1 text-[11px] text-ink-faint">No project agents yet.</p>
+                ) : (
+                  inScope.map((p) => (
+                    <ProfileRow
+                      key={p.id}
+                      profile={p}
+                      spendUsd={spendByTag.get(agentTag(p.id))}
+                      isDefault={p.id === roster?.defaultAgentId}
+                      isManager={p.id === roster?.managerAgentId}
+                      selected={selectedProfile?.id === p.id}
+                      onSelect={() => {
+                        setDraftNew(null);
+                        setProfileId(p.id);
+                      }}
+                    />
+                  ))
+                )}
+              </div>
+            );
+          })}
+          {draftNew ? (
+            <div className="px-2 text-[11px] text-crystal-300">
+              New agent — unsaved. Fill in the editor and Save.
+            </div>
           ) : null}
         </div>
-        <div className="min-h-0 flex-1">
-          {selectedRun ? (
-            <RunView run={selectedRun} />
-          ) : (
-            <DispatchPanel onDispatched={onSelectRun} />
-          )}
+        {/* Roster-level policy: which profile untagged work and managers run as. */}
+        {roster ? (
+          <div className="shrink-0 space-y-1.5 border-t border-edge px-3 py-2">
+            <label className="flex items-center gap-2 text-[11px] text-ink-muted">
+              <span className="w-16 shrink-0">Default</span>
+              <select
+                className={cn(selectClasses, "h-6 min-w-0 flex-1 text-[11px]")}
+                value={roster.defaultAgentId ?? ""}
+                onChange={(e) =>
+                  updateRoster({ ...roster, defaultAgentId: e.target.value || null })
+                }
+                aria-label="Default agent"
+              >
+                <option value="">First generic</option>
+                {profiles.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="flex items-center gap-2 text-[11px] text-ink-muted">
+              <span className="w-16 shrink-0">Manager</span>
+              <select
+                className={cn(selectClasses, "h-6 min-w-0 flex-1 text-[11px]")}
+                value={roster.managerAgentId ?? ""}
+                onChange={(e) =>
+                  updateRoster({ ...roster, managerAgentId: e.target.value || null })
+                }
+                aria-label="Manager agent"
+              >
+                <option value="">Follows default</option>
+                {profiles.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+        ) : null}
+      </aside>
+
+      <main className="min-w-0 flex-1 overflow-y-auto">
+        <div className="mx-auto flex w-full max-w-2xl flex-col gap-4 p-5">
+          {selectedProfile ? (
+            <ProfileEditor
+              key={selectedProfile.id}
+              profile={selectedProfile}
+              isNew={draftNew != null}
+              onSaved={(saved) => {
+                setDraftNew(null);
+                setProfileId(saved.id);
+              }}
+              onDeleted={() => {
+                setDraftNew(null);
+                setProfileId(null);
+              }}
+              onClose={() => {
+                setDraftNew(null);
+                setProfileId(null);
+              }}
+            />
+          ) : null}
+          <DispatchPanel profiles={profiles} onDispatched={onSelectRun} />
         </div>
       </main>
+    </div>
+  );
+}
+
+/** One roster row: name, kind, model, spend, default/manager badges. */
+function ProfileRow({
+  profile,
+  spendUsd,
+  isDefault,
+  isManager,
+  selected,
+  onSelect,
+}: {
+  profile: AgentProfile;
+  spendUsd: number | undefined;
+  isDefault: boolean;
+  isManager: boolean;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      className={cn(
+        "block w-full rounded-lg px-2 py-1.5 text-left transition-colors",
+        selected ? "bg-crystal-500/15" : "hover:bg-surface-2",
+      )}
+    >
+      <span className="flex items-center gap-1.5">
+        <span className="min-w-0 flex-1 truncate text-xs text-ink">{profile.name}</span>
+        {isDefault ? <Badge tone="violet">default</Badge> : null}
+        {isManager ? <Badge tone="cyan">manager</Badge> : null}
+      </span>
+      <span className="mt-0.5 flex items-center gap-1.5 text-[10px] text-ink-faint">
+        <span>{profile.kind}</span>
+        <span className="rounded-full bg-surface-3 px-1.5 font-mono text-[9px] text-ink-muted">
+          {profile.model}
+        </span>
+        <span className="ml-auto">{formatRunCost(spendUsd)}</span>
+      </span>
+    </button>
+  );
+}
+
+const splitCommas = (s: string) => s.split(",").map((x) => x.trim()).filter(Boolean);
+const splitLines = (s: string) => s.split("\n").map((x) => x.trim()).filter(Boolean);
+
+/**
+ * The profile editor — identity (name/kind/model), standing behavior
+ * (appendPrompt, tool policy, permission mode), dispatch defaults and the
+ * storage scope. Save is explicit (`agents.saveProfile`); saving with a
+ * changed scope *moves* the record between `.crystal/agents.json` and the
+ * shared `~/.crystal/agents` library.
+ */
+function ProfileEditor({
+  profile,
+  isNew,
+  onSaved,
+  onDeleted,
+  onClose,
+}: {
+  profile: AgentProfile;
+  isNew: boolean;
+  onSaved: (profile: AgentProfile) => void;
+  onDeleted: () => void;
+  onClose: () => void;
+}) {
+  const { client } = useCrystal();
+  const [name, setName] = useState(profile.name);
+  const [kind, setKind] = useState(profile.kind);
+  const [model, setModel] = useState(profile.model);
+  const [skills, setSkills] = useState(profile.skills.join(", "));
+  const [tags, setTags] = useState(profile.tags.join(", "));
+  const [appendPrompt, setAppendPrompt] = useState(profile.appendPrompt ?? "");
+  const [allowedTools, setAllowedTools] = useState((profile.allowedTools ?? []).join("\n"));
+  const [disallowedTools, setDisallowedTools] = useState(
+    (profile.disallowedTools ?? []).join("\n"),
+  );
+  const [permissionMode, setPermissionMode] = useState<"" | AgentPermissionMode>(
+    profile.permissionMode ?? "",
+  );
+  const [purpose, setPurpose] = useState<"" | RunPurpose>(profile.defaults?.purpose ?? "");
+  const [isolate, setIsolate] = useState(profile.defaults?.isolation === "worktree");
+  const [scope, setScope] = useState<AgentProfileScope>(profile.scope);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const scopeMoves = !isNew && scope !== profile.scope;
+
+  async function save(): Promise<void> {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    const allowed = splitLines(allowedTools);
+    const disallowed = splitLines(disallowedTools);
+    const next: AgentProfile = {
+      ...profile,
+      name: name.trim() || profile.name,
+      kind,
+      model: model.trim() || "sonnet",
+      skills: splitCommas(skills),
+      tags: splitCommas(tags),
+      appendPrompt: appendPrompt.trim() || undefined,
+      allowedTools: allowed.length ? allowed : undefined,
+      disallowedTools: disallowed.length ? disallowed : undefined,
+      permissionMode: permissionMode || undefined,
+      defaults:
+        purpose || isolate
+          ? {
+              purpose: purpose || undefined,
+              isolation: isolate ? ("worktree" as const) : undefined,
+            }
+          : undefined,
+      scope,
+    };
+    try {
+      const { profile: saved } = await client.request("agents.saveProfile", {
+        profile: next,
+        scope,
+      });
+      onSaved(saved);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove(): Promise<void> {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await client.request("agents.removeProfile", { id: profile.id });
+      onDeleted();
+    } catch (err) {
+      // The server refuses deleting the roster's default agent — surface it.
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="rounded-xl border border-edge bg-surface-1 p-3">
+      <div className="mb-2 flex items-center gap-2">
+        <UserCog className="h-4 w-4 text-crystal-300" />
+        <span className="text-[13px] font-semibold text-ink">
+          {isNew ? "New agent" : profile.name}
+        </span>
+        <Badge tone={scope === "library" ? "cyan" : "slate"}>{scope}</Badge>
+        <Button variant="ghost" size="xs" className="ml-auto" onClick={onClose}>
+          Close
+        </Button>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2">
+        <EditorField label="Name">
+          <Input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            aria-label="Agent name"
+            className="h-7 text-xs"
+          />
+        </EditorField>
+        <EditorField label="Kind" hint="Specialists win dispatch for tasks whose tags overlap">
+          <select
+            className={cn(selectClasses, "h-7 w-full text-xs")}
+            value={kind}
+            onChange={(e) => setKind(e.target.value as AgentProfile["kind"])}
+            aria-label="Agent kind"
+          >
+            {AGENT_PROFILE_KINDS.map((k) => (
+              <option key={k} value={k}>
+                {k}
+              </option>
+            ))}
+          </select>
+        </EditorField>
+        <EditorField label="Model" hint="Claude model alias or id, passed as --model">
+          <Input
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+            list="agent-model-hints"
+            aria-label="Agent model"
+            className="h-7 font-mono text-xs"
+          />
+          <datalist id="agent-model-hints">
+            {MODEL_HINTS.map((m) => (
+              <option key={m} value={m} />
+            ))}
+          </datalist>
+        </EditorField>
+        <EditorField label="Skills" hint="Comma-separated, woven into dispatch prompts">
+          <Input
+            value={skills}
+            onChange={(e) => setSkills(e.target.value)}
+            placeholder="e.g. security-review, dataviz"
+            aria-label="Agent skills"
+            className="h-7 text-xs"
+          />
+        </EditorField>
+        <EditorField label="Tags" hint="Context tags this specialist owns (auto-assignment)">
+          <Input
+            value={tags}
+            onChange={(e) => setTags(e.target.value)}
+            placeholder="e.g. intent:auth, sys:forms"
+            aria-label="Agent tags"
+            className="h-7 text-xs"
+          />
+        </EditorField>
+        <EditorField label="Permission mode" hint="Unset keeps acceptEdits (headless default)">
+          <select
+            className={cn(selectClasses, "h-7 w-full text-xs")}
+            value={permissionMode}
+            onChange={(e) => setPermissionMode(e.target.value as "" | AgentPermissionMode)}
+            aria-label="Permission mode"
+          >
+            <option value="">Unset — acceptEdits</option>
+            {AGENT_PERMISSION_MODES.map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
+          </select>
+        </EditorField>
+      </div>
+
+      <EditorField
+        label="Standing instructions"
+        hint="Passed as --append-system-prompt on every run, so they survive --resume turns"
+        className="mt-2"
+      >
+        <Textarea
+          value={appendPrompt}
+          onChange={(e) => setAppendPrompt(e.target.value)}
+          rows={3}
+          placeholder="Durable behavior for this agent — style, constraints, review bar…"
+          aria-label="Standing instructions"
+          className="text-xs"
+        />
+      </EditorField>
+
+      <div className="mt-2 grid grid-cols-2 gap-2">
+        <EditorField label="Allowed tools" hint="One pattern per line, merged over the run allowlist">
+          <Textarea
+            value={allowedTools}
+            onChange={(e) => setAllowedTools(e.target.value)}
+            rows={3}
+            placeholder={"Bash(pnpm *)\nWebSearch"}
+            aria-label="Allowed tools"
+            className="font-mono text-xs"
+          />
+        </EditorField>
+        <EditorField label="Disallowed tools" hint="One pattern per line — --disallowedTools">
+          <Textarea
+            value={disallowedTools}
+            onChange={(e) => setDisallowedTools(e.target.value)}
+            rows={3}
+            placeholder={"WebFetch\nBash(git push*)"}
+            aria-label="Disallowed tools"
+            className="font-mono text-xs"
+          />
+        </EditorField>
+      </div>
+
+      <div className="mt-2 flex items-center gap-3">
+        <EditorField label="Default purpose" className="flex-1">
+          <select
+            className={cn(selectClasses, "h-7 w-full text-xs")}
+            value={purpose}
+            onChange={(e) => setPurpose(e.target.value as "" | RunPurpose)}
+            aria-label="Default purpose"
+          >
+            <option value="">None</option>
+            {RUN_PURPOSES.map((p) => (
+              <option key={p} value={p}>
+                {p}
+              </option>
+            ))}
+          </select>
+        </EditorField>
+        <label className="mt-4 flex cursor-pointer items-center gap-1.5 text-[11px] text-ink-muted">
+          <input
+            type="checkbox"
+            checked={isolate}
+            onChange={(e) => setIsolate(e.target.checked)}
+            className="h-3 w-3 accent-[var(--color-crystal-500)]"
+          />
+          Isolate in a worktree by default
+        </label>
+      </div>
+
+      <div className="mt-3 flex items-center gap-2 border-t border-edge pt-2">
+        <EditorField label="Scope" className="w-44">
+          <select
+            className={cn(selectClasses, "h-7 w-full text-xs")}
+            value={scope}
+            onChange={(e) => setScope(e.target.value as AgentProfileScope)}
+            aria-label="Profile scope"
+          >
+            {AGENT_PROFILE_SCOPES.map((s) => (
+              <option key={s} value={s}>
+                {s === "project" ? "project — .crystal/agents.json" : "library — ~/.crystal/agents"}
+              </option>
+            ))}
+          </select>
+        </EditorField>
+        {scopeMoves ? (
+          <span className="text-[10px] text-warn">
+            Saving moves this profile to the {scope} scope — one id never lives in both.
+          </span>
+        ) : null}
+        <span className="ml-auto flex items-center gap-2">
+          {!isNew ? (
+            <Button variant="ghost" size="sm" disabled={busy} onClick={() => void remove()}>
+              <Trash2 className="h-3 w-3 text-danger" /> Delete
+            </Button>
+          ) : null}
+          <Button variant="primary" size="sm" disabled={busy} onClick={() => void save()}>
+            {isNew ? "Create" : "Save"}
+          </Button>
+        </span>
+      </div>
+      {error ? <p className="mt-2 text-[11px] text-danger">{error}</p> : null}
+    </div>
+  );
+}
+
+function EditorField({
+  label,
+  hint,
+  className,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className={className}>
+      <div className="mb-1 flex items-baseline gap-1.5">
+        <span className="text-[11px] font-medium text-ink">{label}</span>
+        {hint ? <span className="truncate text-[10px] text-ink-faint">{hint}</span> : null}
+      </div>
+      {children}
     </div>
   );
 }
@@ -85,7 +606,13 @@ const JOB_TEMPLATES: JobTemplate[] = [
 
 const EMPTY_REPOS: never[] = [];
 
-function DispatchPanel({ onDispatched }: { onDispatched: (id: string) => void }) {
+function DispatchPanel({
+  profiles,
+  onDispatched,
+}: {
+  profiles: AgentProfile[];
+  onDispatched: (id: string) => void;
+}) {
   const { client } = useCrystal();
   const start = useAgents((s) => s.start);
   const repos = useWorkspace((s) => s.info?.manifest.repos ?? EMPTY_REPOS);
@@ -95,6 +622,10 @@ function DispatchPanel({ onDispatched }: { onDispatched: (id: string) => void })
   const [purpose, setPurpose] = useState<RunPurpose>("implement");
   const [cwd, setCwd] = useState(".");
   const [isolate, setIsolate] = useState(false);
+  /** "" = raw dispatch (no profile overlay). */
+  const [agentId, setAgentId] = useState("");
+  /** "" = the profile's model (or the CLI default on a raw dispatch). */
+  const [modelOverride, setModelOverride] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -113,7 +644,9 @@ function DispatchPanel({ onDispatched }: { onDispatched: (id: string) => void })
         isolation: isolate ? "worktree" : "none",
         role: manager ? "manager" : null,
         purpose,
+        agentId: agentId || null,
         tags: manager ? ["role:manager", `purpose:${purpose}`] : [`purpose:${purpose}`],
+        model: modelOverride.trim() || null,
       });
       setPrompt("");
       onDispatched(run.id);
@@ -152,7 +685,7 @@ function DispatchPanel({ onDispatched }: { onDispatched: (id: string) => void })
   }
 
   return (
-    <div className="mx-auto flex h-full w-full max-w-2xl flex-col gap-4 overflow-y-auto p-5">
+    <div className="flex flex-col gap-4">
       <div className="rounded-xl border border-crystal-500/25 bg-crystal-500/5 p-3">
         <div className="mb-2 flex items-center gap-2">
           <Bot className="h-4 w-4 text-crystal-300" />
@@ -182,6 +715,34 @@ function DispatchPanel({ onDispatched }: { onDispatched: (id: string) => void })
           <UserCog className="h-3.5 w-3.5" />
           Manager mode — delegate to worker agents
         </label>
+        <div className="mt-2 flex items-center gap-2">
+          <select
+            className={cn(selectClasses, "h-7 flex-1 text-xs")}
+            value={agentId}
+            onChange={(e) => setAgentId(e.target.value)}
+            aria-label="Agent profile"
+          >
+            <option value="">No profile — raw dispatch</option>
+            {profiles.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name} ({p.model})
+              </option>
+            ))}
+          </select>
+          <Input
+            value={modelOverride}
+            onChange={(e) => setModelOverride(e.target.value)}
+            list="dispatch-model-hints"
+            placeholder="model override"
+            aria-label="Model override"
+            className="h-7 w-36 font-mono text-xs"
+          />
+          <datalist id="dispatch-model-hints">
+            {MODEL_HINTS.map((m) => (
+              <option key={m} value={m} />
+            ))}
+          </datalist>
+        </div>
         <div className="mt-2 flex items-center gap-2">
           <select
             className={cn(selectClasses, "h-7 flex-1 text-xs")}
@@ -256,8 +817,8 @@ function DispatchPanel({ onDispatched }: { onDispatched: (id: string) => void })
       </div>
 
       <EmptyState icon={Bot} title="One run tree">
-        Manager runs, their workers, single agents and templates all stream into the list on
-        the left.
+        Manager runs, their workers, single agents and templates all stream into the runs list
+        — dispatching opens it.
       </EmptyState>
     </div>
   );

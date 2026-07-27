@@ -1,8 +1,8 @@
 import { useMemo } from "react";
 import { GitBranch, TerminalSquare } from "lucide-react";
 import { groupRunsByManager, type AgentRun } from "@crystal/core";
+import { formatRunCost } from "@crystal/client";
 import { StatusDot, cn } from "@crystal/ui";
-import { formatCost } from "./prompt.js";
 
 /**
  * Reusable agent-run sidepane. Renders a scrollable, selectable list of runs —
@@ -22,6 +22,7 @@ export function RunList({
   title = "Agent runs",
   emptyHint = "No runs yet.",
   className,
+  wsNameOf,
 }: {
   runs: AgentRun[];
   selectedRunId: string | null;
@@ -32,6 +33,12 @@ export function RunList({
   emptyHint?: string;
   /** Extra classes on the `<aside>` (e.g. width or border overrides). */
   className?: string;
+  /**
+   * Workspace badge per row for cross-workspace lists (fleet / attention
+   * queue): a run record carries no workspace id, so the caller — who knows
+   * which store each run came from — supplies the name. Unset = no chip.
+   */
+  wsNameOf?: (run: AgentRun) => string | null | undefined;
 }) {
   const nodes = useMemo(() => groupRunsByManager(runs), [runs]);
 
@@ -58,6 +65,7 @@ export function RunList({
                 selected={selectedRunId === node.run.id}
                 onSelect={onSelect}
                 workerCount={node.workers.length}
+                wsName={wsNameOf?.(node.run)}
               />
               {node.workers.length > 0 ? (
                 <div className="ml-3.5 mt-1 space-y-1 border-l border-edge/70 pl-1.5">
@@ -68,6 +76,7 @@ export function RunList({
                       selected={selectedRunId === w.id}
                       onSelect={onSelect}
                       worker
+                      wsName={wsNameOf?.(w)}
                     />
                   ))}
                 </div>
@@ -87,6 +96,7 @@ function RunListItem({
   onSelect,
   workerCount = 0,
   worker = false,
+  wsName,
 }: {
   run: AgentRun;
   selected: boolean;
@@ -95,6 +105,8 @@ function RunListItem({
   workerCount?: number;
   /** Render as a nested worker row (denser). */
   worker?: boolean;
+  /** Workspace name chip (cross-workspace lists only). */
+  wsName?: string | null;
 }) {
   const isManager = run.role === "manager" || workerCount > 0;
   return (
@@ -137,8 +149,15 @@ function RunListItem({
             </span>
           ) : null}
         </span>
-        <span className="mt-0.5 block text-[10px] text-ink-faint">
-          {new Date(run.createdAt).toLocaleString()} · {formatCost(run.costUsd)}
+        <span className="mt-0.5 flex items-center gap-1 text-[10px] text-ink-faint">
+          <span className="truncate">
+            {new Date(run.createdAt).toLocaleString()} · {formatRunCost(run.costUsd)}
+          </span>
+          {wsName ? (
+            <span className="shrink-0 rounded-full bg-surface-3 px-1.5 text-[9px] font-medium text-ink-faint">
+              {wsName}
+            </span>
+          ) : null}
         </span>
       </span>
     </button>

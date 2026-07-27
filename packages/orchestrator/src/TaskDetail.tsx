@@ -21,9 +21,17 @@ import {
   type TaskSize,
   type TaskStatus,
 } from "@crystal/core";
-import { useAgents, useCrystal, useTerminals, useWorkspace, useWorkspaces } from "@crystal/client";
+import {
+  formatRunCost,
+  formatRunTokens,
+  useAgents,
+  useCrystal,
+  useTerminals,
+  useWorkspace,
+  useWorkspaces,
+} from "@crystal/client";
 import { Badge, Button, StatusDot, Textarea, cn } from "@crystal/ui";
-import { buildTaskPrompt, formatCost, formatTokens } from "./prompt.js";
+import { buildTaskPrompt } from "./prompt.js";
 
 const selectClasses =
   "w-full h-8 rounded-lg border border-edge bg-surface-1 px-2 text-[13px] text-ink " +
@@ -615,9 +623,9 @@ export function TaskDetail({
           <Field label="Cost to date">
             <div className="grid grid-cols-2 gap-x-3 gap-y-1 rounded-lg border border-edge bg-surface-2 px-2.5 py-2 text-[11px]">
               <span className="text-ink-faint">Cost</span>
-              <span className="text-right text-ink">{formatCost(liveUsage?.costUsd)}</span>
+              <span className="text-right text-ink">{formatRunCost(liveUsage?.costUsd)}</span>
               <span className="text-ink-faint">Tokens</span>
-              <span className="text-right text-ink">{formatTokens(liveUsage?.tokens)}</span>
+              <span className="text-right text-ink">{formatRunTokens(liveUsage?.tokens)}</span>
               <span className="text-ink-faint">API calls</span>
               <span className="text-right text-ink">{rollup.usage.apiCalls || "—"}</span>
               <span className="text-ink-faint">API rate</span>
@@ -651,7 +659,7 @@ export function TaskDetail({
                       {run.filesTouched.length} file{run.filesTouched.length > 1 ? "s" : ""}
                     </span>
                   ) : null}
-                  <span className="text-[10px] text-ink-faint">{formatCost(run.costUsd)}</span>
+                  <span className="text-[10px] text-ink-faint">{formatRunCost(run.costUsd)}</span>
                   <ExternalLink className="h-3 w-3 text-ink-faint" />
                 </button>
               ))}

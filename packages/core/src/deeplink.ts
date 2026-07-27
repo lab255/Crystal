@@ -18,6 +18,7 @@ import { CODE_LOD_LEVELS, type CodeLodLevel } from "./codemap.js";
 import type { HubViewId } from "./hub.js";
 import type { QualityViewId } from "./quality.js";
 import type { SurfaceViewId } from "./surfaces.js";
+import { RUN_PURPOSES, type RunPurpose } from "./agent.js";
 
 export type CrystalModeId =
   | "projects"
@@ -112,6 +113,8 @@ export interface OrchestrateLink {
   task?: string;
   /** Selected agent run id (runs tab). */
   run?: string;
+  /** Runs-tab purpose filter chip (unset = all purposes). */
+  purpose?: RunPurpose;
   /** Selected workflow id (workflows tab). */
   workflow?: string;
   /** Template builder pane open (workflows tab). */
@@ -297,6 +300,7 @@ export function formatDeepLink(link: DeepLink): string {
     if (tab === "board" && o.filter) add("filter", o.filter);
     if (tab === "board" && o.owner) add("owner", o.owner);
     if ((tab === "runs" || tab === "agents") && o.run) add("run", o.run);
+    if (tab === "runs" && o.purpose) add("purpose", o.purpose);
     if (tab === "workflows" && o.workflow) add("workflow", o.workflow);
     if (tab === "workflows" && o.builder) add("builder", "1");
     if (tab === "workflows" && o.builder && o.template) add("template", o.template);
@@ -477,6 +481,9 @@ export function parseDeepLink(hash: string): DeepLink {
     if (owner) o.owner = owner;
     const run = params.get("run");
     if (run) o.run = run;
+    const purpose = params.get("purpose");
+    if (purpose && (RUN_PURPOSES as readonly string[]).includes(purpose))
+      o.purpose = purpose as RunPurpose;
     const workflow = params.get("workflow");
     if (workflow) o.workflow = workflow;
     if (params.get("builder") === "1") o.builder = true;
@@ -575,7 +582,7 @@ const ARCHITECT_VIEW_FIELDS: Record<ArchitectViewId, readonly (keyof ArchitectLi
 
 const ORCHESTRATE_TAB_FIELDS: Record<OrchestratorTabId, readonly (keyof OrchestrateLink)[]> = {
   board: ["tab", "project", "task", "group", "sort"],
-  runs: ["tab", "project", "run"],
+  runs: ["tab", "project", "run", "purpose"],
   agents: ["tab", "project", "run"],
   workflows: ["tab", "project", "workflow", "builder", "template"],
 };

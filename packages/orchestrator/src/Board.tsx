@@ -30,11 +30,13 @@ import {
   useNavUpdate,
   useTerminals,
   useWorkflows,
+  formatRunCost,
+  formatRunTokens,
   useWorkspace,
   useWorkspaces,
 } from "@crystal/client";
 import { Badge, Button, StatusDot, Tooltip, cn } from "@crystal/ui";
-import { MANAGER_PREAMBLE, buildBoardManagerGoal, formatCost, formatTokens } from "./prompt.js";
+import { MANAGER_PREAMBLE, buildBoardManagerGoal } from "./prompt.js";
 
 const TASK_MIME = "application/crystal-task-id";
 
@@ -818,7 +820,7 @@ function TaskCard({
         </span>
         {usage && (usage.tokens > 0 || usage.costUsd > 0) ? (
           <span className="ml-auto shrink-0">
-            {formatTokens(usage.tokens)} · {formatCost(usage.costUsd)}
+            {formatRunTokens(usage.tokens)} · {formatRunCost(usage.costUsd)}
           </span>
         ) : task.runIds.length > 0 ? (
           <span className="ml-auto shrink-0">

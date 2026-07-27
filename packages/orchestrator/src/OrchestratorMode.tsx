@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Bot, ChevronDown, KanbanSquare, ListTodo, Network, Plus, Sparkles } from "lucide-react";
-import type { OrchestratorTabId, Project } from "@crystal/core";
+import { RUN_PURPOSES, type OrchestratorTabId, type Project, type RunPurpose } from "@crystal/core";
 import { useAgents, useNav, useNavUpdate, useWorkspace } from "@crystal/client";
 import {
   Button,
@@ -19,8 +19,7 @@ import {
 } from "@crystal/ui";
 import { AgentsTab } from "./AgentsTab.js";
 import { Board } from "./Board.js";
-import { RunList } from "./RunList.js";
-import { RunView } from "./RunView.js";
+import { RunsPane } from "./RunsPane.js";
 import { TaskDetail } from "./TaskDetail.js";
 import { WorkflowsTab } from "./WorkflowsTab.js";
 
@@ -73,6 +72,12 @@ export function OrchestratorMode() {
   );
   const [createOpen, setCreateOpen] = useState(false);
   const [newName, setNewName] = useState("");
+  // The Runs tab's purpose filter (Jobs' run list folded in) rides the URL.
+  const purposeFilter = useNav((l) => l.orchestrate?.purpose) ?? null;
+  const setPurposeFilter = useCallback(
+    (p: RunPurpose | null) => nav({ orchestrate: { purpose: p } }),
+    [nav],
+  );
 
   const current = projects.find((p) => p.path === projectPath) ?? projects[0] ?? null;
   useEffect(() => {
@@ -80,8 +85,17 @@ export function OrchestratorMode() {
   }, [current?.path]);
 
   const selectedTask = current?.project.tasks.find((t) => t.id === taskId) ?? null;
-  const selectedRun = runs.find((r) => r.id === runId) ?? null;
   const runningCount = runs.filter((r) => r.status === "running").length;
+
+  // Only purposes actually present become chips, in RUN_PURPOSES order.
+  const presentPurposes = useMemo(() => {
+    const present = new Set(runs.map((r) => r.purpose).filter(Boolean));
+    return RUN_PURPOSES.filter((p) => present.has(p));
+  }, [runs]);
+  const filteredRuns = useMemo(
+    () => (purposeFilter ? runs.filter((r) => r.purpose === purposeFilter) : runs),
+    [runs, purposeFilter],
+  );
 
   async function handleCreate() {
     const name = newName.trim();
@@ -202,24 +216,35 @@ export function OrchestratorMode() {
         ) : tab === "agents" ? (
           <AgentsTab selectedRunId={runId} onSelectRun={setRunId} />
         ) : (
-          <div className="flex h-full min-h-0">
-            <RunList
-              runs={runs}
-              selectedRunId={runId}
-              onSelect={setRunId}
-              emptyHint="No runs yet. Start one from a task on the board."
-            />
-            <main className="min-w-0 flex-1">
-              {selectedRun ? (
-                <RunView run={selectedRun} />
-              ) : (
-                <EmptyState icon={Bot} title="Select a run">
-                  Live output streams here while Claude Code works — tool calls, edits,
-                  costs, results.
-                </EmptyState>
-              )}
-            </main>
-          </div>
+          <RunsPane
+            runs={filteredRuns}
+            selectedRunId={runId}
+            onSelect={setRunId}
+            emptyHint={
+              purposeFilter
+                ? `No ${purposeFilter} runs.`
+                : "No runs yet. Start one from a task on the board."
+            }
+            listHeader={
+              presentPurposes.length > 0 ? (
+                <div className="flex flex-wrap items-center gap-1 px-2.5 pt-2">
+                  <PurposeChip
+                    label="All"
+                    active={purposeFilter === null}
+                    onClick={() => setPurposeFilter(null)}
+                  />
+                  {presentPurposes.map((p) => (
+                    <PurposeChip
+                      key={p}
+                      label={p}
+                      active={purposeFilter === p}
+                      onClick={() => setPurposeFilter(purposeFilter === p ? null : p)}
+                    />
+                  ))}
+                </div>
+              ) : null
+            }
+          />
         )}
       </div>
 
@@ -252,6 +277,32 @@ export function OrchestratorMode() {
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+/** One purpose filter chip on the Runs tab (All · manage · develop · …). */
+function PurposeChip({
+  label,
+  active,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "rounded-full border px-2 py-0.5 text-[10px] font-medium transition-colors",
+        active
+          ? "border-crystal-500/40 bg-crystal-500/15 text-crystal-200"
+          : "border-edge text-ink-muted hover:border-edge-strong hover:text-ink",
+      )}
+    >
+      {label}
+    </button>
   );
 }
 

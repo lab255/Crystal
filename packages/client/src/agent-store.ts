@@ -12,6 +12,8 @@ export interface AgentStartInput {
   isolation?: "none" | "worktree";
   /** Agent profile to dispatch to (model + skills resolve server-side). */
   agentId?: string | null;
+  /** Model override — an explicit model wins over the profile's. */
+  model?: string | null;
   /** Manager run that dispatched this worker (sets role to "worker"). */
   parentRunId?: string | null;
   /** Place in the manager/worker hierarchy (unset = standalone run). */
