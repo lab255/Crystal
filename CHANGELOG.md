@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.4.0 (2026-07-27)
+
+### Features
+
+- merge_track automation, track diff chips, spend index ([`6e861e2`](https://github.com/eliotlim/crystal/commit/6e861e2))
+- one-click apply of an isolated run's worktree as a branch ([`1da5602`](https://github.com/eliotlim/crystal/commit/1da5602))
+- bill interactive runs from their session transcript ([`cf1fe91`](https://github.com/eliotlim/crystal/commit/cf1fe91))
+- waiting-on-you attention + board question previews ([`db7c587`](https://github.com/eliotlim/crystal/commit/db7c587))
+- one-click manager recovery + interactive-run surfacing ([`25b9a79`](https://github.com/eliotlim/crystal/commit/25b9a79))
+- interactive workflow managers + shared launch seam ([`f7e4d05`](https://github.com/eliotlim/crystal/commit/f7e4d05))
+- interactive terminal dispatch with board-logged questions ([`99dc7e3`](https://github.com/eliotlim/crystal/commit/99dc7e3))
+
+### Bug Fixes
+
+- deliver worker notices into live TUIs; unpin doomed sessions ([`7437e62`](https://github.com/eliotlim/crystal/commit/7437e62))
+- spawned agents must not inherit the child-session marker ([`131343d`](https://github.com/eliotlim/crystal/commit/131343d))
+- harden interactive dispatch after adversarial self-review ([`8567232`](https://github.com/eliotlim/crystal/commit/8567232))
+- keep waiting-on-you counts live on board writes ([`afec634`](https://github.com/eliotlim/crystal/commit/afec634))
+- four defects that forced the human back into the loop ([`a03f8d2`](https://github.com/eliotlim/crystal/commit/a03f8d2))
+
 ## v0.3.1 (2026-07-26)
 
 ### Bug Fixes
