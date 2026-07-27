@@ -374,6 +374,16 @@ export interface BridgeMethods {
     result: { diff: string; stat: string; worktreePath: string | null };
   };
   "agent.cleanupWorktree": { params: WsScope & { runId: string }; result: { ok: true } };
+  /**
+   * Land an isolated run's changes as a branch + commit (worktrees share
+   * refs, so the branch is immediately mergeable from the repo). A detached
+   * worktree moves onto `branch` (default `crystal/<runId>`); a track
+   * worktree commits onto its own branch. The worktree survives for review.
+   */
+  "agent.applyWorktree": {
+    params: WsScope & { runId: string; branch?: string | null; message?: string | null };
+    result: { ok: true; branch: string; commit: string } | { ok: false; reason: string };
+  };
   /** Spawn a PTY shell terminal in the workspace (cwd relative to the root). */
   "terminal.create": {
     params: WsScope & { cwd?: string; cols?: number; rows?: number };

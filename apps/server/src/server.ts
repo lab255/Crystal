@@ -508,6 +508,8 @@ export async function startCrystalServer(opts: {
       const run = await registry.get(ws).agents.dispatchWorker(managerRunId, spec);
       return { run };
     },
+    "agent.applyWorktree": ({ ws, runId, branch, message }) =>
+      registry.get(ws).agents.applyWorktree(runId, { branch, message }),
     "agent.cancel": async ({ ws, runId }) => {
       await registry.get(ws).agents.cancel(runId);
       return { ok: true };

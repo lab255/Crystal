@@ -260,6 +260,56 @@ describe("interactive sessions", () => {
   });
 });
 
+describe("applyWorktree", () => {
+  let tmp: string | null = null;
+
+  afterEach(async () => {
+    if (tmp) await fs.rm(tmp, { recursive: true, force: true });
+    tmp = null;
+  });
+
+  const git = async (cwd: string, args: string[]) => {
+    const { runGit } = await import("./git.js");
+    return runGit(cwd, args);
+  };
+
+  it("lands a detached worktree's changes as a branch + commit visible from the repo", async () => {
+    tmp = await fs.mkdtemp(path.join(os.tmpdir(), "crystal-apply-test-"));
+    const repo = path.join(tmp, "repo");
+    await fs.mkdir(repo, { recursive: true });
+    await git(repo, ["init"]);
+    await git(repo, ["config", "user.email", "test@crystal"]);
+    await git(repo, ["config", "user.name", "Crystal Test"]);
+    await fs.writeFile(path.join(repo, "a.txt"), "one\n");
+    await git(repo, ["add", "-A"]);
+    await git(repo, ["commit", "-m", "init"]);
+
+    const mgr = new AgentManager(repo, path.join(tmp, "data"), "node");
+    // A settled run with a real detached worktree, as isolation would leave it.
+    const worktree = path.join(tmp, "wt");
+    await git(repo, ["worktree", "add", "--detach", worktree]);
+    await fs.writeFile(path.join(worktree, "a.txt"), "two\n");
+    await fs.writeFile(path.join(worktree, "new.txt"), "brand new\n");
+    // A cheap settled run record (spawn fails instantly), then point it at
+    // the prepared worktree — list() hands back the live record objects.
+    const run = await mgr.start({ prompt: "noop", cwd: "does-not-exist-dir" });
+    await mgr.waitForSettled(run.id);
+    const record = (await mgr.list())[0]!;
+    record.worktreePath = worktree;
+
+    const result = await mgr.applyWorktree(record.id, { branch: "crystal/test-apply" });
+    expect(result).toMatchObject({ ok: true, branch: "crystal/test-apply" });
+    // The branch (and both files) are visible from the main repo.
+    const show = await git(repo, ["show", "crystal/test-apply:a.txt"]);
+    expect(show).toContain("two");
+    const files = await git(repo, ["show", "--name-only", "--format=", "crystal/test-apply"]);
+    expect(files).toContain("new.txt");
+    // Applying again with nothing new refuses cleanly.
+    const again = await mgr.applyWorktree(record.id, {});
+    expect(again.ok).toBe(false);
+  });
+});
+
 describe("composeNoticePrompt", () => {
   it("carries each notice's text — not the notice object", () => {
     // Regression: the notices used to be joined directly, so every manager

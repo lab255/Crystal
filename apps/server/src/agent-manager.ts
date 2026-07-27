@@ -1037,6 +1037,60 @@ export class AgentManager {
     return { diff: capped, stat, worktreePath: worktree };
   }
 
+  /**
+   * Land an isolated run's changes as a branch + commit — one click instead
+   * of hand-rolled git in a hidden worktree dir. Everything (tracked edits
+   * and new files) is committed in the worktree onto `branch`; worktrees
+   * share refs with the repo, so the branch is immediately visible there for
+   * merge/PR. A detached worktree is moved onto the new branch; a track
+   * worktree (already branch-bound) just gets the commit — its branch IS the
+   * apply target. The worktree survives (review the branch first; discard is
+   * a separate click).
+   */
+  async applyWorktree(
+    runId: string,
+    init: { branch?: string | null; message?: string | null } = {},
+  ): Promise<{ ok: true; branch: string; commit: string } | { ok: false; reason: string }> {
+    await this.ensureLoaded();
+    const run = this.runs.get(runId);
+    const worktree = run?.worktreePath;
+    if (!run || !worktree || !(await fs.access(worktree).then(() => true, () => false))) {
+      return { ok: false, reason: "This run has no worktree (already cleaned up?)." };
+    }
+    // Same guard as cleanup: a live sharer of the worktree is mid-edit —
+    // committing under it would snapshot a half-written tree.
+    const live = [...this.runs.values()].find(
+      (r) =>
+        r.worktreePath === worktree && (r.status === "running" || r.status === "queued"),
+    );
+    if (live) {
+      return { ok: false, reason: `Worktree is in use by live run ${live.id} — wait for it to settle.` };
+    }
+    try {
+      await runGit(worktree, ["add", "-A"]);
+      const staged = await runGit(worktree, ["diff", "--cached", "--name-only"]);
+      if (!staged.trim()) return { ok: false, reason: "No changes to apply." };
+      // A branchless (detached) worktree moves onto the new branch; a track
+      // worktree keeps its own branch — that branch is what "apply" means.
+      let branch = run.branch ?? null;
+      if (!branch) {
+        branch = (init.branch ?? "").trim() || `crystal/${run.id}`;
+        await runGit(worktree, ["checkout", "-b", branch]);
+        run.branch = branch;
+      }
+      const message =
+        (init.message ?? "").trim() ||
+        `${run.prompt.split("\n")[0]!.slice(0, 72)}\n\nApplied from Crystal run ${run.id}.`;
+      await runGit(worktree, ["commit", "-m", message]);
+      const commit = (await runGit(worktree, ["rev-parse", "--short", "HEAD"])).trim();
+      this.emitRunChanged(run);
+      await this.persist(run);
+      return { ok: true, branch, commit };
+    } catch (err) {
+      return { ok: false, reason: (err as Error).message };
+    }
+  }
+
   /** Remove a run's worktree (discards any unapplied changes in it). */
   async cleanupWorktree(runId: string): Promise<void> {
     await this.ensureLoaded();

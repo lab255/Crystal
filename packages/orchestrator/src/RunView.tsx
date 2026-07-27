@@ -57,6 +57,8 @@ function ChangesPanel({ run }: { run: AgentRun }) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [diff, setDiff] = useState<{ diff: string; stat: string } | null>(null);
+  const [applying, setApplying] = useState(false);
+  const [applyNote, setApplyNote] = useState<string | null>(null);
 
   async function load() {
     setLoading(true);
@@ -65,6 +67,31 @@ function ChangesPanel({ run }: { run: AgentRun }) {
       setDiff(result);
     } finally {
       setLoading(false);
+    }
+  }
+
+  /** One click from reviewed diff to mergeable branch — no manual git in a hidden dir. */
+  async function apply() {
+    const suggested = run.branch ?? `crystal/${run.id}`;
+    const branch = window.prompt("Commit the worktree's changes onto branch:", suggested);
+    if (branch === null) return;
+    setApplying(true);
+    setApplyNote(null);
+    try {
+      const result = await client.request("agent.applyWorktree", {
+        runId: run.id,
+        branch: branch.trim() || null,
+      });
+      setApplyNote(
+        result.ok
+          ? `Committed ${result.commit} on ${result.branch} — merge or PR it from the repo.`
+          : result.reason,
+      );
+      if (result.ok) await load();
+    } catch (err) {
+      setApplyNote((err as Error).message);
+    } finally {
+      setApplying(false);
     }
   }
 
@@ -87,6 +114,16 @@ function ChangesPanel({ run }: { run: AgentRun }) {
         <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-ink-faint">
           {run.worktreePath}
         </span>
+        <Tooltip content="Commit these changes onto a branch in the repo (worktrees share refs — merge or PR it from there)">
+          <Button
+            variant="secondary"
+            size="xs"
+            disabled={applying || run.status === "running"}
+            onClick={() => void apply()}
+          >
+            <GitBranch className="h-3 w-3" /> Apply as branch
+          </Button>
+        </Tooltip>
         <Tooltip content="Refresh diff">
           <Button variant="ghost" size="icon-sm" onClick={() => void load()} aria-label="Refresh diff">
             <RefreshCw className={cn("h-3 w-3", loading && "animate-spin")} />
@@ -103,6 +140,9 @@ function ChangesPanel({ run }: { run: AgentRun }) {
           </Button>
         </Tooltip>
       </div>
+      {applyNote ? (
+        <p className="px-3 pb-1.5 text-[10px] text-ink-muted">{applyNote}</p>
+      ) : null}
       {open ? (
         <div className="max-h-72 overflow-auto border-t border-edge px-3 py-2">
           {diff === null ? (
