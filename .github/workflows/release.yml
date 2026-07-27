@@ -308,6 +308,9 @@ jobs:
       - name: Build latest.json from both platform signatures and publish
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # This job never checks out the repo, so gh has no git remote to
+          # infer the repo from — every gh call needs it pinned explicitly.
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           ver="${{ needs.release.outputs.version }}"
