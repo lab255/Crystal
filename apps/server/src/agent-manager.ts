@@ -453,7 +453,9 @@ export class AgentManager {
 
   async list(): Promise<AgentRun[]> {
     await this.ensureLoaded();
-    return [...this.runs.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    // Plain < on ISO-8601 strings — an ICU collation per comparison is pure
+    // overhead on the hottest list in the workspace.
+    return [...this.runs.values()].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
   }
 
   async eventsFor(runId: string): Promise<RunEvent[]> {
@@ -688,7 +690,14 @@ export class AgentManager {
       // Harvest BEFORE finish: the terminal runChanged from finish() is what
       // the settle hooks claim (once) to bill the task/epic — usage arriving
       // after it would never reach a cost rollup.
-      await this.harvestInteractiveUsage(run);
+      const transcriptFound = await this.harvestInteractiveUsage(run);
+      // A TUI that failed without ever writing a transcript never became a
+      // session: the pinned --session-id points at nothing, and a `--resume`
+      // of it would consume queued deliveries into a turn that can only die.
+      // Unpin so the chain reads as unresumable and deliveries stay queued
+      // (exit 0 keeps today's benefit of the doubt — a clean exit with a
+      // cleaned-up transcript is still a session the CLI may know).
+      if (!transcriptFound && exitCode !== 0) run.sessionId = null;
       await this.finish(
         run,
         exitCode === 0 ? "completed" : "failed",
@@ -697,9 +706,13 @@ export class AgentManager {
     }
   }
 
-  /** Best-effort: fill an interactive run's usage/model from its Claude transcript. */
-  private async harvestInteractiveUsage(run: AgentRun): Promise<void> {
-    if (!run.sessionId) return;
+  /**
+   * Best-effort: fill an interactive run's usage/model from its Claude
+   * transcript. Returns whether a transcript existed at all — absence after
+   * the terminal exits is the one signal that the session never materialized.
+   */
+  private async harvestInteractiveUsage(run: AgentRun): Promise<boolean> {
+    if (!run.sessionId) return false;
     try {
       const projectsDir = path.join(os.homedir(), ".claude", "projects");
       const name = `${run.sessionId}.jsonl`;
@@ -716,16 +729,19 @@ export class AgentManager {
           if (text != null) break;
         }
       }
-      if (text == null) return;
+      if (text == null) return false;
       const { usage, model } = transcriptUsage(text);
-      if (!usage.apiCalls) return;
-      run.usage = usage;
-      run.model ??= model;
+      if (usage.apiCalls) {
+        run.usage = usage;
+        run.model ??= model;
+      }
       // No emit/persist here — this runs just before finish(), whose terminal
       // broadcast and persist carry the harvested usage along.
+      return true;
     } catch {
       // No transcript (stub binary in tests, cleaned history) — the run
       // simply reads as costless rather than failing settlement.
+      return false;
     }
   }
 
@@ -835,7 +851,7 @@ export class AgentManager {
         (r) =>
           r.id !== run.id && r.branch === run.branch && r.cwd === run.cwd && r.worktreePath,
       )
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
     const live = holders.find((r) => r.status === "running" || r.status === "queued");
     if (live) {
       throw new Error(`Branch ${run.branch} is in use by live worker ${live.id}`);
@@ -866,7 +882,7 @@ export class AgentManager {
     const chain = this.chainIds(chainRootId(managerRunId, this.runs));
     return [...this.runs.values()]
       .filter((r) => r.parentRunId && chain.has(r.parentRunId))
-      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      .sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
   }
 
   /** The runs of one chain root, oldest first (see chainRuns). */
@@ -874,7 +890,7 @@ export class AgentManager {
     return [...this.chainIds(rootId)]
       .map((id) => this.runs.get(id))
       .filter((r): r is AgentRun => !!r)
-      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      .sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
   }
 
   /**
@@ -1313,14 +1329,19 @@ export class AgentManager {
       notices.push({ kind: "worker", text: this.workerNotice(run) });
       this.pendingNotices.set(managerRoot, notices);
       if (!this.chainLive(managerRoot)) void this.flushNotices(managerRoot);
+      // An interactive manager stays live for its whole TUI session, so the
+      // gate above would hold every worker result until the terminal closes.
+      // Type them into the terminal instead (no-op without a ready TUI).
+      else void this.flushInteractiveQueue(managerRoot);
       // Fall through: a worker has a queue of its own. Anything delivered to
       // it while it was busy — most often the answer to a question it asked —
       // would otherwise sit there forever, because a worker's settlement only
       // ever looked at its *manager's* queue.
     }
     const own = chainRootId(run.id, this.runs);
-    if (this.pendingNotices.get(own)?.length && !this.chainLive(own)) {
-      void this.flushNotices(own);
+    if (this.pendingNotices.get(own)?.length) {
+      if (!this.chainLive(own)) void this.flushNotices(own);
+      else void this.flushInteractiveQueue(own);
     }
   }
 
@@ -1353,20 +1374,7 @@ export class AgentManager {
       this.pendingNotices.delete(rootId);
       return;
     }
-    const settled = notices.filter((n) => n.kind === "worker").length;
-    const prompt =
-      `${settled > 1 ? `${settled} workers settled while you were away.\n\n` : ""}` +
-      notices.map((n) => n.text).join("\n\n---\n\n") +
-      // The board-keeping instructions belong to *settlement*. A queued
-      // message (an answer, a steer) speaks for itself and must not be
-      // wrapped in "you were resumed because dispatched work settled".
-      (settled
-        ? "\n\nYou were resumed because dispatched work settled. Review the results, update the " +
-          "board (claim → update_task → release), dispatch follow-up or review workers for " +
-          "anything done, and start the next READY tasks. If everything is done and the board " +
-          "reflects it, say so briefly and stop. You will be resumed again when more workers " +
-          "settle — do not busy-poll worker_status."
-        : "");
+    const prompt = composeNoticePrompt(notices);
     const delivered = notices.length;
     try {
       const run = await this.resumeChain(rootId, prompt);

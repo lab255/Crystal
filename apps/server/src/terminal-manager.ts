@@ -218,7 +218,13 @@ export class TerminalManager {
     if (record.info.status !== "running" || !pty) return;
     // Same tree-kill as agent runs: shells spawn children of their own.
     if (process.platform === "win32") {
-      spawnProcess("taskkill", ["/pid", String(pty.pid), "/T", "/F"], { shell: false });
+      const killer = spawnProcess("taskkill", ["/pid", String(pty.pid), "/T", "/F"], {
+        shell: false,
+      });
+      // Attached synchronously, or a missing/blocked taskkill emits an
+      // unhandled `error` next tick and takes the whole server down —
+      // pty.kill() below is the fallback either way.
+      killer.on("error", () => {});
     }
     try {
       pty.kill();

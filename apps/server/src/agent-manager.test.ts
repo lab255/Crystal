@@ -244,6 +244,25 @@ describe("interactive sessions", () => {
     expect(typed).toEqual(["Answer: early bird"]);
   });
 
+  it("keeps deliveries queued when the TUI dies before becoming a session", async () => {
+    // The pinned --session-id of a TUI that never booted points at nothing:
+    // a --resume of it would consume queued deliveries into a turn that can
+    // only die. A failed exit with no transcript unpins the session instead,
+    // so the chain reads unresumable and the messages survive.
+    const mgr = await makeManager();
+    mgr.interactiveReadyMs = 60_000; // never ready — deliveries must queue
+    const plan = await mgr.prepareInteractive({ prompt: "Go.", taskId: "task_1" });
+    const run = await mgr.bindInteractive(plan.run.id, "term_5");
+    expect(await mgr.deliver(run.id, "Answer: queued")).toBeNull();
+
+    await mgr.settleInteractive("term_5", 1);
+    const settled = await mgr.get(run.id);
+    expect(settled?.status).toBe("failed");
+    expect(settled?.sessionId).toBeNull();
+    // No doomed --resume consumed the queue — the chain stayed a single run.
+    expect(await mgr.chainRuns(run.id)).toHaveLength(1);
+  });
+
   it("cancel kills the terminal and reads cancelled, not failed", async () => {
     const mgr = await makeManager();
     const killed: string[] = [];

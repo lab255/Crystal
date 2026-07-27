@@ -121,6 +121,30 @@ describe("agent wake-ups", () => {
     expect(chain[1]!.prompt).toBe("OWNER MESSAGE: change of plan.");
   });
 
+  it("types a worker's result into a live interactive manager terminal", async () => {
+    // Regression: an interactive manager's chain is live for its whole TUI
+    // session, so the settle-time gate held every worker notice until the
+    // terminal closed — while the manager's prompt promises settlements are
+    // typed in as they happen.
+    const mgr = await makeManager(150);
+    mgr.interactiveReadyMs = 0;
+    const typed: string[] = [];
+    mgr.interactiveInput = (_run, text) => {
+      typed.push(text);
+      return true;
+    };
+    const plan = await mgr.prepareInteractive({ prompt: "coordinate", role: "manager" });
+    const manager = await mgr.bindInteractive(plan.run.id, "term_mgr");
+    const worker = (await mgr.dispatchWorker(manager.id, { prompt: "do the thing" }))!;
+    expect(worker).not.toBeNull();
+    await mgr.waitForSettled(worker.id);
+
+    await until(() => typed.length > 0);
+    expect(typed[0]).toContain(`Worker ${worker.id} settled: completed`);
+    // Typed into the TUI, never a --resume of the live chain (that would fork).
+    expect(await mgr.chainRuns(manager.id)).toHaveLength(1);
+  });
+
   it("delivers a message queued on a worker's own chain when the worker settles", async () => {
     // Regression: a worker's settlement only ever flushed its *manager's*
     // queue, so an answer to a question the worker asked was lost forever.
