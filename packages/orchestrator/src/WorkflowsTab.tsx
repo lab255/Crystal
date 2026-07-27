@@ -19,6 +19,7 @@ import {
   TASK_STATUS_LABELS,
   boardColumnStages,
   budgetState,
+  presetById,
   templateOf,
   validateWorkflowTemplate,
   workflowSpend,
@@ -613,6 +614,7 @@ function NewWorkflowPanel({
   const start = useWorkflows((s) => s.start);
   const templates = useWorkflows((s) => s.templates);
   const projects = useWorkspace((s) => s.info?.projects ?? EMPTY_PROJECTS);
+  const roster = useWorkspace((s) => s.roster);
   const activeWs = useWorkspaces((s) => s.activeId);
   const focusTerminal = useTerminals((s) => s.focusTerminal);
 
@@ -621,6 +623,9 @@ function NewWorkflowPanel({
   const [budget, setBudgetInput] = useState("");
   const [projectId, setProjectId] = useState<string>("");
   const [templateId, setTemplateId] = useState<string>("");
+  /** "" = the roster preset's manager model; anything else overrides this run. */
+  const [managerModel, setManagerModel] = useState<string>("");
+  const preset = presetById(roster?.preset);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   /**
@@ -656,6 +661,7 @@ function NewWorkflowPanel({
         templateId: template?.id,
         template: tweak,
         projectId: projectId || null,
+        managerModel: managerModel || null,
         budgetUsd: budget.trim() !== "" && Number.isFinite(n) ? n : null,
         interactive,
       });
@@ -778,6 +784,23 @@ function NewWorkflowPanel({
               </option>
             ))}
           </select>
+          <Tooltip content={`The orchestrator model for this run only. The project preset (${preset.name}) is set on the Agents tab.`}>
+            <select
+              className="h-8 w-44 rounded-lg border border-edge bg-surface-1 px-2 text-[13px] text-ink focus:border-crystal-500/60 focus:outline-none"
+              value={managerModel}
+              onChange={(e) => setManagerModel(e.target.value)}
+              aria-label="Manager model"
+            >
+              <option value="">Manager: {preset.manager} (preset)</option>
+              {["fable", "opus", "sonnet"]
+                .filter((m) => m !== preset.manager)
+                .map((m) => (
+                  <option key={m} value={m}>
+                    Manager: {m}
+                  </option>
+                ))}
+            </select>
+          </Tooltip>
           <Button
             variant="primary"
             size="sm"

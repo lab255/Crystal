@@ -280,6 +280,7 @@ function StageInspector({
               className="h-7 text-xs"
             />
             <datalist id="wf-builder-models">
+              <option value="fable" />
               <option value="opus" />
               <option value="sonnet" />
               <option value="haiku" />

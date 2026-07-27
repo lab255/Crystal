@@ -31,6 +31,77 @@ export const AGENT_PROFILE_KINDS = ["generic", "specialist"] as const;
 export const AgentProfileKindSchema = z.enum(AGENT_PROFILE_KINDS);
 export type AgentProfileKind = z.infer<typeof AgentProfileKindSchema>;
 
+/* ------------------------------------------------------------------ */
+/* Model presets                                                       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A model preset is the project's one cost/capability dial: which model the
+ * top-level orchestrators run, and which models `"auto"` profiles resolve to
+ * by kind. It rides the existing profile/tag/dispatch machinery — a preset
+ * never bypasses profiles, it just answers "auto" — so per-profile pins and
+ * per-dispatch `model` overrides keep winning exactly as before.
+ */
+export interface ModelPreset {
+  id: string;
+  name: string;
+  description: string;
+  /** Top-level orchestrators: workflow, program and board managers. */
+  manager: string;
+  /** Generic (`kind: "generic"`) profiles left on `"auto"`. */
+  worker: string;
+  /** Specialist profiles left on `"auto"`. */
+  specialist: string;
+}
+
+export const MODEL_PRESETS: readonly ModelPreset[] = [
+  {
+    id: "balanced",
+    name: "Balanced",
+    description: "Opus orchestrators · Sonnet generalists · Opus specialists",
+    manager: "opus",
+    worker: "sonnet",
+    specialist: "opus",
+  },
+  {
+    id: "frontier",
+    name: "Frontier",
+    description: "Fable orchestrators · Opus generalists · Fable specialists",
+    manager: "fable",
+    worker: "opus",
+    specialist: "fable",
+  },
+];
+
+export const DEFAULT_PRESET_ID = "balanced";
+
+/** Preset by id, falling back to the default — an unknown id never crashes a spawn. */
+export function presetById(id?: string | null): ModelPreset {
+  return (
+    MODEL_PRESETS.find((p) => p.id === id) ??
+    MODEL_PRESETS.find((p) => p.id === DEFAULT_PRESET_ID)!
+  );
+}
+
+/** Sentinel model meaning "follow the roster's preset for my kind". */
+export const AUTO_MODEL = "auto";
+
+/**
+ * A profile's concrete `--model` value: its own pin always wins; "auto"
+ * resolves by the run's place in the hierarchy — a manager gets the preset's
+ * manager model whatever profile it runs as (orchestration is a role, not a
+ * kind), everything else resolves by profile kind.
+ */
+export function resolveProfileModel(
+  profile: AgentProfile,
+  preset: ModelPreset,
+  role?: "manager" | null,
+): string {
+  if (profile.model && profile.model !== AUTO_MODEL) return profile.model;
+  if (role === "manager") return preset.manager;
+  return profile.kind === "specialist" ? preset.specialist : preset.worker;
+}
+
 /**
  * `--permission-mode` for the profile's runs. Unset keeps today's behavior
  * (acceptEdits — headless runs have nobody to answer prompts).
@@ -58,8 +129,11 @@ export const AgentProfileSchema = z.object({
   id: z.string(),
   name: z.string(),
   kind: AgentProfileKindSchema.default("generic"),
-  /** Claude model alias or id (`--model`), e.g. "sonnet", "opus", "fable". */
-  model: z.string().default("sonnet"),
+  /**
+   * Claude model alias or id (`--model`), e.g. "sonnet", "opus", "fable" —
+   * or "auto" to follow the roster's model preset for this profile's kind.
+   */
+  model: z.string().default(AUTO_MODEL),
   /** Skill names woven into dispatch prompts (specialists). */
   skills: z.array(z.string()).default([]),
   /** Context tags this specialist owns (see tags.ts). */
@@ -92,6 +166,8 @@ export const AgentRosterSchema = z.object({
   managerAgentId: z.string().nullish(),
   /** Human owner stamped onto new tasks by default. */
   defaultHuman: z.string().default(""),
+  /** Model preset id (see MODEL_PRESETS); null/unknown means the default. */
+  preset: z.string().nullish(),
 });
 export type AgentRoster = z.infer<typeof AgentRosterSchema>;
 
@@ -111,8 +187,10 @@ export function createAgentProfile(
 export function createDefaultRoster(): AgentRoster {
   return AgentRosterSchema.parse({
     agents: [
-      { id: "agent_generalist", name: "Generalist", kind: "generic", model: "opus" },
-      { id: "agent_specialist", name: "Specialist", kind: "specialist", model: "fable" },
+      // "auto" models: the roster's preset decides (Balanced out of the box —
+      // Sonnet generalist, Opus specialist; Frontier lifts both a tier).
+      { id: "agent_generalist", name: "Generalist", kind: "generic", model: AUTO_MODEL },
+      { id: "agent_specialist", name: "Specialist", kind: "specialist", model: AUTO_MODEL },
     ],
     defaultAgentId: "agent_generalist",
     defaultHuman: "",
@@ -166,11 +244,19 @@ export interface AgentProfileOverlay {
   extraTags: string[];
 }
 
-/** Flatten a profile into the overlay a dispatch applies. */
-export function profileOverlay(profile: AgentProfile): AgentProfileOverlay {
+/**
+ * Flatten a profile into the overlay a dispatch applies. The preset resolves
+ * "auto" models here, at the single choke point, so every consumer of an
+ * overlay only ever sees a concrete model.
+ */
+export function profileOverlay(
+  profile: AgentProfile,
+  preset?: ModelPreset,
+  role?: "manager" | null,
+): AgentProfileOverlay {
   return {
     agentId: profile.id,
-    model: profile.model,
+    model: resolveProfileModel(profile, preset ?? presetById(null), role),
     skills: profile.skills,
     appendPrompt: profile.appendPrompt?.trim() || null,
     allowedTools: profile.allowedTools ?? [],
@@ -235,13 +321,13 @@ const ROSTER_STANDING_CHARS = 100;
  * assigning an agent is a lookup by id, not a judgement call about models
  * (same principle as {@link boardMappingText} for board columns).
  */
-export function rosterText(profiles: readonly AgentProfile[]): string {
+export function rosterText(profiles: readonly AgentProfile[], preset?: ModelPreset): string {
   const lines: string[] = [];
   for (const p of profiles) {
     const bits = [
       `- ${p.id} "${p.name}"`,
       p.kind,
-      `model ${p.model}`,
+      `model ${resolveProfileModel(p, preset ?? presetById(null))}`,
       p.tags.length ? `tags: ${p.tags.join(", ")}` : null,
       p.skills.length ? `skills: ${p.skills.join(", ")}` : null,
     ].filter(Boolean);

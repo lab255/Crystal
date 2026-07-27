@@ -22,11 +22,12 @@ import {
   type AgentProfileOverlay,
   type AgentRole,
   type AgentRun,
+  type ModelPreset,
   type RunEvent,
   type RunPurpose,
   type WorkerSpec,
 } from "@crystal/core";
-import { envWithBinDir, resolveClaudeBin } from "./claude-bin.js";
+import { envWithBinDir, envWithToolchain, resolveClaudeBin } from "./claude-bin.js";
 import { runGit } from "./git.js";
 import { resolveInRoot } from "./paths.js";
 import { PendingQueue } from "./pending-queue.js";
@@ -431,8 +432,28 @@ export class AgentManager {
    * profile would silently fall off the chain's second turn.
    */
   profileResolver: ((agentId: string) => Promise<AgentProfileOverlay | null>) | null = null;
+  /**
+   * Set by the host: the workspace's model preset (roster `preset` field).
+   * It answers only when nothing else named a model — explicit params and
+   * profile overlays always win — and only for orchestration roles: managers
+   * get the preset's manager model, dispatched workers its worker model.
+   * Plain runs (jobs, consoles) keep the CLI's own default, as before.
+   */
+  presetResolver: (() => Promise<ModelPreset>) | null = null;
   /** Mount window before an interactive session takes deliveries (test seam). */
   interactiveReadyMs = INTERACTIVE_READY_MS;
+
+  /** The preset-fallback model for a run with none: managers/workers only. */
+  private async presetModelFor(params: {
+    model?: string | null;
+    role?: string | null;
+  }): Promise<string | null> {
+    if (params.model || !this.presetResolver) return params.model ?? null;
+    if (params.role !== "manager" && params.role !== "worker") return null;
+    const preset = await this.presetResolver().catch(() => null);
+    if (!preset) return null;
+    return params.role === "manager" ? preset.manager : preset.worker;
+  }
 
   /** Absolute workspace root — engines run deterministic git against it. */
   get workspaceRoot(): string {
@@ -569,6 +590,8 @@ export class AgentManager {
   async start(params: AgentStartParams): Promise<AgentRun> {
     if (this.disposed) throw new Error("Workspace is closed — no new agent runs.");
     await this.ensureLoaded();
+    const presetModel = await this.presetModelFor(params);
+    if (presetModel) params = { ...params, model: presetModel };
     const run = createAgentRun(params);
     // The dispatched model, visible while the run is queued (the stream-json
     // init event overwrites it with the resolved model id) — same convention
@@ -619,7 +642,13 @@ export class AgentManager {
         windowsHide: true,
         // A CLI resolved from outside the inherited PATH (GUI-launched
         // sidecar) must still find its own helpers — put its dir on PATH.
-        env: envWithBinDir(agentEnv({ ...process.env, FORCE_COLOR: "0" }), claudeBin),
+        // The project toolchain rides along too: the agent's own commands
+        // (pnpm/node/node_modules/.bin) must resolve from the run's cwd and
+        // the workspace root, wherever the server was launched from.
+        env: envWithBinDir(
+          envWithToolchain(agentEnv({ ...process.env, FORCE_COLOR: "0" }), [cwdAbs, this.root]),
+          claudeBin,
+        ),
         stdio: ["pipe", "pipe", "pipe"],
       });
     } catch (err) {
@@ -717,6 +746,8 @@ export class AgentManager {
   async prepareInteractive(params: InteractiveStartParams): Promise<InteractiveSpawn> {
     if (this.disposed) throw new Error("Workspace is closed — no new agent runs.");
     await this.ensureLoaded();
+    const presetModel = await this.presetModelFor(params);
+    if (presetModel) params = { ...params, model: presetModel };
     const run = createAgentRun(params);
     // A known session id (--session-id) keeps the chain resumable headlessly
     // once the terminal closes — the TUI emits no stream-json to learn it from.
@@ -749,7 +780,13 @@ export class AgentManager {
       run: { ...run },
       file: claudeBin,
       args,
-      env: envWithBinDir(agentEnv({ ...process.env }), claudeBin),
+      env: envWithBinDir(
+        envWithToolchain(agentEnv({ ...process.env }), [
+          resolveInRoot(this.root, run.cwd ?? "."),
+          this.root,
+        ]),
+        claudeBin,
+      ),
       cwd: run.cwd,
       prompt,
     };

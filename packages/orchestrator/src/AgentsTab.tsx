@@ -13,10 +13,12 @@ import {
   AGENT_PERMISSION_MODES,
   AGENT_PROFILE_KINDS,
   AGENT_PROFILE_SCOPES,
+  MODEL_PRESETS,
   RUN_PURPOSES,
   agentTag,
   createAgentProfile,
   isAgentTag,
+  presetById,
   type AgentPermissionMode,
   type AgentProfile,
   type AgentProfileScope,
@@ -32,8 +34,9 @@ const selectClasses =
   "focus:border-crystal-500/60 focus:outline-none";
 
 // Same model hints as the template builder's stage datalist — free text stays
-// allowed (any Claude model alias/id the CLI accepts).
-const MODEL_HINTS = ["opus", "sonnet", "haiku"] as const;
+// allowed (any Claude model alias/id the CLI accepts). "auto" follows the
+// roster's model preset for the profile's kind.
+const MODEL_HINTS = ["auto", "fable", "opus", "sonnet", "haiku"] as const;
 
 const EMPTY_PROFILES: AgentProfile[] = [];
 
@@ -165,6 +168,22 @@ export function AgentsTab({
         {/* Roster-level policy: which profile untagged work and managers run as. */}
         {roster ? (
           <div className="shrink-0 space-y-1.5 border-t border-edge px-3 py-2">
+            <label className="flex items-center gap-2 text-[11px] text-ink-muted">
+              <span className="w-16 shrink-0">Preset</span>
+              <select
+                className={cn(selectClasses, "h-6 min-w-0 flex-1 text-[11px]")}
+                value={presetById(roster.preset).id}
+                onChange={(e) => updateRoster({ ...roster, preset: e.target.value })}
+                aria-label="Model preset"
+                title={presetById(roster.preset).description}
+              >
+                {MODEL_PRESETS.map((p) => (
+                  <option key={p.id} value={p.id} title={p.description}>
+                    {p.name} — {p.description}
+                  </option>
+                ))}
+              </select>
+            </label>
             <label className="flex items-center gap-2 text-[11px] text-ink-muted">
               <span className="w-16 shrink-0">Default</span>
               <select

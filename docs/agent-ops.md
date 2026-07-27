@@ -285,3 +285,31 @@ over fleet-store's compound-keyed maps rendered with the `ws`-badged RunList;
 review verbs are actions on RunSurface's Changes pane feeding
 `agent.message`/`deliver`; capture files todos through the same bridge the
 fleet client already reaches.
+
+## Model presets (2026-07-27, shipped)
+
+One cost/capability dial per project, riding the existing profile/overlay
+machinery rather than a parallel system:
+
+- `MODEL_PRESETS` in `packages/core/src/agent-profile.ts` — `balanced`
+  (opus orchestrators / sonnet generalists / opus specialists, the default)
+  and `frontier` (fable orchestrators / opus generalists / fable specialists).
+  The roster's `preset` field (`.crystal/agents.json`, Agents-tab picker)
+  names the active one.
+- Profiles default to `model: "auto"`, resolved at the overlay choke point
+  (`profileOverlay` → `resolveProfileModel`) so a spawn never sees the
+  sentinel. Resolution is **role-aware**: a manager resolves to the preset's
+  manager model whatever profile it runs as (orchestration is a role, not a
+  kind); everything else resolves by profile kind. Explicit pins and
+  per-dispatch `model` always win — precedence is dispatch > profile pin >
+  preset, same as before.
+- Fallbacks when nothing named a model: `AgentManager.presetResolver`
+  (wired from the roster by the workspace runtime) answers for
+  `role: "manager"` starts and dispatched workers only — plain runs (jobs,
+  consoles) keep the CLI default. The workflow engine's old `??= "opus"` now
+  reads the preset; the hub engine keeps the default preset's manager (it
+  sits above any one project's roster) but honors `hub.startManager`'s
+  `model` (the client no longer drops it).
+- Per-dispatch override: `workflow.start` gained `managerModel` (start-panel
+  select, "Manager: <model>"), and `dispatch_worker`'s existing
+  `model`/`agentId` fields are unchanged.

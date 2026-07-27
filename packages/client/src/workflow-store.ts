@@ -26,6 +26,8 @@ export interface WorkflowState {
     projectId?: string | null;
     cwd?: string;
     agentId?: string | null;
+    /** Manager model override for this dispatch (beats profile + preset). */
+    managerModel?: string | null;
     budgetUsd?: number | null;
     /** Host the manager as a native interactive Claude session in the terminal panel. */
     interactive?: boolean;

@@ -12,7 +12,7 @@ import type {
   RecentWorkspace,
   WorkspaceDescriptor,
 } from "@crystal/core";
-import { profileOverlay, type AgentProfileOverlay } from "@crystal/core";
+import { presetById, profileOverlay, type AgentProfileOverlay, type ModelPreset } from "@crystal/core";
 import { AgentLibrary, GlobalAgentStore } from "./agent-library.js";
 import { AgentManager } from "./agent-manager.js";
 import { AnalysisBackend, createCodeMapFacade, type CodeMapFacade } from "./analysis-host.js";
@@ -103,6 +103,7 @@ export class WorkspaceRuntime {
     // The single resolution path: dispatch-by-agentId (workers, resumed
     // chain turns) resolves through the merged project+library view.
     this.agents.profileResolver = (agentId) => this.resolveProfile(agentId);
+    this.agents.presetResolver = () => this.resolvePreset();
     this.terminals = new TerminalManager(root);
     this.analysis = new AnalysisBackend(root);
     this.codemap = createCodeMapFacade(this.analysis);
@@ -178,7 +179,17 @@ export class WorkspaceRuntime {
   async resolveProfile(agentId?: string | null): Promise<AgentProfileOverlay | null> {
     if (!agentId) return null;
     const profile = await this.agentLibrary.get(agentId);
-    return profile ? profileOverlay(profile) : null;
+    if (!profile) return null;
+    // The roster's preset resolves "auto" profile models — here, at the one
+    // resolution path, so every dispatch sees a concrete model.
+    const roster = await this.agentLibrary.roster();
+    return profileOverlay(profile, presetById(roster.preset));
+  }
+
+  /** The workspace's model preset (roster `preset` field, default Balanced). */
+  async resolvePreset(): Promise<ModelPreset> {
+    const roster = await this.agentLibrary.roster();
+    return presetById(roster.preset);
   }
 
   /** LanguageService-backed refactor engine, created on first use. */

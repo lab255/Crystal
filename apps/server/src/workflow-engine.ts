@@ -18,6 +18,7 @@ import {
   workflowStatusText,
   workflowTag,
   applyProfileOverlay,
+  presetById,
   profileOverlay,
   type AgentPermissionMode,
   type AgentRoster,
@@ -221,6 +222,8 @@ export class WorkflowEngine {
     projectId?: string | null;
     cwd?: string;
     agentId?: string | null;
+    /** Per-dispatch manager model — beats the profile and the roster preset. */
+    managerModel?: string | null;
     budgetUsd?: number | null;
     /**
      * Host the manager as a native interactive Claude session in the terminal
@@ -252,7 +255,8 @@ export class WorkflowEngine {
     const profile = managerAgentId
       ? (roster.agents.find((a) => a.id === managerAgentId) ?? null)
       : null;
-    const overlay = profile ? profileOverlay(profile) : null;
+    const preset = presetById(roster.preset);
+    const overlay = profile ? profileOverlay(profile, preset, "manager") : null;
     const params = applyProfileOverlay(
       {
         cwd: workflow.cwd,
@@ -263,12 +267,14 @@ export class WorkflowEngine {
         role: "manager" as const,
         purpose: "manage" as const,
         tags: [workflowTag(workflow.id)],
-        model: null as string | null,
+        model: (init.managerModel ?? null) as string | null,
         skills: [] as string[],
       },
       overlay,
     );
-    params.model ??= "opus";
+    // No explicit model, no profile pin → the project's preset names the
+    // orchestrator model (Balanced: opus; Frontier: fable).
+    params.model ??= preset.manager;
     // The manager coordinates in place — a profile's worktree default is a
     // worker policy, and an isolated manager could not keep the board honest.
     (params as { isolation?: unknown }).isolation = undefined;
@@ -277,14 +283,14 @@ export class WorkflowEngine {
     if (init.interactive && this.interactiveLauncher) {
       const launched = await this.interactiveLauncher({
         ...params,
-        prompt: buildWorkflowManagerPrompt(workflow, roster.agents) + WORKFLOW_INTERACTIVE_NOTE,
+        prompt: buildWorkflowManagerPrompt(workflow, roster.agents, preset) + WORKFLOW_INTERACTIVE_NOTE,
         title: `workflow · ${workflow.name}`,
       });
       run = launched.run;
     } else {
       run = await this.agents.start({
         ...params,
-        prompt: buildWorkflowManagerPrompt(workflow, roster.agents),
+        prompt: buildWorkflowManagerPrompt(workflow, roster.agents, preset),
       });
     }
     workflow.managerRunId = run.id;

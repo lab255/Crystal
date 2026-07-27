@@ -6,7 +6,7 @@ import {
   type AgentRun,
   type RunPurpose,
 } from "./agent.js";
-import { rosterText, type AgentProfile } from "./agent-profile.js";
+import { rosterText, type AgentProfile, type ModelPreset } from "./agent-profile.js";
 import { runCostUsd } from "./orchestration.js";
 import {
   TASK_STATUSES,
@@ -1202,6 +1202,8 @@ export function buildWorkflowManagerPrompt(
   workflow: Workflow,
   /** The dispatchable agent roster; rendered so assignment is a lookup by id. */
   roster: readonly AgentProfile[] = [],
+  /** The project's model preset — resolves "auto" profile models in the rendering. */
+  preset?: ModelPreset,
 ): string {
   const template = templateOf(workflow);
   const budget =
@@ -1232,7 +1234,7 @@ export function buildWorkflowManagerPrompt(
     })
     .join("\n");
   const boardMapping = boardMappingText(template);
-  const agents = rosterText(roster);
+  const agents = rosterText(roster, preset);
   return [
     `You are the MANAGER of workflow "${workflow.name}" (${workflow.id}) — a long-lived, interactive coordination session. You coordinate and control; you do not implement anything yourself.`,
     "",

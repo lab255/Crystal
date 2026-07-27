@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
+  AUTO_MODEL,
   AgentProfileSchema,
   AgentRosterSchema,
+  DEFAULT_PRESET_ID,
   applyProfileOverlay,
   createDefaultRoster,
   matchAgent,
+  presetById,
   profileOverlay,
+  resolveProfileModel,
   rosterText,
   type AgentRoster,
   type ProfileDispatchInit,
@@ -208,6 +212,40 @@ describe("rosterText", () => {
     expect(text).toContain("standing: Only review; never edit files.");
     expect(text).not.toContain("Second line never shows");
     expect(rosterText([])).toBe("");
+  });
+});
+
+describe("model presets", () => {
+  it("resolves 'auto' models by preset and kind, pins always win", () => {
+    const generic = AgentProfileSchema.parse({ id: "g", name: "G", kind: "generic" });
+    const specialist = AgentProfileSchema.parse({ id: "s", name: "S", kind: "specialist" });
+    const pinned = AgentProfileSchema.parse({ id: "p", name: "P", kind: "specialist", model: "haiku" });
+
+    expect(generic.model).toBe(AUTO_MODEL);
+    expect(resolveProfileModel(generic, presetById("balanced"))).toBe("sonnet");
+    expect(resolveProfileModel(specialist, presetById("balanced"))).toBe("opus");
+    expect(resolveProfileModel(generic, presetById("frontier"))).toBe("opus");
+    expect(resolveProfileModel(specialist, presetById("frontier"))).toBe("fable");
+    expect(resolveProfileModel(pinned, presetById("frontier"))).toBe("haiku");
+  });
+
+  it("gives managers the preset's manager model whatever profile they run as", () => {
+    const generic = AgentProfileSchema.parse({ id: "g", name: "G", kind: "generic" });
+    expect(resolveProfileModel(generic, presetById("balanced"), "manager")).toBe("opus");
+    expect(resolveProfileModel(generic, presetById("frontier"), "manager")).toBe("fable");
+    expect(profileOverlay(generic, presetById("frontier"), "manager").model).toBe("fable");
+  });
+
+  it("falls back to the default preset on unknown ids and renders resolved models", () => {
+    expect(presetById("no-such-preset").id).toBe(DEFAULT_PRESET_ID);
+    expect(presetById(null).id).toBe(DEFAULT_PRESET_ID);
+    // An overlay never leaks the "auto" sentinel to a spawn.
+    const roster = createDefaultRoster();
+    for (const p of roster.agents) {
+      expect(profileOverlay(p, presetById(roster.preset)).model).not.toBe(AUTO_MODEL);
+    }
+    expect(rosterText(roster.agents, presetById("frontier"))).toContain("model fable");
+    expect(rosterText(roster.agents, presetById("frontier"))).not.toContain("model auto");
   });
 });
 
