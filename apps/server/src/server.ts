@@ -19,11 +19,13 @@ import {
 } from "@crystal/core";
 import {
   applyCodeSnapshotToGraph,
+  applyProfileOverlay,
   buildSystemOverview,
   computeReviewFindings,
   createArchDraft,
   diffSystemOverviews,
   openQuestionsOfWorkflow,
+  profileOverlay,
   suggestFacets,
 } from "@crystal/core";
 import { LineBuffer } from "@crystal/core";
@@ -300,7 +302,13 @@ export async function startCrystalServer(opts: {
         // workspace closed or terminal already gone
       }
     };
-    hub = new HubEngine(hubRoot, registryProjects(registry), hubAgents);
+    // The hub is cross-project: agent ids resolve against the shared library,
+    // never a workspace roster (there is no "the" workspace up here).
+    hubAgents.profileResolver = async (agentId) => {
+      const profile = await registry.globalAgents.get(agentId);
+      return profile ? profileOverlay(profile) : null;
+    };
+    hub = new HubEngine(hubRoot, registryProjects(registry), hubAgents, registry.globalAgents);
     hub.events.on("changed", ({ program }) => broadcast("hub.changed", { program }));
     // Catch up on anything that settled while this server was down — the hub's
     // event edges only cover the time it was actually listening.
@@ -414,11 +422,19 @@ export async function startCrystalServer(opts: {
       registry.get(ws).orchestration.answerQuestion(p, taskId, questionId, answer),
     "task.update": ({ ws, path: p, taskId, patch, claimId, force }) =>
       registry.get(ws).orchestration.updateTask(p, taskId, patch, { claimId, force }),
-    "agents.get": async ({ ws }) => ({ roster: await registry.get(ws).store.loadAgents() }),
+    // The roster methods all speak the *merged* project+library view; the
+    // runtime's agentLibrary listener broadcasts agents.changed after every
+    // mutation (including library saves made from other workspaces).
+    "agents.get": async ({ ws }) => ({ roster: await registry.get(ws).agentLibrary.roster() }),
     "agents.save": async ({ ws, roster }) => {
-      const rt = registry.get(ws);
-      await rt.store.saveAgents(roster);
-      broadcast("agents.changed", { ws: rt.id, roster });
+      await registry.get(ws).agentLibrary.saveRoster(roster);
+      return { ok: true };
+    },
+    "agents.saveProfile": async ({ ws, profile, scope }) => ({
+      profile: await registry.get(ws).agentLibrary.saveProfile(profile, scope),
+    }),
+    "agents.removeProfile": async ({ ws, id }) => {
+      await registry.get(ws).agentLibrary.removeProfile(id);
       return { ok: true };
     },
     "syslayout.get": async ({ ws }) => ({
@@ -469,40 +485,31 @@ export async function startCrystalServer(opts: {
       gitCheckout(registry.get(ws).root, repoPath ?? ".", ref),
     "agent.start": async ({ ws, ...params }) => {
       const rt = registry.get(ws);
-      // Resolve the dispatch profile server-side so model + skills always
-      // follow the roster on disk, whatever the client knew.
-      let model: string | null = null;
-      let skills: string[] = [];
-      if (params.agentId) {
-        const roster = await rt.store.loadAgents();
-        const profile = roster.agents.find((a) => a.id === params.agentId);
-        if (profile) {
-          model = profile.model;
-          skills = profile.skills;
-        }
-      }
-      return { run: await rt.agents.start({ ...params, model, skills }) };
+      // Resolve the dispatch profile server-side (one path: resolveProfile)
+      // so model/skills/policy always follow the roster on disk, whatever
+      // the client knew.
+      const overlay = await rt.resolveProfile(params.agentId);
+      return { run: await rt.agents.start(applyProfileOverlay({ ...params }, overlay)) };
     },
     "agent.interactive": async ({ ws, cols, rows, ...params }) => {
       const rt = registry.get(ws);
-      let model: string | null = null;
-      let skills: string[] = [];
-      if (params.agentId) {
-        const roster = await rt.store.loadAgents();
-        const profile = roster.agents.find((a) => a.id === params.agentId);
-        if (profile) {
-          model = profile.model;
-          skills = profile.skills;
-        }
-      }
+      const overlay = await rt.resolveProfile(params.agentId);
       return launchInteractiveRun(rt.agents, rt.terminals, {
-        ...params,
-        model,
-        skills,
+        ...applyProfileOverlay({ ...params }, overlay),
         cols,
         rows,
         title: ["claude", params.purpose ?? null].filter(Boolean).join(" · "),
       });
+    },
+    "agent.message": async ({ ws, runId, text }) => {
+      const rt = registry.get(ws);
+      // An unknown id would queue the text against a chain that can never
+      // exist — refuse it instead of losing the message silently.
+      if (!(await rt.agents.get(runId))) throw new Error(`Unknown run: ${runId}`);
+      // Verbatim delivery: deliver() types into a live TUI, resumes an idle
+      // chain, or queues for the next settlement — never a board-keeping tail.
+      const run = await rt.agents.deliver(runId, text);
+      return { queued: run == null };
     },
     "agent.dispatchWorker": async ({ ws, managerRunId, spec }) => {
       const run = await registry.get(ws).agents.dispatchWorker(managerRunId, spec);
@@ -599,26 +606,21 @@ export async function startCrystalServer(opts: {
     "codeindex.enrich": async ({ ws, files, full, agentId }) => {
       const rt = registry.get(ws);
       // Indexing defaults to a small, cheap model; a profile overrides it.
-      let model = "haiku";
-      let skills: string[] = [];
-      if (agentId) {
-        const roster = await rt.store.loadAgents();
-        const profile = roster.agents.find((a) => a.id === agentId);
-        if (profile) {
-          model = profile.model;
-          skills = profile.skills;
-        }
-      }
+      const overlay = await rt.resolveProfile(agentId);
       const startBatch = async () => {
         const dispatch = await rt.codeindex.enrichmentDispatch(full ? undefined : files);
-        const run = await rt.agents.start({
-          prompt: dispatch.prompt,
-          model,
-          skills,
-          agentId: agentId ?? null,
-          purpose: "index",
-          tags: ["purpose:index"],
-        });
+        const run = await rt.agents.start(
+          applyProfileOverlay(
+            {
+              prompt: dispatch.prompt,
+              model: overlay ? null : "haiku",
+              agentId: agentId ?? null,
+              purpose: "index" as const,
+              tags: ["purpose:index"],
+            },
+            overlay,
+          ),
+        );
         return { run, files: dispatch.files, remaining: dispatch.remaining };
       };
       // A full index chains batches server-side until the backlog is drained.
@@ -745,13 +747,17 @@ export async function startCrystalServer(opts: {
       await requireHub().remove(programId);
       return { ok: true as const };
     },
-    "hub.startManager": async ({ programId, model, terminal }) => {
+    "hub.startManager": async ({ programId, model, agentId, terminal }) => {
       const engine = requireHub();
       let run;
       if (terminal) {
         // Interactive manager: the hub owns the run, a workspace hosts the PTY.
         const rt = registry.get(terminal.ws);
-        const plan = await engine.prepareInteractiveManager(programId, model ?? "opus");
+        const plan = await engine.prepareInteractiveManager(
+          programId,
+          model ?? null,
+          agentId ?? null,
+        );
         const term = rt.terminals.create({
           cols: terminal.cols,
           rows: terminal.rows,
@@ -765,7 +771,7 @@ export async function startCrystalServer(opts: {
           rt.terminals.writeWhenReady(term.id, plan.prompt, INTERACTIVE_PROMPT_DELAY_MS);
         }
       } else {
-        run = await engine.startManager(programId, model ?? "opus");
+        run = await engine.startManager(programId, model ?? null, agentId ?? null);
       }
       const program = await engine.get(programId);
       if (!program) throw new Error(`Unknown program: ${programId}`);

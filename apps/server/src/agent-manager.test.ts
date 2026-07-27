@@ -39,6 +39,31 @@ describe("claudeRunArgs", () => {
     expect(args[args.indexOf("--model") + 1]).toBe("opus");
     expect(args[args.indexOf("--resume") + 1]).toBe("sess_1");
   });
+
+  it("threads the profile policy: append prompt, permission mode, tool lists", () => {
+    const args = claudeRunArgs({
+      appendSystemPrompt: "Only review; never edit files.",
+      permissionMode: "plan",
+      allowedTools: ["Bash(semgrep *)", "Bash(git commit *)"],
+      disallowedTools: ["Write", "Edit", "Write"],
+    });
+    // The standing prompt is a flag (it must survive --resume turns); the
+    // task prompt itself still travels on stdin, never argv.
+    expect(args[args.indexOf("--append-system-prompt") + 1]).toBe("Only review; never edit files.");
+    expect(args[args.indexOf("--permission-mode") + 1]).toBe("plan");
+    const allowed = args[args.indexOf("--allowedTools") + 1]!;
+    // Profile additions merge over the dev-loop allowlist, deduped.
+    expect(allowed).toContain("Bash(semgrep *)");
+    expect(allowed.match(/Bash\(git commit \*\)/g)).toHaveLength(1);
+    expect(args[args.indexOf("--disallowedTools") + 1]).toBe("Write,Edit");
+  });
+
+  it("keeps today's defaults when no policy is set", () => {
+    const args = claudeRunArgs({});
+    expect(args[args.indexOf("--permission-mode") + 1]).toBe("acceptEdits");
+    expect(args).not.toContain("--append-system-prompt");
+    expect(args).not.toContain("--disallowedTools");
+  });
 });
 
 describe("claudeInteractiveArgs", () => {
@@ -65,6 +90,19 @@ describe("claudeInteractiveArgs", () => {
     expect(args).not.toContain("--mcp-config");
     expect(args).not.toContain("--session-id");
     expect(args[args.indexOf("--allowedTools") + 1]).not.toContain("mcp__crystal");
+  });
+
+  it("threads the profile policy exactly like headless runs", () => {
+    const args = claudeInteractiveArgs({
+      appendSystemPrompt: "Standing orders.",
+      permissionMode: "default",
+      allowedTools: ["Bash(semgrep *)"],
+      disallowedTools: ["WebSearch"],
+    });
+    expect(args[args.indexOf("--permission-mode") + 1]).toBe("default");
+    expect(args[args.indexOf("--append-system-prompt") + 1]).toBe("Standing orders.");
+    expect(args[args.indexOf("--allowedTools") + 1]).toContain("Bash(semgrep *)");
+    expect(args[args.indexOf("--disallowedTools") + 1]).toBe("WebSearch");
   });
 });
 
@@ -96,6 +134,16 @@ describe("planClaudeSpawn", () => {
   it("strips embedded quotes instead of letting them break the command line", () => {
     const plan = planClaudeSpawn("claude", ['a"b c'], true);
     expect(plan.args).toEqual(['"ab c"']);
+  });
+
+  it("quotes a multi-word --append-system-prompt on the .cmd/shell path", () => {
+    // A profile's standing prompt is the first arg with spaces that is user
+    // text, not a path — cmd.exe concatenates argv unquoted, so it must go
+    // through the same winShellQuote as everything else.
+    const args = claudeRunArgs({ appendSystemPrompt: 'Only "review"; never edit.' });
+    const plan = planClaudeSpawn("claude", args, true);
+    const i = plan.args.indexOf("--append-system-prompt");
+    expect(plan.args[i + 1]).toBe('"Only review; never edit."');
   });
 
   it("never shells on POSIX", () => {
@@ -174,6 +222,56 @@ describe("runsWithTag", () => {
     const reloaded = new AgentManager(root, data, missing);
     const again = await reloaded.runsWithTag("workflow:wf_1");
     expect(again.map((r) => r.id).sort()).toEqual([a.id, b.id].sort());
+  });
+});
+
+describe("dispatchWorker agent profiles", () => {
+  let tmp: string | null = null;
+
+  afterEach(async () => {
+    if (tmp) await fs.rm(tmp, { recursive: true, force: true });
+    tmp = null;
+  });
+
+  it("resolves the spec's agentId through the profile resolver; explicit model wins", async () => {
+    tmp = await fs.mkdtemp(path.join(os.tmpdir(), "crystal-dispatch-agent-"));
+    const root = path.join(tmp, "root");
+    await fs.mkdir(root, { recursive: true });
+    // A missing binary settles runs instantly — the record still carries the
+    // resolved dispatch config, which is all this test reads.
+    const mgr = new AgentManager(root, path.join(tmp, "data"), path.join(tmp, "missing.exe"));
+    mgr.profileResolver = async (agentId) =>
+      agentId === "sec"
+        ? {
+            agentId: "sec",
+            model: "sonnet",
+            skills: ["security-review"],
+            appendPrompt: "Only review.",
+            allowedTools: [],
+            disallowedTools: ["Write"],
+            permissionMode: "plan",
+            defaults: { purpose: "security-review" },
+            extraTags: ["agent:sec"],
+          }
+        : null;
+
+    const manager = await mgr.start({ prompt: "coordinate", role: "manager" });
+    const worker = await mgr.dispatchWorker(manager.id, {
+      prompt: "Audit the auth flow.",
+      agentId: "sec",
+    });
+    expect(worker).not.toBeNull();
+    expect(worker!.model).toBe("sonnet");
+    expect(worker!.agentId).toBe("sec");
+    expect(worker!.purpose).toBe("security-review");
+    expect(worker!.tags).toContain("agent:sec");
+
+    const explicit = await mgr.dispatchWorker(manager.id, {
+      prompt: "Audit again.",
+      agentId: "sec",
+      model: "opus",
+    });
+    expect(explicit!.model).toBe("opus"); // spec's explicit model beats the profile's
   });
 });
 

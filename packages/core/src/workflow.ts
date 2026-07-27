@@ -6,6 +6,7 @@ import {
   type AgentRun,
   type RunPurpose,
 } from "./agent.js";
+import { rosterText, type AgentProfile } from "./agent-profile.js";
 import { runCostUsd } from "./orchestration.js";
 import {
   TASK_STATUSES,
@@ -64,6 +65,12 @@ export const WorkflowStageDefSchema = z.object({
    * manager passes it as dispatch_worker's `model`.
    */
   model: z.string().optional(),
+  /**
+   * Named agent profile for this stage's workers (see agent-profile.ts) —
+   * *who* runs the stage, not just which model. The manager passes it as
+   * dispatch_worker's `agentId`; `model` stays as the fallback hint.
+   */
+  agentId: z.string().optional(),
   /**
    * The **handoff**: what this stage hands to the stages that depend on it,
    * stated as a concrete artifact ("board tasks with acceptance criteria",
@@ -1191,7 +1198,11 @@ export function workflowStatusText(workflow: Workflow, spend: WorkflowSpend): st
  * review → merge → release — through its MCP tools, under budget control,
  * steerable by user messages at any time.
  */
-export function buildWorkflowManagerPrompt(workflow: Workflow): string {
+export function buildWorkflowManagerPrompt(
+  workflow: Workflow,
+  /** The dispatchable agent roster; rendered so assignment is a lookup by id. */
+  roster: readonly AgentProfile[] = [],
+): string {
   const template = templateOf(workflow);
   const budget =
     workflow.budgetUsd != null
@@ -1203,6 +1214,7 @@ export function buildWorkflowManagerPrompt(workflow: Workflow): string {
       const attrs = [
         s.id,
         s.perTrack ? "per track" : null,
+        s.agentId ? `agent: ${s.agentId}` : null,
         s.model ? `model: ${s.model}` : null,
         s.boardStatus ? `board: ${s.boardStatus}` : null,
       ].filter(Boolean);
@@ -1220,6 +1232,7 @@ export function buildWorkflowManagerPrompt(workflow: Workflow): string {
     })
     .join("\n");
   const boardMapping = boardMappingText(template);
+  const agents = rosterText(roster);
   return [
     `You are the MANAGER of workflow "${workflow.name}" (${workflow.id}) — a long-lived, interactive coordination session. You coordinate and control; you do not implement anything yourself.`,
     "",
@@ -1227,6 +1240,13 @@ export function buildWorkflowManagerPrompt(workflow: Workflow): string {
     "",
     `Stages (template "${template.name}"; advance them with advance_stage as work moves — done stages unlock their dependents):`,
     stageList,
+    ...(agents
+      ? [
+          "",
+          "Agent roster (dispatch by passing dispatch_worker's `agentId` — the server applies that profile's model, skills and standing instructions):",
+          agents,
+        ]
+      : []),
     "",
     "Operating protocol:",
     ...stageProtocolLines(template),
@@ -1238,7 +1258,7 @@ export function buildWorkflowManagerPrompt(workflow: Workflow): string {
       : "- The board is the single source of truth. Coordinate through it: board_status, get_task, claim_task → update_task → release_task, and keep task statuses honest.",
     "- Coordinate through the board's tools: board_status, get_task, claim_task → update_task → release_task.",
     `- Cost accounting is your job. ${budget}`,
-    "- Model routing: pass each stage's suggested model as dispatch_worker's `model` — heavyweight models only where code gets written; lighter models for planning, review and release chores.",
+    "- Agent routing: a stage naming an agent is dispatched with that `agentId`; otherwise pick from the roster by tags/skills, or fall back to the stage's suggested `model` — heavyweight models only where code gets written; lighter models for planning, review and release chores.",
     "- You are resumed automatically whenever dispatched workers settle — end your turn after dispatching instead of polling worker_status in a loop.",
     "- Record decisions as you go: advance_stage notes, task descriptions, and answers to user questions are the durable memory of this workflow.",
     "- A stage the goal does not need is skipped explicitly (advance_stage status \"skipped\"), never left pending — its dependents cannot start until it settles either way.",

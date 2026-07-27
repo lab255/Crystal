@@ -203,11 +203,19 @@ const DISPATCH_WORKER_TOOL = {
           "Implies worktree isolation — use one branch per parallel track.",
       },
       purpose: { type: "string", description: "Attribution, e.g. implement, code-review, fix." },
+      agentId: {
+        type: "string",
+        description:
+          "Agent profile id from your roster — the worker runs as that agent " +
+          "(its model, skills, standing instructions and tool policy apply). " +
+          "Prefer this over picking a raw model.",
+      },
       model: {
         type: "string",
         description:
           "Claude model alias for the worker (e.g. \"opus\" for code-intensive " +
-          "work, \"sonnet\" for lighter tasks). Omitted = CLI default.",
+          "work, \"sonnet\" for lighter tasks). Wins over the agentId profile's " +
+          "model when both are given. Omitted = the profile's, else CLI default.",
       },
       taskId: {
         type: "string",

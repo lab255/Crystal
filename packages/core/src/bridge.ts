@@ -1,4 +1,4 @@
-import type { AgentRoster } from "./agent-profile.js";
+import type { AgentProfile, AgentProfileScope, AgentRoster } from "./agent-profile.js";
 import type { ArchDraft } from "./arch-draft.js";
 import type { ArchitectureGraph } from "./architecture.js";
 import type { AgentRole, AgentRun, RunEvent, RunPurpose, WorkerSpec } from "./agent.js";
@@ -258,9 +258,31 @@ export interface BridgeMethods {
    */
   "facets.get": { params: WsScope; result: { facets: WorkspaceFacet[] } };
   "facets.save": { params: WsScope & { facets: WorkspaceFacet[] }; result: { ok: true } };
-  /** The agent roster (`.crystal/agents.json`; seeded defaults when absent). */
+  /**
+   * The agent roster: the project's own profiles (`.crystal/agents.json`,
+   * seeded defaults when absent) merged with the shared `~/.crystal/agents`
+   * library — each profile carries its resolved `scope`, and a project
+   * profile shadows a library one with the same id.
+   */
   "agents.get": { params: WsScope; result: { roster: AgentRoster } };
+  /**
+   * Save roster-level fields (defaultAgentId, managerAgentId, defaultHuman)
+   * and the *project* profiles. Library-scoped profiles in the payload are
+   * ignored — echoing the merged view back must not copy the library into
+   * the project file; use `agents.saveProfile` to edit those.
+   */
   "agents.save": { params: WsScope & { roster: AgentRoster }; result: { ok: true } };
+  /**
+   * Create or update one profile. `scope` decides where it lands (default:
+   * where it already lives, else project); saving with a different scope
+   * *moves* it — one id must never live in both stores.
+   */
+  "agents.saveProfile": {
+    params: WsScope & { profile: AgentProfile; scope?: AgentProfileScope };
+    result: { profile: AgentProfile };
+  };
+  /** Delete a profile from whichever scope holds it (the default agent is refused). */
+  "agents.removeProfile": { params: WsScope & { id: string }; result: { ok: true } };
   /**
    * Hand arrangement of the systems overview (`.crystal/systems-layout.json`).
    * `layout` is null until the user first edits the canvas — views auto-group
@@ -371,6 +393,17 @@ export interface BridgeMethods {
       rows?: number;
     };
     result: { run: AgentRun; terminal: TerminalInfo };
+  };
+  /**
+   * The generic steer: deliver `text` into the chain of any run, via the
+   * same machinery worker results use — typed into a live interactive TUI,
+   * resumed as a fresh turn when the chain is idle, queued (and flushed on
+   * settlement) when a turn is live. Delivered verbatim — no manager-notice
+   * framing (workflow.message / hub.message add that on their routes).
+   */
+  "agent.message": {
+    params: WsScope & { runId: string; text: string };
+    result: { queued: boolean };
   };
   "agent.cancel": { params: WsScope & { runId: string }; result: { ok: true } };
   "agent.list": { params: WsScope; result: { runs: AgentRun[] } };
@@ -799,6 +832,12 @@ export interface BridgeMethods {
     params: {
       programId: string;
       model?: string | null;
+      /**
+       * Library agent profile the manager runs as (resolved against
+       * `~/.crystal/agents` — the hub is cross-project, so workspace rosters
+       * don't apply). An explicit `model` wins over the profile's.
+       */
+      agentId?: string | null;
       /**
        * Run the manager as a native interactive Claude session in a PTY
        * terminal hosted by workspace `ws` (the manager still coordinates via

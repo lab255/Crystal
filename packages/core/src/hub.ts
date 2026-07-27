@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { nowIso, uid } from "./ids.js";
 import { usageTotalTokens, type AgentRun } from "./agent.js";
+import { rosterText, type AgentProfile } from "./agent-profile.js";
 import { runCostUsd } from "./orchestration.js";
 
 /**
@@ -830,7 +831,11 @@ export function formatProgramMessage(text: string): string {
  * per-project deliveries, handing each to that project's own orchestrator, and
  * sequencing them — without ever writing code itself.
  */
-export function buildProgramManagerPrompt(program: Program): string {
+export function buildProgramManagerPrompt(
+  program: Program,
+  /** Shared agent library (hub scope — project rosters don't apply here). */
+  roster: readonly AgentProfile[] = [],
+): string {
   const budget =
     program.budgetUsd != null
       ? `The program budget is $${program.budgetUsd.toFixed(2)} across every project. Give each delivery its own budget so no single project can drain the program, and check program_status between waves.`
@@ -838,12 +843,20 @@ export function buildProgramManagerPrompt(program: Program): string {
   const deliveries = program.deliveries.length
     ? program.deliveries.map((d) => `- ${d.id} ${d.projectName}: ${headline(d.brief)}`).join("\n")
     : "(none yet — you plan them)";
+  const agents = rosterText(roster);
   return [
     `You are the PROGRAM MANAGER of "${program.name}" (${program.id}) — a long-lived, interactive session owning one epic that spans several projects. You coordinate project orchestrators; you never write code and never edit files yourself.`,
     "",
     `Program goal:\n${program.goal.trim()}`,
     "",
     `Deliveries so far:\n${deliveries}`,
+    ...(agents
+      ? [
+          "",
+          "Shared agent library (each project's orchestrator dispatches these by agentId — name one in a brief when a delivery should run as a specific agent):",
+          agents,
+        ]
+      : []),
     "",
     "Operating protocol:",
     "- SURVEY first: list_projects shows every project this Crystal server knows (open and recently opened). open_project brings one under management. project_board reads a project's board when you need to know what is already planned there.",

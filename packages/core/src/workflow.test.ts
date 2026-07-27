@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createAgentRun } from "./agent.js";
+import { AgentProfileSchema } from "./agent-profile.js";
 import {
   ADVANCED_WORKFLOW_TEMPLATE,
   SIMPLE_WORKFLOW_TEMPLATE,
@@ -289,8 +290,41 @@ describe("manager prompting", () => {
     expect(prompt).toContain("complete_workflow");
     expect(prompt).toContain("add_track");
     expect(prompt).toContain("worktree");
-    expect(prompt).toContain("Model routing");
+    expect(prompt).toContain("Agent routing");
     expect(prompt).toContain("model: opus");
+  });
+
+  it("renders the agent roster so dispatch is a lookup by agentId", () => {
+    const roster = [
+      AgentProfileSchema.parse({
+        id: "agent_sec",
+        name: "Security reviewer",
+        kind: "specialist",
+        model: "sonnet",
+        appendPrompt: "Only review; never edit.",
+      }),
+    ];
+    const prompt = buildWorkflowManagerPrompt(makeWorkflow(), roster);
+    expect(prompt).toContain("Agent roster");
+    expect(prompt).toContain('- agent_sec "Security reviewer" · specialist · model sonnet');
+    expect(prompt).toContain("standing: Only review; never edit.");
+    // No roster = no empty section header.
+    expect(buildWorkflowManagerPrompt(makeWorkflow())).not.toContain("Agent roster");
+  });
+
+  it("a stage naming an agentId surfaces it in the stage list", () => {
+    const wf = createWorkflow({
+      name: "X",
+      goal: "g",
+      template: makeTemplate({
+        id: "wft_agents",
+        name: "With agents",
+        stages: [
+          { id: "audit", name: "Audit", purpose: "security-review", agentId: "agent_sec" },
+        ],
+      }),
+    });
+    expect(buildWorkflowManagerPrompt(wf)).toContain("agent: agent_sec");
   });
 
   it("user messages are framed as steering", () => {

@@ -27,6 +27,10 @@ import {
   programStatusText,
   programTag,
   readyDeliveries,
+  applyProfileOverlay,
+  profileOverlay,
+  type AgentProfile,
+  type AgentProfileOverlay,
   type AgentRun,
   type DeliveryInit,
   type DeliverySpend,
@@ -42,6 +46,7 @@ import {
   type Workflow,
 } from "@crystal/core";
 import type { AgentManager, InteractiveSpawn } from "./agent-manager.js";
+import type { GlobalAgentStore } from "./agent-library.js";
 import { JsonRecordStore } from "./record-store.js";
 import { SettledRuns } from "./settled-runs.js";
 import { PendingQueue } from "./pending-queue.js";
@@ -178,6 +183,12 @@ export class HubEngine {
      * disables the manager (the hub is then driven purely over MCP/UI).
      */
     private readonly agents: AgentManager | null = null,
+    /**
+     * The shared agent library. The hub is cross-project, so a manager's
+     * `agentId` resolves here — never against any workspace's roster. Null
+     * keeps managers on the classic hardcoded default.
+     */
+    private readonly profiles: GlobalAgentStore | null = null,
   ) {
     this.store = new JsonRecordStore<Program>(
       path.join(dataDir, "programs"),
@@ -789,21 +800,57 @@ export class HubEngine {
    * carrying the `program:<id>` tag that scopes its MCP toolset and attributes
    * its coordination spend.
    */
-  async startManager(programId: string, model: string | null = "opus"): Promise<AgentRun> {
+  async startManager(
+    programId: string,
+    model: string | null = null,
+    agentId: string | null = null,
+  ): Promise<AgentRun> {
     if (!this.agents) throw new Error("Program manager sessions are not available on this server.");
     const program = await this.requireManagerless(programId);
-    const run = await this.agents.start({
-      prompt: buildProgramManagerPrompt(program),
-      role: "manager",
-      purpose: "manage",
-      tags: [programTag(programId)],
-      model,
-    });
+    const run = await this.agents.start(
+      await this.managerParams(program, model, agentId, buildProgramManagerPrompt),
+    );
     await this.mutate(programId, (current) => ({
       program: { ...current, managerRunId: run.id },
       result: undefined,
     }));
     return run;
+  }
+
+  /**
+   * The manager spawn params, with an optional library profile applied. An
+   * explicit `model` wins over the profile's; when neither resolves, the
+   * classic heavyweight default stands.
+   */
+  private async managerParams(
+    program: Program,
+    model: string | null,
+    agentId: string | null,
+    prompt: (program: Program, roster: readonly AgentProfile[]) => string,
+  ) {
+    const roster = this.profiles ? await this.profiles.list() : [];
+    let overlay: AgentProfileOverlay | null = null;
+    if (agentId && this.profiles) {
+      const profile = await this.profiles.get(agentId);
+      if (!profile) throw new Error(`Unknown agent profile: ${agentId}`);
+      overlay = profileOverlay(profile);
+    }
+    const params = applyProfileOverlay(
+      {
+        prompt: prompt(program, roster),
+        role: "manager" as const,
+        purpose: "manage" as const,
+        tags: [programTag(program.id)],
+        model,
+        agentId: overlay?.agentId ?? null,
+      },
+      overlay,
+    );
+    params.model ??= "opus";
+    // A manager coordinates in place — a profile's worktree default is for
+    // workers, and the hub's own directory is not even a repo.
+    (params as { isolation?: unknown }).isolation = undefined;
+    return params;
   }
 
   private async requireManagerless(programId: string): Promise<Program> {
@@ -825,17 +872,19 @@ export class HubEngine {
    */
   async prepareInteractiveManager(
     programId: string,
-    model: string | null = "opus",
+    model: string | null = null,
+    agentId: string | null = null,
   ): Promise<InteractiveSpawn> {
     if (!this.agents) throw new Error("Program manager sessions are not available on this server.");
     const program = await this.requireManagerless(programId);
-    const spawn = await this.agents.prepareInteractive({
-      prompt: buildProgramManagerPrompt(program) + INTERACTIVE_MANAGER_NOTE,
-      role: "manager",
-      purpose: "manage",
-      tags: [programTag(programId)],
-      model,
-    });
+    const spawn = await this.agents.prepareInteractive(
+      await this.managerParams(
+        program,
+        model,
+        agentId,
+        (p, roster) => buildProgramManagerPrompt(p, roster) + INTERACTIVE_MANAGER_NOTE,
+      ),
+    );
     await this.mutate(programId, (current) => ({
       program: { ...current, managerRunId: spawn.run.id },
       result: undefined,

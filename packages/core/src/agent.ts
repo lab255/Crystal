@@ -78,6 +78,23 @@ export function usageTotalTokens(usage: AgentUsage | null | undefined): number {
   );
 }
 
+const AGENT_TAG_PREFIX = "agent:";
+
+/**
+ * Dimensional tag carried by every run executed as a named agent profile —
+ * stamped at run creation, so spend/attribution per profile falls out of the
+ * existing tag index (`runsWithTag` + `rollupRunsUsage`), the same trick as
+ * `workflow:<id>` and `program:<id>`.
+ */
+export function agentTag(agentId: string): string {
+  return `${AGENT_TAG_PREFIX}${agentId}`;
+}
+
+/** True for tags minted by {@link agentTag} — the single prefix check. */
+export function isAgentTag(tag: string): boolean {
+  return tag.startsWith(AGENT_TAG_PREFIX);
+}
+
 export const AgentRunSchema = z.object({
   id: z.string(),
   /** Optional links back into the PM board. */
@@ -174,7 +191,12 @@ export function createAgentRun(init: {
     // unless the caller declares it a manager.
     role: init.role ?? (init.parentRunId ? "worker" : null),
     purpose: init.purpose ?? null,
-    tags: init.tags ?? [],
+    // Profile attribution is stamped here, not per call site, so every path
+    // that creates a run (start, interactive, workers, resumed chain turns)
+    // carries the `agent:<id>` tag without each caller remembering to.
+    tags: init.agentId
+      ? [...new Set([...(init.tags ?? []), agentTag(init.agentId)])]
+      : (init.tags ?? []),
     createdAt: nowIso(),
   });
 }
@@ -408,6 +430,12 @@ export const WorkerSpecSchema = z.object({
    * ones for plan/design/review-style tasks. Omitted = CLI default.
    */
   model: z.string().nullish(),
+  /**
+   * Agent profile to run the worker as (see agent-profile.ts). The server
+   * resolves it to model/skills/tool policy; an explicit `model` in this spec
+   * wins over the profile's.
+   */
+  agentId: z.string().nullish(),
   /** Why this worker touches the task (defaults to the manager's purpose). */
   purpose: RunPurposeSchema.nullish(),
   /**

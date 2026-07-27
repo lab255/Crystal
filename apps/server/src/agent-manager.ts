@@ -15,8 +15,11 @@ import {
   parseClaudeStreamLine,
   touchedFileFromToolUse,
   transcriptUsage,
+  applyProfileOverlay,
   type AgentEvent,
   type AgentIsolation,
+  type AgentPermissionMode,
+  type AgentProfileOverlay,
   type AgentRole,
   type AgentRun,
   type RunEvent,
@@ -50,6 +53,17 @@ export interface AgentStartParams {
   model?: string | null;
   /** Skill names woven into the prompt (from the dispatched agent profile). */
   skills?: string[];
+  /**
+   * Standing instructions passed as `--append-system-prompt` (from the agent
+   * profile) — a flag, not prompt concatenation, so they survive `--resume`.
+   */
+  appendSystemPrompt?: string | null;
+  /** Extra pre-allowed tools, merged (deduped) over the dev-loop allowlist. */
+  allowedTools?: string[];
+  /** Tools the run may never use (`--disallowedTools`, comma-joined). */
+  disallowedTools?: string[];
+  /** Overrides the default acceptEdits `--permission-mode` when set. */
+  permissionMode?: AgentPermissionMode | null;
   /** Git branch for the run's worktree (implies worktree isolation). */
   branch?: string | null;
 }
@@ -67,6 +81,10 @@ export interface InteractiveStartParams {
   tags?: string[];
   model?: string | null;
   skills?: string[];
+  appendSystemPrompt?: string | null;
+  allowedTools?: string[];
+  disallowedTools?: string[];
+  permissionMode?: AgentPermissionMode | null;
 }
 
 /**
@@ -238,6 +256,13 @@ export function claudeRunArgs(opts: {
   model?: string | null;
   resumeSessionId?: string | null;
   mcpConfigPath?: string | null;
+  /** Profile standing prompt (`--append-system-prompt`); prompt text stays on stdin. */
+  appendSystemPrompt?: string | null;
+  /** Profile allowlist additions, merged (deduped) over {@link ALLOWED_RUN_TOOLS}. */
+  allowedTools?: string[] | null;
+  disallowedTools?: string[] | null;
+  /** Replaces the default acceptEdits when set. */
+  permissionMode?: AgentPermissionMode | null;
 }): string[] {
   const args = [
     "-p",
@@ -245,13 +270,23 @@ export function claudeRunArgs(opts: {
     "stream-json",
     "--verbose",
     "--permission-mode",
-    "acceptEdits",
+    opts.permissionMode ?? "acceptEdits",
   ];
   if (opts.model) args.push("--model", opts.model);
   if (opts.resumeSessionId) args.push("--resume", opts.resumeSessionId);
   if (opts.mcpConfigPath) args.push("--mcp-config", opts.mcpConfigPath);
-  const allowed = [...(opts.mcpConfigPath ? ["mcp__crystal"] : []), ...ALLOWED_RUN_TOOLS];
+  if (opts.appendSystemPrompt) args.push("--append-system-prompt", opts.appendSystemPrompt);
+  const allowed = [
+    ...new Set([
+      ...(opts.mcpConfigPath ? ["mcp__crystal"] : []),
+      ...ALLOWED_RUN_TOOLS,
+      ...(opts.allowedTools ?? []),
+    ]),
+  ];
   args.push("--allowedTools", allowed.join(","));
+  if (opts.disallowedTools?.length) {
+    args.push("--disallowedTools", [...new Set(opts.disallowedTools)].join(","));
+  }
   return args;
 }
 
@@ -267,13 +302,27 @@ export function claudeInteractiveArgs(opts: {
   model?: string | null;
   sessionId?: string | null;
   mcpConfigPath?: string | null;
+  appendSystemPrompt?: string | null;
+  allowedTools?: string[] | null;
+  disallowedTools?: string[] | null;
+  permissionMode?: AgentPermissionMode | null;
 }): string[] {
-  const args = ["--permission-mode", "acceptEdits"];
+  const args = ["--permission-mode", opts.permissionMode ?? "acceptEdits"];
   if (opts.sessionId) args.push("--session-id", opts.sessionId);
   if (opts.model) args.push("--model", opts.model);
   if (opts.mcpConfigPath) args.push("--mcp-config", opts.mcpConfigPath);
-  const allowed = [...(opts.mcpConfigPath ? ["mcp__crystal"] : []), ...ALLOWED_RUN_TOOLS];
+  if (opts.appendSystemPrompt) args.push("--append-system-prompt", opts.appendSystemPrompt);
+  const allowed = [
+    ...new Set([
+      ...(opts.mcpConfigPath ? ["mcp__crystal"] : []),
+      ...ALLOWED_RUN_TOOLS,
+      ...(opts.allowedTools ?? []),
+    ]),
+  ];
   args.push("--allowedTools", allowed.join(","));
+  if (opts.disallowedTools?.length) {
+    args.push("--disallowedTools", [...new Set(opts.disallowedTools)].join(","));
+  }
   return args;
 }
 
@@ -373,6 +422,15 @@ export class AgentManager {
   interactiveInput: ((run: AgentRun, text: string) => boolean) | null = null;
   /** Set by the host: kill the PTY hosting an interactive run (cancel path). */
   interactiveKill: ((run: AgentRun) => void) | null = null;
+  /**
+   * Set by the host: resolve an agent profile id to its dispatch overlay
+   * (workspace runtimes back it with the project+library AgentLibrary, the
+   * hub with the global store). It is what lets a manager dispatch workers by
+   * `agentId`, and what re-applies a profile's standing prompt / tool policy
+   * on every `--resume` turn — flags are per-invocation, so without this the
+   * profile would silently fall off the chain's second turn.
+   */
+  profileResolver: ((agentId: string) => Promise<AgentProfileOverlay | null>) | null = null;
   /** Mount window before an interactive session takes deliveries (test seam). */
   interactiveReadyMs = INTERACTIVE_READY_MS;
 
@@ -512,6 +570,10 @@ export class AgentManager {
     if (this.disposed) throw new Error("Workspace is closed — no new agent runs.");
     await this.ensureLoaded();
     const run = createAgentRun(params);
+    // The dispatched model, visible while the run is queued (the stream-json
+    // init event overwrites it with the resolved model id) — same convention
+    // as prepareInteractive.
+    run.model = params.model ?? null;
     let cwdAbs = resolveInRoot(this.root, params.cwd ?? ".");
 
     this.runs.set(run.id, run);
@@ -539,6 +601,10 @@ export class AgentManager {
       model: params.model,
       resumeSessionId: params.resumeSessionId,
       mcpConfigPath: mcpConfig,
+      appendSystemPrompt: params.appendSystemPrompt,
+      allowedTools: params.allowedTools,
+      disallowedTools: params.disallowedTools,
+      permissionMode: params.permissionMode,
     });
 
     const claudeBin = await this.claudePath();
@@ -666,6 +732,10 @@ export class AgentManager {
       model: params.model,
       sessionId: run.sessionId,
       mcpConfigPath: mcpConfig,
+      appendSystemPrompt: params.appendSystemPrompt,
+      allowedTools: params.allowedTools,
+      disallowedTools: params.disallowedTools,
+      permissionMode: params.permissionMode,
     });
     const claudeBin = await this.claudePath();
 
@@ -964,6 +1034,12 @@ export class AgentManager {
       if (!root || !latest || latest.status === "cancelled") return null;
       const session = [...chain].reverse().find((r) => r.sessionId)?.sessionId;
       if (!session) return null;
+      // Re-resolve the chain's profile policy: --append-system-prompt and the
+      // tool flags are per-invocation, so a resumed turn that omitted them
+      // would silently shed the profile's standing behavior mid-conversation.
+      const overlay = root.agentId
+        ? await this.profileResolver?.(root.agentId).catch(() => null)
+        : null;
       return this.start({
         prompt,
         cwd: root.cwd,
@@ -976,6 +1052,10 @@ export class AgentManager {
         // Resumed turns stay on the chain's model — the CLI would otherwise
         // fall back to its configured default mid-conversation.
         model: latest.model ?? root.model ?? null,
+        appendSystemPrompt: overlay?.appendPrompt ?? null,
+        allowedTools: overlay?.allowedTools,
+        disallowedTools: overlay?.disallowedTools,
+        permissionMode: overlay?.permissionMode ?? null,
         role: root.role === "manager" ? "manager" : null,
         purpose: root.purpose,
         tags: root.tags,
@@ -1044,19 +1124,34 @@ export class AgentManager {
     // sees *why* the dispatch was refused, not just that it was.
     const veto = await this.dispatchGuard?.(manager, spec);
     if (veto) throw new Error(veto);
+    // A spec naming an agentId runs as that profile; anything the spec sets
+    // explicitly (model above all) wins over the profile's own values, and
+    // the manager's purpose stays the last fallback exactly as before.
+    const overlay = spec.agentId
+      ? ((await this.profileResolver?.(spec.agentId).catch(() => null)) ?? null)
+      : null;
+    const merged = applyProfileOverlay(
+      {
+        prompt: spec.prompt,
+        cwd: spec.cwd ?? manager.cwd,
+        repoId: manager.repoId,
+        taskId: spec.taskId ?? manager.taskId,
+        projectId: manager.projectId,
+        isolation: spec.isolation ?? undefined,
+        branch: spec.branch ?? null,
+        model: spec.model ?? null,
+        agentId: spec.agentId ?? null,
+        parentRunId: managerRunId,
+        role: "worker" as const,
+        purpose: spec.purpose ?? null,
+        tags,
+      },
+      overlay,
+    );
     const worker = await this.start({
-      prompt: spec.prompt,
-      cwd: spec.cwd ?? manager.cwd,
-      repoId: manager.repoId,
-      taskId: spec.taskId ?? manager.taskId,
-      projectId: manager.projectId,
-      isolation: spec.isolation ?? "none",
-      branch: spec.branch ?? null,
-      model: spec.model ?? null,
-      parentRunId: managerRunId,
-      role: "worker",
-      purpose: spec.purpose ?? manager.purpose,
-      tags,
+      ...merged,
+      isolation: merged.isolation ?? "none",
+      purpose: merged.purpose ?? manager.purpose,
     });
     // Hand the task's lease to the run doing the work (see OrchestrationService).
     this.onWorkerDispatched?.(worker);

@@ -52,6 +52,15 @@ export function globalTemplatesDir(): string {
   return path.join(os.homedir(), ".crystal", "workflow-templates");
 }
 
+/**
+ * The shared agent-profile library. Outside `workspaces/` for the same reason
+ * templates are: a profile describes *who runs*, not a repo — and it is what
+ * the hub (which belongs to no project) resolves agent ids against.
+ */
+export function globalAgentsDir(): string {
+  return path.join(os.homedir(), ".crystal", "agents");
+}
+
 const IGNORED_DIRS = new Set([
   "node_modules",
   ".git",

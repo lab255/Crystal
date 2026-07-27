@@ -17,6 +17,10 @@ import {
   workflowSpend,
   workflowStatusText,
   workflowTag,
+  applyProfileOverlay,
+  profileOverlay,
+  type AgentPermissionMode,
+  type AgentRoster,
   type AgentRun,
   type Workflow,
   type WorkflowSpend,
@@ -88,6 +92,10 @@ export class WorkflowEngine {
         tags: string[];
         model?: string | null;
         skills?: string[];
+        appendSystemPrompt?: string | null;
+        allowedTools?: string[];
+        disallowedTools?: string[];
+        permissionMode?: AgentPermissionMode | null;
         title?: string | null;
       }) => Promise<{ run: AgentRun; terminal: unknown }>)
     | null = null;
@@ -108,6 +116,11 @@ export class WorkflowEngine {
     private readonly agents: AgentManager,
     private readonly store: WorkspaceStore,
     globalTemplates: GlobalTemplateStore,
+    /**
+     * The merged project+library roster view. Optional so headless
+     * embeddings/tests fall back to the project roster alone.
+     */
+    private readonly agentLibrary: { roster(): Promise<AgentRoster> } | null = null,
   ) {
     this.records = new JsonRecordStore<Workflow>(
       path.join(dataDir, "workflows"),
@@ -228,47 +241,50 @@ export class WorkflowEngine {
     }
     const workflow = createWorkflow({ ...init, template });
 
-    // Resolve the manager's model + skills from the roster on disk, like
-    // agent.start does. The manager defaults to a heavyweight model — it
-    // makes every coordination and review-routing decision; workers are
-    // where cost routing happens (per-stage models in the template).
-    let model: string | null = "opus";
-    let skills: string[] = [];
-    if (init.agentId) {
-      const roster = await this.store.loadAgents();
-      const profile = roster.agents.find((a) => a.id === init.agentId);
-      if (profile) {
-        model = profile.model;
-        skills = profile.skills;
-      }
-    }
+    // Resolve the manager's profile from the merged roster: an explicit
+    // init.agentId wins, else the roster names its manager
+    // (managerAgentId ?? defaultAgentId). Only when nothing resolves does
+    // the old hardcoded default apply — the manager runs heavyweight; workers
+    // are where cost routing happens (per-stage agents/models).
+    const roster = this.agentLibrary ? await this.agentLibrary.roster() : await this.store.loadAgents();
+    const managerAgentId =
+      init.agentId ?? roster.managerAgentId ?? roster.defaultAgentId ?? null;
+    const profile = managerAgentId
+      ? (roster.agents.find((a) => a.id === managerAgentId) ?? null)
+      : null;
+    const overlay = profile ? profileOverlay(profile) : null;
+    const params = applyProfileOverlay(
+      {
+        cwd: workflow.cwd,
+        projectId: workflow.projectId,
+        // The resolved profile is the run's attribution (agent:<id> tag,
+        // resume-time policy), even when it came from the roster's default.
+        agentId: overlay ? overlay.agentId : workflow.agentId,
+        role: "manager" as const,
+        purpose: "manage" as const,
+        tags: [workflowTag(workflow.id)],
+        model: null as string | null,
+        skills: [] as string[],
+      },
+      overlay,
+    );
+    params.model ??= "opus";
+    // The manager coordinates in place — a profile's worktree default is a
+    // worker policy, and an isolated manager could not keep the board honest.
+    (params as { isolation?: unknown }).isolation = undefined;
 
     let run: AgentRun;
     if (init.interactive && this.interactiveLauncher) {
       const launched = await this.interactiveLauncher({
-        prompt: buildWorkflowManagerPrompt(workflow) + WORKFLOW_INTERACTIVE_NOTE,
-        cwd: workflow.cwd,
-        projectId: workflow.projectId,
-        agentId: workflow.agentId,
-        role: "manager",
-        purpose: "manage",
-        tags: [workflowTag(workflow.id)],
-        model,
-        skills,
+        ...params,
+        prompt: buildWorkflowManagerPrompt(workflow, roster.agents) + WORKFLOW_INTERACTIVE_NOTE,
         title: `workflow · ${workflow.name}`,
       });
       run = launched.run;
     } else {
       run = await this.agents.start({
-        prompt: buildWorkflowManagerPrompt(workflow),
-        cwd: workflow.cwd,
-        projectId: workflow.projectId,
-        agentId: workflow.agentId,
-        role: "manager",
-        purpose: "manage",
-        tags: [workflowTag(workflow.id)],
-        model,
-        skills,
+        ...params,
+        prompt: buildWorkflowManagerPrompt(workflow, roster.agents),
       });
     }
     workflow.managerRunId = run.id;

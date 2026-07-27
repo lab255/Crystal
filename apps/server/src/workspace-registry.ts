@@ -12,13 +12,15 @@ import type {
   RecentWorkspace,
   WorkspaceDescriptor,
 } from "@crystal/core";
+import { profileOverlay, type AgentProfileOverlay } from "@crystal/core";
+import { AgentLibrary, GlobalAgentStore } from "./agent-library.js";
 import { AgentManager } from "./agent-manager.js";
 import { AnalysisBackend, createCodeMapFacade, type CodeMapFacade } from "./analysis-host.js";
 import { launchInteractiveRun } from "./interactive.js";
 import { CodeIndexService } from "./code-index.js";
 import { type CrossSurface } from "./code-map.js";
 import { OrchestrationService } from "./orchestration.js";
-import { appDataDir, globalTemplatesDir, isIgnoredDir, workspaceIdFor } from "./paths.js";
+import { appDataDir, globalAgentsDir, globalTemplatesDir, isIgnoredDir, workspaceIdFor } from "./paths.js";
 import { QualityService } from "./quality-runner.js";
 import { RefactorEngine } from "./refactor.js";
 import { SettledRuns } from "./settled-runs.js";
@@ -61,6 +63,8 @@ export class WorkspaceRuntime {
   readonly quality: QualityService;
   readonly orchestration: OrchestrationService;
   readonly workflows: WorkflowEngine;
+  /** Project roster + shared library, merged (see agent-library.ts). */
+  readonly agentLibrary: AgentLibrary;
   /** Manifest name, kept fresh by workspace.get / saveManifest handlers. */
   name: string;
 
@@ -83,16 +87,22 @@ export class WorkspaceRuntime {
      * registry (tests), where there is nothing to share with.
      */
     globalTemplates: GlobalTemplateStore = new GlobalTemplateStore(globalTemplatesDir()),
+    /** Same sharing story as templates: one agent library per server. */
+    globalAgents: GlobalAgentStore = new GlobalAgentStore(globalAgentsDir()),
   ) {
     this.id = workspaceIdFor(root);
     this.name = path.basename(root);
     this.store = new WorkspaceStore(root);
+    this.agentLibrary = new AgentLibrary(this.store, globalAgents);
     this.agents = new AgentManager(
       root,
       appDataDir(root),
       undefined,
       mcpBaseUrl ? { baseUrl: mcpBaseUrl, scope: this.id } : null,
     );
+    // The single resolution path: dispatch-by-agentId (workers, resumed
+    // chain turns) resolves through the merged project+library view.
+    this.agents.profileResolver = (agentId) => this.resolveProfile(agentId);
     this.terminals = new TerminalManager(root);
     this.analysis = new AnalysisBackend(root);
     this.codemap = createCodeMapFacade(this.analysis);
@@ -102,7 +112,13 @@ export class WorkspaceRuntime {
       this.notifyWorkspaceChanged?.(),
     );
     // Installs the dispatch guard (pause/budget veto) and settle hooks.
-    this.workflows = new WorkflowEngine(appDataDir(root), this.agents, this.store, globalTemplates);
+    this.workflows = new WorkflowEngine(
+      appDataDir(root),
+      this.agents,
+      this.store,
+      globalTemplates,
+      this.agentLibrary,
+    );
     // Workflow managers can be hosted as native interactive Claude sessions
     // on this workspace's PTYs.
     this.workflows.interactiveLauncher = (params) =>
@@ -154,6 +170,17 @@ export class WorkspaceRuntime {
     return { id: this.id, root: this.root, name: this.name };
   }
 
+  /**
+   * Resolve an agent profile id to the overlay a dispatch applies — model,
+   * skills, standing prompt, tool policy, the `agent:<id>` tag. The one
+   * resolution path every handler and engine goes through (design A3).
+   */
+  async resolveProfile(agentId?: string | null): Promise<AgentProfileOverlay | null> {
+    if (!agentId) return null;
+    const profile = await this.agentLibrary.get(agentId);
+    return profile ? profileOverlay(profile) : null;
+  }
+
   /** LanguageService-backed refactor engine, created on first use. */
   refactor(): RefactorEngine {
     return (this.refactorEngine ??= new RefactorEngine(this.root, this.codemap));
@@ -198,6 +225,16 @@ export class WorkspaceRuntime {
       this.workflows.events.on("templatesChanged", () =>
         broadcast("workflow.templatesChanged", { ws: this.id }),
       ),
+      // Every roster mutation — project save here, or a library save from
+      // *any* workspace — re-announces this workspace's merged roster.
+      this.agentLibrary.events.on("changed", () => {
+        void this.agentLibrary
+          .roster()
+          .then((roster) => broadcast("agents.changed", { ws: this.id, roster }))
+          .catch((err) => {
+            console.warn(`[crystal] agents.changed broadcast failed:`, (err as Error).message);
+          });
+      }),
     ];
     try {
       this.watcher = fsSync.watch(this.root, { recursive: true }, (_evt, filename) => {
@@ -245,6 +282,8 @@ export class WorkspaceRuntime {
     // A replaced engine must not keep settling runs into the same app-data
     // files after the workspace reopens with a fresh one.
     this.workflows.dispose();
+    // Same story for the shared agent store's subscription.
+    this.agentLibrary.dispose();
     // Kill live agent runs BEFORE their terminals: a closed workspace with
     // its orchestrator still running is how the hub's one-per-project
     // invariant broke (cancel recorded, orchestrator alive, retry doubled).
@@ -277,6 +316,13 @@ export class WorkspaceRegistry {
    */
   private readonly globalTemplates = new GlobalTemplateStore(globalTemplatesDir());
 
+  /**
+   * The machine-wide agent-profile library, shared the same way. Public
+   * because the hub (which lives beside the registry, not inside a
+   * workspace) resolves its manager agent ids against it directly.
+   */
+  readonly globalAgents = new GlobalAgentStore(globalAgentsDir());
+
   constructor(
     private readonly broadcast: Broadcast,
     /** Where to persist the open set; null disables persistence entirely. */
@@ -294,7 +340,12 @@ export class WorkspaceRegistry {
     const existing = this.runtimes.get(id);
     if (existing) return existing;
 
-    const runtime = new WorkspaceRuntime(canonical, this.mcpBaseUrl, this.globalTemplates);
+    const runtime = new WorkspaceRuntime(
+      canonical,
+      this.mcpBaseUrl,
+      this.globalTemplates,
+      this.globalAgents,
+    );
     // Warm the workspace (creates .crystal/ on first run) and pick up its name.
     const info = await runtime.store.load();
     runtime.name = info.manifest.name;
