@@ -8,6 +8,7 @@ import {
   type TerminalInfo,
   type TerminalStream,
 } from "@crystal/core";
+import { envWithToolchain } from "./claude-bin.js";
 import { resolveInRoot, toRelPath } from "./paths.js";
 
 /** Replay buffer cap per terminal — enough scrollback without unbounded memory. */
@@ -131,8 +132,12 @@ export class TerminalManager {
         cwd: cwdAbs,
         // A command's env is COMPLETE, not a patch — merging over process.env
         // would resurrect keys the caller deliberately removed (the
-        // child-session marker that disables transcript saving).
-        env: (opts.command?.env ?? process.env) as Record<string, string>,
+        // child-session marker that disables transcript saving). Plain shells
+        // (no command) still get the project toolchain on PATH: a workspace
+        // terminal where `pnpm`/`node` ENOENT is broken, whatever bare env a
+        // GUI-launched server inherited.
+        env: (opts.command?.env ??
+          envWithToolchain(process.env, [cwdAbs, this.root])) as Record<string, string>,
       });
     } catch (err) {
       this.exit(record, null, `Failed to spawn ${file}: ${(err as Error).message}`);

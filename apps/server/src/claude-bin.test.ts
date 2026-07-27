@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { envWithBinDir, isBareName, resolveClaudeBin } from "./claude-bin.js";
+import { envWithBinDir, envWithToolchain, isBareName, resolveClaudeBin } from "./claude-bin.js";
 
 const tmps: string[] = [];
 
@@ -138,5 +138,49 @@ describe("envWithBinDir", () => {
     const base = { PATH: `/a${path.delimiter}/b` };
     expect(envWithBinDir(base, "claude")).toBe(base);
     expect(envWithBinDir(base, "/a/claude")).toBe(base);
+  });
+});
+
+describe("envWithToolchain", () => {
+  const posix = { platform: "linux" as const, home: "/home/u", execPath: "/opt/node24/bin/node" };
+
+  it("prepends project bins, pnpm homes and the server's node dir — existing dirs only", () => {
+    // Built with path.join so the probe strings match on any host platform.
+    const projectBin = path.join("/repo", "node_modules", ".bin");
+    const pnpmHome = path.join("/home/u", ".local", "share", "pnpm");
+    const nodeDir = path.dirname(posix.execPath);
+    const exists = (d: string) => [projectBin, pnpmHome, nodeDir].includes(d);
+    const env = envWithToolchain({ PATH: "/usr/bin" }, ["/repo"], { ...posix, exists });
+    expect(env.PATH).toBe([projectBin, pnpmHome, nodeDir, "/usr/bin"].join(path.delimiter));
+  });
+
+  it("respects PNPM_HOME, priority order and never duplicates PATH entries", () => {
+    const nodeDir = path.dirname(posix.execPath);
+    const exists = (d: string) => ["/pnpm-home", nodeDir].includes(d);
+    const env = envWithToolchain(
+      { PATH: [nodeDir, "/usr/bin"].join(path.delimiter), PNPM_HOME: "/pnpm-home" },
+      ["/repo"],
+      { ...posix, exists },
+    );
+    // node dir was already on PATH → only PNPM_HOME lands, in front.
+    expect(env.PATH).toBe(["/pnpm-home", nodeDir, "/usr/bin"].join(path.delimiter));
+  });
+
+  it("mutates the env's own Path key on Windows instead of adding a colliding PATH", () => {
+    const binDir = ["C:", "repo", "node_modules", ".bin"].join(path.sep);
+    const exists = (d: string) => d === binDir;
+    const env = envWithToolchain({ Path: "C:\\Windows" }, [["C:", "repo"].join(path.sep)], {
+      platform: "win32",
+      home: "C:\\Users\\u",
+      execPath: "C:\\node\\node.exe",
+      exists,
+    });
+    expect(env.Path).toBe([binDir, "C:\\Windows"].join(path.delimiter));
+    expect(Object.keys(env)).not.toContain("PATH");
+  });
+
+  it("is a no-op when nothing new exists", () => {
+    const base = { PATH: "/usr/bin" };
+    expect(envWithToolchain(base, ["/repo"], { ...posix, exists: () => false })).toBe(base);
   });
 });

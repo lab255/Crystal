@@ -20,6 +20,7 @@ import {
   type TestRunnerInfo,
   type TestRunnerKind,
 } from "@crystal/core";
+import { envWithToolchain } from "./claude-bin.js";
 import { isIgnoredDir, resolveInRoot, toRelPath } from "./paths.js";
 
 /** Cap on test files listed by detect(). */
@@ -861,7 +862,9 @@ export class QualityService {
         // vitest/jest/pnpm are .cmd shims on Windows npm installs.
         shell: win,
         windowsHide: true,
-        env: { ...process.env, FORCE_COLOR: "0", NO_COLOR: "1" },
+        // Project toolchain on PATH: the runner binaries live in the
+        // project's node_modules/.bin, not wherever the server was launched.
+        env: envWithToolchain({ ...process.env, FORCE_COLOR: "0", NO_COLOR: "1" }, [cwd]),
         stdio: ["ignore", "pipe", "pipe"],
       });
     } catch (err) {

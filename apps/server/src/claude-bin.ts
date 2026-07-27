@@ -8,6 +8,7 @@
 // user's login shell. Whatever wins is also prepended to the child's PATH so
 // the CLI can find its own helpers.
 import { execFile } from "node:child_process";
+import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -162,9 +163,89 @@ export function envWithBinDir(
   binPath: string,
 ): NodeJS.ProcessEnv {
   if (!path.isAbsolute(binPath)) return env;
-  const dir = path.dirname(binPath);
+  return envWithPathDirs(env, [path.dirname(binPath)]);
+}
+
+/** Prepend `dirs` (kept in order, deduped) to the env's PATH, same key rules as above. */
+function envWithPathDirs(env: NodeJS.ProcessEnv, dirs: string[]): NodeJS.ProcessEnv {
   const key = pathKey(env);
   const current = env[key] ?? "";
-  if (current.split(path.delimiter).includes(dir)) return env;
-  return { ...env, [key]: current ? dir + path.delimiter + current : dir };
+  const present = new Set(current.split(path.delimiter));
+  const add = [...new Set(dirs)].filter((d) => d && !present.has(d));
+  if (!add.length) return env;
+  return { ...env, [key]: [...add, current].filter(Boolean).join(path.delimiter) };
+}
+
+/**
+ * Directories where node/pnpm/npm live when a GUI-launched server's bare
+ * PATH doesn't say — the project-toolchain counterpart of
+ * {@link claudeFallbackDirs}. pnpm's standalone installer homes (`PNPM_HOME`,
+ * `~/Library/pnpm`, `%LOCALAPPDATA%\pnpm`, `~/.local/share/pnpm`) first,
+ * then the usual npm/node spots.
+ */
+function toolchainFallbackDirs(
+  platform: NodeJS.Platform,
+  home: string,
+  env: NodeJS.ProcessEnv,
+): string[] {
+  const pnpmHome = env.PNPM_HOME ? [env.PNPM_HOME] : [];
+  if (platform === "win32") {
+    return [
+      ...pnpmHome,
+      ...(env.LOCALAPPDATA ? [path.join(env.LOCALAPPDATA, "pnpm")] : []),
+      ...(env.APPDATA ? [path.join(env.APPDATA, "npm")] : []),
+      path.join(home, ".local", "bin"),
+    ];
+  }
+  return [
+    ...pnpmHome,
+    path.join(home, "Library", "pnpm"),
+    path.join(home, ".local", "share", "pnpm"),
+    path.join(home, ".local", "bin"),
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    path.join(home, ".volta", "bin"),
+    path.join(home, "n", "bin"),
+    path.join(home, ".npm-global", "bin"),
+  ];
+}
+
+export interface ToolchainEnvOptions {
+  platform?: NodeJS.Platform;
+  home?: string;
+  /** The node binary hosting this server (`process.execPath`); "" to skip. */
+  execPath?: string;
+  /** Existence probe, injectable for tests. */
+  exists?: (dir: string) => boolean;
+}
+
+/**
+ * The spawn env every agent, workspace terminal and project subprocess gets:
+ * PATH is guaranteed to reach the project's own toolchain, wherever the
+ * server was launched from. A GUI-launched sidecar inherits a bare PATH —
+ * `claude` is resolved separately (see {@link resolveClaudeBin}), but the
+ * agent's *own* shell commands (`pnpm test`, `node scripts/…`, anything in
+ * `node_modules/.bin`) would still ENOENT, and the agent concludes the
+ * project "has no pnpm/node" when it's the environment that's bare.
+ *
+ * Prepended in priority order: each root's `node_modules/.bin` (project
+ * binaries win), then pnpm/npm homes that actually exist, then the directory
+ * of the node binary hosting this server — so `node` itself always resolves,
+ * and to the version already proven to run this project's server.
+ */
+export function envWithToolchain(
+  env: NodeJS.ProcessEnv,
+  roots: string[],
+  opts: ToolchainEnvOptions = {},
+): NodeJS.ProcessEnv {
+  const platform = opts.platform ?? process.platform;
+  const home = opts.home ?? os.homedir();
+  const execPath = opts.execPath ?? process.execPath;
+  const exists = opts.exists ?? fsSync.existsSync;
+  const dirs = [
+    ...roots.filter(Boolean).map((root) => path.join(root, "node_modules", ".bin")),
+    ...toolchainFallbackDirs(platform, home, env),
+    ...(execPath && path.isAbsolute(execPath) ? [path.dirname(execPath)] : []),
+  ].filter((d) => exists(d));
+  return envWithPathDirs(env, dirs);
 }
