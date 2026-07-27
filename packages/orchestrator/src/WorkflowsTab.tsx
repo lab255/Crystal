@@ -31,7 +31,14 @@ import {
   type WorkflowStageStatus,
   type WorkflowTemplate,
 } from "@crystal/core";
-import { useAgents, useTerminals, useWorkflows, useWorkspace, useWorkspaces } from "@crystal/client";
+import {
+  InteractiveRunBanner,
+  useAgents,
+  useTerminals,
+  useWorkflows,
+  useWorkspace,
+  useWorkspaces,
+} from "@crystal/client";
 import { Badge, Button, EmptyState, Input, Spinner, Textarea, Tooltip, cn } from "@crystal/ui";
 import { formatCost, formatTokens } from "./prompt.js";
 import { RunView } from "./RunView.js";
@@ -236,8 +243,6 @@ function WorkflowDetail({
   const setPaused = useWorkflows((s) => s.setPaused);
   const setBudget = useWorkflows((s) => s.setBudget);
   const cancel = useWorkflows((s) => s.cancel);
-  const activeWs = useWorkspaces((s) => s.activeId);
-  const focusTerminal = useTerminals((s) => s.focusTerminal);
 
   const template = templateOf(workflow);
   const [graphOpen, setGraphOpen] = useState(false);
@@ -521,22 +526,8 @@ function WorkflowDetail({
             </EmptyState>
           )}
         </div>
-        {viewedTurn?.terminalId ? (
-          <div className="flex shrink-0 items-center gap-2 border-t border-edge bg-surface-2/50 px-3 py-1.5 text-[11px] text-ink-muted">
-            <TerminalSquare className="h-3 w-3 shrink-0 text-crystal-300" />
-            This manager runs interactively — talk to it in its terminal.
-            <Button
-              variant="ghost"
-              size="xs"
-              onClick={() => {
-                if (activeWs && viewedTurn.terminalId) {
-                  void focusTerminal(activeWs, viewedTurn.terminalId);
-                }
-              }}
-            >
-              Open its terminal →
-            </Button>
-          </div>
+        {viewedTurn ? (
+          <InteractiveRunBanner run={viewedTurn} className="border-t border-edge" />
         ) : null}
         {!terminal ? <ManagerComposer workflowId={workflow.id} /> : null}
       </div>

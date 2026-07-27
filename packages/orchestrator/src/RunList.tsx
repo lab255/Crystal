@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { GitBranch } from "lucide-react";
+import { GitBranch, TerminalSquare } from "lucide-react";
 import { groupRunsByManager, type AgentRun } from "@crystal/core";
 import { StatusDot, cn } from "@crystal/ui";
 import { formatCost } from "./prompt.js";
@@ -116,8 +116,22 @@ function RunListItem({
           )}
         >
           <span className="truncate">{run.prompt.split("\n")[0]}</span>
+          {run.terminalId ? (
+            <span
+              className="ml-auto flex shrink-0 items-center gap-0.5 rounded-full bg-surface-3 px-1.5 text-[9px] font-medium text-ink-muted"
+              title="Native interactive session — its transcript lives in its terminal"
+            >
+              <TerminalSquare className="h-2.5 w-2.5" />
+              interactive
+            </span>
+          ) : null}
           {isManager ? (
-            <span className="ml-auto flex shrink-0 items-center gap-0.5 rounded-full bg-crystal-500/15 px-1.5 text-[9px] font-medium text-crystal-300">
+            <span
+              className={cn(
+                "flex shrink-0 items-center gap-0.5 rounded-full bg-crystal-500/15 px-1.5 text-[9px] font-medium text-crystal-300",
+                !run.terminalId && "ml-auto",
+              )}
+            >
               <GitBranch className="h-2.5 w-2.5" />
               {workerCount || ""}
             </span>

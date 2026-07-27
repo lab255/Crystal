@@ -33,6 +33,7 @@ import {
 import {
   EMPTY_HUB_EVENTS,
   EMPTY_HUB_QUESTIONS,
+  InteractiveRunBanner,
   RunTranscript,
   formatRunCost,
   formatRunTokens,
@@ -857,22 +858,7 @@ function ManagerSession({ program }: { program: Program }) {
           </div>
         ) : null}
       </div>
-      {viewed?.terminalId ? (
-        <div className="flex items-center gap-2 border-t border-edge bg-surface-2/50 px-4 py-1.5 text-[11px] text-ink-muted">
-          <TerminalSquare className="h-3 w-3 shrink-0 text-crystal-300" />
-          This manager runs interactively — talk to it in its terminal.
-          <Button
-            variant="ghost"
-            size="xs"
-            onClick={() => {
-              const ws = viewed.terminalWs ?? hostWs;
-              if (ws && viewed.terminalId) void focusTerminal(ws, viewed.terminalId);
-            }}
-          >
-            Open its terminal →
-          </Button>
-        </div>
-      ) : null}
+      {viewed ? <InteractiveRunBanner run={viewed} className="border-t border-edge" /> : null}
       <div className="flex h-80 flex-col border-t border-edge">
         <RunTranscript events={events} runId={viewedId} starting={viewed?.status === "running"} />
       </div>

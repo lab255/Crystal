@@ -55,6 +55,7 @@ export {
   type HubState,
   type HubStore,
 } from "./hub-store.js";
+export { InteractiveRunBanner } from "./interactive-banner.js";
 export {
   RunTranscript,
   formatRunCost,
