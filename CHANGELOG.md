@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.5.0 (2026-07-27)
+
+### Features
+
+- multi-endpoint bridge relay + instance discovery ([`aaa51e3`](https://github.com/eliotlim/crystal/commit/aaa51e3))
+- unified RunSurface + shared composer; hub and jobs adopt it ([`b0e0061`](https://github.com/eliotlim/crystal/commit/b0e0061))
+- first-class agent profiles with a two-scope library ([`f034b2c`](https://github.com/eliotlim/crystal/commit/f034b2c))
+
+### Bug Fixes
+
+- pin GH_REPO for the checkout-less finalize job ([`87c03b4`](https://github.com/eliotlim/crystal/commit/87c03b4))
+
 ## v0.4.0 (2026-07-27)
 
 ### Features
