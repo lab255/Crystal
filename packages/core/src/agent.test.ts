@@ -3,15 +3,57 @@ import {
   LineBuffer,
   QUESTION_MARKER,
   apiRatePerMin,
+  claudeProjectDirName,
   createAgentRun,
   extractDispatches,
   extractQuestions,
   groupRunsByManager,
   parseClaudeStreamLine,
   rollupRunsUsage,
+  transcriptUsage,
   usageTotalTokens,
   type AgentRun,
 } from "./agent.js";
+
+describe("claudeProjectDirName", () => {
+  it("mirrors Claude Code's munging: every non-alphanumeric becomes a dash", () => {
+    expect(claudeProjectDirName("C:\\Users\\Eliot Lim\\Workspaces\\crystal")).toBe(
+      "C--Users-Eliot-Lim-Workspaces-crystal",
+    );
+    expect(claudeProjectDirName("/home/dev/.crystal/worktrees/run_1")).toBe(
+      "-home-dev--crystal-worktrees-run-1",
+    );
+  });
+});
+
+describe("transcriptUsage", () => {
+  const line = (id: string, usage: Record<string, number>, model = "claude-sonnet-5") =>
+    JSON.stringify({ message: { id, role: "assistant", model, usage } });
+
+  it("sums per message id — chunked lines of one message count once", () => {
+    // One assistant message spans several transcript lines (thinking chunk,
+    // then text chunk); the last usage-bearing line per id wins.
+    const jsonl = [
+      line("msg_1", { input_tokens: 1, output_tokens: 10, cache_read_input_tokens: 100 }),
+      line("msg_1", { input_tokens: 2, output_tokens: 20, cache_read_input_tokens: 200 }),
+      line("msg_2", { input_tokens: 3, output_tokens: 30, cache_creation_input_tokens: 500 }),
+      JSON.stringify({ type: "mode", mode: "normal" }), // non-message lines skipped
+      '{"truncated": ', // a mid-flush partial line is not an error
+    ].join("\n");
+    const { usage, model } = transcriptUsage(jsonl);
+    expect(usage.apiCalls).toBe(2);
+    expect(usage.inputTokens).toBe(5);
+    expect(usage.outputTokens).toBe(50);
+    expect(usage.cacheReadTokens).toBe(200);
+    expect(usage.cacheCreationTokens).toBe(500);
+    expect(model).toBe("claude-sonnet-5");
+  });
+
+  it("reads an empty or foreign file as zero usage", () => {
+    expect(transcriptUsage("").usage.apiCalls).toBe(0);
+    expect(transcriptUsage('{"message":{"role":"user"}}').usage.apiCalls).toBe(0);
+  });
+});
 
 describe("parseClaudeStreamLine", () => {
   it("parses system init", () => {

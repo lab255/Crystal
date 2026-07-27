@@ -1,17 +1,20 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import {
   Emitter,
   LineBuffer,
   chainRootId,
+  claudeProjectDirName,
   createAgentRun,
   emptyUsage,
   isWorkflowTag,
   nowIso,
   parseClaudeStreamLine,
   touchedFileFromToolUse,
+  transcriptUsage,
   type AgentEvent,
   type AgentIsolation,
   type AgentRole,
@@ -645,6 +648,42 @@ export class AgentManager {
         exitCode === 0 ? "completed" : "failed",
         `Interactive session ended (exit ${exitCode ?? "?"})`,
       );
+      // The TUI emitted no stream-json, so the run settled with no bill —
+      // harvest it from the session transcript so spend rollups (task cost,
+      // workflow budgets) see interactive work like any other run.
+      await this.harvestInteractiveUsage(run);
+    }
+  }
+
+  /** Best-effort: fill an interactive run's usage/model from its Claude transcript. */
+  private async harvestInteractiveUsage(run: AgentRun): Promise<void> {
+    if (!run.sessionId) return;
+    try {
+      const projectsDir = path.join(os.homedir(), ".claude", "projects");
+      const name = `${run.sessionId}.jsonl`;
+      const cwdAbs = resolveInRoot(this.root, run.cwd);
+      let text = await fs
+        .readFile(path.join(projectsDir, claudeProjectDirName(cwdAbs), name), "utf8")
+        .catch(() => null);
+      // A hub manager's terminal runs cwd'd in a *workspace* while this
+      // manager's root is the hub dir — when the direct guess misses, scan:
+      // session ids are unique, so the first hit is the transcript.
+      if (text == null) {
+        for (const dir of await fs.readdir(projectsDir).catch(() => [] as string[])) {
+          text = await fs.readFile(path.join(projectsDir, dir, name), "utf8").catch(() => null);
+          if (text != null) break;
+        }
+      }
+      if (text == null) return;
+      const { usage, model } = transcriptUsage(text);
+      if (!usage.apiCalls) return;
+      run.usage = usage;
+      run.model ??= model;
+      this.emitRunChanged(run);
+      await this.persist(run);
+    } catch {
+      // No transcript (stub binary in tests, cleaned history) — the run
+      // simply reads as costless rather than failing settlement.
     }
   }
 

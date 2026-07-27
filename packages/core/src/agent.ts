@@ -330,6 +330,64 @@ export function extractQuestions(text: string): string[] {
     .filter(Boolean);
 }
 
+/**
+ * The `~/.claude/projects/<dir>` name Claude Code files a cwd's session
+ * transcripts under: every non-alphanumeric character becomes a dash
+ * (`C:\Users\Eliot Lim\ws` → `C--Users-Eliot-Lim-ws`).
+ */
+export function claudeProjectDirName(cwd: string): string {
+  return cwd.replace(/[^a-zA-Z0-9]/g, "-");
+}
+
+/**
+ * Sum token usage out of a Claude Code session transcript
+ * (`~/.claude/projects/<dir>/<sessionId>.jsonl`). Interactive terminal runs
+ * emit no stream-json, so their bill is harvested from the transcript once
+ * the session ends. One assistant message id spans several transcript lines
+ * (thinking chunk, text chunk, tool-use chunk) — the last usage-bearing line
+ * per id wins, and each id counts as one API call.
+ */
+export function transcriptUsage(jsonl: string): { usage: AgentUsage; model: string | null } {
+  const byId = new Map<
+    string,
+    {
+      input_tokens?: number;
+      output_tokens?: number;
+      cache_read_input_tokens?: number;
+      cache_creation_input_tokens?: number;
+    }
+  >();
+  let model: string | null = null;
+  for (const line of jsonl.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const entry = JSON.parse(line) as {
+        message?: {
+          id?: unknown;
+          role?: unknown;
+          model?: unknown;
+          usage?: Record<string, number> | null;
+        };
+      };
+      const m = entry?.message;
+      if (m?.role !== "assistant" || !m.usage || typeof m.id !== "string") continue;
+      if (typeof m.model === "string" && m.model) model = m.model;
+      byId.set(m.id, m.usage);
+    } catch {
+      // A truncated trailing line (session still flushing) is not an error.
+    }
+  }
+  const usage = emptyUsage();
+  for (const u of byId.values()) {
+    usage.inputTokens += u.input_tokens ?? 0;
+    usage.outputTokens += u.output_tokens ?? 0;
+    usage.cacheReadTokens += u.cache_read_input_tokens ?? 0;
+    usage.cacheCreationTokens += u.cache_creation_input_tokens ?? 0;
+    usage.apiCalls += 1;
+  }
+  return { usage, model };
+}
+
 /** What a manager run asks for when it delegates a unit of work to a worker. */
 export const WorkerSpecSchema = z.object({
   /** The worker's task prompt (its first line doubles as the run headline). */
