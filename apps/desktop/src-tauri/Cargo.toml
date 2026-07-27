@@ -30,6 +30,10 @@ tauri-plugin-process = "2"
 # the desktop process crashes without running its shutdown path.
 [target.'cfg(windows)'.dependencies]
 win32job = "2"
+# Cheap pid-liveness probe for bridge instance discovery (OpenProcess with the
+# weakest access right — no signaling, no memory reads). Already in the tree
+# via tauri/tokio, so this adds no new compile unit version.
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [profile.release]
 panic = "abort"

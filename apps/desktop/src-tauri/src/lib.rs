@@ -306,11 +306,18 @@ fn bridge_endpoint(state: tauri::State<'_, BridgeEndpoint>) -> Option<String> {
 #[tauri::command]
 async fn bridge_connect(
     app: tauri::AppHandle,
+    endpoint: Option<String>,
     on_event: Channel<RelayEvent>,
 ) -> Result<u32, String> {
-    let endpoint = lock(&app.state::<BridgeEndpoint>().0)
-        .clone()
-        .ok_or("no bridge pipe")?;
+    // No explicit endpoint (the historical call shape) dials the supervised
+    // sidecar's pipe; an explicit one dials any other local server's pipe or
+    // socket — typically discovered via `list_bridge_instances`.
+    let endpoint = match endpoint {
+        Some(endpoint) => endpoint,
+        None => lock(&app.state::<BridgeEndpoint>().0)
+            .clone()
+            .ok_or("no bridge pipe")?,
+    };
     let (reader, writer) = open_pipe(&endpoint).await.map_err(|e| e.to_string())?;
     let id = {
         let relay = app.state::<RelayState>();
@@ -366,6 +373,94 @@ async fn bridge_close(id: u32, state: tauri::State<'_, RelayState>) -> Result<()
         let _ = w.shutdown().await;
     }
     Ok(())
+}
+
+// --- Instance discovery: every running bridge server advertises itself in
+// `~/.crystal/instances/<pid>.json` (see apps/server/src/instances.ts). The
+// webview lists them here to offer "connect to another local bridge", then
+// dials the chosen pipe via bridge_connect's endpoint argument.
+
+/// Probe a pid without signaling it. Access denied still proves a live
+/// process owns the pid (another user's server — the pipe may still accept us).
+#[cfg(windows)]
+fn pid_alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, GetLastError, ERROR_ACCESS_DENIED, STILL_ACTIVE,
+    };
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return GetLastError() == ERROR_ACCESS_DENIED;
+        }
+        // The handle alone can outlive the process — check it still runs.
+        let mut code = 0u32;
+        let running = GetExitCodeProcess(handle, &mut code) != 0 && code == STILL_ACTIVE as u32;
+        CloseHandle(handle);
+        running
+    }
+}
+
+/// `kill -0` probes liveness without delivering a signal (same tool the
+/// graceful-shutdown path already shells out to).
+#[cfg(not(windows))]
+fn pid_alive(pid: u32) -> bool {
+    Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// List the bridge servers advertised under `~/.crystal/instances`.
+///
+/// Parsing is deliberately lenient — the schema is still growing (serverId,
+/// name, workspaces…), so each file is surfaced as its raw JSON object with
+/// every unknown field intact; unreadable or non-object files are skipped.
+/// Each entry gains `file` (the discovery file's own path) and `alive` (a
+/// cheap pid probe). Dead entries are **returned, not filtered**: deleting or
+/// hiding stale files is the servers' own sweep's job, and the webview may
+/// want to show a recently-crashed server. The `token` field is stripped —
+/// local pipe connections need no auth, and a remote bridge's token must come
+/// from the user, never ride a discovery listing into the webview.
+#[tauri::command]
+fn list_bridge_instances() -> Vec<serde_json::Value> {
+    let home = match std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) {
+        Ok(home) => home,
+        Err(_) => return Vec::new(),
+    };
+    let dir = std::path::Path::new(&home).join(".crystal").join("instances");
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(_) => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(serde_json::Value::Object(mut obj)) = serde_json::from_str(&text) else {
+            continue;
+        };
+        obj.remove("token");
+        let alive = obj
+            .get("pid")
+            .and_then(|pid| pid.as_u64())
+            .is_some_and(|pid| u32::try_from(pid).is_ok_and(|pid| pid_alive(pid)));
+        obj.insert("alive".into(), serde_json::Value::Bool(alive));
+        obj.insert(
+            "file".into(),
+            serde_json::Value::String(path.to_string_lossy().into_owned()),
+        );
+        out.push(serde_json::Value::Object(obj));
+    }
+    out
 }
 
 /// One job object for the whole app lifetime: kill-on-close means the OS reaps
@@ -468,7 +563,8 @@ pub fn run() {
             bridge_endpoint,
             bridge_connect,
             bridge_send,
-            bridge_close
+            bridge_close,
+            list_bridge_instances
         ])
         .setup(|app| {
             // The staged node-pty resource lives at `<resource>/sidecar`; the

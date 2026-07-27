@@ -445,6 +445,7 @@ dependencies = [
  "tauri-plugin-updater",
  "tokio",
  "win32job",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
