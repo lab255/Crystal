@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.6.0 (2026-07-27)
+
+### Features
+
+- roster surface, shared RunsPane, deep-linked purpose filter ([`b8806c9`](https://github.com/eliotlim/crystal/commit/b8806c9))
+- live instance registry + per-flavor open-workspace persistence ([`3f0f9a6`](https://github.com/eliotlim/crystal/commit/3f0f9a6))
+
 ## v0.5.0 (2026-07-27)
 
 ### Features
