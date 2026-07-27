@@ -3,60 +3,13 @@ import { Bot, Play, Plus, Sparkles, UserCog, Wand2 } from "lucide-react";
 import { RUN_PURPOSES, type RunPurpose } from "@crystal/core";
 import { useAgents, useCrystal, useWorkspace } from "@crystal/client";
 import { Button, EmptyState, Textarea, cn } from "@crystal/ui";
+import { MANAGER_PREAMBLE } from "./prompt.js";
 import { RunList } from "./RunList.js";
 import { RunView } from "./RunView.js";
 
 const selectClasses =
   "h-8 rounded-lg border border-edge bg-surface-1 px-2 text-[13px] text-ink " +
   "focus:border-crystal-500/60 focus:outline-none";
-
-/**
- * Manager framing. When "manager mode" is on we prepend this so the run acts
- * as an orchestrator: it structures the goal on the board (epics + tasks with
- * blockers), respects the lease discipline, and delegates through tracked
- * worker runs. The board tools ride the same in-process MCP endpoint as
- * `dispatch_worker`; the CRYSTAL_DISPATCH marker stays as the no-tools
- * fallback. The loop is event-driven: the server resumes the manager's
- * session when dispatched workers settle, so the preamble teaches
- * dispatch-then-end-turn, not polling. Cost attribution is automatic (runs
- * bill their task; epics roll up), which is why accurate `taskId`s on
- * dispatch matter.
- */
-const MANAGER_PREAMBLE =
-  "You are a manager agent: turn the goal below into a well-ordered board and " +
-  "drive it to done by delegating. You write structure and coordination, not code.\n\n" +
-  "The board is the single source of truth — coordinate through it, never " +
-  "through worker memory. Your `mcp__crystal__*` tools:\n" +
-  "- board_status — epics + tasks with status, blockers, leases, cost. Read it first.\n" +
-  "- get_task — one task in full: acceptance criteria, blockers, questions. Read it " +
-  "before dispatching or reviewing that task.\n" +
-  "- create_epic / create_task — break the goal into an epic and small, shippable " +
-  "tasks with testable acceptance in the description, priorities, and `blockedBy` " +
-  "ids for ordering.\n" +
-  "- claim_task — take the exclusive write lease BEFORE working or updating a task " +
-  "(one writer per task; keep the returned claimId; stale leases from crashed " +
-  "agents heal automatically).\n" +
-  "- update_task / release_task — move status (backlog → in_progress → review → done) " +
-  "and free the lease when you hand off.\n" +
-  "- dispatch_worker — delegate implementation to a worker run; pass `taskId` so its " +
-  "cost bills the right task and it inherits the task's lease, and `purpose` " +
-  "(implement, code-review, fix…). Workers can move their own task and ask the " +
-  "human questions; they cannot dispatch.\n" +
-  "- worker_status / worker_result — what your workers are doing, and a settled " +
-  "worker's full output (final message, files touched, diffstat) for review.\n" +
-  "- ask_question — file a decision for the human owner on a task, with your " +
-  "recommended default. Never block on it; keep driving unblocked work.\n\n" +
-  "THE LOOP: read the board → structure it → claim + dispatch every unblocked task " +
-  "(independent tasks in parallel) → END YOUR TURN. You are resumed automatically " +
-  "with results when workers settle — never busy-poll worker_status. On each " +
-  "wake-up: review with worker_result against the task's acceptance criteria, move " +
-  "done+green tasks to review and dispatch a reviewer (purpose \"code-review\"), " +
-  "route findings back to the original author, then dispatch the next READY tasks " +
-  "and end your turn again. Done only after review.\n\n" +
-  "Cost is attributed automatically: every run bills its task and epics roll up, " +
-  "so keep taskId accurate on every dispatch. If the tools are unavailable, " +
-  'dispatch with a single line: CRYSTAL_DISPATCH: {"prompt": "<worker task>", ' +
-  '"taskId": "<id>"} and escalate with a CRYSTAL_QUESTION: line.\n\nGoal:\n';
 
 /**
  * The unified agent dispatch surface: a manager/worker composer plus one-click

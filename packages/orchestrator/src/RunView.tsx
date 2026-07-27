@@ -1,7 +1,15 @@
 import { useEffect, useState } from "react";
-import { Ban, ChevronDown, ChevronRight, GitBranch, RefreshCw, Trash2 } from "lucide-react";
+import {
+  Ban,
+  ChevronDown,
+  ChevronRight,
+  GitBranch,
+  RefreshCw,
+  TerminalSquare,
+  Trash2,
+} from "lucide-react";
 import { usageTotalTokens, type AgentRun, type RunEvent } from "@crystal/core";
-import { RunTranscript, useAgents, useCrystal } from "@crystal/client";
+import { RunTranscript, useAgents, useCrystal, useTerminals, useWorkspaces } from "@crystal/client";
 import { Badge, Button, Spinner, StatusDot, Tooltip, cn } from "@crystal/ui";
 import { formatCost, formatDuration, formatTokens } from "./prompt.js";
 
@@ -10,6 +18,8 @@ export function RunView({ run }: { run: AgentRun }) {
   const events = useAgents((s) => s.eventsByRun[run.id] ?? EMPTY_EVENTS);
   const loadEvents = useAgents((s) => s.loadEvents);
   const cancel = useAgents((s) => s.cancel);
+  const activeWs = useWorkspaces((s) => s.activeId);
+  const focusTerminal = useTerminals((s) => s.focusTerminal);
 
   useEffect(() => {
     void loadEvents(run.id);
@@ -38,7 +48,33 @@ export function RunView({ run }: { run: AgentRun }) {
           </Button>
         ) : null}
       </header>
-      <RunTranscript events={events} runId={run.id} starting={run.status === "running"} />
+      {run.terminalId ? (
+        <div className="flex shrink-0 items-center gap-2 border-b border-edge bg-surface-2/50 px-3 py-1.5 text-[11px] text-ink-muted">
+          <TerminalSquare className="h-3 w-3 shrink-0 text-crystal-300" />
+          {run.status === "running"
+            ? "This run is a native interactive session — its transcript lives in its terminal."
+            : "This run was a native interactive session — its transcript lived in its terminal."}
+          {run.status === "running" ? (
+            <Button
+              variant="ghost"
+              size="xs"
+              onClick={() => {
+                const ws = run.terminalWs ?? activeWs;
+                if (ws && run.terminalId) void focusTerminal(ws, run.terminalId);
+              }}
+            >
+              Open its terminal →
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
+      <RunTranscript
+        events={events}
+        runId={run.id}
+        // An interactive run streams no events here — without this the pane
+        // would show a "starting…" spinner for the session's whole life.
+        starting={run.status === "running" && !run.terminalId}
+      />
       {run.worktreePath ? <ChangesPanel run={run} /> : null}
     </div>
   );

@@ -357,6 +357,8 @@ export interface BridgeMethods {
       repoId?: string | null;
       /** Agent profile to dispatch to — the server resolves model + skills from the roster. */
       agentId?: string | null;
+      /** "manager" scopes the run's MCP endpoint to the board/dispatch toolset. */
+      role?: AgentRole | null;
       purpose?: RunPurpose | null;
       tags?: string[];
       cols?: number;

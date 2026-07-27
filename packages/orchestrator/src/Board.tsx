@@ -1,5 +1,5 @@
 import { useMemo, useState, type DragEvent, type KeyboardEvent } from "react";
-import { Bot, CircleHelp, Lock, Network, Plus, UserRound } from "lucide-react";
+import { Bot, CircleHelp, Lock, Network, Play, Plus, TerminalSquare, UserRound } from "lucide-react";
 import {
   PRIORITY_RANK,
   TASK_SIZE_POINTS,
@@ -23,9 +23,18 @@ import {
   type TaskItem,
   type TaskStatus,
 } from "@crystal/core";
-import { useAgents, useNav, useNavUpdate, useWorkflows, useWorkspace } from "@crystal/client";
-import { Badge, StatusDot, Tooltip, cn } from "@crystal/ui";
-import { formatCost, formatTokens } from "./prompt.js";
+import {
+  useAgents,
+  useCrystal,
+  useNav,
+  useNavUpdate,
+  useTerminals,
+  useWorkflows,
+  useWorkspace,
+  useWorkspaces,
+} from "@crystal/client";
+import { Badge, Button, StatusDot, Tooltip, cn } from "@crystal/ui";
+import { MANAGER_PREAMBLE, buildBoardManagerGoal, formatCost, formatTokens } from "./prompt.js";
 
 const TASK_MIME = "application/crystal-task-id";
 
@@ -74,8 +83,13 @@ export function Board({
   onSelectTask: (taskId: string | null) => void;
 }) {
   const runs = useAgents((s) => s.runs);
+  const startRun = useAgents((s) => s.start);
   const roster = useWorkspace((s) => s.roster);
   const workflows = useWorkflows((s) => s.workflows);
+  const activeWs = useWorkspaces((s) => s.activeId);
+  const focusTerminal = useTerminals((s) => s.focusTerminal);
+  const { client } = useCrystal();
+  const [managerBusy, setManagerBusy] = useState(false);
 
   /**
    * The stage each status column is currently being driven by, from any live
@@ -292,6 +306,40 @@ export function Board({
     onProjectChange({ ...project, epics: [...project.epics, createEpic(name)] });
   }
 
+  /**
+   * The stalled-board recovery, one click instead of a trip to the Agents
+   * tab: dispatch a manager whose goal is to drive the READY set that is
+   * sitting here — headless, or as a native interactive session in the
+   * terminal panel.
+   */
+  async function startBoardManager(interactive: boolean): Promise<void> {
+    if (managerBusy) return;
+    setManagerBusy(true);
+    try {
+      const prompt = MANAGER_PREAMBLE + buildBoardManagerGoal(project.name, ready);
+      if (interactive) {
+        const { terminal } = await client.request("agent.interactive", {
+          prompt,
+          projectId: project.id,
+          role: "manager",
+          purpose: "manage",
+          tags: ["role:manager"],
+        });
+        if (activeWs) await focusTerminal(activeWs, terminal.id);
+      } else {
+        await startRun({
+          prompt,
+          projectId: project.id,
+          role: "manager",
+          purpose: "manage",
+          tags: ["role:manager"],
+        });
+      }
+    } finally {
+      setManagerBusy(false);
+    }
+  }
+
   const running = new Set(
     runs.filter((r) => r.status === "running" && r.taskId).map((r) => r.taskId as string),
   );
@@ -402,12 +450,31 @@ export function Board({
           )
         ) : null}
         {stalled ? (
-          <span
-            className="ml-auto flex items-center gap-1.5 rounded-md border border-warn/30 bg-warn/5 px-2 py-0.5 text-[11px] text-warn"
-            title="Unblocked backlog tasks are waiting and no manager run is live — dispatch a manager from the Agents tab or start a task run."
-          >
+          <span className="ml-auto flex items-center gap-1.5 rounded-md border border-warn/30 bg-warn/5 py-0.5 pl-2 pr-1 text-[11px] text-warn">
             <span className="h-1.5 w-1.5 rounded-full bg-warn" />
             {ready.length} ready · no active manager
+            <Tooltip content="Dispatch a manager to drive the READY tasks (headless — steer it from the Agents tab)">
+              <Button
+                variant="ghost"
+                size="xs"
+                disabled={managerBusy}
+                aria-label="Start a board manager"
+                onClick={() => void startBoardManager(false)}
+              >
+                <Play className="h-3 w-3" /> Start manager
+              </Button>
+            </Tooltip>
+            <Tooltip content="Same, as a native interactive Claude session in the terminal panel — it asks you decisions directly">
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                disabled={managerBusy}
+                aria-label="Start a board manager in the terminal"
+                onClick={() => void startBoardManager(true)}
+              >
+                <TerminalSquare className="h-3 w-3" />
+              </Button>
+            </Tooltip>
           </span>
         ) : null}
       </div>
