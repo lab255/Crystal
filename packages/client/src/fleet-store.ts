@@ -1,6 +1,18 @@
 import { createStore, type StoreApi } from "zustand/vanilla";
-import { nowIso, type AgentRun, type TodoItem } from "@crystal/core";
+import { nowIso, type AgentRun, type TodoItem, type WorkspaceInfo } from "@crystal/core";
 import type { BridgeClient } from "./bridge-client.js";
+
+/** Open (unanswered) board questions across every project of a workspace. */
+function countOpenQuestions(info: WorkspaceInfo): number {
+  return info.projects.reduce(
+    (n, p) =>
+      n + p.project.tasks.reduce((m, t) => m + t.questions.filter((q) => q.answer == null).length, 0),
+    0,
+  );
+}
+
+/** Board writes arrive in bursts (a manager updating five tasks) — one recount each. */
+const QUESTION_RECOUNT_DEBOUNCE_MS = 400;
 
 const SAVE_DEBOUNCE_MS = 700;
 const SEEN_STORAGE_KEY = "crystal.seenRuns";
@@ -101,17 +113,12 @@ export function createFleetStore(client: BridgeClient): FleetStore {
             // a workspace whose info fails to load reads as zero, not broken.
             client.request("workspace.get", { ws }).catch(() => null),
           ]);
-          const questions =
-            info?.projects.reduce(
-              (n, p) =>
-                n +
-                p.project.tasks.reduce(
-                  (m, t) => m + t.questions.filter((q) => q.answer == null).length,
-                  0,
-                ),
-              0,
-            ) ?? 0;
-          return { ws, runs: runs.runs, todos: todos.todos.items, questions };
+          return {
+            ws,
+            runs: runs.runs,
+            todos: todos.todos.items,
+            questions: info ? countOpenQuestions(info) : 0,
+          };
         }),
       );
       set((s) => {
@@ -171,6 +178,34 @@ export function createFleetStore(client: BridgeClient): FleetStore {
     // Skip the echo of our own in-flight save; local state is newer.
     if (store.getState().pendingTodoSaves[ws]) return;
     store.setState((s) => ({ todosByWs: { ...s.todosByWs, [ws]: todos.items } }));
+  });
+
+  // Questions live on boards, and board writes ride workspace.changed —
+  // without this the "waiting on you" chip and yellow light only updated on
+  // reconnects and workspace-set changes, going stale the moment an agent
+  // asked (or an answer landed). Debounced per workspace.
+  const questionTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  client.events.on("workspace.changed", ({ ws }) => {
+    if (questionTimers.has(ws)) return;
+    questionTimers.set(
+      ws,
+      setTimeout(() => {
+        questionTimers.delete(ws);
+        client
+          .request("workspace.get", { ws })
+          .then((info) => {
+            const questions = countOpenQuestions(info);
+            store.setState((s) =>
+              s.questionsByWs[ws] === questions
+                ? s
+                : { questionsByWs: { ...s.questionsByWs, [ws]: questions } },
+            );
+          })
+          .catch(() => {
+            // workspace closed mid-flight — the next refresh drops it
+          });
+      }, QUESTION_RECOUNT_DEBOUNCE_MS),
+    );
   });
 
   return store;
