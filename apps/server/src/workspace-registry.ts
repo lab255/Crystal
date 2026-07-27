@@ -14,6 +14,7 @@ import type {
 } from "@crystal/core";
 import { AgentManager } from "./agent-manager.js";
 import { AnalysisBackend, createCodeMapFacade, type CodeMapFacade } from "./analysis-host.js";
+import { launchInteractiveRun } from "./interactive.js";
 import { CodeIndexService } from "./code-index.js";
 import { type CrossSurface } from "./code-map.js";
 import { OrchestrationService } from "./orchestration.js";
@@ -102,6 +103,10 @@ export class WorkspaceRuntime {
     );
     // Installs the dispatch guard (pause/budget veto) and settle hooks.
     this.workflows = new WorkflowEngine(appDataDir(root), this.agents, this.store, globalTemplates);
+    // Workflow managers can be hosted as native interactive Claude sessions
+    // on this workspace's PTYs.
+    this.workflows.interactiveLauncher = (params) =>
+      launchInteractiveRun(this.agents, this.terminals, params);
     // A worker dispatched against a claimed task inherits the lease, so it is
     // released when the work settles rather than when the manager's turn ends.
     this.agents.onWorkerDispatched = (worker) => {

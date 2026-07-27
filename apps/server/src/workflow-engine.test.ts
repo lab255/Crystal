@@ -52,6 +52,11 @@ class FakeAgents {
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   }
 
+  /** No interactive terminals in these tests — the engine falls back to resumeChain. */
+  async deliverInteractive(_runId: string, _text: string): Promise<AgentRun | null> {
+    return null;
+  }
+
   /** Mirrors AgentManager.resumeChain: idle + session → new turn, else null. */
   async resumeChain(fromRunId: string, prompt: string): Promise<AgentRun | null> {
     const chain = await this.chainRuns(fromRunId);
@@ -132,6 +137,27 @@ describe("WorkflowEngine", () => {
     expect(agents.started).toHaveLength(1);
     // The manager defaults to the heavyweight model when no profile overrides.
     expect(agents.started[0]!.model).toBe("opus");
+  });
+
+  it("interactive start goes through the injected launcher with the terminal protocol", async () => {
+    const { agents, engine } = makeEngine();
+    const launched: { prompt: string; title?: string | null; tags: string[] }[] = [];
+    engine.interactiveLauncher = async (params) => {
+      launched.push(params);
+      const run = createAgentRun({ prompt: params.prompt, role: "manager", tags: params.tags });
+      run.status = "running";
+      run.terminalId = "term_wf";
+      return { run, terminal: { id: "term_wf" } };
+    };
+    const { workflow, run } = await engine.start({ name: "Feature X", goal: "g", interactive: true });
+    expect(run.terminalId).toBe("term_wf");
+    expect((await engine.get(workflow.id))?.managerRunId).toBe(run.id);
+    // Headless spawn was NOT used; the prompt carries the interactive pairing.
+    expect(agents.started).toHaveLength(0);
+    expect(launched[0]!.prompt).toContain("AskUserQuestion");
+    expect(launched[0]!.prompt).toContain("resolve_question");
+    expect(launched[0]!.title).toContain("Feature X");
+    expect(launched[0]!.tags).toContain(workflowTag(workflow.id));
   });
 
   it("messages queue while the manager is live and deliver on settlement", async () => {

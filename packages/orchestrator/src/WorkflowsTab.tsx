@@ -12,6 +12,7 @@ import {
   Plus,
   Send,
   SlidersHorizontal,
+  TerminalSquare,
   Workflow as WorkflowIcon,
 } from "lucide-react";
 import {
@@ -30,7 +31,7 @@ import {
   type WorkflowStageStatus,
   type WorkflowTemplate,
 } from "@crystal/core";
-import { useAgents, useWorkflows, useWorkspace } from "@crystal/client";
+import { useAgents, useTerminals, useWorkflows, useWorkspace, useWorkspaces } from "@crystal/client";
 import { Badge, Button, EmptyState, Input, Spinner, Textarea, Tooltip, cn } from "@crystal/ui";
 import { formatCost, formatTokens } from "./prompt.js";
 import { RunView } from "./RunView.js";
@@ -235,6 +236,8 @@ function WorkflowDetail({
   const setPaused = useWorkflows((s) => s.setPaused);
   const setBudget = useWorkflows((s) => s.setBudget);
   const cancel = useWorkflows((s) => s.cancel);
+  const activeWs = useWorkspaces((s) => s.activeId);
+  const focusTerminal = useTerminals((s) => s.focusTerminal);
 
   const template = templateOf(workflow);
   const [graphOpen, setGraphOpen] = useState(false);
@@ -518,6 +521,23 @@ function WorkflowDetail({
             </EmptyState>
           )}
         </div>
+        {viewedTurn?.terminalId ? (
+          <div className="flex shrink-0 items-center gap-2 border-t border-edge bg-surface-2/50 px-3 py-1.5 text-[11px] text-ink-muted">
+            <TerminalSquare className="h-3 w-3 shrink-0 text-crystal-300" />
+            This manager runs interactively — talk to it in its terminal.
+            <Button
+              variant="ghost"
+              size="xs"
+              onClick={() => {
+                if (activeWs && viewedTurn.terminalId) {
+                  void focusTerminal(activeWs, viewedTurn.terminalId);
+                }
+              }}
+            >
+              Open its terminal →
+            </Button>
+          </div>
+        ) : null}
         {!terminal ? <ManagerComposer workflowId={workflow.id} /> : null}
       </div>
     </div>
@@ -580,6 +600,8 @@ function NewWorkflowPanel({
   const start = useWorkflows((s) => s.start);
   const templates = useWorkflows((s) => s.templates);
   const projects = useWorkspace((s) => s.info?.projects ?? EMPTY_PROJECTS);
+  const activeWs = useWorkspaces((s) => s.activeId);
+  const focusTerminal = useTerminals((s) => s.focusTerminal);
 
   const [name, setName] = useState("");
   const [goal, setGoal] = useState("");
@@ -609,21 +631,26 @@ function NewWorkflowPanel({
     setTweak(null);
   };
 
-  async function create() {
+  async function create(interactive = false) {
     if (!name.trim() || !goal.trim() || busy || tweakProblems.length) return;
     setBusy(true);
     setError(null);
     try {
       const n = Number(budget);
-      const workflow = await start({
+      const { workflow, run } = await start({
         name: name.trim(),
         goal: goal.trim(),
         templateId: template?.id,
         template: tweak,
         projectId: projectId || null,
         budgetUsd: budget.trim() !== "" && Number.isFinite(n) ? n : null,
+        interactive,
       });
       onStarted(workflow.id);
+      // The interactive manager lives in the terminal panel — surface it.
+      if (interactive && activeWs && run.terminalId) {
+        await focusTerminal(activeWs, run.terminalId);
+      }
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -746,6 +773,16 @@ function NewWorkflowPanel({
           >
             <Play className="h-3 w-3" /> Start
           </Button>
+          <Tooltip content="Host the manager as a native interactive Claude session in the terminal panel — it asks you decisions directly (AskUserQuestion, still logged on the board), and you steer it by typing.">
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={busy || !name.trim() || !goal.trim() || tweakProblems.length > 0}
+              onClick={() => void create(true)}
+            >
+              <TerminalSquare className="h-3 w-3" /> Start in terminal
+            </Button>
+          </Tooltip>
         </div>
         {error ? <p className="mt-2 text-[11px] text-danger">{error}</p> : null}
         {tweakProblems.length ? (

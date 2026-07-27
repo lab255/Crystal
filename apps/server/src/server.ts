@@ -43,16 +43,10 @@ import { hubDataDir, workspaceIdFor } from "./paths.js";
 import { deleteAt, listDir, mkdirAt, readFileCapped, renameAt, writeFileAt } from "./fs-api.js";
 import { changedFiles, gitCheckout, gitLog, gitRefs, gitStatus } from "./git.js";
 import { HUB_MCP_ID, handleMcpRequest, isMcpRequest } from "./mcp/http.js";
+import { INTERACTIVE_PROMPT_DELAY_MS, launchInteractiveRun } from "./interactive.js";
 import { overviewSourcesAtRef, snapshotAtRef, surfacesSnapshotAtRef } from "./ref-snapshot.js";
 import { pasteInput } from "./terminal-manager.js";
 import { WorkspaceRegistry } from "./workspace-registry.js";
-
-/**
- * How long after spawning the Claude TUI its opening prompt is typed in. The
- * TUI must have mounted (and enabled bracketed paste) before raw input means
- * anything; too early and the paste markers land as literal escapes.
- */
-const INTERACTIVE_PROMPT_DELAY_MS = 2500;
 
 type Handlers = {
   [M in BridgeMethodName]: (
@@ -495,22 +489,14 @@ export async function startCrystalServer(opts: {
           skills = profile.skills;
         }
       }
-      const plan = await rt.agents.prepareInteractive({ ...params, model, skills });
-      const terminal = rt.terminals.create({
-        cwd: plan.cwd,
+      return launchInteractiveRun(rt.agents, rt.terminals, {
+        ...params,
+        model,
+        skills,
         cols,
         rows,
-        command: { file: plan.file, args: plan.args, env: plan.env },
         title: ["claude", params.purpose ?? null].filter(Boolean).join(" · "),
       });
-      const run = await rt.agents.bindInteractive(plan.run.id, terminal.id);
-      if (terminal.status === "exited") {
-        // Spawn failed before the exit event could see a bound run.
-        await rt.agents.settleInteractive(terminal.id, terminal.exitCode);
-        return { run: (await rt.agents.get(run.id)) ?? run, terminal };
-      }
-      rt.terminals.writeWhenReady(terminal.id, plan.prompt, INTERACTIVE_PROMPT_DELAY_MS);
-      return { run, terminal };
     },
     "agent.dispatchWorker": async ({ ws, managerRunId, spec }) => {
       const run = await registry.get(ws).agents.dispatchWorker(managerRunId, spec);

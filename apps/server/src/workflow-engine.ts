@@ -50,11 +50,45 @@ import type { WorkspaceStore } from "./workspace-store.js";
  *    its budget is exhausted; budget exhaustion pauses the workflow.
  *  - Run settlements recompute spend and broadcast `workflow.changed`.
  */
+/**
+ * Trailing protocol for an interactive workflow manager (native Claude TUI in
+ * the terminal panel, owner present). The generated manager prompt already
+ * covers the MCP protocol; this adds the terminal-native question etiquette —
+ * same pairing the hub's interactive manager uses.
+ */
+const WORKFLOW_INTERACTIVE_NOTE =
+  "\n\nYou are running interactively, in a terminal the workflow's owner can see. When a " +
+  "decision needs the owner: file it with ask_question (passing the task's id — that logs " +
+  "it on the board, answerable later if they step away), then put it to them directly with " +
+  "your AskUserQuestion tool. When the interactive answer arrives, act on it and close the " +
+  "board copy with resolve_question (same taskId). Worker settlements and owner messages " +
+  "are typed into this session as they happen.";
+
 export class WorkflowEngine {
   readonly events = new Emitter<{
     changed: { workflow: Workflow };
     templatesChanged: Record<string, never>;
   }>();
+
+  /**
+   * Set by the workspace runtime: host a manager as a native interactive
+   * Claude session on one of this workspace's PTYs (see launchInteractiveRun).
+   * Null (tests, headless embeddings) means `start` always spawns headless.
+   */
+  interactiveLauncher:
+    | ((params: {
+        prompt: string;
+        cwd?: string;
+        projectId?: string | null;
+        agentId?: string | null;
+        role: "manager";
+        purpose: "manage";
+        tags: string[];
+        model?: string | null;
+        skills?: string[];
+        title?: string | null;
+      }) => Promise<{ run: AgentRun; terminal: unknown }>)
+    | null = null;
 
   /** Persisted workflows, with the serialized read-modify-write (see JsonRecordStore). */
   private readonly records: JsonRecordStore<Workflow>;
@@ -171,6 +205,12 @@ export class WorkflowEngine {
     cwd?: string;
     agentId?: string | null;
     budgetUsd?: number | null;
+    /**
+     * Host the manager as a native interactive Claude session in the terminal
+     * panel instead of a headless run — the owner answers its questions
+     * (AskUserQuestion) right there, and steering messages are typed in live.
+     */
+    interactive?: boolean;
   }): Promise<{ workflow: Workflow; run: AgentRun }> {
     await this.ensureLoaded();
     // A custom template id resolves to its current definition and is
@@ -199,17 +239,34 @@ export class WorkflowEngine {
       }
     }
 
-    const run = await this.agents.start({
-      prompt: buildWorkflowManagerPrompt(workflow),
-      cwd: workflow.cwd,
-      projectId: workflow.projectId,
-      agentId: workflow.agentId,
-      role: "manager",
-      purpose: "manage",
-      tags: [workflowTag(workflow.id)],
-      model,
-      skills,
-    });
+    let run: AgentRun;
+    if (init.interactive && this.interactiveLauncher) {
+      const launched = await this.interactiveLauncher({
+        prompt: buildWorkflowManagerPrompt(workflow) + WORKFLOW_INTERACTIVE_NOTE,
+        cwd: workflow.cwd,
+        projectId: workflow.projectId,
+        agentId: workflow.agentId,
+        role: "manager",
+        purpose: "manage",
+        tags: [workflowTag(workflow.id)],
+        model,
+        skills,
+        title: `workflow · ${workflow.name}`,
+      });
+      run = launched.run;
+    } else {
+      run = await this.agents.start({
+        prompt: buildWorkflowManagerPrompt(workflow),
+        cwd: workflow.cwd,
+        projectId: workflow.projectId,
+        agentId: workflow.agentId,
+        role: "manager",
+        purpose: "manage",
+        tags: [workflowTag(workflow.id)],
+        model,
+        skills,
+      });
+    }
     workflow.managerRunId = run.id;
     await this.records.put(workflow);
     return { workflow: { ...workflow }, run };
@@ -225,6 +282,12 @@ export class WorkflowEngine {
     const workflow = this.records.peek(workflowId);
     if (!workflow) throw new Error(`Unknown workflow: ${workflowId}`);
     if (!workflow.managerRunId) throw new Error(`Workflow ${workflowId} has no manager session`);
+    // An interactive manager takes the message in its terminal, mid-turn or
+    // not — the TUI queues input itself, so this can never fork the session.
+    const interactive = await this.agents
+      .deliverInteractive(workflow.managerRunId, formatUserMessage(text))
+      .catch(() => null);
+    if (interactive) return { run: interactive, queued: false };
     // resumeChain serializes attempts per chain and re-checks liveness inside
     // its lock — a null (turn live, or no session yet) means queue-and-retry.
     const run = await this.agents.resumeChain(workflow.managerRunId, formatUserMessage(text));

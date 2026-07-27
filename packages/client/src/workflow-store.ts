@@ -27,7 +27,9 @@ export interface WorkflowState {
     cwd?: string;
     agentId?: string | null;
     budgetUsd?: number | null;
-  }): Promise<Workflow>;
+    /** Host the manager as a native interactive Claude session in the terminal panel. */
+    interactive?: boolean;
+  }): Promise<{ workflow: Workflow; run: AgentRun }>;
   /** Remote control: deliver a user message into the manager session. */
   message(workflowId: string, text: string): Promise<{ run: AgentRun | null; queued: boolean }>;
   setPaused(workflowId: string, paused: boolean, reason?: string | null): Promise<void>;
@@ -77,9 +79,9 @@ export function createWorkflowStore(client: BridgeClient): WorkflowStore {
     },
 
     async start(input) {
-      const { workflow } = await client.request("workflow.start", input);
+      const { workflow, run } = await client.request("workflow.start", input);
       upsert(workflow);
-      return workflow;
+      return { workflow, run };
     },
 
     async message(workflowId, text) {

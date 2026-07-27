@@ -609,6 +609,12 @@ export interface BridgeMethods {
       template?: WorkflowTemplate | null;
       projectId?: string | null;
       cwd?: string;
+      /**
+       * Host the manager as a native interactive Claude session in the
+       * terminal panel (AskUserQuestion works; steering is typed in live)
+       * instead of a headless run. The returned run carries `terminalId`.
+       */
+      interactive?: boolean;
       /** Agent profile for the manager (model + skills resolve server-side). */
       agentId?: string | null;
       /** Spend ceiling in USD; dispatches are refused once crossed. */
