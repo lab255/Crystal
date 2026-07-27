@@ -705,7 +705,7 @@ function TaskCard({
   onKeyCommand: (e: KeyboardEvent<HTMLDivElement>) => void;
 }) {
   const agent = roster?.agents.find((a) => a.id === task.owners.agentId) ?? null;
-  const questions = openQuestions(task).length;
+  const openQs = openQuestions(task);
   const unowned = !task.owners.agentId || !task.owners.human;
   const leased = leaseValid(task.lease);
 
@@ -765,10 +765,29 @@ function TaskCard({
               <span className="max-w-[80px] truncate">{task.lease!.holder}</span>
             </span>
           ) : null}
-          {questions > 0 ? (
-            <span className="flex items-center gap-0.5 text-[10px] text-warn">
-              <CircleHelp className="h-3 w-3" /> {questions}
-            </span>
+          {openQs.length > 0 ? (
+            // The count alone says "something is waiting" but not what — the
+            // preview spares a click into every ⓘ-badged task.
+            <Tooltip
+              content={
+                <div className="max-w-80 space-y-1.5">
+                  {openQs.slice(0, 3).map((q) => (
+                    <p key={q.id} className="text-[11px] leading-snug">
+                      {q.text.length > 200 ? `${q.text.slice(0, 200)}…` : q.text}
+                    </p>
+                  ))}
+                  {openQs.length > 3 ? (
+                    <p className="text-[10px] opacity-70">
+                      +{openQs.length - 3} more — open the task to answer
+                    </p>
+                  ) : null}
+                </div>
+              }
+            >
+              <span className="flex items-center gap-0.5 text-[10px] text-warn">
+                <CircleHelp className="h-3 w-3" /> {openQs.length}
+              </span>
+            </Tooltip>
           ) : null}
           {agentRunning ? (
             <span className="flex items-center gap-1 text-[10px] text-info">

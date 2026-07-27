@@ -377,6 +377,7 @@ function useFleetAttention(activeWsId: string | null): TrafficLight {
   const runsByWs = useFleet((s) => s.runsByWs);
   const todosByWs = useFleet((s) => s.todosByWs);
   const seenAtByWs = useFleet((s) => s.seenAtByWs);
+  const questionsByWs = useFleet((s) => s.questionsByWs);
   return worstLight(
     workspaces
       .filter((w) => w.id !== activeWsId)
@@ -385,6 +386,7 @@ function useFleetAttention(activeWsId: string | null): TrafficLight {
           todosByWs[w.id] ?? EMPTY_TODOS,
           runsByWs[w.id] ?? EMPTY_RUNS,
           seenAtByWs[w.id] ?? null,
+          questionsByWs[w.id] ?? 0,
         ),
       ),
   );

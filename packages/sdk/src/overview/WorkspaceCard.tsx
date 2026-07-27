@@ -26,8 +26,9 @@ export function WorkspaceCard({ ws, active }: { ws: WorkspaceDescriptor; active:
   const runs = useFleet((s) => s.runsByWs[ws.id] ?? EMPTY_RUNS);
   const todos = useFleet((s) => s.todosByWs[ws.id] ?? EMPTY_TODOS);
   const seenAt = useFleet((s) => s.seenAtByWs[ws.id] ?? null);
+  const questions = useFleet((s) => s.questionsByWs[ws.id] ?? 0);
 
-  const light = workspaceLight(todos, runs, seenAt);
+  const light = workspaceLight(todos, runs, seenAt, questions);
   const running = runs.filter((r) => r.status === "running" || r.status === "queued").length;
   const unseen = seenAt === null ? runs.filter((r) => r.endedAt) : runs.filter((r) => r.endedAt && r.endedAt > seenAt);
   const toReview = unseen.filter((r) => r.status === "completed").length;
@@ -114,6 +115,19 @@ export function WorkspaceCard({ ws, active }: { ws: WorkspaceDescriptor; active:
 
       <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
         <span className="text-ink-faint">{TRAFFIC_LIGHT_LABELS[light]}</span>
+        {questions > 0 ? (
+          <button
+            type="button"
+            onClick={() => {
+              setActive(ws.id);
+              updateNav({ ws: ws.id, mode: "orchestrate", orchestrate: { tab: "board" } });
+            }}
+            title="Agents filed decisions only a human can make — answer them on the board"
+            className="rounded-full bg-warn/15 px-2 py-0.5 font-medium text-warn hover:bg-warn/25"
+          >
+            {questions} waiting on you
+          </button>
+        ) : null}
         {running > 0 ? (
           <button
             type="button"

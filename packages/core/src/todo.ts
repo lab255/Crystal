@@ -108,11 +108,23 @@ export function runsLight(
   return worstLight(lights);
 }
 
-/** Overall workspace light: open todos + agent-run attention, worst wins. */
+/**
+ * Attention from agents waiting on the human: any open board question is
+ * yellow — the agent filed a decision it can't make and someone has to
+ * answer, which is exactly "needs attention". Never red on its own (nothing
+ * is broken) and never acknowledgeable-away like run results — it clears
+ * only by answering.
+ */
+export function questionsLight(openQuestions: number): TrafficLight {
+  return openQuestions > 0 ? "yellow" : "gray";
+}
+
+/** Overall workspace light: todos + run attention + open questions, worst wins. */
 export function workspaceLight(
   todos: TodoItem[],
   runs: { status: AgentRunStatus; endedAt?: string | null }[],
   seenAt: string | null,
+  openQuestions = 0,
 ): TrafficLight {
-  return worstLight([todosLight(todos), runsLight(runs, seenAt)]);
+  return worstLight([todosLight(todos), runsLight(runs, seenAt), questionsLight(openQuestions)]);
 }

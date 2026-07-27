@@ -20,6 +20,11 @@ export const EMPTY_TODOS: TodoItem[] = [];
 export interface FleetState {
   runsByWs: Record<string, AgentRun[]>;
   todosByWs: Record<string, TodoItem[]>;
+  /**
+   * Open board questions per workspace — agents waiting on the human. Drives
+   * the yellow "waiting on you" attention on lights and overview cards.
+   */
+  questionsByWs: Record<string, number>;
   seenAtByWs: Record<string, string>;
   /** Workspaces with an in-flight (debounced) todo save. */
   pendingTodoSaves: Record<string, true>;
@@ -82,28 +87,44 @@ export function createFleetStore(client: BridgeClient): FleetStore {
   const store = createStore<FleetState>((set, get) => ({
     runsByWs: {},
     todosByWs: {},
+    questionsByWs: {},
     seenAtByWs: typeof localStorage === "undefined" ? {} : loadSeen(),
     pendingTodoSaves: {},
 
     async refresh(wsIds) {
       const results = await Promise.all(
         wsIds.map(async (ws) => {
-          const [runs, todos] = await Promise.all([
+          const [runs, todos, info] = await Promise.all([
             client.request("agent.list", { ws }),
             client.request("todos.get", { ws }),
+            // Boards carry the open questions (agents waiting on the human);
+            // a workspace whose info fails to load reads as zero, not broken.
+            client.request("workspace.get", { ws }).catch(() => null),
           ]);
-          return { ws, runs: runs.runs, todos: todos.todos.items };
+          const questions =
+            info?.projects.reduce(
+              (n, p) =>
+                n +
+                p.project.tasks.reduce(
+                  (m, t) => m + t.questions.filter((q) => q.answer == null).length,
+                  0,
+                ),
+              0,
+            ) ?? 0;
+          return { ws, runs: runs.runs, todos: todos.todos.items, questions };
         }),
       );
       set((s) => {
         const runsByWs: Record<string, AgentRun[]> = {};
         const todosByWs: Record<string, TodoItem[]> = {};
-        for (const { ws, runs, todos } of results) {
+        const questionsByWs: Record<string, number> = {};
+        for (const { ws, runs, todos, questions } of results) {
           runsByWs[ws] = runs;
+          questionsByWs[ws] = questions;
           // A pending local edit is newer than what the server just returned.
           todosByWs[ws] = s.pendingTodoSaves[ws] ? (s.todosByWs[ws] ?? todos) : todos;
         }
-        return { runsByWs, todosByWs };
+        return { runsByWs, todosByWs, questionsByWs };
       });
     },
 

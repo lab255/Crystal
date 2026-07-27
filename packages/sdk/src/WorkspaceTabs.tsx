@@ -42,6 +42,7 @@ export function WorkspaceTabs({
   const runsByWs = useFleet((s) => s.runsByWs);
   const todosByWs = useFleet((s) => s.todosByWs);
   const seenAtByWs = useFleet((s) => s.seenAtByWs);
+  const questionsByWs = useFleet((s) => s.questionsByWs);
 
   const [dialog, setDialog] = useState<{
     open: boolean;
@@ -59,7 +60,12 @@ export function WorkspaceTabs({
   // "Home" = the cross-workspace overview; anything else means a workspace is entered.
   const entered = !isCrossProjectMode(mode);
   const lightFor = (ws: string) =>
-    workspaceLight(todosByWs[ws] ?? EMPTY_TODOS, runsByWs[ws] ?? EMPTY_RUNS, seenAtByWs[ws] ?? null);
+    workspaceLight(
+      todosByWs[ws] ?? EMPTY_TODOS,
+      runsByWs[ws] ?? EMPTY_RUNS,
+      seenAtByWs[ws] ?? null,
+      questionsByWs[ws] ?? 0,
+    );
   const openRoots = new Set(workspaces.map((w) => w.root));
   const reopenable = recents.filter((r) => !openRoots.has(r.root));
 

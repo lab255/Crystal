@@ -89,4 +89,14 @@ describe("workspaceLight", () => {
       workspaceLight([todo({ light: "yellow" })], [run("failed", "2026-01-02T00:00:00Z")], null),
     ).toBe("red");
   });
+
+  it("an agent waiting on the human raises the light to yellow", () => {
+    // An open board question is "needs attention": it clears only by
+    // answering, never by acknowledging like run results do.
+    expect(workspaceLight([], [], null, 1)).toBe("yellow");
+    expect(workspaceLight([], [run("running")], null, 3)).toBe("yellow");
+    expect(workspaceLight([], [], null, 0)).toBe("gray");
+    // Questions never outrank a real failure.
+    expect(workspaceLight([], [run("failed", "2026-01-02T00:00:00Z")], null, 5)).toBe("red");
+  });
 });
