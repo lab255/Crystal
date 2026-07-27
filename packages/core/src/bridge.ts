@@ -114,7 +114,15 @@ export interface GitStatusResult {
   files: GitFileStatus[];
   /** False when `repoPath` is not inside a git repository (a state, not an error). */
   isRepo: boolean;
+  /** Upstream tracking branch in short form ("origin/main"), null when none is set. */
+  upstream: string | null;
+  /** Commits ahead of / behind the upstream (0 when no upstream). */
+  ahead: number;
+  behind: number;
 }
+
+/** Remote sync verbs for `git.sync`. */
+export type GitSyncOp = "fetch" | "pull" | "push";
 
 /**
  * Which changed-file set a diff-scoped agent job runs on: "worktree" =
@@ -338,6 +346,17 @@ export interface BridgeMethods {
   "git.checkout": {
     params: WsScope & { repoPath?: string; ref: string };
     result: { ok: true; branch: string | null };
+  };
+  /**
+   * Sync with the remote: "fetch" (`--prune`), "pull" (fast-forward only — a
+   * divergence fails with git's message rather than minting a surprise merge)
+   * or "push" (sets upstream on the first push of a branch). Credential
+   * prompts are disabled server-side, so a repo that needs interactive auth
+   * fails fast instead of hanging.
+   */
+  "git.sync": {
+    params: WsScope & { repoPath?: string; op: GitSyncOp };
+    result: { ok: true; summary: string; status: GitStatusResult };
   };
   "agent.start": {
     params: WsScope & {
@@ -679,6 +698,12 @@ export interface BridgeMethods {
       interactive?: boolean;
       /** Agent profile for the manager (model + skills resolve server-side). */
       agentId?: string | null;
+      /**
+       * Model override for THIS workflow's manager — beats the profile and
+       * the roster preset (e.g. lift one dispatch to fable without changing
+       * the project setting).
+       */
+      managerModel?: string | null;
       /** Spend ceiling in USD; dispatches are refused once crossed. */
       budgetUsd?: number | null;
     };
@@ -878,7 +903,19 @@ export interface BridgeMethods {
    * project's board and handed back to the run that asked, which resumes.
    */
   "hub.answerQuestion": {
-    params: { programId: string; questionId: string; answer: string };
+    params: {
+      programId: string;
+      questionId: string;
+      answer: string;
+      /**
+       * Where the caller saw the question (`HubQuestion.deliveryId`/`taskId`).
+       * Pass both when known: the server then answers that exact board task
+       * instead of re-deriving from live deliveries — which goes stale the
+       * moment a delivery settles with its question still open.
+       */
+      deliveryId?: string | null;
+      taskId?: string | null;
+    };
     result: { ok: true; resumedRunId: string | null } | { ok: false; reason: string };
   };
   /** The MCP endpoint a central agent points at to drive the hub. */

@@ -1,6 +1,20 @@
 import { useCallback, useEffect, useState } from "react";
-import { Check, Focus, FolderGit2, GitBranch } from "lucide-react";
-import { suggestIndexFacets, type IndexFacetSuggestion } from "@crystal/core";
+import {
+  ArrowDown,
+  ArrowUp,
+  Check,
+  Focus,
+  FolderGit2,
+  GitBranch,
+  Loader2,
+  RefreshCw,
+} from "lucide-react";
+import {
+  suggestIndexFacets,
+  type GitStatusResult,
+  type GitSyncOp,
+  type IndexFacetSuggestion,
+} from "@crystal/core";
 import { useCrystal, useGitRefs, useNav, useNavUpdate, useWorkspaces } from "@crystal/client";
 import {
   DropdownMenu,
@@ -31,6 +45,9 @@ export function BranchSwitcher() {
   });
   const [facets, setFacets] = useState<IndexFacetSuggestion[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [status, setStatus] = useState<GitStatusResult | null>(null);
+  const [syncing, setSyncing] = useState<GitSyncOp | null>(null);
+  const [syncMsg, setSyncMsg] = useState<string | null>(null);
 
   const loadFacets = useCallback(() => {
     client
@@ -39,25 +56,38 @@ export function BranchSwitcher() {
       .catch(() => setFacets([]));
   }, [client]);
 
+  // Ahead/behind for the trigger badge and the Pull/Push rows — quietly
+  // absent when the workspace isn't a repo.
+  const loadStatus = useCallback(() => {
+    client
+      .request("git.status", { repoPath: "." })
+      .then((s) => setStatus(s.isRepo ? s : null))
+      .catch(() => setStatus(null));
+  }, [client]);
+
   const load = useCallback(() => {
     setError(null);
     loadRefs();
+    loadStatus();
     loadFacets();
-  }, [loadRefs, loadFacets]);
+  }, [loadRefs, loadStatus, loadFacets]);
 
   // Opening the menu re-fetches — branches move underneath us (fetches,
   // checkouts in a terminal…).
   const refresh = useCallback(() => {
     setError(null);
     reloadRefs();
+    loadStatus();
     loadFacets();
-  }, [reloadRefs, loadFacets]);
+  }, [reloadRefs, loadStatus, loadFacets]);
 
   // The trigger shows the current branch, so refresh on workspace switch too —
   // not just when the menu opens. Stale data is cleared first.
   useEffect(() => {
     setFacets(null);
+    setStatus(null);
     setError(null);
+    setSyncMsg(null);
     if (activeWsId) load();
   }, [activeWsId, load]);
 
@@ -67,12 +97,38 @@ export function BranchSwitcher() {
       try {
         await client.request("git.checkout", { ref });
         reloadRefs();
+        loadStatus();
       } catch (err) {
         // Git's own message (dirty tree, conflicts…) shown inline in the menu.
         setError((err as Error).message);
       }
     },
-    [client, reloadRefs],
+    [client, reloadRefs, loadStatus],
+  );
+
+  const sync = useCallback(
+    async (op: GitSyncOp) => {
+      if (syncing) return;
+      setError(null);
+      setSyncMsg(null);
+      setSyncing(op);
+      try {
+        // Network op — give it more rope than the default request timeout,
+        // matching the server's own 120 s deadline.
+        const res = await client.request("git.sync", { op }, { timeoutMs: 150_000 });
+        setStatus(res.status.isRepo ? res.status : null);
+        // The last line is git's own outcome ("Already up to date.",
+        // "Fast-forward", the pushed range…) — one line says enough.
+        const lines = res.summary.split("\n").filter((l) => l.trim());
+        setSyncMsg(lines[lines.length - 1] ?? `${op} complete`);
+        reloadRefs();
+      } catch (err) {
+        setError((err as Error).message);
+      } finally {
+        setSyncing(null);
+      }
+    },
+    [client, syncing, reloadRefs],
   );
 
   const openWorktree = useCallback(
@@ -111,9 +167,98 @@ export function BranchSwitcher() {
           {refs ? (
             <span className="max-w-40 truncate">{refs.current ?? "detached"}</span>
           ) : null}
+          {status && (status.ahead > 0 || status.behind > 0) ? (
+            <span
+              className="flex items-center text-[10px] text-ink-faint"
+              title={`${status.ahead} ahead, ${status.behind} behind ${status.upstream ?? "upstream"}`}
+            >
+              {status.ahead > 0 ? (
+                <>
+                  {status.ahead}
+                  <ArrowUp className="h-3 w-3" />
+                </>
+              ) : null}
+              {status.behind > 0 ? (
+                <>
+                  {status.behind}
+                  <ArrowDown className="h-3 w-3" />
+                </>
+              ) : null}
+            </span>
+          ) : null}
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" side="bottom" className="min-w-56">
+        {status ? (
+          <>
+            <DropdownMenuLabel className="flex items-baseline gap-1.5">
+              Remote
+              <span className="truncate text-[10px] font-normal text-ink-faint">
+                {status.upstream ?? "no upstream"}
+              </span>
+            </DropdownMenuLabel>
+            <DropdownMenuItem
+              disabled={!!syncing || !status.upstream}
+              onSelect={(e) => {
+                // Keep the menu open — the outcome line lands right below.
+                e.preventDefault();
+                void sync("pull");
+              }}
+              className="gap-2"
+            >
+              {syncing === "pull" ? (
+                <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-ink-faint" />
+              ) : (
+                <ArrowDown className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
+              )}
+              <span className="min-w-0 flex-1">Pull</span>
+              {status.behind > 0 ? (
+                <span className="shrink-0 text-[10px] text-ink-faint">{status.behind} behind</span>
+              ) : null}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              disabled={!!syncing}
+              onSelect={(e) => {
+                e.preventDefault();
+                void sync("push");
+              }}
+              className="gap-2"
+            >
+              {syncing === "push" ? (
+                <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-ink-faint" />
+              ) : (
+                <ArrowUp className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
+              )}
+              <span className="min-w-0 flex-1">Push</span>
+              {status.ahead > 0 ? (
+                <span className="shrink-0 text-[10px] text-ink-faint">{status.ahead} ahead</span>
+              ) : status.upstream ? null : (
+                <span className="shrink-0 text-[10px] text-ink-faint">sets upstream</span>
+              )}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              disabled={!!syncing}
+              onSelect={(e) => {
+                e.preventDefault();
+                void sync("fetch");
+              }}
+              className="gap-2"
+            >
+              {syncing === "fetch" ? (
+                <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-ink-faint" />
+              ) : (
+                <RefreshCw className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
+              )}
+              <span className="min-w-0 flex-1">Fetch</span>
+            </DropdownMenuItem>
+            {syncMsg ? (
+              <div className="max-w-64 truncate px-2 py-1 text-[10px] text-ink-faint" title={syncMsg}>
+                {syncMsg}
+              </div>
+            ) : null}
+            <DropdownMenuSeparator />
+          </>
+        ) : null}
         <DropdownMenuLabel>Branches</DropdownMenuLabel>
         {(refs?.branches ?? []).map((b) => {
           const isCurrent = refs?.current === b;

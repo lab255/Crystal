@@ -45,7 +45,7 @@ import { AgentManager } from "./agent-manager.js";
 import { HubEngine, type HubProjects } from "./hub-engine.js";
 import { hubDataDir, workspaceIdFor } from "./paths.js";
 import { deleteAt, listDir, mkdirAt, readFileCapped, renameAt, writeFileAt } from "./fs-api.js";
-import { changedFiles, gitCheckout, gitLog, gitRefs, gitStatus } from "./git.js";
+import { changedFiles, gitCheckout, gitLog, gitRefs, gitStatus, gitSync } from "./git.js";
 import { HUB_MCP_ID, handleMcpRequest, isMcpRequest } from "./mcp/http.js";
 import { INTERACTIVE_PROMPT_DELAY_MS, launchInteractiveRun } from "./interactive.js";
 import { overviewSourcesAtRef, snapshotAtRef, surfacesSnapshotAtRef } from "./ref-snapshot.js";
@@ -517,6 +517,7 @@ export async function startCrystalServer(opts: {
     "git.refs": ({ ws, repoPath }) => gitRefs(registry.get(ws).root, repoPath ?? "."),
     "git.checkout": ({ ws, repoPath, ref }) =>
       gitCheckout(registry.get(ws).root, repoPath ?? ".", ref),
+    "git.sync": ({ ws, repoPath, op }) => gitSync(registry.get(ws).root, repoPath ?? ".", op),
     "agent.start": async ({ ws, ...params }) => {
       const rt = registry.get(ws);
       // Resolve the dispatch profile server-side (one path: resolveProfile)
@@ -813,8 +814,8 @@ export async function startCrystalServer(opts: {
     },
     "hub.message": ({ programId, text }) => requireHub().message(programId, text),
     "hub.questions": async () => ({ questions: await requireHub().allQuestions() }),
-    "hub.answerQuestion": ({ programId, questionId, answer }) =>
-      requireHub().answerQuestion(programId, questionId, answer),
+    "hub.answerQuestion": ({ programId, questionId, answer, deliveryId, taskId }) =>
+      requireHub().answerQuestion(programId, questionId, answer, { deliveryId, taskId }),
     "hub.endpoint": async () => ({
       url: hubMcpUrl,
       mcpConfig: JSON.stringify(

@@ -1,13 +1,21 @@
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
-import type { ChangeScope, GitCommit, GitRefsResult, GitStatusResult } from "@crystal/core";
+import type { ChangeScope, GitCommit, GitRefsResult, GitStatusResult, GitSyncOp } from "@crystal/core";
 import { resolveInRoot } from "./paths.js";
 
 const exec = promisify(execFile);
 
+/**
+ * Never let a git subprocess sit waiting for credentials: the server has no
+ * terminal, so an interactive prompt is a hang, not a question. Credential
+ * helpers (manager, osxkeychain…) still work — only terminal/GUI askpass
+ * prompts are refused.
+ */
+const GIT_ENV = { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_ASKPASS: "" };
+
 /** Run git in a directory (absolute path), returning stdout. */
 export async function runGit(cwd: string, args: string[], maxBuffer = 8 * 1024 * 1024): Promise<string> {
-  const { stdout } = await exec("git", args, { cwd, windowsHide: true, maxBuffer });
+  const { stdout } = await exec("git", args, { cwd, windowsHide: true, maxBuffer, env: GIT_ENV });
   return stdout;
 }
 
@@ -18,27 +26,95 @@ export async function gitStatus(root: string, repoRel: string): Promise<GitStatu
     ({ stdout } = await exec("git", ["status", "--porcelain=v1", "-b"], {
       cwd,
       windowsHide: true,
+      env: GIT_ENV,
     }));
   } catch (err) {
     // Not being a repo is a state, not a failure — workspaces without version
     // control (or before the first `git init`) must not error the UI.
     const text = `${(err as { stderr?: string }).stderr ?? ""}${(err as Error).message ?? ""}`;
     if (text.includes("not a git repository")) {
-      return { repoPath: repoRel, branch: null, files: [], isRepo: false };
+      return {
+        repoPath: repoRel,
+        branch: null,
+        files: [],
+        isRepo: false,
+        upstream: null,
+        ahead: 0,
+        behind: 0,
+      };
     }
     throw err;
   }
   const lines = stdout.split("\n").filter(Boolean);
   let branch: string | null = null;
+  let upstream: string | null = null;
+  let ahead = 0;
+  let behind = 0;
   const files: GitStatusResult["files"] = [];
   for (const line of lines) {
     if (line.startsWith("## ")) {
-      branch = line.slice(3).split("...")[0] ?? null;
+      // "## branch...origin/branch [ahead 1, behind 2]" — branch, tracking
+      // target and divergence all live in this one header line.
+      const head = line.slice(3);
+      const bracket = head.match(/ \[(?:ahead (\d+))?(?:, )?(?:behind (\d+))?\]$/);
+      if (bracket) {
+        ahead = Number(bracket[1] ?? 0);
+        behind = Number(bracket[2] ?? 0);
+      }
+      const names = (bracket ? head.slice(0, bracket.index) : head).split("...");
+      branch = names[0] ?? null;
+      upstream = names[1] ?? null;
     } else {
       files.push({ code: line.slice(0, 2), path: line.slice(3).trim() });
     }
   }
-  return { repoPath: repoRel, branch, files, isRepo: true };
+  return { repoPath: repoRel, branch, files, isRepo: true, upstream, ahead, behind };
+}
+
+/** Network sync ops get a hard deadline — a stuck remote must not hold a bridge request forever. */
+const SYNC_TIMEOUT_MS = 120_000;
+
+async function runGitSync(cwd: string, args: string[]): Promise<string> {
+  const { stdout, stderr } = await exec("git", args, {
+    cwd,
+    windowsHide: true,
+    env: GIT_ENV,
+    timeout: SYNC_TIMEOUT_MS,
+    maxBuffer: 8 * 1024 * 1024,
+  });
+  // git reports transfer/progress on stderr even on success — that's the
+  // human-readable half of the story.
+  return `${stdout}\n${stderr}`.trim();
+}
+
+/**
+ * Fetch/pull/push against the repo's remote. Pull is `--ff-only`: a diverged
+ * branch is a decision (merge? rebase?) the user makes in a terminal, not a
+ * side effect of a toolbar button. Push auto-sets the upstream on a branch's
+ * first push, so a fresh local branch "just pushes".
+ */
+export async function gitSync(
+  root: string,
+  repoRel: string,
+  op: GitSyncOp,
+): Promise<{ ok: true; summary: string; status: GitStatusResult }> {
+  const cwd = resolveInRoot(root, repoRel);
+  let summary: string;
+  if (op === "fetch") {
+    summary = await runGitSync(cwd, ["fetch", "--prune"]);
+  } else if (op === "pull") {
+    summary = await runGitSync(cwd, ["pull", "--ff-only"]);
+  } else {
+    try {
+      summary = await runGitSync(cwd, ["push"]);
+    } catch (err) {
+      const text = `${(err as { stderr?: string }).stderr ?? ""}${(err as Error).message ?? ""}`;
+      if (!text.includes("no upstream branch")) throw err;
+      summary = await runGitSync(cwd, ["push", "--set-upstream", "origin", "HEAD"]);
+    }
+  }
+  const status = await gitStatus(root, repoRel);
+  return { ok: true, summary: summary || `${op} complete`, status };
 }
 
 /** Candidate main-branch names, tried in order, for the "base" diff scope. */

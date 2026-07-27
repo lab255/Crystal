@@ -188,6 +188,7 @@ export class BridgeClient {
   request<M extends BridgeMethodName>(
     method: M,
     params: BridgeMethods[M]["params"],
+    opts?: { timeoutMs?: number },
   ): Promise<BridgeMethods[M]["result"]> {
     const transport = this.transport;
     if (!transport || this._state !== "open") {
@@ -205,7 +206,7 @@ export class BridgeClient {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`Request timed out: ${method}`));
-      }, REQUEST_TIMEOUT_MS);
+      }, opts?.timeoutMs ?? REQUEST_TIMEOUT_MS);
       this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer });
       transport.send(JSON.stringify(req));
     });
