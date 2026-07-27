@@ -202,6 +202,12 @@ build/sign (+notarize on macOS) → signed updater `latest.json`).
 - Child-process `error` handlers (and one on `stdin`) must be attached **synchronously
   after `spawn()`** — the failure event fires next tick, and with an `await` in between
   it becomes an uncaught exception that kills the whole bridge server.
+- Spawned agents must not inherit `CLAUDE_CODE_CHILD_SESSION` (see `agentEnv` in
+  agent-manager.ts): a bridge server launched from inside a Claude session passes the
+  marker through, the CLI then disables transcript saving, and that silently breaks
+  `--resume` of an interactive session after its terminal closes *and* transcript-based
+  usage harvesting. Interactive PTY spawns pass a **complete** env for the same reason —
+  `TerminalManager` must not merge it over `process.env`, which would resurrect the key.
 - The server canonicalizes its root with `fs.realpathSync.native` — Windows 8.3 short
   paths crash libuv's recursive watcher if you skip this.
 - react-flow requires parents before children in the node array (`topoOrderNodes`), and

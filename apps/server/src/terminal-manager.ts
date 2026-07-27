@@ -129,10 +129,10 @@ export class TerminalManager {
         cols: info.cols,
         rows: info.rows,
         cwd: cwdAbs,
-        env: { ...(process.env as Record<string, string>), ...(opts.command?.env ?? {}) } as Record<
-          string,
-          string
-        >,
+        // A command's env is COMPLETE, not a patch — merging over process.env
+        // would resurrect keys the caller deliberately removed (the
+        // child-session marker that disables transcript saving).
+        env: (opts.command?.env ?? process.env) as Record<string, string>,
       });
     } catch (err) {
       this.exit(record, null, `Failed to spawn ${file}: ${(err as Error).message}`);

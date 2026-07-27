@@ -140,6 +140,21 @@ export const INTERACTIVE_PROMPT_DELAY_MS = 2500;
  */
 const INTERACTIVE_READY_MS = INTERACTIVE_PROMPT_DELAY_MS + 1500;
 
+/**
+ * Env for a spawned agent. Crystal's agents are top-level Claude sessions,
+ * never nested children of whatever session happened to launch the bridge
+ * server — an inherited child-session marker makes the CLI disable transcript
+ * saving ("⚠ Transcript saving is off"), which silently breaks `--resume`
+ * of an interactive session after its terminal closes AND transcript-based
+ * usage harvesting. Found live: a dev server started from inside a Claude
+ * session passed the marker straight through.
+ */
+export function agentEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env = { ...base };
+  delete env.CLAUDE_CODE_CHILD_SESSION;
+  return env;
+}
+
 /** How to invoke the Claude CLI: a direct executable, or through cmd.exe. */
 export interface ClaudeSpawnPlan {
   file: string;
@@ -500,7 +515,7 @@ export class AgentManager {
         windowsHide: true,
         // A CLI resolved from outside the inherited PATH (GUI-launched
         // sidecar) must still find its own helpers — put its dir on PATH.
-        env: envWithBinDir({ ...process.env, FORCE_COLOR: "0" }, claudeBin),
+        env: envWithBinDir(agentEnv({ ...process.env, FORCE_COLOR: "0" }), claudeBin),
         stdio: ["pipe", "pipe", "pipe"],
       });
     } catch (err) {
@@ -625,7 +640,7 @@ export class AgentManager {
       run: { ...run },
       file: claudeBin,
       args,
-      env: envWithBinDir({ ...process.env }, claudeBin),
+      env: envWithBinDir(agentEnv({ ...process.env }), claudeBin),
       cwd: run.cwd,
       prompt,
     };
