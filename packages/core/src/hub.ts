@@ -56,7 +56,7 @@ export interface HubDispatchReport {
 }
 
 /** Subviews of the Hub mode (deep-link segment after `#/hub`). */
-export type HubViewId = "programs" | "projects";
+export type HubViewId = "programs" | "projects" | "questions";
 
 /**
  * A question a project's orchestrator (or one of its workers) raised and is

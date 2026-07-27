@@ -129,6 +129,12 @@ export function CrystalShell({
   const liveProgramCount = useHub(
     (s) => s.programs.filter((p) => p.status === "running").length,
   );
+  // Unanswered agent questions across the portfolio: they outrank the live
+  // count on the rail — a stopped run waiting on a human is the thing to see
+  // from any mode.
+  const hubWaiting = useHub((s) =>
+    Object.values(s.questions).reduce((n, qs) => n + qs.length, 0),
+  );
 
   const switchMode = useCallback(
     (next: CrystalMode): void => {
@@ -266,8 +272,9 @@ export function CrystalShell({
                   : m === "jobs"
                     ? runningJobs
                     : m === "hub"
-                      ? liveProgramCount
+                      ? hubWaiting || liveProgramCount
                       : 0;
+              const badgeWarns = m === "hub" && hubWaiting > 0;
               return (
                 <Tooltip key={m} content={MODE_LABELS[m]} shortcut={`Ctrl+${i + 1}`} side="right">
                   <button
@@ -287,7 +294,12 @@ export function CrystalShell({
                     ) : null}
                     <Icon className="h-4.5 w-4.5" />
                     {badge > 0 ? (
-                      <span className="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-info px-0.5 text-[9px] font-bold text-surface-0">
+                      <span
+                        className={cn(
+                          "absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full px-0.5 text-[9px] font-bold text-surface-0",
+                          badgeWarns ? "bg-warn" : "bg-info",
+                        )}
+                      >
                         {badge}
                       </span>
                     ) : null}

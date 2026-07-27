@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Bot, ChevronDown, KanbanSquare, ListTodo, Network, Plus, Sparkles } from "lucide-react";
-import { RUN_PURPOSES, type OrchestratorTabId, type Project, type RunPurpose } from "@crystal/core";
+import {
+  RUN_PURPOSES,
+  openQuestions,
+  type OrchestratorTabId,
+  type Project,
+  type RunPurpose,
+} from "@crystal/core";
 import { useAgents, useNav, useNavUpdate, useWorkspace } from "@crystal/client";
 import {
   Button,
@@ -19,6 +25,7 @@ import {
 } from "@crystal/ui";
 import { AgentsTab } from "./AgentsTab.js";
 import { Board } from "./Board.js";
+import { QuestionsStrip } from "./QuestionsStrip.js";
 import { RunsPane } from "./RunsPane.js";
 import { TaskDetail } from "./TaskDetail.js";
 import { WorkflowsTab } from "./WorkflowsTab.js";
@@ -86,6 +93,9 @@ export function OrchestratorMode() {
 
   const selectedTask = current?.project.tasks.find((t) => t.id === taskId) ?? null;
   const runningCount = runs.filter((r) => r.status === "running").length;
+  const waitingCount = current
+    ? current.project.tasks.reduce((n, t) => n + openQuestions(t).length, 0)
+    : 0;
 
   // Only purposes actually present become chips, in RUN_PURPOSES order.
   const presentPurposes = useMemo(() => {
@@ -138,6 +148,11 @@ export function OrchestratorMode() {
         <div className="ml-auto flex items-center gap-0.5 rounded-lg bg-surface-2 p-0.5">
           <TabButton active={tab === "board"} onClick={() => setTab("board")}>
             <ListTodo className="h-3.5 w-3.5" /> Board
+            {waitingCount > 0 ? (
+              <span className="ml-0.5 rounded-full bg-warn/20 px-1.5 text-[10px] font-semibold text-warn">
+                {waitingCount}
+              </span>
+            ) : null}
           </TabButton>
           <TabButton active={tab === "workflows"} onClick={() => setTab("workflows")}>
             <Network className="h-3.5 w-3.5" /> Workflows
@@ -159,28 +174,40 @@ export function OrchestratorMode() {
       <div className="min-h-0 flex-1">
         {tab === "board" ? (
           current ? (
-            <div className="flex h-full min-h-0">
-              <div className="min-w-0 flex-1">
-                <Board
-                  project={current.project}
-                  selectedTaskId={taskId}
-                  onProjectChange={(project: Project) => updateProject(current.path, project)}
-                  onSelectTask={setTaskId}
-                />
+            <div className="flex h-full min-h-0 flex-col">
+              <QuestionsStrip
+                project={current.project}
+                projectPath={current.path}
+                onProjectChange={(project: Project) => updateProject(current.path, project)}
+                onOpenTask={setTaskId}
+                onOpenRun={(id) => {
+                  setRunId(id);
+                  setTab("runs");
+                }}
+              />
+              <div className="flex min-h-0 flex-1">
+                <div className="min-w-0 flex-1">
+                  <Board
+                    project={current.project}
+                    selectedTaskId={taskId}
+                    onProjectChange={(project: Project) => updateProject(current.path, project)}
+                    onSelectTask={setTaskId}
+                  />
+                </div>
+                {selectedTask ? (
+                  <TaskDetail
+                    project={current.project}
+                    projectPath={current.path}
+                    task={selectedTask}
+                    onProjectChange={(project: Project) => updateProject(current.path, project)}
+                    onClose={() => setTaskId(null)}
+                    onOpenRun={(id) => {
+                      setRunId(id);
+                      setTab("runs");
+                    }}
+                  />
+                ) : null}
               </div>
-              {selectedTask ? (
-                <TaskDetail
-                  project={current.project}
-                  projectPath={current.path}
-                  task={selectedTask}
-                  onProjectChange={(project: Project) => updateProject(current.path, project)}
-                  onClose={() => setTaskId(null)}
-                  onOpenRun={(id) => {
-                    setRunId(id);
-                    setTab("runs");
-                  }}
-                />
-              ) : null}
             </div>
           ) : (
             <EmptyState

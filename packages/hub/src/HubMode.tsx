@@ -34,6 +34,7 @@ import {
 import { NewProgramPanel } from "./NewProgramPanel.js";
 import { ProgramDetail } from "./ProgramDetail.js";
 import { ProjectsView } from "./ProjectsView.js";
+import { QuestionsView } from "./QuestionsView.js";
 import { programMenuEntries } from "./menus.js";
 
 /**
@@ -87,10 +88,15 @@ export function HubMode() {
           {live ? ` · ${live} live` : ""}
         </span>
         {waiting ? (
-          <span className="flex items-center gap-1 rounded-full border border-warn/40 bg-warn/10 px-1.5 py-0.5 text-[10px] font-medium text-warn">
+          <button
+            type="button"
+            onClick={() => nav({ hub: { view: "questions" } })}
+            title="Open the questions inbox"
+            className="flex items-center gap-1 rounded-full border border-warn/40 bg-warn/10 px-1.5 py-0.5 text-[10px] font-medium text-warn transition-colors hover:bg-warn/20"
+          >
             <CircleHelp className="h-3 w-3" />
             {waiting} waiting on you
-          </span>
+          </button>
         ) : null}
 
         <div className="relative ml-3 w-56">
@@ -124,12 +130,29 @@ export function HubMode() {
           >
             <Boxes className="h-3.5 w-3.5" /> Projects
           </SegmentedTab>
+          <SegmentedTab
+            active={view === "questions"}
+            onClick={() => nav({ hub: { view: "questions" } })}
+          >
+            <CircleHelp className="h-3.5 w-3.5" /> Questions
+            {waiting ? (
+              <span className="ml-0.5 rounded-full bg-warn/20 px-1.5 text-[10px] font-semibold text-warn">
+                {waiting}
+              </span>
+            ) : null}
+          </SegmentedTab>
         </TabStrip>
       </header>
 
       <HubError />
 
-      {view === "programs" ? <ProgramsView find={find} /> : <ProjectsView find={find} />}
+      {view === "programs" ? (
+        <ProgramsView find={find} />
+      ) : view === "questions" ? (
+        <QuestionsView find={find} />
+      ) : (
+        <ProjectsView find={find} />
+      )}
 
       <EndpointDialog open={endpointOpen} onOpenChange={setEndpointOpen} />
     </div>
