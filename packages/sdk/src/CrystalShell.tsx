@@ -6,15 +6,17 @@ import {
   EMPTY_RUNS,
   EMPTY_TODOS,
   useAgents,
-  useConnectionState,
   useCrystal,
   useFleet,
+  useFleetConnections,
   useHub,
   useNav,
   useNavUpdate,
   useTerminals,
   useWorkspace,
   useWorkspaces,
+  wsKey,
+  type ConnectionState,
 } from "@crystal/client";
 import { Spinner, StatusDot, Tooltip, TooltipProvider, TrafficLightDot, cn } from "@crystal/ui";
 import { BranchSwitcher } from "./BranchSwitcher.js";
@@ -106,8 +108,9 @@ export function CrystalShell({
   const terminalOpen = useTerminals((s) => s.panelOpen);
   const setTerminalOpen = useTerminals((s) => s.setPanelOpen);
 
-  const { terminalsStore, workspacesStore, navStore } = useCrystal();
-  const connection = useConnectionState();
+  const { terminalsStore, navStore, fleet, activeSid, selectWorkspace: focusWorkspace } =
+    useCrystal();
+  const connections = useFleetConnections();
   const activeWsId = useWorkspaces((s) => s.activeId);
   const activeWsRoot = useWorkspaces(
     (s) => s.workspaces.find((w) => w.id === s.activeId)?.root ?? null,
@@ -121,7 +124,7 @@ export function CrystalShell({
         (r) => r.status === "running" && (r.purpose === "index" || r.purpose === "survey"),
       ).length,
   );
-  const attention = useFleetAttention(activeWsId);
+  const attention = useFleetAttention(activeSid, activeWsId);
   // Programs still in flight across every project — the Hub's rail badge.
   const liveProgramCount = useHub(
     (s) => s.programs.filter((p) => p.status === "running").length,
@@ -135,26 +138,29 @@ export function CrystalShell({
     [updateNav, onModeChange],
   );
 
-  // Last facet visited per workspace: re-entering a workspace from the
-  // Overview restores where you were in it.
+  // Last facet visited per (server, workspace): re-entering a workspace from
+  // the Overview restores where you were in it.
   const lastFacet = useRef(new Map<string, CrystalMode>());
   useEffect(() => {
-    if (!isCrossProjectMode(mode) && activeWsId) lastFacet.current.set(activeWsId, mode);
-  }, [mode, activeWsId]);
+    if (!isCrossProjectMode(mode) && activeWsId) {
+      lastFacet.current.set(wsKey(activeSid, activeWsId), mode);
+    }
+  }, [mode, activeSid, activeWsId]);
 
   const selectWorkspace = useCallback(
-    (id: string): void => {
-      const ws = workspacesStore.getState();
-      if (ws.activeId !== id) ws.setActive(id);
+    (sid: string, id: string): void => {
+      // Cross-server aware: focusing another connection's workspace also swaps
+      // the active store bundle (the per-workspace modes re-key below).
+      focusWorkspace(sid, id);
       // From the Overview, entering a workspace restores its last facet; from a
       // facet, the facet is preserved — flipping between two workspaces'
       // architectures is a single click per flip.
       const current = navStore.getState().link.mode;
       if (!current || isCrossProjectMode(current)) {
-        switchMode(lastFacet.current.get(id) ?? "architect");
+        switchMode(lastFacet.current.get(wsKey(sid, id)) ?? "architect");
       }
     },
-    [workspacesStore, navStore, switchMode],
+    [focusWorkspace, navStore, switchMode],
   );
 
   useEffect(() => {
@@ -166,11 +172,15 @@ export function CrystalShell({
         e.preventDefault();
         setPaletteOpen(true);
       } else if ((e.ctrlKey || e.metaKey) && e.altKey && /^[1-9]$/.test(e.key)) {
-        // Workspace tabs are the top level: Ctrl+Alt+n jumps to the nth workspace.
-        const ws = workspacesStore.getState().workspaces[Number(e.key) - 1];
+        // Workspace tabs are the top level: Ctrl+Alt+n jumps to the nth
+        // workspace, counted across every connected server in tab order.
+        const all = fleet.store
+          .getState()
+          .connections.flatMap((c) => c.workspaces.map((w) => ({ sid: c.sid, id: w.id })));
+        const ws = all[Number(e.key) - 1];
         if (ws) {
           e.preventDefault();
-          selectWorkspace(ws.id);
+          selectWorkspace(ws.sid, ws.id);
         }
       } else if (
         (e.ctrlKey || e.metaKey) &&
@@ -207,13 +217,16 @@ export function CrystalShell({
     };
     window.addEventListener("crystal:open-file", onOpenFile);
     // "Open a terminal in workspace X" requests (e.g. from a project card).
+    // `sid` targets a specific server; absent means the active connection.
     const onOpenTerminal = (e: Event) => {
-      const detail = (e as CustomEvent<{ ws?: string; kind?: "shell" | "agent" }>).detail;
-      const ws = detail?.ws ?? workspacesStore.getState().activeId;
+      const detail = (e as CustomEvent<{ ws?: string; sid?: string; kind?: "shell" | "agent" }>)
+        .detail;
+      const sid = detail?.sid ?? fleet.activeSid;
+      const ws = detail?.ws ?? fleet.connection(sid)?.activeWs;
       if (!ws) return;
       terminalsStore.getState().setPanelOpen(true);
-      if (detail?.kind === "agent") terminalsStore.getState().openAgentConsole(ws);
-      else void terminalsStore.getState().openShell(ws);
+      if (detail?.kind === "agent") terminalsStore.getState().openAgentConsole(ws, sid);
+      else void terminalsStore.getState().openShell(ws, undefined, undefined, undefined, sid);
     };
     window.addEventListener("crystal:open-terminal", onOpenTerminal);
     return () => {
@@ -221,7 +234,7 @@ export function CrystalShell({
       window.removeEventListener("crystal:open-file", onOpenFile);
       window.removeEventListener("crystal:open-terminal", onOpenTerminal);
     };
-  }, [switchMode, selectWorkspace, workspacesStore, terminalsStore]);
+  }, [switchMode, selectWorkspace, fleet, terminalsStore]);
 
   return (
     <TooltipProvider>
@@ -295,12 +308,13 @@ export function CrystalShell({
                 </div>
               }
             >
-              {/* Keyed by workspace: switching remounts modes with fresh, correctly-scoped
-                  state. Cross-project modes (Overview, Hub) span workspaces, so they
-                  survive switches. */}
+              {/* Keyed by (server, workspace): switching remounts modes with fresh,
+                  correctly-scoped state — the sid matters because two servers can host
+                  the same repo path and then share a wsId. Cross-project modes
+                  (Overview, Hub) span workspaces, so they survive switches. */}
               {CRYSTAL_MODES.filter((m) => visited.has(m)).map((m) => {
                 const ModeComponent = MODE_COMPONENTS[m];
-                const key = isCrossProjectMode(m) ? m : `${m}:${activeWsId ?? ""}`;
+                const key = isCrossProjectMode(m) ? m : `${m}:${activeSid}:${activeWsId ?? ""}`;
                 return (
                   <div key={key} className={cn("h-full", mode !== m && "hidden")}>
                     <ModeComponent />
@@ -315,14 +329,7 @@ export function CrystalShell({
 
         {!hideStatusBar ? (
           <footer className="flex h-6 shrink-0 items-center gap-3 border-t border-edge bg-surface-1 px-3 text-[11px] text-ink-faint">
-            <span className="flex items-center gap-1.5">
-              <StatusDot
-                status={
-                  connection === "open" ? "completed" : connection === "connecting" ? "running" : "failed"
-                }
-              />
-              {connection === "open" ? "bridge" : connection}
-            </span>
+            <BridgeStatus connections={connections} />
             <Tooltip content="Toggle the terminal panel" shortcut="Ctrl+`">
               <button
                 type="button"
@@ -356,11 +363,12 @@ export function CrystalShell({
           </footer>
         ) : null}
 
+        {/* The palette lists the ACTIVE connection's workspaces (fleet v1). */}
         <CommandPalette
           open={paletteOpen}
           onOpenChange={setPaletteOpen}
           onSwitchMode={switchMode}
-          onSelectWorkspace={selectWorkspace}
+          onSelectWorkspace={(id) => selectWorkspace(activeSid, id)}
         />
       </div>
     </TooltipProvider>
@@ -368,27 +376,69 @@ export function CrystalShell({
 }
 
 /**
- * Worst traffic light across the *other* workspaces — the rail badge that says
- * "something elsewhere needs you". The active workspace is excluded: its run
- * results are auto-acknowledged while you're looking at it.
+ * Worst traffic light across every *other* (server, workspace) in the fleet —
+ * the rail badge that says "something elsewhere needs you". The active pair is
+ * excluded: its run results are auto-acknowledged while you're looking at it.
  */
-function useFleetAttention(activeWsId: string | null): TrafficLight {
-  const workspaces = useWorkspaces((s) => s.workspaces);
+function useFleetAttention(activeSid: string, activeWsId: string | null): TrafficLight {
+  const connections = useFleetConnections();
   const runsByWs = useFleet((s) => s.runsByWs);
   const todosByWs = useFleet((s) => s.todosByWs);
   const seenAtByWs = useFleet((s) => s.seenAtByWs);
   const questionsByWs = useFleet((s) => s.questionsByWs);
   return worstLight(
-    workspaces
-      .filter((w) => w.id !== activeWsId)
-      .map((w) =>
-        workspaceLight(
-          todosByWs[w.id] ?? EMPTY_TODOS,
-          runsByWs[w.id] ?? EMPTY_RUNS,
-          seenAtByWs[w.id] ?? null,
-          questionsByWs[w.id] ?? 0,
-        ),
-      ),
+    connections.flatMap((c) =>
+      c.workspaces
+        .filter((w) => !(c.sid === activeSid && w.id === activeWsId))
+        .map((w) => {
+          const key = wsKey(c.sid, w.id);
+          return workspaceLight(
+            todosByWs[key] ?? EMPTY_TODOS,
+            runsByWs[key] ?? EMPTY_RUNS,
+            seenAtByWs[key] ?? null,
+            questionsByWs[key] ?? 0,
+          );
+        }),
+    ),
+  );
+}
+
+/**
+ * Footer bridge indicator across every connection: the worst state wins the
+ * dot, the tooltip lists each server. A dead *added* connection shows as
+ * degraded here (and on its tabs) but never blocks the default server.
+ */
+function BridgeStatus({
+  connections,
+}: {
+  connections: ReturnType<typeof useFleetConnections>;
+}) {
+  const rank: Record<ConnectionState, number> = { open: 0, connecting: 1, closed: 2 };
+  const worst = connections.reduce<ConnectionState>(
+    (acc, c) => (rank[c.state] > rank[acc] ? c.state : acc),
+    "open",
+  );
+  const label =
+    connections.length <= 1
+      ? worst === "open"
+        ? "bridge"
+        : worst
+      : `${connections.filter((c) => c.state === "open").length}/${connections.length} bridges`;
+  return (
+    <Tooltip
+      content={
+        connections.length <= 1
+          ? "Bridge connection"
+          : connections.map((c) => `${c.label}: ${c.state}`).join(" · ")
+      }
+    >
+      <span className="flex items-center gap-1.5">
+        <StatusDot
+          status={worst === "open" ? "completed" : worst === "connecting" ? "running" : "failed"}
+        />
+        {label}
+      </span>
+    </Tooltip>
   );
 }
 

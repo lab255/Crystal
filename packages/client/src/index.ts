@@ -5,7 +5,23 @@ export {
   type BridgeTransportFactory,
   type ConnectionState,
 } from "./bridge-client.js";
-export { tauriBridgeTransport } from "./tauri-transport.js";
+export {
+  listBridgeInstances,
+  shellBridgeEndpoint,
+  tauriBridgeTransport,
+  tauriPipeTransport,
+  type BridgeInstance,
+} from "./tauri-transport.js";
+export {
+  EMPTY_WORKSPACES,
+  FleetClient,
+  parseWsKey,
+  sidForEndpoint,
+  wsKey,
+  type FleetClientOptions,
+  type FleetClientState,
+  type ServerConnection,
+} from "./fleet-client.js";
 export { checkForDesktopUpdate } from "./desktop-update.js";
 export { useWorkerMemo, type WorkerMemoResult } from "./use-worker-memo.js";
 export {
@@ -113,6 +129,7 @@ export {
   useConnectionState,
   useCrystal,
   useFleet,
+  useFleetConnections,
   useHighlight,
   useHighlightUpdate,
   useHub,

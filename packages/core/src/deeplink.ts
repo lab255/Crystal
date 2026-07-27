@@ -20,6 +20,39 @@ import type { QualityViewId } from "./quality.js";
 import type { SurfaceViewId } from "./surfaces.js";
 import { RUN_PURPOSES, type RunPurpose } from "./agent.js";
 
+/**
+ * The fleet client's id for the bootstrapped connection (page-origin bridge /
+ * desktop sidecar). Deep links never spell it out: a bare workspace id always
+ * means "on the default server", which is what keeps every pre-fleet URL valid.
+ */
+export const DEFAULT_SERVER_SID = "default";
+
+/**
+ * A parsed `ws` deep-link param: which server (`sid`, the fleet client's
+ * *stable connection id*, not the per-boot serverId) and which workspace.
+ */
+export interface WsRef {
+  sid: string;
+  ws: string;
+}
+
+/**
+ * Parse a `ws` param. Bare workspace ids (every URL minted before the fleet
+ * layer, and every URL pointing at the default server) resolve to the default
+ * sid; `sid:wsId` targets an added server. Workspace ids are hex hashes and
+ * sids are `default`/hex-derived, so the first `:` is an unambiguous split.
+ */
+export function parseWsRef(ref: string): WsRef {
+  const idx = ref.indexOf(":");
+  if (idx <= 0) return { sid: DEFAULT_SERVER_SID, ws: idx === 0 ? ref.slice(1) : ref };
+  return { sid: ref.slice(0, idx), ws: ref.slice(idx + 1) };
+}
+
+/** Format a `ws` param; the default server stays bare (backward compatible). */
+export function formatWsRef(sid: string | null | undefined, ws: string): string {
+  return !sid || sid === DEFAULT_SERVER_SID ? ws : `${sid}:${ws}`;
+}
+
 export type CrystalModeId =
   | "projects"
   | "hub"
@@ -207,7 +240,11 @@ export interface HubLink {
 }
 
 export interface DeepLink {
-  /** Active workspace id (`workspaceIdFor(root)` — stable across restarts). */
+  /**
+   * Active workspace ref: a bare workspace id (`workspaceIdFor(root)` — stable
+   * across restarts) on the default server, or `sid:wsId` for a workspace on
+   * an added bridge connection. See `parseWsRef`/`formatWsRef`.
+   */
   ws?: string;
   /**
    * Active global lens (see lens.ts): dimensional tags ("intent:auth,sys:forms"),
@@ -268,7 +305,9 @@ export function formatDeepLink(link: DeepLink): string {
       if (cm) {
         add("at", cm.kind);
         if (cm.kind !== "all") {
-          if (cm.ws !== link.ws) add("mws", cm.ws);
+          // `link.ws` may be a `sid:wsId` ref; the code map's ws is always a
+          // bare workspace id (of the active server), so compare bare-to-bare.
+          if (cm.ws !== (link.ws ? parseWsRef(link.ws).ws : undefined)) add("mws", cm.ws);
           if (cm.kind === "module" || cm.kind === "file") add("path", cm.path);
         }
       }
@@ -452,7 +491,8 @@ export function parseDeepLink(hash: string): DeepLink {
     const find = params.get("find");
     if (find) a.find = find;
     const at = params.get("at");
-    const mws = params.get("mws") ?? ws;
+    // The `ws` param may carry a server prefix; codemap levels hold bare ids.
+    const mws = params.get("mws") ?? (ws ? parseWsRef(ws).ws : null);
     const path = params.get("path");
     if (at === "all") a.codemap = { kind: "all" };
     else if (at === "workspace" && mws) a.codemap = { kind: "workspace", ws: mws };

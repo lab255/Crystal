@@ -10,34 +10,37 @@ import {
   type Project,
   type TodoItem,
 } from "@crystal/core";
-import { useCrystal, useFleet } from "@crystal/client";
+import { useCrystal, useFleet, wsKey } from "@crystal/client";
 import { TrafficLightDot, cn } from "@crystal/ui";
 
 /**
  * A workspace card's todo list: each item carries a traffic light (click the
  * dot to cycle gray → green → yellow → red), a title, and an optional context
- * note — enough to re-orient when hopping back into this codebase.
+ * note — enough to re-orient when hopping back into this codebase. Fleet-
+ * aware: `sid` names the card's bridge connection, todos live under the
+ * compound key, and requests go over that server's own client.
  */
-export function TodoSection({ ws, todos }: { ws: string; todos: TodoItem[] }) {
+export function TodoSection({ sid, ws, todos }: { sid: string; ws: string; todos: TodoItem[] }) {
   const setTodos = useFleet((s) => s.setTodos);
-  const { client, workspaceStore, workspacesStore } = useCrystal();
+  const { fleet, activeSid, workspaceStore, workspacesStore } = useCrystal();
   const [draft, setDraft] = useState("");
 
+  const key = wsKey(sid, ws);
   const update = (id: string, patch: Partial<TodoItem>) => {
     setTodos(
-      ws,
+      key,
       todos.map((t) => (t.id === id ? { ...t, ...patch, updatedAt: nowIso() } : t)),
     );
   };
   const remove = (id: string) =>
     setTodos(
-      ws,
+      key,
       todos.filter((t) => t.id !== id),
     );
   const add = () => {
     const text = draft.trim();
     if (!text) return;
-    setTodos(ws, [...todos, createTodoItem(text)]);
+    setTodos(key, [...todos, createTodoItem(text)]);
     setDraft("");
   };
 
@@ -48,6 +51,8 @@ export function TodoSection({ ws, todos }: { ws: string; todos: TodoItem[] }) {
    * is marked done. Dispatch happens later, from the board.
    */
   const promote = async (t: TodoItem) => {
+    const client = fleet.clientOf(sid);
+    if (!client) return; // connection removed under us
     const { roster } = await client.request("agents.get", { ws });
     const labels = ["source:todo"];
     const makeTask = (project: Project) => {
@@ -64,8 +69,8 @@ export function TodoSection({ ws, todos }: { ws: string; todos: TodoItem[] }) {
     };
     // The active workspace's board lives in the workspace store — go through
     // it so a pending debounced save can't clobber the new task. Any other
-    // workspace saves directly over the bridge with an explicit `ws`.
-    const isActive = workspacesStore.getState().activeId === ws;
+    // workspace (or server) saves directly over its bridge with an explicit `ws`.
+    const isActive = sid === activeSid && workspacesStore.getState().activeId === ws;
     const activeInfo = isActive ? workspaceStore.getState().info : null;
     if (activeInfo) {
       const entry = activeInfo.projects[0];

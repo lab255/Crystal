@@ -1,13 +1,61 @@
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_SERVER_SID,
   applyDeepLink,
   deepLinkNavIdentity,
   formatDeepLink,
+  formatWsRef,
   parseDeepLink,
+  parseWsRef,
   type DeepLink,
 } from "./deeplink.js";
 
 const roundTrip = (link: DeepLink) => parseDeepLink(formatDeepLink(link));
+
+describe("parseWsRef/formatWsRef", () => {
+  it("round-trips a default-server ref as a bare id (backward compatible)", () => {
+    const ref = formatWsRef(DEFAULT_SERVER_SID, "1a2b3c4d5e6f");
+    expect(ref).toBe("1a2b3c4d5e6f");
+    expect(parseWsRef(ref)).toEqual({ sid: DEFAULT_SERVER_SID, ws: "1a2b3c4d5e6f" });
+  });
+
+  it("treats null/undefined sid as the default server", () => {
+    expect(formatWsRef(null, "abc")).toBe("abc");
+    expect(formatWsRef(undefined, "abc")).toBe("abc");
+  });
+
+  it("round-trips an added-server ref through the sid:wsId form", () => {
+    const ref = formatWsRef("s1f3a9c2b", "1a2b3c4d5e6f");
+    expect(ref).toBe("s1f3a9c2b:1a2b3c4d5e6f");
+    expect(parseWsRef(ref)).toEqual({ sid: "s1f3a9c2b", ws: "1a2b3c4d5e6f" });
+  });
+
+  it("parses every pre-fleet URL's bare ws id identically", () => {
+    // Old links carry exactly the bare hash — they must mean the default server.
+    expect(parseWsRef("d41d8cd98f00")).toEqual({ sid: DEFAULT_SERVER_SID, ws: "d41d8cd98f00" });
+  });
+
+  it("keeps the ws param backward compatible inside full deep links", () => {
+    const old = parseDeepLink("#/code?ws=abc123&file=src/index.ts");
+    expect(old.ws).toBe("abc123");
+    const fleet = parseDeepLink("#/code?ws=s99ff0011%3Aabc123&file=src/index.ts");
+    expect(fleet.ws).toBe("s99ff0011:abc123");
+    expect(parseWsRef(fleet.ws!)).toEqual({ sid: "s99ff0011", ws: "abc123" });
+  });
+
+  it("compares code-map workspaces bare-to-bare when link.ws carries a sid", () => {
+    // The active workspace lives on an added server, and the code map drills
+    // into that same workspace: no mws must be emitted.
+    const hash = formatDeepLink({
+      mode: "architect",
+      ws: "sffee1122:abc",
+      architect: { view: "codemap", codemap: { kind: "module", ws: "abc", path: "packages/ui" } },
+    });
+    expect(hash).not.toContain("mws");
+    const parsed = parseDeepLink(hash);
+    expect(parsed.architect?.codemap).toEqual({ kind: "module", ws: "abc", path: "packages/ui" });
+  });
+});
 
 describe("formatDeepLink", () => {
   it("returns empty string without a mode", () => {

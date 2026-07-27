@@ -1,6 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { Bot, ChevronDown, Plus, Square, TerminalSquare, X } from "lucide-react";
-import { useTerminals, useWorkspaces, type TermChunk, type TerminalTab } from "@crystal/client";
+import {
+  useFleetConnections,
+  useTerminals,
+  type TermChunk,
+  type TerminalTab,
+} from "@crystal/client";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -13,11 +18,13 @@ import {
 import { XtermView } from "./XtermView.js";
 
 /**
- * Bottom terminal panel — tabs span every open workspace, so you can run
- * commands or drive agents in one project while looking at another. Two tab
- * kinds: shells (server-hosted PTYs rendered with xterm.js — interactive,
- * shared live across every connected client) and agent consoles (each prompt
- * starts/resumes a Claude run in that workspace).
+ * Bottom terminal panel — tabs span every open workspace of every connected
+ * bridge server, so you can run commands or drive agents in one project while
+ * looking at another. Two tab kinds: shells (server-hosted PTYs rendered with
+ * xterm.js — interactive, shared live across every connected client) and
+ * agent consoles (each prompt starts/resumes a Claude run in that workspace).
+ * With more than one server, the + menu lists (server · workspace) pairs and
+ * tab labels carry the server name.
  */
 export function TerminalPanel({ onClose }: { onClose: () => void }) {
   const tabs = useTerminals((s) => s.tabs);
@@ -26,9 +33,24 @@ export function TerminalPanel({ onClose }: { onClose: () => void }) {
   const openShell = useTerminals((s) => s.openShell);
   const openAgentConsole = useTerminals((s) => s.openAgentConsole);
   const closeTab = useTerminals((s) => s.closeTab);
-  const workspaces = useWorkspaces((s) => s.workspaces);
+  const connections = useFleetConnections();
+  const multiServer = connections.length > 1;
 
-  const wsName = (id: string) => workspaces.find((w) => w.id === id)?.name ?? id;
+  const wsName = (sid: string, id: string) => {
+    const conn = connections.find((c) => c.sid === sid);
+    const name = conn?.workspaces.find((w) => w.id === id)?.name ?? id;
+    return multiServer && conn ? `${conn.label} · ${name}` : name;
+  };
+  // Every (server, workspace) pair the + menu can open a terminal into.
+  const targets = connections.flatMap((c) =>
+    c.state === "open"
+      ? c.workspaces.map((w) => ({
+          sid: c.sid,
+          ws: w.id,
+          label: multiServer ? `${c.label} · ${w.name}` : w.name,
+        }))
+      : [],
+  );
   const active = tabs.find((t) => t.id === activeTabId) ?? null;
 
   return (
@@ -51,8 +73,8 @@ export function TerminalPanel({ onClose }: { onClose: () => void }) {
                 <Icon className="h-3 w-3" />
                 <span className="max-w-40 truncate">
                   {t.title
-                    ? `${t.title} — ${wsName(t.ws)}`
-                    : `${wsName(t.ws)}${t.kind === "shell" && t.cwd !== "." ? `/${t.cwd}` : ""}`}
+                    ? `${t.title} — ${wsName(t.sid, t.ws)}`
+                    : `${wsName(t.sid, t.ws)}${t.kind === "shell" && t.cwd !== "." ? `/${t.cwd}` : ""}`}
                 </span>
                 {t.kind === "agent" && t.activeRunId ? (
                   <StatusDot status="running" />
@@ -85,16 +107,24 @@ export function TerminalPanel({ onClose }: { onClose: () => void }) {
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="min-w-56">
-            {workspaces.map((w) => (
-              <DropdownMenuItem key={`sh-${w.id}`} onSelect={() => void openShell(w.id)} className="gap-2">
+            {targets.map((t) => (
+              <DropdownMenuItem
+                key={`sh-${t.sid}-${t.ws}`}
+                onSelect={() => void openShell(t.ws, undefined, undefined, undefined, t.sid)}
+                className="gap-2"
+              >
                 <TerminalSquare className="h-3.5 w-3.5 text-ink-faint" />
-                <span className="min-w-0 flex-1 truncate">Terminal — {w.name}</span>
+                <span className="min-w-0 flex-1 truncate">Terminal — {t.label}</span>
               </DropdownMenuItem>
             ))}
-            {workspaces.map((w) => (
-              <DropdownMenuItem key={`ag-${w.id}`} onSelect={() => openAgentConsole(w.id)} className="gap-2">
+            {targets.map((t) => (
+              <DropdownMenuItem
+                key={`ag-${t.sid}-${t.ws}`}
+                onSelect={() => openAgentConsole(t.ws, t.sid)}
+                className="gap-2"
+              >
                 <Bot className="h-3.5 w-3.5 text-ink-faint" />
-                <span className="min-w-0 flex-1 truncate">Agent console — {w.name}</span>
+                <span className="min-w-0 flex-1 truncate">Agent console — {t.label}</span>
               </DropdownMenuItem>
             ))}
           </DropdownMenuContent>

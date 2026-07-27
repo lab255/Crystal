@@ -21,18 +21,24 @@ export { CRYSTAL_MODES, MODE_LABELS, WORKSPACE_FACETS, type CrystalMode } from "
 export {
   BridgeClient,
   CrystalProvider,
+  FleetClient,
   defaultBridgeUrl,
+  parseWsKey,
   useAgents,
   useConnectionState,
   useCrystal,
   useFleet,
+  useFleetConnections,
   useNav,
   useNavUpdate,
   useTerminals,
   useWorkspace,
+  wsKey,
   type ConnectionState,
   type NavPatch,
+  type ServerConnection,
 } from "@crystal/client";
+export { ConnectBridgeDialog } from "./ConnectBridgeDialog.js";
 
 // Domain model
 export * from "@crystal/core";

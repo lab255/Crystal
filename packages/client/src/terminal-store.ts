@@ -17,12 +17,16 @@ export type TerminalTabKind = "shell" | "agent";
  * page reload via `terminal.list` + replay buffers); agent consoles are
  * client-local — each submitted prompt starts an agent run in the tab's
  * workspace, resuming the previous Claude session so the console reads as one
- * conversation. Tabs are cross-workspace by design: `ws` is explicit
- * everywhere and never relies on the client's active scope.
+ * conversation. Tabs are cross-workspace *and cross-server* by design: `sid`
+ * (bridge connection) and `ws` are explicit everywhere and never rely on the
+ * client's active scope. Terminal/run ids are server-local, so every lookup
+ * pairs them with the tab's `sid`.
  */
 export interface TerminalTab {
   /** Server terminal id for shells; client-generated for agent consoles. */
   id: string;
+  /** Bridge connection hosting this terminal (see fleet-client.ts). */
+  sid: string;
   ws: string;
   kind: TerminalTabKind;
   status: "running" | "exited";
@@ -50,12 +54,21 @@ export interface TerminalsState {
   panelOpen: boolean;
 
   setPanelOpen(open: boolean): void;
-  /** Reveal the panel and focus a (possibly not-yet-synced) server terminal. */
-  focusTerminal(ws: string, terminalId: string): Promise<void>;
-  /** Sync shell tabs with the server's terminals for the given workspaces. */
-  refresh(wsIds: string[]): Promise<void>;
-  openShell(ws: string, cwd?: string, cols?: number, rows?: number): Promise<string>;
-  openAgentConsole(ws: string): string;
+  /**
+   * Wire a bridge connection's terminal/agent events into this store. Returns
+   * a disposer that also drops the connection's tabs (server removed).
+   */
+  attach(sid: string, client: BridgeClient): () => void;
+  /**
+   * Reveal the panel and focus a (possibly not-yet-synced) server terminal.
+   * `sid` defaults to the active connection — every pre-fleet call site is a
+   * per-workspace view, which by the fleet invariant renders the active server.
+   */
+  focusTerminal(ws: string, terminalId: string, sid?: string): Promise<void>;
+  /** Sync one server's shell tabs with its `terminal.list` for the given workspaces. */
+  refresh(sid: string, wsIds: string[]): Promise<void>;
+  openShell(ws: string, cwd?: string, cols?: number, rows?: number, sid?: string): Promise<string>;
+  openAgentConsole(ws: string, sid?: string): string;
   setActive(tabId: string | null): void;
   /** Send a line: shell → PTY input (CR appended); agent → start/resume a run. */
   send(tabId: string, text: string): Promise<void>;
@@ -70,10 +83,20 @@ export interface TerminalsState {
 
 export type TerminalsStore = StoreApi<TerminalsState>;
 
-export function createTerminalsStore(client: BridgeClient): TerminalsStore {
+export function createTerminalsStore(getActiveSid: () => string): TerminalsStore {
+  /** Live clients by sid — how a tab's requests find its server. */
+  const clients = new Map<string, BridgeClient>();
+  function clientFor(sid: string): BridgeClient {
+    const client = clients.get(sid);
+    if (!client) throw new Error(`No bridge connection: ${sid}`);
+    return client;
+  }
+
   // Which console tab each agent run belongs to — runs outlive activeRunId
-  // (their tail events still stream after `result` settles the run).
+  // (their tail events still stream after `result` settles the run). Keyed
+  // per connection: run ids are server-local.
   const tabByRunId = new Map<string, string>();
+  const runKey = (sid: string, runId: string) => `${sid}/${runId}`;
   // Synthetic seq counters for agent consoles.
   const agentSeq = new Map<string, number>();
 
@@ -104,17 +127,124 @@ export function createTerminalsStore(client: BridgeClient): TerminalsStore {
       set({ panelOpen: open });
     },
 
-    async focusTerminal(ws, terminalId) {
-      // The terminal.changed broadcast usually lands before the caller gets
-      // here; refresh covers the race (and hydrates the replay buffer).
-      if (!get().tabs.some((t) => t.id === terminalId)) {
-        await get().refresh([...new Set([...get().tabs.map((t) => t.ws), ws])]);
-      }
-      set({ panelOpen: true });
-      if (get().tabs.some((t) => t.id === terminalId)) set({ activeTabId: terminalId });
+    attach(sid, client) {
+      clients.set(sid, client);
+      const disposers = [
+        client.events.on("terminal.data", ({ chunk }) => {
+          store.setState((s) => {
+            // Terminal ids are server-local — match within this connection only.
+            const tab = s.tabs.find((t) => t.sid === sid && t.id === chunk.terminalId);
+            if (!tab) return s;
+            const chunks = s.chunksByTab[tab.id] ?? [];
+            const last = chunks[chunks.length - 1];
+            if (last && chunk.seq <= last.seq) return s; // replay overlap
+            return {
+              chunksByTab: {
+                ...s.chunksByTab,
+                [tab.id]: [...chunks, { seq: chunk.seq, stream: chunk.stream, text: chunk.text }],
+              },
+            };
+          });
+        }),
+        client.events.on("terminal.changed", ({ ws, terminal }) => {
+          store.setState((s) => {
+            const idx = s.tabs.findIndex((t) => t.sid === sid && t.id === terminal.id);
+            if (idx === -1) {
+              // Created elsewhere (another client/tab) — surface it here too.
+              if (terminal.status !== "running") return s;
+              return {
+                tabs: [
+                  ...s.tabs,
+                  {
+                    id: terminal.id,
+                    sid,
+                    ws,
+                    kind: "shell" as const,
+                    status: terminal.status,
+                    title: terminal.title ?? null,
+                    cwd: terminal.cwd,
+                    cols: terminal.cols,
+                    rows: terminal.rows,
+                    sessionId: null,
+                    activeRunId: null,
+                  },
+                ],
+              };
+            }
+            const tabs = [...s.tabs];
+            tabs[idx] = {
+              ...tabs[idx]!,
+              status: terminal.status,
+              cols: terminal.cols,
+              rows: terminal.rows,
+            };
+            return { tabs };
+          });
+        }),
+        client.events.on("agent.event", (runEvent) => {
+          const tabId = tabByRunId.get(runKey(sid, runEvent.runId));
+          if (!tabId) return;
+          const chunk = agentEventToChunk(runEvent.event);
+          if (chunk) appendChunk(tabId, chunk.stream, chunk.text);
+          if (runEvent.event.type === "result") {
+            patchTab(tabId, {
+              activeRunId: null,
+              sessionId:
+                runEvent.event.sessionId ??
+                store.getState().tabs.find((t) => t.id === tabId)?.sessionId ??
+                null,
+            });
+          } else if (
+            runEvent.event.type === "status" &&
+            runEvent.event.status !== "running" &&
+            runEvent.event.status !== "queued"
+          ) {
+            // Terminal status without a result (spawn failure, cancel): unblock the console.
+            const tab = store.getState().tabs.find((t) => t.id === tabId);
+            if (tab?.activeRunId === runEvent.runId) patchTab(tabId, { activeRunId: null });
+          }
+        }),
+      ];
+      return () => {
+        for (const dispose of disposers) dispose();
+        clients.delete(sid);
+        set((s) => {
+          const dropped = s.tabs.filter((t) => t.sid === sid);
+          const tabs = s.tabs.filter((t) => t.sid !== sid);
+          const chunksByTab = { ...s.chunksByTab };
+          for (const t of dropped) {
+            delete chunksByTab[t.id];
+            agentSeq.delete(t.id);
+          }
+          return {
+            tabs,
+            chunksByTab,
+            activeTabId:
+              s.activeTabId && tabs.some((t) => t.id === s.activeTabId)
+                ? s.activeTabId
+                : (tabs[0]?.id ?? null),
+          };
+        });
+      };
     },
 
-    async refresh(wsIds) {
+    async focusTerminal(ws, terminalId, sid = getActiveSid()) {
+      // The terminal.changed broadcast usually lands before the caller gets
+      // here; refresh covers the race (and hydrates the replay buffer).
+      const has = () => get().tabs.some((t) => t.sid === sid && t.id === terminalId);
+      if (!has()) {
+        const wsIds = [
+          ...new Set([...get().tabs.filter((t) => t.sid === sid).map((t) => t.ws), ws]),
+        ];
+        await get().refresh(sid, wsIds);
+      }
+      set({ panelOpen: true });
+      if (has()) set({ activeTabId: terminalId });
+    },
+
+    async refresh(sid, wsIds) {
+      const client = clients.get(sid);
+      if (!client) return;
       const lists = await Promise.all(
         wsIds.map(async (ws) => ({
           ws,
@@ -125,11 +255,14 @@ export function createTerminalsStore(client: BridgeClient): TerminalsStore {
         terminals.map((t) => ({ ws, info: t })),
       );
       set((s) => {
-        const known = new Set(s.tabs.map((t) => t.id));
+        const known = new Set(
+          s.tabs.filter((t) => t.sid === sid).map((t) => t.id),
+        );
         const added: TerminalTab[] = server
           .filter(({ info }) => !known.has(info.id))
           .map(({ ws, info }) => ({
             id: info.id,
+            sid,
             ws,
             kind: "shell" as const,
             status: info.status,
@@ -142,11 +275,17 @@ export function createTerminalsStore(client: BridgeClient): TerminalsStore {
           }));
         const serverIds = new Set(server.map(({ info }) => info.id));
         const infoById = new Map(server.map(({ info }) => [info.id, info]));
-        // Shells gone from the server (killed elsewhere, server restart) drop;
-        // agent consoles are client-local and always survive.
+        // Shells gone from this server (killed elsewhere, server restart)
+        // drop; agent consoles and *other servers' tabs* always survive.
         const kept = s.tabs
-          .filter((t) => t.kind === "agent" || (serverIds.has(t.id) && wsIds.includes(t.ws)))
+          .filter(
+            (t) =>
+              t.sid !== sid ||
+              t.kind === "agent" ||
+              (serverIds.has(t.id) && wsIds.includes(t.ws)),
+          )
           .map((t) => {
+            if (t.sid !== sid) return t;
             const info = infoById.get(t.id);
             if (!info) return t;
             return info.status !== t.status || info.cols !== t.cols || info.rows !== t.rows
@@ -165,7 +304,7 @@ export function createTerminalsStore(client: BridgeClient): TerminalsStore {
       // Replay buffers for shells we haven't hydrated yet.
       await Promise.all(
         get()
-          .tabs.filter((t) => t.kind === "shell" && !get().chunksByTab[t.id])
+          .tabs.filter((t) => t.sid === sid && t.kind === "shell" && !get().chunksByTab[t.id])
           .map(async (tab) => {
             try {
               const { chunks } = await client.request("terminal.buffer", {
@@ -185,15 +324,21 @@ export function createTerminalsStore(client: BridgeClient): TerminalsStore {
       );
     },
 
-    async openShell(ws, cwd, cols, rows) {
-      const { terminal } = await client.request("terminal.create", { ws, cwd, cols, rows });
+    async openShell(ws, cwd, cols, rows, sid = getActiveSid()) {
+      const { terminal } = await clientFor(sid).request("terminal.create", {
+        ws,
+        cwd,
+        cols,
+        rows,
+      });
       set((s) => ({
-        tabs: s.tabs.some((t) => t.id === terminal.id)
+        tabs: s.tabs.some((t) => t.sid === sid && t.id === terminal.id)
           ? s.tabs
           : [
               ...s.tabs,
               {
                 id: terminal.id,
+                sid,
                 ws,
                 kind: "shell",
                 status: terminal.status,
@@ -210,13 +355,14 @@ export function createTerminalsStore(client: BridgeClient): TerminalsStore {
       return terminal.id;
     },
 
-    openAgentConsole(ws) {
+    openAgentConsole(ws, sid = getActiveSid()) {
       const id = uid("console");
       set((s) => ({
         tabs: [
           ...s.tabs,
           {
             id,
+            sid,
             ws,
             kind: "agent",
             status: "running",
@@ -242,7 +388,7 @@ export function createTerminalsStore(client: BridgeClient): TerminalsStore {
       if (!tab) throw new Error(`Unknown terminal tab: ${tabId}`);
       if (tab.kind === "shell") {
         // \r is what a real Enter key sends to a PTY.
-        await client.request("terminal.input", {
+        await clientFor(tab.sid).request("terminal.input", {
           ws: tab.ws,
           terminalId: tab.id,
           data: `${text}\r`,
@@ -251,19 +397,23 @@ export function createTerminalsStore(client: BridgeClient): TerminalsStore {
       }
       if (tab.activeRunId) throw new Error("An agent run is already executing in this console");
       appendChunk(tabId, "input", `${text}\n`);
-      const { run } = await client.request("agent.start", {
+      const { run } = await clientFor(tab.sid).request("agent.start", {
         ws: tab.ws,
         prompt: text,
         resumeSessionId: tab.sessionId,
       });
-      tabByRunId.set(run.id, tabId);
+      tabByRunId.set(runKey(tab.sid, run.id), tabId);
       patchTab(tabId, { activeRunId: run.id });
     },
 
     async write(tabId, data) {
       const tab = get().tabs.find((t) => t.id === tabId);
       if (!tab || tab.kind !== "shell") throw new Error(`Not a shell tab: ${tabId}`);
-      await client.request("terminal.input", { ws: tab.ws, terminalId: tab.id, data });
+      await clientFor(tab.sid).request("terminal.input", {
+        ws: tab.ws,
+        terminalId: tab.id,
+        data,
+      });
     },
 
     async resize(tabId, cols, rows) {
@@ -271,24 +421,29 @@ export function createTerminalsStore(client: BridgeClient): TerminalsStore {
       if (!tab || tab.kind !== "shell") return;
       if (tab.cols === cols && tab.rows === rows) return;
       patchTab(tabId, { cols, rows });
-      await client.request("terminal.resize", { ws: tab.ws, terminalId: tab.id, cols, rows });
+      await clientFor(tab.sid).request("terminal.resize", {
+        ws: tab.ws,
+        terminalId: tab.id,
+        cols,
+        rows,
+      });
     },
 
     async cancelAgent(tabId) {
       const tab = get().tabs.find((t) => t.id === tabId);
       if (!tab?.activeRunId) return;
-      await client.request("agent.cancel", { ws: tab.ws, runId: tab.activeRunId });
+      await clientFor(tab.sid).request("agent.cancel", { ws: tab.ws, runId: tab.activeRunId });
     },
 
     async closeTab(tabId) {
       const tab = get().tabs.find((t) => t.id === tabId);
       if (!tab) return;
       if (tab.kind === "shell") {
-        await client
+        await clientFor(tab.sid)
           .request("terminal.kill", { ws: tab.ws, terminalId: tab.id })
           .catch(() => {/* already gone on the server */});
       } else if (tab.activeRunId) {
-        await client
+        await clientFor(tab.sid)
           .request("agent.cancel", { ws: tab.ws, runId: tab.activeRunId })
           .catch(() => {});
       }
@@ -304,75 +459,6 @@ export function createTerminalsStore(client: BridgeClient): TerminalsStore {
       agentSeq.delete(tabId);
     },
   }));
-
-  client.events.on("terminal.data", ({ chunk }) => {
-    store.setState((s) => {
-      const existing = s.chunksByTab[chunk.terminalId];
-      // Ignore terminals we don't track (other clients' workspaces still open here get tabs via refresh/changed).
-      if (!s.tabs.some((t) => t.id === chunk.terminalId)) return s;
-      const chunks = existing ?? [];
-      const last = chunks[chunks.length - 1];
-      if (last && chunk.seq <= last.seq) return s; // replay overlap
-      return {
-        chunksByTab: {
-          ...s.chunksByTab,
-          [chunk.terminalId]: [...chunks, { seq: chunk.seq, stream: chunk.stream, text: chunk.text }],
-        },
-      };
-    });
-  });
-
-  client.events.on("terminal.changed", ({ ws, terminal }) => {
-    store.setState((s) => {
-      const idx = s.tabs.findIndex((t) => t.id === terminal.id);
-      if (idx === -1) {
-        // Created elsewhere (another client/tab) — surface it here too.
-        if (terminal.status !== "running") return s;
-        return {
-          tabs: [
-            ...s.tabs,
-            {
-              id: terminal.id,
-              ws,
-              kind: "shell" as const,
-              status: terminal.status,
-              title: terminal.title ?? null,
-              cwd: terminal.cwd,
-              cols: terminal.cols,
-              rows: terminal.rows,
-              sessionId: null,
-              activeRunId: null,
-            },
-          ],
-        };
-      }
-      const tabs = [...s.tabs];
-      tabs[idx] = {
-        ...tabs[idx]!,
-        status: terminal.status,
-        cols: terminal.cols,
-        rows: terminal.rows,
-      };
-      return { tabs };
-    });
-  });
-
-  client.events.on("agent.event", (runEvent) => {
-    const tabId = tabByRunId.get(runEvent.runId);
-    if (!tabId) return;
-    const chunk = agentEventToChunk(runEvent.event);
-    if (chunk) appendChunk(tabId, chunk.stream, chunk.text);
-    if (runEvent.event.type === "result") {
-      patchTab(tabId, {
-        activeRunId: null,
-        sessionId: runEvent.event.sessionId ?? store.getState().tabs.find((t) => t.id === tabId)?.sessionId ?? null,
-      });
-    } else if (runEvent.event.type === "status" && runEvent.event.status !== "running" && runEvent.event.status !== "queued") {
-      // Terminal status without a result (spawn failure, cancel): unblock the console.
-      const tab = store.getState().tabs.find((t) => t.id === tabId);
-      if (tab?.activeRunId === runEvent.runId) patchTab(tabId, { activeRunId: null });
-    }
-  });
 
   return store;
 }

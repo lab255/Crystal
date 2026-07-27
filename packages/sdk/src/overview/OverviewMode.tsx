@@ -1,20 +1,24 @@
 import { useState } from "react";
-import { FolderPlus } from "lucide-react";
-import { useWorkspaces } from "@crystal/client";
+import { FolderPlus, Unplug } from "lucide-react";
+import { useFleetConnections } from "@crystal/client";
 import { Button, EmptyState } from "@crystal/ui";
 import { OpenWorkspaceDialog } from "../OpenWorkspaceDialog.js";
 import { WorkspaceCard } from "./WorkspaceCard.js";
 
 /**
- * Projects mode — mission control across every open workspace. Each card
- * shows the workspace's traffic light, what its agents are doing, and its
- * todo list, so switching codebases starts with context instead of
- * archaeology.
+ * Projects mode — mission control across every open workspace of every
+ * connected bridge server. Each card shows the workspace's traffic light,
+ * what its agents are doing, and its todo list, so switching codebases starts
+ * with context instead of archaeology. With more than one server, cards group
+ * under a server heading; a disconnected server keeps its heading (dimmed) so
+ * a dead connection is visible rather than silently absent.
  */
 export function OverviewMode() {
-  const workspaces = useWorkspaces((s) => s.workspaces);
-  const activeId = useWorkspaces((s) => s.activeId);
+  const connections = useFleetConnections();
   const [openDialog, setOpenDialog] = useState(false);
+
+  const multiServer = connections.length > 1;
+  const total = connections.reduce((n, c) => n + c.workspaces.length, 0);
 
   return (
     <div className="h-full overflow-y-auto bg-surface-0">
@@ -23,7 +27,9 @@ export function OverviewMode() {
           <div>
             <h2 className="text-base font-semibold text-ink">Projects</h2>
             <p className="text-xs text-ink-muted">
-              Every workspace on this bridge — traffic lights, agents and todos in one place.
+              {multiServer
+                ? "Every workspace across your connected bridges — traffic lights, agents and todos in one place."
+                : "Every workspace on this bridge — traffic lights, agents and todos in one place."}
             </p>
           </div>
           <Button
@@ -36,15 +42,46 @@ export function OverviewMode() {
           </Button>
         </header>
 
-        {workspaces.length === 0 ? (
+        {total === 0 ? (
           <EmptyState title="No workspaces open">
             Open a workspace to start tracking its agents and todos.
           </EmptyState>
         ) : (
-          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-            {workspaces.map((w) => (
-              <WorkspaceCard key={w.id} ws={w} active={w.id === activeId} />
-            ))}
+          <div className="space-y-6">
+            {connections.map((c) => {
+              if (c.workspaces.length === 0 && !multiServer) return null;
+              const offline = c.state !== "open";
+              return (
+                <section key={c.sid}>
+                  {multiServer ? (
+                    <h3 className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-ink-faint">
+                      {c.label}
+                      {offline ? (
+                        <span className="flex items-center gap-1 normal-case tracking-normal text-danger">
+                          <Unplug className="h-3 w-3" /> disconnected
+                        </span>
+                      ) : null}
+                    </h3>
+                  ) : null}
+                  <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                    {c.workspaces.map((w) => (
+                      <WorkspaceCard
+                        key={`${c.sid}:${w.id}`}
+                        sid={c.sid}
+                        ws={w}
+                        serverLabel={multiServer ? c.label : null}
+                        offline={offline}
+                      />
+                    ))}
+                  </div>
+                  {multiServer && c.workspaces.length === 0 ? (
+                    <p className="text-[11px] text-ink-faint">
+                      {offline ? "Unreachable — its workspaces will return on reconnect." : "No workspaces open."}
+                    </p>
+                  ) : null}
+                </section>
+              );
+            })}
           </div>
         )}
       </div>

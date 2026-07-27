@@ -1,5 +1,6 @@
 import { ArrowRight, Bot, KanbanSquare, TerminalSquare } from "lucide-react";
 import {
+  formatWsRef,
   workspaceLight,
   TRAFFIC_LIGHT_LABELS,
   type WorkspaceDescriptor,
@@ -7,27 +8,47 @@ import {
 import {
   EMPTY_RUNS,
   EMPTY_TODOS,
+  useCrystal,
   useFleet,
   useNavUpdate,
   useWorkspaces,
+  wsKey,
 } from "@crystal/client";
 import { Tooltip, TrafficLightDot, cn } from "@crystal/ui";
 import { TodoSection } from "./TodoSection.js";
 
 /**
  * One project (workspace) on the overview: its traffic light, agent-run
- * summary, and todo list. The rollup light combines open todos with run
- * attention — a run finishing while you work elsewhere turns the card yellow
- * (review) or red (failure) until you focus the workspace again.
+ * summary, and todo list. Fleet-aware: the card belongs to one bridge
+ * connection (`sid`), reads its slice of the fleet store via the compound
+ * `"<sid>/<wsId>"` key, and entering it switches both the active server and
+ * workspace. The rollup light combines open todos with run attention — a run
+ * finishing while you work elsewhere turns the card yellow (review) or red
+ * (failure) until you focus the workspace again.
  */
-export function WorkspaceCard({ ws, active }: { ws: WorkspaceDescriptor; active: boolean }) {
-  const setActive = useWorkspaces((s) => s.setActive);
+export function WorkspaceCard({
+  sid,
+  ws,
+  serverLabel,
+  offline,
+}: {
+  sid: string;
+  ws: WorkspaceDescriptor;
+  /** Shown when more than one server is connected. */
+  serverLabel: string | null;
+  /** The card's connection is down — render read-only/dimmed. */
+  offline: boolean;
+}) {
+  const { activeSid, selectWorkspace } = useCrystal();
+  const activeWsId = useWorkspaces((s) => s.activeId);
   const updateNav = useNavUpdate();
-  const runs = useFleet((s) => s.runsByWs[ws.id] ?? EMPTY_RUNS);
-  const todos = useFleet((s) => s.todosByWs[ws.id] ?? EMPTY_TODOS);
-  const seenAt = useFleet((s) => s.seenAtByWs[ws.id] ?? null);
-  const questions = useFleet((s) => s.questionsByWs[ws.id] ?? 0);
+  const key = wsKey(sid, ws.id);
+  const runs = useFleet((s) => s.runsByWs[key] ?? EMPTY_RUNS);
+  const todos = useFleet((s) => s.todosByWs[key] ?? EMPTY_TODOS);
+  const seenAt = useFleet((s) => s.seenAtByWs[key] ?? null);
+  const questions = useFleet((s) => s.questionsByWs[key] ?? 0);
 
+  const active = sid === activeSid && ws.id === activeWsId;
   const light = workspaceLight(todos, runs, seenAt, questions);
   const running = runs.filter((r) => r.status === "running" || r.status === "queued").length;
   const unseen = seenAt === null ? runs.filter((r) => r.endedAt) : runs.filter((r) => r.endedAt && r.endedAt > seenAt);
@@ -35,14 +56,19 @@ export function WorkspaceCard({ ws, active }: { ws: WorkspaceDescriptor; active:
   const failed = unseen.filter((r) => r.status === "failed").length;
   const openTodos = todos.filter((t) => !t.done).length;
 
+  const enter = () => selectWorkspace(sid, ws.id);
   const goToRuns = () => {
-    setActive(ws.id);
-    updateNav({ ws: ws.id, mode: "orchestrate", orchestrate: { tab: "runs" } });
+    enter();
+    updateNav({ ws: formatWsRef(sid, ws.id), mode: "orchestrate", orchestrate: { tab: "runs" } });
+  };
+  const goToBoard = () => {
+    enter();
+    updateNav({ ws: formatWsRef(sid, ws.id), mode: "orchestrate", orchestrate: { tab: "board" } });
   };
 
   const openTerminal = (kind: "shell" | "agent") => {
     window.dispatchEvent(
-      new CustomEvent("crystal:open-terminal", { detail: { ws: ws.id, kind } }),
+      new CustomEvent("crystal:open-terminal", { detail: { ws: ws.id, sid, kind } }),
     );
   };
 
@@ -51,6 +77,7 @@ export function WorkspaceCard({ ws, active }: { ws: WorkspaceDescriptor; active:
       className={cn(
         "flex min-w-0 flex-col gap-2.5 rounded-xl border bg-surface-1 p-3.5",
         active ? "border-crystal-500/50" : "border-edge",
+        offline && "opacity-60",
       )}
     >
       <header className="flex items-center gap-2.5">
@@ -58,7 +85,11 @@ export function WorkspaceCard({ ws, active }: { ws: WorkspaceDescriptor; active:
         <div className="min-w-0 flex-1">
           <div className="flex items-baseline gap-2">
             <h3 className="truncate text-sm font-semibold text-ink">{ws.name}</h3>
+            {serverLabel ? (
+              <span className="truncate text-[10px] text-ink-faint">{serverLabel}</span>
+            ) : null}
             {active ? <span className="text-[10px] text-crystal-300">active</span> : null}
+            {offline ? <span className="text-[10px] text-danger">offline</span> : null}
           </div>
           <div className="truncate text-[10px] text-ink-faint" title={ws.root}>
             {ws.root}
@@ -68,9 +99,10 @@ export function WorkspaceCard({ ws, active }: { ws: WorkspaceDescriptor; active:
           <Tooltip content="Open a terminal here">
             <button
               type="button"
+              disabled={offline}
               onClick={() => openTerminal("shell")}
               aria-label={`Open terminal in ${ws.name}`}
-              className="rounded p-1 text-ink-faint hover:bg-surface-3 hover:text-ink"
+              className="rounded p-1 text-ink-faint hover:bg-surface-3 hover:text-ink disabled:opacity-40"
             >
               <TerminalSquare className="h-3.5 w-3.5" />
             </button>
@@ -78,9 +110,10 @@ export function WorkspaceCard({ ws, active }: { ws: WorkspaceDescriptor; active:
           <Tooltip content="Open an agent console here">
             <button
               type="button"
+              disabled={offline}
               onClick={() => openTerminal("agent")}
               aria-label={`Open agent console in ${ws.name}`}
-              className="rounded p-1 text-ink-faint hover:bg-surface-3 hover:text-ink"
+              className="rounded p-1 text-ink-faint hover:bg-surface-3 hover:text-ink disabled:opacity-40"
             >
               <Bot className="h-3.5 w-3.5" />
             </button>
@@ -88,12 +121,10 @@ export function WorkspaceCard({ ws, active }: { ws: WorkspaceDescriptor; active:
           <Tooltip content="Open the task board">
             <button
               type="button"
-              onClick={() => {
-                setActive(ws.id);
-                updateNav({ ws: ws.id, mode: "orchestrate", orchestrate: { tab: "board" } });
-              }}
+              disabled={offline}
+              onClick={goToBoard}
               aria-label={`Open board for ${ws.name}`}
-              className="rounded p-1 text-ink-faint hover:bg-surface-3 hover:text-ink"
+              className="rounded p-1 text-ink-faint hover:bg-surface-3 hover:text-ink disabled:opacity-40"
             >
               <KanbanSquare className="h-3.5 w-3.5" />
             </button>
@@ -102,9 +133,10 @@ export function WorkspaceCard({ ws, active }: { ws: WorkspaceDescriptor; active:
             <Tooltip content="Switch to this workspace">
               <button
                 type="button"
-                onClick={() => setActive(ws.id)}
+                disabled={offline}
+                onClick={enter}
                 aria-label={`Switch to ${ws.name}`}
-                className="rounded p-1 text-ink-faint hover:bg-surface-3 hover:text-ink"
+                className="rounded p-1 text-ink-faint hover:bg-surface-3 hover:text-ink disabled:opacity-40"
               >
                 <ArrowRight className="h-3.5 w-3.5" />
               </button>
@@ -118,10 +150,8 @@ export function WorkspaceCard({ ws, active }: { ws: WorkspaceDescriptor; active:
         {questions > 0 ? (
           <button
             type="button"
-            onClick={() => {
-              setActive(ws.id);
-              updateNav({ ws: ws.id, mode: "orchestrate", orchestrate: { tab: "board" } });
-            }}
+            disabled={offline}
+            onClick={goToBoard}
             title="Agents filed decisions only a human can make — answer them on the board"
             className="rounded-full bg-warn/15 px-2 py-0.5 font-medium text-warn hover:bg-warn/25"
           >
@@ -131,6 +161,7 @@ export function WorkspaceCard({ ws, active }: { ws: WorkspaceDescriptor; active:
         {running > 0 ? (
           <button
             type="button"
+            disabled={offline}
             onClick={goToRuns}
             className="rounded-full bg-info/15 px-2 py-0.5 text-info hover:bg-info/25"
           >
@@ -140,6 +171,7 @@ export function WorkspaceCard({ ws, active }: { ws: WorkspaceDescriptor; active:
         {toReview > 0 ? (
           <button
             type="button"
+            disabled={offline}
             onClick={goToRuns}
             className="rounded-full bg-warn/15 px-2 py-0.5 text-warn hover:bg-warn/25"
           >
@@ -149,6 +181,7 @@ export function WorkspaceCard({ ws, active }: { ws: WorkspaceDescriptor; active:
         {failed > 0 ? (
           <button
             type="button"
+            disabled={offline}
             onClick={goToRuns}
             className="rounded-full bg-danger/15 px-2 py-0.5 text-danger hover:bg-danger/25"
           >
@@ -162,7 +195,7 @@ export function WorkspaceCard({ ws, active }: { ws: WorkspaceDescriptor; active:
         ) : null}
       </div>
 
-      <TodoSection ws={ws.id} todos={todos} />
+      <TodoSection sid={sid} ws={ws.id} todos={todos} />
     </section>
   );
 }

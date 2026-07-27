@@ -9,11 +9,14 @@ import {
 type RelayEvent = { kind: "line"; data: string } | { kind: "close" };
 
 /**
- * Connect to the sidecar's IPC pipe through the Tauri shell: JS never touches
- * the network — the Rust side owns the pipe client and relays newline-delimited
- * bridge frames over a Tauri ipc Channel. Rejects when the shell has no pipe.
+ * Connect to a bridge server's IPC pipe through the Tauri shell: JS never
+ * touches the network — the Rust side owns the pipe client and relays
+ * newline-delimited bridge frames over a Tauri ipc Channel. Without an
+ * explicit `endpoint` the shell dials its own supervised sidecar's pipe
+ * (rejecting when it has none); with one it dials any local server's pipe or
+ * socket — typically discovered via {@link listBridgeInstances}.
  */
-async function connectPipe(): Promise<BridgeTransport> {
+async function connectPipe(endpoint?: string): Promise<BridgeTransport> {
   const channel = new Channel<RelayEvent>();
   const t: BridgeTransport & { id: number | null; closed: boolean } = {
     id: null,
@@ -33,7 +36,10 @@ async function connectPipe(): Promise<BridgeTransport> {
     if (evt.kind === "line") t.onmessage?.(evt.data);
     else t.onclose?.();
   };
-  const id = await invoke<number>("bridge_connect", { onEvent: channel });
+  const id = await invoke<number>(
+    "bridge_connect",
+    endpoint == null ? { onEvent: channel } : { endpoint, onEvent: channel },
+  );
   if (t.closed) {
     void invoke("bridge_close", { id });
     throw new Error("closed before connect");
@@ -96,4 +102,87 @@ export function tauriBridgeTransport(fallbackUrl: string): BridgeTransportFactor
       });
     return t;
   };
+}
+
+/**
+ * Transport for an *explicit* local IPC endpoint (an added fleet connection on
+ * the desktop). No WebSocket fallback: if the pipe is down we surface a close
+ * and let the BridgeClient's retry loop re-dial it — connecting to some other
+ * server's TCP port instead would be silently wrong.
+ */
+export function tauriPipeTransport(endpoint: string): BridgeTransportFactory {
+  return () => {
+    let inner: BridgeTransport | null = null;
+    let closed = false;
+    const t: BridgeTransport = {
+      send: (text) => inner?.send(text),
+      close: () => {
+        closed = true;
+        inner?.close();
+      },
+      onopen: null,
+      onmessage: null,
+      onclose: null,
+    };
+    void connectPipe(endpoint)
+      .then((pipe) => {
+        if (closed) {
+          pipe.close();
+          return;
+        }
+        inner = pipe;
+        pipe.onmessage = (text) => t.onmessage?.(text);
+        pipe.onclose = () => t.onclose?.();
+        t.onopen?.();
+      })
+      .catch(() => {
+        t.onclose?.();
+      });
+    return t;
+  };
+}
+
+/**
+ * A bridge server's discovery record from `~/.crystal/instances/<pid>.json`,
+ * as surfaced by the desktop shell (lenient — the schema is still growing;
+ * `token` is stripped Rust-side, `alive`/`file` are added there).
+ */
+export interface BridgeInstance {
+  pid?: number;
+  serverId?: string;
+  name?: string;
+  pipe?: string;
+  port?: number;
+  roots?: string[];
+  workspaces?: { id: string; root: string; name: string }[];
+  startedAt?: string;
+  alive?: boolean;
+  file?: string;
+}
+
+/**
+ * List every local bridge server advertising itself in `~/.crystal/instances`
+ * (desktop only — resolves to [] in a plain browser, where discovery is
+ * impossible and connections are added by URL instead).
+ */
+export async function listBridgeInstances(): Promise<BridgeInstance[]> {
+  try {
+    const raw = await invoke<unknown[]>("list_bridge_instances");
+    return raw.filter((r): r is BridgeInstance => typeof r === "object" && r !== null);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * The supervised sidecar's own IPC endpoint (null in `tauri dev` or a plain
+ * browser) — used to exclude the default connection's instance file from the
+ * "connect to another bridge" candidates.
+ */
+export async function shellBridgeEndpoint(): Promise<string | null> {
+  try {
+    return await invoke<string | null>("bridge_endpoint");
+  } catch {
+    return null;
+  }
 }
