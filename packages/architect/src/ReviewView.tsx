@@ -28,7 +28,7 @@ import { NoteNode } from "./nodes/NoteNode.js";
 /**
  * Draft review — the draft and its base side by side, with every semantic
  * difference listed at a glance. Works for any draft; drafts minted from a
- * git ref (`archdraft.fromRef`) make this "review this PR / commit against
+ * git ref (the vs-ref review) make this "review this PR / commit against
  * the current architecture".
  */
 

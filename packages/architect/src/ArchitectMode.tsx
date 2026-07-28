@@ -48,6 +48,8 @@ import {
   type CodeTrace,
   type CodeTraceStep,
   type FacetSuggestion,
+  type SurfaceMapReport,
+  type SurfacesReport,
   type SystemOverview,
   type TaskItem,
 } from "@crystal/core";
@@ -397,6 +399,40 @@ function DiagramsView({
     [client, fetchOverview, activeWs],
   );
 
+  // Screens layer (the folded-in surfaces map): screens + their API call
+  // flows join the derivation when the `layers` param asks for them.
+  const layersParam = useNav((l) => l.architect?.layers) ?? null;
+  const screensOn = layersParam?.split(",").includes("screens") ?? false;
+  const setScreensOn = useCallback(
+    (on: boolean) => nav({ architect: { layers: on ? "screens" : null } }),
+    [nav],
+  );
+  const [screensData, setScreensData] = useState<{
+    screens: SurfacesReport["screens"];
+    calls: SurfaceMapReport["calls"];
+  } | null>(null);
+  const fetchScreens = useCallback(async () => {
+    try {
+      const [report, map] = await Promise.all([
+        client.request("surfaces.get", {}),
+        client.request("surfaces.map", {}),
+      ]);
+      setScreensData({ screens: report.screens, calls: map.calls });
+    } catch {
+      // No analyzable frontend — the layer simply stays empty.
+    }
+  }, [client]);
+  useEffect(() => {
+    if (!screensOn) return;
+    if (connection === "open") void fetchScreens();
+  }, [screensOn, connection, fetchScreens]);
+  useEffect(() => {
+    if (!screensOn) return;
+    return client.events.on("codemap.changed", ({ ws }) => {
+      if (!activeWs || ws === activeWs) void fetchScreens();
+    });
+  }, [client, screensOn, fetchScreens, activeWs]);
+
   const derived = useMemo(
     () =>
       overviewData && codeSummary
@@ -404,9 +440,10 @@ function DiagramsView({
             overview: overviewData,
             externals: codeSummary.externals ?? [],
             modules: codeSummary.modules,
+            surfaces: screensOn ? screensData : null,
           })
         : null,
-    [overviewData, codeSummary],
+    [overviewData, codeSummary, screensOn, screensData],
   );
   // Fold the fresh derivation through the overlay (drops dead positional
   // overrides, keeps semantic ones as stale).
@@ -1084,6 +1121,8 @@ function DiagramsView({
                   onToggleInsights={setShowInsights}
                   showContracts={showContracts}
                   onToggleContracts={setShowContracts}
+                  showScreens={screensOn}
+                  onToggleScreens={setScreensOn}
                 />
               )}
               {activeDraft ? (

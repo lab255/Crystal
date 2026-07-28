@@ -19,11 +19,9 @@ import {
   type ProgramSpend,
 } from "@crystal/core";
 import {
-  applyCodeSnapshotToGraph,
   applyProfileOverlay,
   buildSystemOverview,
   computeReviewFindings,
-  createArchDraft,
   diffSystemOverviews,
   migrateLegacyToOverlay,
   openQuestionsOfWorkflow,
@@ -57,7 +55,7 @@ import {
 } from "./git.js";
 import { HUB_MCP_ID, handleMcpRequest, isMcpRequest } from "./mcp/http.js";
 import { INTERACTIVE_PROMPT_DELAY_MS, launchInteractiveRun } from "./interactive.js";
-import { overviewSourcesAtRef, snapshotAtRef, surfacesSnapshotAtRef } from "./ref-snapshot.js";
+import { overviewSourcesAtRef, surfacesSnapshotAtRef } from "./ref-snapshot.js";
 import { pasteInput } from "./terminal-manager.js";
 import { WorkspaceRegistry } from "./workspace-registry.js";
 
@@ -440,25 +438,6 @@ export async function startCrystalServer(opts: {
       return { ok: true };
     },
     "archdraft.create": ({ ws, draft }) => registry.get(ws).store.createArchDraft(draft),
-    "archdraft.fromRef": async ({ ws, archPath, ref, repoPath }) => {
-      const rt = registry.get(ws);
-      const info = await rt.store.load();
-      const arch = info.architectures.find((a) => a.path === archPath);
-      if (!arch) throw new Error(`Unknown architecture: ${archPath}`);
-      const snapshot = await snapshotAtRef(rt.root, repoPath ?? ".", ref);
-      // Long hashes make unreadable names; prefer the resolved short hash.
-      const refLabel = /^[0-9a-f]{12,}$/i.test(ref) ? snapshot.commit : ref;
-      const draft = createArchDraft(
-        `Review ${refLabel}`,
-        archPath,
-        arch.graph,
-        new Date().toISOString(),
-      );
-      const graph = applyCodeSnapshotToGraph(arch.graph, snapshot);
-      const created = await rt.store.createArchDraft({ ...draft, graph });
-      broadcast("workspace.changed", { ws: rt.id });
-      return created;
-    },
     "archdraft.save": async ({ ws, path: p, draft }) => {
       await registry.get(ws).store.saveArchDraft(p, draft);
       return { ok: true };

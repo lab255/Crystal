@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ClipboardCheck, Copy, Handshake, History, Layers, LayoutGrid, Lightbulb, Maximize2, Network, Radar, Rows3, X, ZoomIn } from "lucide-react";
+import { AppWindow, ClipboardCheck, Copy, Handshake, History, Layers, LayoutGrid, Lightbulb, Maximize2, Network, Radar, Rows3, X, ZoomIn } from "lucide-react";
 import type { ArchEdgeKind, ArchitectureGraph, CodeLodLevel } from "@crystal/core";
 import { Button, Tooltip, cn } from "@crystal/ui";
 import { EDGE_KIND_STYLE } from "./model.js";
@@ -32,6 +32,8 @@ export function Toolbar({
   onToggleInsights,
   showContracts,
   onToggleContracts,
+  showScreens,
+  onToggleScreens,
   onOpenWorkspacesMap,
 }: {
   graph: ArchitectureGraph;
@@ -61,6 +63,8 @@ export function Toolbar({
   onToggleInsights?: (on: boolean) => void;
   showContracts?: boolean;
   onToggleContracts?: (on: boolean) => void;
+  showScreens?: boolean;
+  onToggleScreens?: (on: boolean) => void;
   /** Open the cross-workspace map (all open workspaces and their imports). */
   onOpenWorkspacesMap?: () => void;
 }) {
@@ -260,6 +264,24 @@ export function Toolbar({
           >
             <History className="h-3.5 w-3.5" />
             changes
+          </button>
+        </Tooltip>
+      ) : null}
+      {onToggleScreens ? (
+        <Tooltip content="Screens layer — frontend screens and their API call flows into the systems (the surfaces map, on this canvas)">
+          <button
+            type="button"
+            aria-pressed={showScreens}
+            onClick={() => onToggleScreens(!showScreens)}
+            className={cn(
+              "flex h-6 items-center gap-1.5 rounded-md px-1.5 text-[11px] transition-colors",
+              showScreens
+                ? "bg-crystal-500/15 text-crystal-300"
+                : "text-ink-faint hover:text-ink-muted",
+            )}
+          >
+            <AppWindow className="h-3.5 w-3.5" />
+            screens
           </button>
         </Tooltip>
       ) : null}

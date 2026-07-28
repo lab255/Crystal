@@ -194,6 +194,9 @@ export interface ArchitectCanvasProps {
   onToggleInsights?: (on: boolean) => void;
   showContracts?: boolean;
   onToggleContracts?: (on: boolean) => void;
+  /** Screens layer toggle (the folded-in surfaces map). */
+  showScreens?: boolean;
+  onToggleScreens?: (on: boolean) => void;
   /**
    * Ref-review marks keyed by node/edge id (vs <ref>) — added/removed/changed
    * tints; ghost-marked nodes render dashed and inert. The caller merges
@@ -363,6 +366,8 @@ function CanvasInner({
   onToggleInsights,
   showContracts,
   onToggleContracts,
+  showScreens,
+  onToggleScreens,
   diffMarks,
 }: ArchitectCanvasProps) {
   const [selectedNodes, setSelectedNodes] = useState<ReadonlySet<string>>(new Set());
@@ -2397,6 +2402,8 @@ function CanvasInner({
             onToggleInsights={onToggleInsights}
             showContracts={showContracts}
             onToggleContracts={onToggleContracts}
+            showScreens={showScreens}
+            onToggleScreens={onToggleScreens}
             onOpenWorkspacesMap={onOpenWorkspacesMap}
           />
         </Panel>

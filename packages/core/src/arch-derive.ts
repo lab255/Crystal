@@ -7,6 +7,7 @@ import type {
 import type { CodeModule } from "./codemap.js";
 import type { DiffMarks } from "./diagram-diff.js";
 import { ARCH_KIND_OF_CATEGORY, type CodeExternalDep } from "./external-services.js";
+import type { ScreenApiCall, ScreenSurface } from "./surfaces.js";
 import type { SystemLink, SystemModule, SystemOverview, SystemRole } from "./system-overview.js";
 import type { SystemChange, SystemOverviewDiff } from "./system-insights.js";
 
@@ -32,6 +33,12 @@ export interface DeriveInput {
   externals: readonly CodeExternalDep[];
   /** Code-map modules — used to pick a resolvable `codeModule` per system. */
   modules: readonly CodeModule[];
+  /**
+   * Screens layer (the surfaces map, folded in): screens render as frontend
+   * nodes grouped by owning module, and their API reachability becomes
+   * screen→system flow edges. Null/absent leaves the layer off.
+   */
+  surfaces?: { screens: readonly ScreenSurface[]; calls: readonly ScreenApiCall[] } | null;
 }
 
 /** Role → node kind (the systems view's mapping, layer-refined below). */
@@ -227,6 +234,80 @@ export function deriveArchGraph(input: DeriveInput): ArchitectureGraph {
         `detected from ${dep.packages.join(", ")}`,
         residual,
       );
+    }
+  }
+
+  // Screens layer: each screen a frontend node grouped by its owning module,
+  // its matched API calls becoming screen→system flow edges — the surfaces
+  // system map's reachability story on the one canvas.
+  if (input.surfaces) {
+    const { screens, calls } = input.surfaces;
+    const groupOf = (file: string): string => {
+      let best = ".";
+      for (const m of modules) {
+        if (m.path === ".") continue;
+        if ((file === m.path || file.startsWith(`${m.path}/`)) && m.path.length > best.length)
+          best = m.path;
+      }
+      return best;
+    };
+    const groups = new Map<string, string>(); // module path → container id
+    for (const screen of screens) {
+      const moduleOfScreen = groupOf(screen.file);
+      let groupId = groups.get(moduleOfScreen);
+      if (!groupId) {
+        groupId = `screens:${slug(moduleOfScreen)}`;
+        groups.set(moduleOfScreen, groupId);
+        const moduleName =
+          modules.find((m) => m.path === moduleOfScreen)?.name ?? moduleOfScreen;
+        nodes.push({
+          id: groupId,
+          kind: "group",
+          label: `${moduleName} screens`,
+          description: "",
+          parentId: null,
+          position: { x: 0, y: 0 },
+          size: { width: 420, height: 280 },
+          tech: [],
+          codeModule: moduleOfScreen === "." ? null : moduleOfScreen,
+          placements: {},
+          layer: "entry",
+        });
+      }
+      nodes.push({
+        id: `screen:${screen.id}`,
+        kind: "frontend",
+        label: screen.route || screen.component || screen.id,
+        description: screen.component ?? "",
+        parentId: groupId,
+        position: { x: 0, y: 0 },
+        size: null,
+        tech: [],
+        codeFile: screen.componentFile ?? screen.file,
+        placements: {},
+        layer: "entry",
+      });
+    }
+    const screenIds = new Set(screens.map((s) => `screen:${s.id}`));
+    const flows = new Map<string, { source: string; target: string; weight: number }>();
+    for (const call of calls) {
+      const source = `screen:${call.screen}`;
+      if (!call.endpoint || !screenIds.has(source)) continue;
+      const target = systemOfModule(call.endpoint.file, overview.systems, idOf);
+      if (!target) continue;
+      const key = `${source}\0${target}`;
+      const entry = flows.get(key) ?? { source, target, weight: 0 };
+      entry.weight += 1;
+      flows.set(key, entry);
+    }
+    for (const { source, target, weight } of flows.values()) {
+      edges.push({
+        id: `flow:${source}->${target}`,
+        source,
+        target,
+        kind: "sync",
+        label: weight > 1 ? String(weight) : "",
+      });
     }
   }
 

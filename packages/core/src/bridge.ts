@@ -227,15 +227,6 @@ export interface BridgeMethods {
     result: { path: string; draft: ArchDraft };
   };
   "archdraft.save": { params: WsScope & { path: string; draft: ArchDraft }; result: { ok: true } };
-  /**
-   * Review a git ref (commit / branch / PR head) architecturally: snapshot the
-   * module + import graph at the ref, project it onto the architecture, and
-   * persist the result as a draft (base = current graph) for split-pane review.
-   */
-  "archdraft.fromRef": {
-    params: WsScope & { archPath: string; ref: string; repoPath?: string };
-    result: { path: string; draft: ArchDraft };
-  };
   "archdraft.delete": { params: WsScope & { path: string }; result: { ok: true } };
   "project.save": { params: WsScope & { path: string; project: Project }; result: { ok: true } };
   "project.create": { params: WsScope & { name: string }; result: { path: string; project: Project } };
