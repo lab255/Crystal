@@ -4,6 +4,7 @@ import {
   BookOpenText,
   Bot,
   Boxes,
+  Coins,
   Component,
   Database,
   FlaskConical,
@@ -13,6 +14,7 @@ import {
   History,
   KanbanSquare,
   Layers,
+  Network,
   PencilRuler,
   Plus,
   Target,
@@ -23,7 +25,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { useNavUpdate, useWorkspace, useWorkspaces } from "@crystal/client";
-import { Dialog, DialogContent, Kbd, cn } from "@crystal/ui";
+import { CommandList, Dialog, DialogContent, Kbd } from "@crystal/ui";
 import { CRYSTAL_MODES, MODE_ICONS, MODE_LABELS, type CrystalMode } from "./modes.js";
 
 export interface Command {
@@ -59,13 +61,9 @@ export function CommandPalette({
   const activeWsId = useWorkspaces((s) => s.activeId);
   const openWorkspace = useWorkspaces((s) => s.openWorkspace);
   const [query, setQuery] = useState("");
-  const [highlight, setHighlight] = useState(0);
 
   useEffect(() => {
-    if (open) {
-      setQuery("");
-      setHighlight(0);
-    }
+    if (open) setQuery("");
   }, [open]);
 
   const commands: Command[] = useMemo(() => {
@@ -197,10 +195,19 @@ export function CommandPalette({
           nav({ architect: { view: "infra" } });
         },
       },
-      ...(["board", "runs", "agents"] as const).map((tab) => ({
+      ...(["board", "workflows", "runs", "agents", "costs"] as const).map((tab) => ({
         id: `view.orchestrate.${tab}`,
-        title: `Orchestrate: ${tab[0]!.toUpperCase()}${tab.slice(1)}`,
-        icon: tab === "board" ? KanbanSquare : tab === "runs" ? History : Bot,
+        title: `Orchestrate: ${tab === "costs" ? "Cost attribution" : `${tab[0]!.toUpperCase()}${tab.slice(1)}`}`,
+        icon:
+          tab === "board"
+            ? KanbanSquare
+            : tab === "runs"
+              ? History
+              : tab === "workflows"
+                ? Network
+                : tab === "costs"
+                  ? Coins
+                  : Bot,
         run: () => {
           onSwitchMode("orchestrate");
           nav({ orchestrate: { tab } });
@@ -290,8 +297,6 @@ export function CommandPalette({
     return commands.filter((c) => c.title.toLowerCase().includes(q));
   }, [commands, query]);
 
-  useEffect(() => setHighlight(0), [query]);
-
   function run(cmd: Command): void {
     onOpenChange(false);
     cmd.run();
@@ -300,48 +305,26 @@ export function CommandPalette({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent title="Command palette" className="top-[30%] w-[480px]">
-        <input
-          autoFocus
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "ArrowDown") {
-              e.preventDefault();
-              setHighlight((h) => Math.min(h + 1, results.length - 1));
-            } else if (e.key === "ArrowUp") {
-              e.preventDefault();
-              setHighlight((h) => Math.max(h - 1, 0));
-            } else if (e.key === "Enter" && results[highlight]) {
-              run(results[highlight]);
-            }
-          }}
+        {/* The shared filtered-list body (same one as quick-open). */}
+        <CommandList
+          query={query}
+          onQueryChange={setQuery}
+          items={results}
+          itemKey={(cmd) => cmd.id}
           placeholder="Type a command…"
-          className="mb-2 w-full rounded-lg border border-edge bg-surface-1 px-2.5 py-1.5 text-sm text-ink outline-none placeholder:text-ink-faint focus:border-crystal-500/60"
-        />
-        <div className="max-h-72 space-y-0.5 overflow-y-auto">
-          {results.map((cmd, i) => {
+          emptyText="No commands"
+          onPick={run}
+          renderItem={(cmd) => {
             const Icon = cmd.icon;
             return (
-              <button
-                key={cmd.id}
-                type="button"
-                onClick={() => run(cmd)}
-                onMouseEnter={() => setHighlight(i)}
-                className={cn(
-                  "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13px]",
-                  i === highlight ? "bg-crystal-500/20 text-ink" : "text-ink-muted",
-                )}
-              >
+              <>
                 <Icon className="h-4 w-4 shrink-0 text-ink-faint" />
                 <span className="flex-1">{cmd.title}</span>
                 {cmd.hint ? <Kbd>{cmd.hint}</Kbd> : null}
-              </button>
+              </>
             );
-          })}
-          {results.length === 0 ? (
-            <div className="px-3 py-6 text-center text-xs text-ink-faint">No commands</div>
-          ) : null}
-        </div>
+          }}
+        />
       </DialogContent>
     </Dialog>
   );

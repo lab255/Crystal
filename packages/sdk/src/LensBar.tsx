@@ -1,7 +1,6 @@
 import { useCallback, useState } from "react";
 import {
   BookmarkPlus,
-  Check,
   GitCompareArrows,
   RefreshCw,
   Sparkles,
@@ -19,8 +18,9 @@ import { RefCombobox, useCrystal, useLens, useNav, useNavUpdate, useWorkspaces }
 import {
   DropdownMenu,
   DropdownMenuContent,
-  DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
   Input,
@@ -160,16 +160,17 @@ export function LensBar({ onOpenTerminal }: LensBarProps) {
   const menu = (
     <DropdownMenuContent align="end" side="bottom" className="min-w-64">
       <DropdownMenuLabel>Review diff</DropdownMenuLabel>
-      {[
-        { param: DIFF_WORKTREE, label: "Working tree changes" },
-        { param: DIFF_BASE, label: "Diff vs base branch" },
-      ].map(({ param, label }) => (
-        <DropdownMenuItem key={param} onSelect={() => setLens(param)} className="gap-2">
-          <GitCompareArrows className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
-          <span className="min-w-0 flex-1 truncate">{label}</span>
-          {lensParam === param ? <Check className="h-3.5 w-3.5 shrink-0 text-ok" /> : null}
-        </DropdownMenuItem>
-      ))}
+      <DropdownMenuRadioGroup value={lensParam ?? ""} onValueChange={setLens}>
+        {[
+          { param: DIFF_WORKTREE, label: "Working tree changes" },
+          { param: DIFF_BASE, label: "Diff vs base branch" },
+        ].map(({ param, label }) => (
+          <DropdownMenuRadioItem key={param} value={param} className="gap-2">
+            <GitCompareArrows className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
+            <span className="min-w-0 flex-1 truncate">{label}</span>
+          </DropdownMenuRadioItem>
+        ))}
+      </DropdownMenuRadioGroup>
       {/* Not a menu item: the combobox needs real keyboard input, so Radix
           typeahead must not see these keystrokes. */}
       <div
@@ -201,30 +202,31 @@ export function LensBar({ onOpenTerminal }: LensBarProps) {
           No saved facets yet — save one from an active lens
         </div>
       ) : (
-        wsFacets.map((f) => {
-          const param = `facet:${f.id}`;
-          return (
-            <DropdownMenuItem key={f.id} onSelect={() => setLens(param)} className="group gap-2">
-              <Telescope className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
-              <span className="min-w-0 flex-1 truncate">{f.name}</span>
-              {lensParam === param ? <Check className="h-3.5 w-3.5 shrink-0 text-ok" /> : null}
-              <button
-                type="button"
-                aria-label={`Delete facet ${f.name}`}
-                onClick={(e) => {
-                  // Keep the menu open; the row's onSelect must not fire.
-                  e.stopPropagation();
-                  e.preventDefault();
-                  deleteFacet(f.id);
-                }}
-                onPointerDown={(e) => e.stopPropagation()}
-                className="shrink-0 rounded p-0.5 text-ink-faint opacity-0 transition-opacity hover:text-danger group-hover:opacity-100 group-data-[highlighted]:opacity-100"
-              >
-                <Trash2 className="h-3 w-3" />
-              </button>
-            </DropdownMenuItem>
-          );
-        })
+        <DropdownMenuRadioGroup value={lensParam ?? ""} onValueChange={setLens}>
+          {wsFacets.map((f) => {
+            const param = `facet:${f.id}`;
+            return (
+              <DropdownMenuRadioItem key={f.id} value={param} className="group gap-2">
+                <Telescope className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
+                <span className="min-w-0 flex-1 truncate">{f.name}</span>
+                <button
+                  type="button"
+                  aria-label={`Delete facet ${f.name}`}
+                  onClick={(e) => {
+                    // Keep the menu open; the row's onSelect must not fire.
+                    e.stopPropagation();
+                    e.preventDefault();
+                    deleteFacet(f.id);
+                  }}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  className="shrink-0 rounded p-0.5 text-ink-faint opacity-0 transition-opacity hover:text-danger group-hover:opacity-100 group-data-[highlighted]:opacity-100"
+                >
+                  <Trash2 className="h-3 w-3" />
+                </button>
+              </DropdownMenuRadioItem>
+            );
+          })}
+        </DropdownMenuRadioGroup>
       )}
     </DropdownMenuContent>
   );

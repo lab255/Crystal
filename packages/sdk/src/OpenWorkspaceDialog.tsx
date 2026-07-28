@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, Folder, FolderGit2, FolderOpen, Gem, History, Package } from "lucide-react";
+import { ArrowUp, Folder, FolderGit2, FolderOpen, Gem, Package } from "lucide-react";
 import type { BrowseEntry } from "@crystal/core";
 import { useCrystal, useWorkspaces } from "@crystal/client";
 import { Button, Dialog, DialogClose, DialogContent, Input, Spinner, cn } from "@crystal/ui";
+import { RecentWorkspaceRowContent } from "./RecentWorkspaceRow.js";
 
 type Listing = { path: string; parent: string | null; entries: BrowseEntry[] };
 
@@ -135,12 +136,7 @@ export function OpenWorkspaceDialog({
                         : "text-ink-muted hover:bg-surface-3 hover:text-ink",
                     )}
                   >
-                    <History className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
-                    <span className="shrink-0 text-ink">{r.name}</span>
-                    <span className="min-w-0 flex-1 truncate text-[10px] text-ink-faint">
-                      {r.root}
-                    </span>
-                    {r.missing ? <span className="text-[9px] text-danger">missing</span> : null}
+                    <RecentWorkspaceRowContent recent={r} />
                   </button>
                 ))}
               </div>

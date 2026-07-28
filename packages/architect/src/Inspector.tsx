@@ -19,7 +19,7 @@ import {
   type HighlightRef,
 } from "@crystal/core";
 import { useWorkspace } from "@crystal/client";
-import { Button, Input, Textarea, cn } from "@crystal/ui";
+import { Button, Field, Input, Select, Textarea, cn } from "@crystal/ui";
 import { deleteEdges, deleteNodes, updateEdge, updateNode } from "./graph-ops.js";
 import { ACCENT_CSS, EDGE_KIND_STYLE, KIND_META, type AccentName } from "./model.js";
 import { highlightAttrs, hlClass, useViewHighlight } from "./use-highlight.js";
@@ -46,21 +46,6 @@ export interface NodeInsight {
 
 const HOVER_OUT = "var(--color-accent-cyan)";
 const HOVER_IN = "var(--color-accent-emerald)";
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <label className="block">
-      <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-ink-faint">
-        {label}
-      </div>
-      {children}
-    </label>
-  );
-}
-
-const selectClasses =
-  "w-full h-8 rounded-lg border border-edge bg-surface-1 px-2 text-[13px] text-ink " +
-  "focus:border-crystal-500/60 focus:outline-none";
 
 export function Inspector({
   graph,
@@ -390,17 +375,11 @@ function NodeEditor({
         />
       </Field>
       <Field label="Kind">
-        <select
-          className={selectClasses}
+        <Select
           value={node.kind}
           onChange={(e) => patch({ kind: e.target.value as ArchNodeKind })}
-        >
-          {kindOptions.map((k) => (
-            <option key={k} value={k}>
-              {KIND_META[k].label}
-            </option>
-          ))}
-        </select>
+          options={kindOptions.map((k) => ({ value: k, label: KIND_META[k].label }))}
+        />
       </Field>
       <Field label="Description">
         <Textarea
@@ -413,8 +392,7 @@ function NodeEditor({
       </Field>
       {node.kind !== "note" ? (
         <Field label="Layer (top-down view)">
-          <select
-            className={selectClasses}
+          <Select
             value={node.layer ?? ""}
             onChange={(e) => patch({ layer: (e.target.value || null) as ArchLayer | null })}
           >
@@ -426,7 +404,7 @@ function NodeEditor({
                 {layer}
               </option>
             ))}
-          </select>
+          </Select>
         </Field>
       ) : null}
       <Field label="Tech (comma-separated)">
@@ -446,8 +424,7 @@ function NodeEditor({
       </Field>
       {codeModules && codeModules.length > 0 && node.kind !== "note" ? (
         <Field label="Code module">
-          <select
-            className={selectClasses}
+          <Select
             value={node.codeModule ?? ""}
             onChange={(e) => patch({ codeModule: e.target.value || null })}
           >
@@ -457,13 +434,12 @@ function NodeEditor({
                 {m.name} {m.path !== "." ? `(${m.path})` : ""}
               </option>
             ))}
-          </select>
+          </Select>
         </Field>
       ) : null}
       {repos.length > 0 ? (
         <Field label="Linked repo">
-          <select
-            className={selectClasses}
+          <Select
             value={node.repoId ?? ""}
             onChange={(e) => patch({ repoId: e.target.value || null })}
           >
@@ -473,7 +449,7 @@ function NodeEditor({
                 {r.name}
               </option>
             ))}
-          </select>
+          </Select>
         </Field>
       ) : null}
       <Field label="Accent">
@@ -535,19 +511,13 @@ function EdgeEditor({
         <span className="text-ink">{nodeName(edge.target)}</span>
       </div>
       <Field label="Kind">
-        <select
-          className={selectClasses}
+        <Select
           value={edge.kind}
           onChange={(e) =>
             onGraphChange(updateEdge(graph, edge.id, { kind: e.target.value as ArchEdgeKind }))
           }
-        >
-          {ARCH_EDGE_KINDS.map((k) => (
-            <option key={k} value={k}>
-              {k}
-            </option>
-          ))}
-        </select>
+          options={ARCH_EDGE_KINDS.map((k) => ({ value: k, label: k }))}
+        />
       </Field>
       <Field label="Label">
         <Input

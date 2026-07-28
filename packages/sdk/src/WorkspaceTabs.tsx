@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { FolderOpen, History, LayoutGrid, Plug, Plus, Unplug, X } from "lucide-react";
+import { FolderOpen, LayoutGrid, Plug, Plus, Unplug, X } from "lucide-react";
 import {
   DEFAULT_SERVER_SID,
   workspaceLight,
@@ -29,6 +29,7 @@ import {
 import { isCrossProjectMode, type CrystalMode } from "./modes.js";
 import { ConnectBridgeDialog } from "./ConnectBridgeDialog.js";
 import { OpenWorkspaceDialog } from "./OpenWorkspaceDialog.js";
+import { RecentWorkspaceRowContent } from "./RecentWorkspaceRow.js";
 
 /**
  * Top-level navigation: the Overview (cross-workspace home) tab, one tab per
@@ -236,14 +237,7 @@ export function WorkspaceTabs({
                     onSelect={() => void reopen(r)}
                     className="gap-2"
                   >
-                    <History className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-ink">{r.name}</span>
-                      <span className="block truncate text-[10px] text-ink-faint">{r.root}</span>
-                    </span>
-                    {r.missing ? (
-                      <span className="shrink-0 text-[9px] text-danger">missing</span>
-                    ) : null}
+                    <RecentWorkspaceRowContent recent={r} />
                   </DropdownMenuItem>
                 ))}
                 <DropdownMenuSeparator />

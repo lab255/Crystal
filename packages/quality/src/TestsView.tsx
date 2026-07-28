@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   ChevronDown,
   Copy,
@@ -11,7 +11,19 @@ import {
 } from "lucide-react";
 import type { QualityRun, TestCaseResult, TestFileResult } from "@crystal/core";
 import { requestOpenFile, useNav, useNavUpdate, useSymbolMenu } from "@crystal/client";
-import { Badge, EmptyState, Pane as SplitPane, Split, Tooltip, cn, useContextMenu } from "@crystal/ui";
+import {
+  Badge,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+  EmptyState,
+  Pane as SplitPane,
+  Split,
+  Tooltip,
+  cn,
+  useContextMenu,
+} from "@crystal/ui";
 import {
   LensHint,
   StatusIcon,
@@ -312,68 +324,45 @@ function RunPicker({
   shownRun: QualityRun | null;
   onPick: (id: string) => void;
 }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const onPointerDown = (e: PointerEvent) => {
-      if (!ref.current?.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    window.addEventListener("pointerdown", onPointerDown, true);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("pointerdown", onPointerDown, true);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
   return (
-    <div className="relative" ref={ref}>
+    <DropdownMenu>
       <Tooltip content="Recent runs">
-        <button
-          type="button"
-          onClick={() => setOpen((o) => !o)}
-          aria-expanded={open}
-          className="flex items-center gap-1 rounded-md border border-edge bg-surface-2 px-1.5 py-0.5 text-[10px] text-ink-muted hover:text-ink"
-        >
-          <History className="h-3 w-3" />
-          {shownRun ? fmtTime(shownRun.startedAt) : "runs"}
-          <ChevronDown className="h-3 w-3" />
-        </button>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            className="flex items-center gap-1 rounded-md border border-edge bg-surface-2 px-1.5 py-0.5 text-[10px] text-ink-muted hover:text-ink"
+          >
+            <History className="h-3 w-3" />
+            {shownRun ? fmtTime(shownRun.startedAt) : "runs"}
+            <ChevronDown className="h-3 w-3" />
+          </button>
+        </DropdownMenuTrigger>
       </Tooltip>
-      {open ? (
-        <div className="absolute right-0 top-full z-40 mt-1 max-h-64 w-64 overflow-y-auto rounded-xl border border-edge bg-surface-2/98 p-1 shadow-2xl shadow-black/50 backdrop-blur">
-          {runs.map((r) => (
-            <button
-              key={r.id}
-              type="button"
-              onClick={() => {
-                onPick(r.id);
-                setOpen(false);
-              }}
-              className={cn(
-                "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[10.5px]",
-                r.id === shownRun?.id ? "bg-surface-active text-ink" : "text-ink-muted hover:bg-surface-active",
-              )}
-            >
-              <StatusIcon
-                status={r.status === "passed" ? "pass" : r.status === "failed" ? "fail" : null}
-                running={r.status === "running"}
-                className="h-3 w-3"
-              />
-              <span className="flex-1">
-                {fmtTime(r.startedAt)}
-                {r.scope.file ? ` · ${r.scope.file.split("/").at(-1)}` : " · all"}
-                {r.scope.testName ? ` · "${r.scope.testName}"` : ""}
-              </span>
-              {r.withCoverage ? <Umbrella className="h-3 w-3 shrink-0 text-ink-faint" /> : null}
-            </button>
-          ))}
-        </div>
-      ) : null}
-    </div>
+      <DropdownMenuContent align="end" className="max-h-64 w-64 overflow-y-auto">
+        {runs.map((r) => (
+          <DropdownMenuItem
+            key={r.id}
+            onSelect={() => onPick(r.id)}
+            className={cn(
+              "gap-2 text-[10.5px]",
+              r.id === shownRun?.id ? "bg-surface-active text-ink" : "text-ink-muted",
+            )}
+          >
+            <StatusIcon
+              status={r.status === "passed" ? "pass" : r.status === "failed" ? "fail" : null}
+              running={r.status === "running"}
+              className="h-3 w-3"
+            />
+            <span className="flex-1">
+              {fmtTime(r.startedAt)}
+              {r.scope.file ? ` · ${r.scope.file.split("/").at(-1)}` : " · all"}
+              {r.scope.testName ? ` · "${r.scope.testName}"` : ""}
+            </span>
+            {r.withCoverage ? <Umbrella className="h-3 w-3 shrink-0 text-ink-faint" /> : null}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 

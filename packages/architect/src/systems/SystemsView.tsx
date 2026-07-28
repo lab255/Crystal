@@ -75,7 +75,7 @@ import {
   type SystemsLayout,
 } from "@crystal/core";
 import {
-  RefCombobox,
+  RefReviewBar,
   useCrystal,
   useNav,
   useNavUpdate,
@@ -861,7 +861,6 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
     null,
   );
   const [diffOpen, setDiffOpen] = useState(false);
-  const [refInput, setRefInput] = useState("");
   const [refDiff, setRefDiff] = useState<RefDiffState | null>(null);
   const [refLoading, setRefLoading] = useState(false);
   const [refError, setRefError] = useState<string | null>(null);
@@ -2430,52 +2429,38 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
 
         {/* Top-right: review-vs-ref + insights + materialize. */}
         <div className="absolute right-3 top-3 flex items-center gap-1.5">
-          {refDiff ? (
-            <div className="flex items-center gap-1.5 rounded-lg border border-edge bg-surface-1/95 px-2 py-1 shadow-sm">
-              <GitCompare className="h-3 w-3 text-accent-violet" />
-              <span className="text-[10px] text-ink">
-                vs <span className="font-mono">{refDiff.ref}</span>
-                <span className="text-ink-faint"> ({refDiff.commit})</span>
-              </span>
-              <span className="rounded-full bg-surface-3 px-1.5 text-[9px] text-ink-muted">
-                {refDiff.diff.total} changes
-              </span>
-              <button
-                type="button"
-                onClick={() => {
-                  setRefDiff(null);
-                  setDiffOpen(false);
-                }}
-                aria-label="Exit review"
-              >
-                <X className="h-3 w-3 text-ink-faint hover:text-ink" />
-              </button>
-            </div>
-          ) : (
-            <div
-              ref={reviewBoxRef}
-              className="@max-[900px]:hidden flex items-center gap-1 rounded-lg border border-edge bg-surface-1/95 px-1.5 py-1 shadow-sm"
-            >
-              <GitCompare className="ml-0.5 h-3 w-3 shrink-0 text-ink-faint" />
-              <RefCombobox
-                value={refInput}
-                onChange={setRefInput}
-                onSubmit={(v) => void reviewRef(v)}
-                placeholder="Review vs ref…"
-                className="w-44"
-                inputClassName="h-6 rounded-md border-0 bg-transparent px-1 text-[11px] focus:ring-0"
-              />
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                disabled={refLoading}
-                onClick={() => void reviewRef(refInput)}
-              >
-                {refLoading ? <RefreshCw className="h-3 w-3 animate-spin" /> : "Go"}
-              </Button>
-            </div>
-          )}
+          {/* The wrapper keeps `reviewBoxRef` targetable (the context menu's
+              "Review vs ref…" action focuses the picker input through it). */}
+          <div ref={reviewBoxRef} className={cn("contents", !refDiff && "@max-[900px]:hidden")}>
+            <RefReviewBar
+              active={
+                refDiff
+                  ? {
+                      ref: refDiff.ref,
+                      commit: refDiff.commit,
+                      badge: (
+                        <span className="rounded-full bg-surface-3 px-1.5 text-[9px] text-ink-muted">
+                          {refDiff.diff.total} changes
+                        </span>
+                      ),
+                    }
+                  : null
+              }
+              onReview={(v) => void reviewRef(v)}
+              onExit={() => {
+                setRefDiff(null);
+                setDiffOpen(false);
+              }}
+              loading={refLoading}
+              icon={
+                refDiff ? (
+                  <GitCompare className="h-3 w-3 text-accent-violet" />
+                ) : (
+                  <GitCompare className="ml-0.5 h-3 w-3 shrink-0 text-ink-faint" />
+                )
+              }
+            />
+          </div>
           <Tooltip content="Boundary contracts">
             <button
               type="button"

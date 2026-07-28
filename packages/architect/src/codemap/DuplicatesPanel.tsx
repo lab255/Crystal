@@ -16,6 +16,7 @@ import {
   DialogContent,
   EmptyState,
   Input,
+  Select,
   Spinner,
   cn,
 } from "@crystal/ui";
@@ -255,8 +256,7 @@ function HoistDialog({
                 placeholder="packages/shared (created if missing)"
               />
             ) : (
-              <select
-                className="h-8 w-full rounded-lg border border-edge bg-surface-1 px-2 text-[13px] text-ink focus:border-crystal-500/60 focus:outline-none"
+              <Select
                 value={target}
                 onChange={(e) => {
                   if (e.target.value === "__custom__") {
@@ -271,7 +271,7 @@ function HoistDialog({
                   </option>
                 ))}
                 <option value="__custom__">New package…</option>
-              </select>
+              </Select>
             )}
           </label>
           <label className="block">

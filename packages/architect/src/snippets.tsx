@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ChevronRight, Code2, ExternalLink, X } from "lucide-react";
 import type { CodeFileDetail, CodeModuleDetail, CodeSymbolSource } from "@crystal/core";
 import { useCrystal } from "@crystal/client";
-import { Badge, Button, CodeSnippet, Spinner, cn } from "@crystal/ui";
+import { Badge, Button, CodeSnippet, Select, Spinner, cn } from "@crystal/ui";
 
 /**
  * Symbol source snippets — fetched over `codemap.symbolSource`, cached until
@@ -194,18 +194,17 @@ export function PeekPanel({
           </div>
         ) : null}
         {files.length > 0 ? (
-          <select
-            className="mb-2 h-7 w-full rounded-lg border border-edge bg-surface-1 px-2 text-[11px] text-ink focus:border-crystal-500/60 focus:outline-none"
+          <Select
+            size="sm"
+            className="mb-2 text-[11px]"
             value={file ?? ""}
             onChange={(e) => setFile(e.target.value)}
             aria-label="File"
-          >
-            {files.map((f) => (
-              <option key={f.path} value={f.path}>
-                {f.path} {f.exportCount ? `· ${f.exportCount} exports` : ""}
-              </option>
-            ))}
-          </select>
+            options={files.map((f) => ({
+              value: f.path,
+              label: `${f.path} ${f.exportCount ? `· ${f.exportCount} exports` : ""}`,
+            }))}
+          />
         ) : null}
         {symbols.map((sym) => (
           <div key={sym.name}>

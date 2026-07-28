@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState } from "react";
 import {
   ArrowDown,
   ArrowUp,
-  Check,
   Focus,
   FolderGit2,
   GitBranch,
@@ -21,6 +20,8 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
   cn,
@@ -260,26 +261,25 @@ export function BranchSwitcher() {
           </>
         ) : null}
         <DropdownMenuLabel>Branches</DropdownMenuLabel>
-        {(refs?.branches ?? []).map((b) => {
-          const isCurrent = refs?.current === b;
-          return (
-            <DropdownMenuItem
+        <DropdownMenuRadioGroup
+          value={refs?.current ?? ""}
+          onValueChange={(b) => void checkout(b)}
+        >
+          {(refs?.branches ?? []).map((b) => (
+            <DropdownMenuRadioItem
               key={b}
-              disabled={isCurrent}
-              onSelect={(e) => {
-                // Keep the menu open: success moves the checkmark, failure
-                // shows git's error inline right here.
-                e.preventDefault();
-                void checkout(b);
-              }}
+              value={b}
+              disabled={refs?.current === b}
+              // Keep the menu open: success moves the checkmark, failure
+              // shows git's error inline right here.
+              onSelect={(e) => e.preventDefault()}
               className="gap-2"
             >
               <GitBranch className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
               <span className="min-w-0 flex-1 truncate">{b}</span>
-              {isCurrent ? <Check className="h-3.5 w-3.5 shrink-0 text-ok" /> : null}
-            </DropdownMenuItem>
-          );
-        })}
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
         {refs && refs.branches.length === 0 ? (
           <div className="px-2 py-1 text-[11px] text-ink-faint">No local branches</div>
         ) : null}
@@ -312,19 +312,27 @@ export function BranchSwitcher() {
         <DropdownMenuSeparator />
         <DropdownMenuLabel>Facet lens</DropdownMenuLabel>
         {facets && facets.length > 0 ? (
-          facets.map((s) => {
-            const active = lensParam === s.tags.join(",");
-            return (
-              <DropdownMenuItem key={s.tags.join(",")} onSelect={() => applyLens(s)} className="gap-2">
-                <Focus className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
-                <span className="min-w-0 flex-1 truncate">{s.name}</span>
-                <span className={cn("shrink-0 text-[10px]", active ? "text-ok" : "text-ink-faint")}>
-                  {active ? "active" : `${s.members} members`}
-                </span>
-                {active ? <Check className="h-3.5 w-3.5 shrink-0 text-ok" /> : null}
-              </DropdownMenuItem>
-            );
-          })
+          <DropdownMenuRadioGroup
+            value={lensParam ?? ""}
+            onValueChange={(param) => {
+              const s = facets.find((f) => f.tags.join(",") === param);
+              if (s) applyLens(s);
+            }}
+          >
+            {facets.map((s) => {
+              const param = s.tags.join(",");
+              const active = lensParam === param;
+              return (
+                <DropdownMenuRadioItem key={param} value={param} className="gap-2">
+                  <Focus className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
+                  <span className="min-w-0 flex-1 truncate">{s.name}</span>
+                  <span className={cn("shrink-0 text-[10px]", active ? "text-ok" : "text-ink-faint")}>
+                    {active ? "active" : `${s.members} members`}
+                  </span>
+                </DropdownMenuRadioItem>
+              );
+            })}
+          </DropdownMenuRadioGroup>
         ) : (
           <div className="px-2 py-1 text-[11px] text-ink-faint">
             No facets yet — run indexing from Jobs

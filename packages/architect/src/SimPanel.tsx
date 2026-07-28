@@ -1,7 +1,7 @@
 import { createContext, useContext } from "react";
 import { MarkerType, type Edge as RfEdge } from "@xyflow/react";
 import { Flame, Gauge, Power, Repeat, ShieldAlert, ShieldCheck, Skull, Square, TriangleAlert, Zap } from "lucide-react";
-import { Input, Switch, Tooltip, cn } from "@crystal/ui";
+import { Field, Input, Select, Switch, Tooltip, cn } from "@crystal/ui";
 import {
   LB_ALGORITHMS,
   type ArchNode,
@@ -417,21 +417,6 @@ export function SimPanel({
 /* Per-node config form                                                */
 /* ------------------------------------------------------------------ */
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <label className="block">
-      <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-ink-faint">
-        {label}
-      </div>
-      {children}
-    </label>
-  );
-}
-
-const selectClasses =
-  "w-full h-8 rounded-lg border border-edge bg-surface-1 px-2 text-[13px] text-ink " +
-  "focus:border-crystal-500/60 focus:outline-none";
-
 const DEFAULT_BREAKER = { enabled: true, errorThreshold: 0.5, cooldownTicks: 6 };
 const DEFAULT_AUTOSCALE: AutoscaleConfig = {
   enabled: true,
@@ -556,21 +541,19 @@ export function SimEditor({
       ) : null}
       {node.kind === "loadbalancer" || node.kind === "gateway" ? (
         <Field label="Balancing algorithm">
-          <select
-            className={selectClasses}
+          <Select
             value={sim?.lbAlgorithm ?? "round-robin"}
             onChange={(e) => patchSim({ lbAlgorithm: e.target.value as LbAlgorithm })}
-          >
-            {LB_ALGORITHMS.map((a) => (
-              <option key={a} value={a}>
-                {a === "round-robin"
+            options={LB_ALGORITHMS.map((a) => ({
+              value: a,
+              label:
+                a === "round-robin"
                   ? "Round robin (no health checks)"
                   : a === "least-loaded"
                     ? "Least loaded (health aware)"
-                    : "Weighted by capacity (health aware)"}
-              </option>
-            ))}
-          </select>
+                    : "Weighted by capacity (health aware)",
+            }))}
+          />
         </Field>
       ) : null}
       {node.kind === "cache" ? (

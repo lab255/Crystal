@@ -36,7 +36,7 @@ import type {
   SystemModule,
 } from "@crystal/core";
 import {
-  RefCombobox,
+  RefReviewBar,
   useCrystal,
   useNav,
   useNavUpdate,
@@ -444,7 +444,6 @@ function SystemMapInner() {
 
   /* ---- ref review: the map diffed against a git ref ---- */
   const [refBundle, setRefBundle] = useState<SurfacesRefBundle | null>(null);
-  const [refInput, setRefInput] = useState("");
   const [refLoading, setRefLoading] = useState(false);
   const [refError, setRefError] = useState<string | null>(null);
   // The clicked change — the review panel scrolls to and spotlights this row.
@@ -891,50 +890,12 @@ function SystemMapInner() {
           </div>
           {/* Top-right: review the map against a git ref. */}
           <div className="absolute right-3 top-3 flex items-center gap-1.5">
-            {refBundle ? (
-              <div className="flex items-center gap-1.5 rounded-lg border border-edge bg-surface-1/95 px-2 py-1 text-[10px] shadow-sm">
-                <GitCompareArrows className="h-3 w-3 text-crystal-300" />
-                <span className="text-ink">
-                  vs {refBundle.ref}
-                  <span className="ml-1 text-ink-faint">{refBundle.commit}</span>
-                </span>
-                <button
-                  type="button"
-                  onClick={exitReview}
-                  aria-label="Exit ref review"
-                  className="rounded p-0.5 text-ink-faint hover:bg-surface-3 hover:text-ink"
-                >
-                  <X className="h-3 w-3" />
-                </button>
-              </div>
-            ) : (
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  void reviewRef(refInput);
-                }}
-                className="flex items-center gap-1 rounded-lg border border-edge bg-surface-1/95 px-1.5 py-1 shadow-sm"
-              >
-                <GitCompareArrows className="h-3 w-3 shrink-0 text-ink-faint" />
-                {/* The shared picker: branches, remotes, tags and recent
-                    commits — free-typing still reaches anything git resolves. */}
-                <RefCombobox
-                  value={refInput}
-                  onChange={setRefInput}
-                  onSubmit={(v) => void reviewRef(v)}
-                  placeholder="Review vs ref…"
-                  className="w-44"
-                  inputClassName="h-6 rounded-md border-0 bg-transparent px-1 text-[11px] focus:ring-0"
-                />
-                <button
-                  type="submit"
-                  disabled={refLoading || !refInput.trim()}
-                  className="rounded-md bg-surface-3 px-1.5 py-0.5 text-[10px] text-ink-muted hover:text-ink disabled:opacity-50"
-                >
-                  {refLoading ? "Analyzing…" : "Review"}
-                </button>
-              </form>
-            )}
+            <RefReviewBar
+              active={refBundle ? { ref: refBundle.ref, commit: refBundle.commit } : null}
+              onReview={(v) => void reviewRef(v)}
+              onExit={exitReview}
+              loading={refLoading}
+            />
           </div>
           {refError ? (
             <div className="absolute right-3 top-12 max-w-72 rounded-lg border border-danger/40 bg-surface-1/95 px-2 py-1 text-[10px] text-danger shadow-sm">

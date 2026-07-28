@@ -1,4 +1,5 @@
 import type { HubProject, HubRecentProject } from "@crystal/core";
+import { Select } from "@crystal/ui";
 
 /**
  * Pick a project by root path. Open workspaces come first; recently-opened
@@ -23,11 +24,8 @@ export function ProjectSelect({
   // The reopen list minus directories that are gone — computed once, read twice.
   const usable = recents.filter((r) => !r.missing);
   return (
-    <select
-      className={
-        className ??
-        "h-8 w-full rounded-lg border border-edge bg-surface-1 px-2 text-[13px] text-ink focus:border-crystal-500/60 focus:outline-none"
-      }
+    <Select
+      className={className}
       value={value}
       onChange={(e) => onChange(e.target.value)}
       {...rest}
@@ -51,6 +49,6 @@ export function ProjectSelect({
           ))}
         </optgroup>
       ) : null}
-    </select>
+    </Select>
   );
 }

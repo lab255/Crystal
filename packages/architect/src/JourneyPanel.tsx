@@ -23,6 +23,7 @@ import { useCrystal, useSymbolMenu, useWorkspaces } from "@crystal/client";
 import {
   Badge,
   Button,
+  CommandList,
   Dialog,
   DialogClose,
   DialogContent,
@@ -61,7 +62,6 @@ function SymbolCombobox({
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<SymbolSearchHit[]>([]);
   const [searching, setSearching] = useState(false);
-  const [open, setOpen] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   useEffect(() => {
@@ -76,7 +76,6 @@ function SymbolCombobox({
       try {
         const res = await client.request("codemap.symbols", { query: q, limit: 20 });
         setHits(res.symbols);
-        setOpen(true);
       } catch {
         setHits([]);
       } finally {
@@ -106,36 +105,35 @@ function SymbolCombobox({
     );
   }
 
+  // The shared filtered-list body, embedded (the dialog already frames it) —
+  // arrow keys + Enter pick, same interaction as the palette and quick-open.
   return (
-    <div className="relative">
-      <Input
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        onFocus={() => hits.length > 0 && setOpen(true)}
+    <div className="rounded-lg border border-edge bg-surface-1 px-2 pt-2">
+      <CommandList
+        query={query}
+        onQueryChange={setQuery}
+        items={hits}
+        itemKey={(hit) => `${hit.file}#${hit.name}`}
+        loading={searching || query.trim().length < 2}
+        autoFocus={false}
         placeholder="Search a function… e.g. createOrder"
-        aria-label="Entry point symbol"
+        inputAriaLabel="Entry point symbol"
+        emptyText="No symbols found"
+        listClassName="max-h-56"
+        onPick={(hit) => {
+          onPick({ file: hit.file, symbol: hit.name });
+          setQuery("");
+        }}
+        renderItem={(hit) => (
+          <>
+            <span className="min-w-0 flex-1 truncate font-mono text-ink">{hit.name}</span>
+            {!hit.exported ? <Badge tone="neutral">int</Badge> : null}
+            <span className="max-w-40 shrink-0 truncate text-[9.5px] text-ink-faint">
+              {hit.file}
+            </span>
+          </>
+        )}
       />
-      {searching ? <Spinner className="absolute right-2 top-2 h-3.5 w-3.5" /> : null}
-      {open && hits.length > 0 ? (
-        <div className="absolute z-30 mt-1 max-h-56 w-full overflow-y-auto rounded-lg border border-edge bg-surface-2 shadow-xl shadow-black/40">
-          {hits.map((hit) => (
-            <button
-              key={`${hit.file}#${hit.name}`}
-              type="button"
-              onClick={() => {
-                onPick({ file: hit.file, symbol: hit.name });
-                setOpen(false);
-                setQuery("");
-              }}
-              className="flex w-full items-center gap-2 px-2 py-1.5 text-left text-[11.5px] hover:bg-surface-3"
-            >
-              <span className="min-w-0 flex-1 truncate font-mono text-ink">{hit.name}</span>
-              {!hit.exported ? <Badge tone="neutral">int</Badge> : null}
-              <span className="max-w-40 shrink-0 truncate text-[9.5px] text-ink-faint">{hit.file}</span>
-            </button>
-          ))}
-        </div>
-      ) : null}
     </div>
   );
 }

@@ -102,6 +102,7 @@ export { createNavStore, type NavPatch, type NavState, type NavStore } from "./n
 export { requestOpenFile } from "./open-file.js";
 export {
   RefCombobox,
+  RefReviewBar,
   gitRefOptions,
   useGitRefs,
   type GitRefsState,
