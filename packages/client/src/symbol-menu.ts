@@ -125,7 +125,7 @@ export function symbolMenuEntries(
         ctx.nav({
           mode: "architect",
           architect: {
-            view: "codemap",
+            view: "codebase",
             codemap: file
               ? { kind: "file", ws, path: file }
               : { kind: "module", ws, path: module! },

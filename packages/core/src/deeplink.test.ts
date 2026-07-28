@@ -49,7 +49,7 @@ describe("parseWsRef/formatWsRef", () => {
     const hash = formatDeepLink({
       mode: "architect",
       ws: "sffee1122:abc",
-      architect: { view: "codemap", codemap: { kind: "module", ws: "abc", path: "packages/ui" } },
+      architect: { view: "codebase", codemap: { kind: "module", ws: "abc", path: "packages/ui" } },
     });
     expect(hash).not.toContain("mws");
     const parsed = parseDeepLink(hash);
@@ -95,15 +95,15 @@ describe("formatDeepLink", () => {
     const hash = formatDeepLink({
       mode: "architect",
       ws: "abc",
-      architect: { view: "codemap", codemap: { kind: "module", ws: "abc", path: "packages/ui" } },
+      architect: { view: "codebase", codemap: { kind: "module", ws: "abc", path: "packages/ui" } },
     });
-    expect(hash).toBe("#/architect/codemap?ws=abc&at=module&path=packages/ui");
+    expect(hash).toBe("#/architect/codebase?ws=abc&at=module&path=packages/ui");
     const other = formatDeepLink({
       mode: "architect",
       ws: "abc",
-      architect: { view: "codemap", codemap: { kind: "workspace", ws: "def" } },
+      architect: { view: "codebase", codemap: { kind: "workspace", ws: "def" } },
     });
-    expect(other).toBe("#/architect/codemap?ws=abc&at=workspace&mws=def");
+    expect(other).toBe("#/architect/codebase?ws=abc&at=workspace&mws=def");
   });
 
   it("scopes task/run params to their tab", () => {
@@ -189,7 +189,7 @@ describe("round trips", () => {
   });
 
   it("global find travels on every architect subview", () => {
-    for (const view of ["systems", "diagrams", "infra", "codemap"] as const) {
+    for (const view of ["systems", "diagrams", "infra", "codebase"] as const) {
       const link: DeepLink = {
         ws: "abc",
         mode: "architect",
@@ -232,7 +232,7 @@ describe("round trips", () => {
       const link: DeepLink = {
         ws: "abc",
         mode: "architect",
-        architect: { view: "codemap", codemap, duplicates: true },
+        architect: { view: "codebase", codemap, duplicates: true },
       };
       expect(roundTrip(link)).toEqual(link);
     }
@@ -244,14 +244,14 @@ describe("round trips", () => {
       lens: "intent:auth,intent:payments",
       mode: "architect",
       architect: {
-        view: "codemap",
+        view: "codebase",
         codemap: { kind: "workspace", ws: "abc" },
         lod: "members",
       },
     };
     expect(roundTrip(link)).toEqual(link);
     expect(formatDeepLink(link)).toBe(
-      "#/architect/codemap?ws=abc&lens=intent%3Aauth,intent%3Apayments&at=workspace&lod=members",
+      "#/architect/codebase?ws=abc&lens=intent%3Aauth,intent%3Apayments&at=workspace&lod=members",
     );
   });
 
@@ -284,18 +284,18 @@ describe("round trips", () => {
       lens: "intent:auth",
       mode: "architect",
       architect: {
-        view: "codemap",
+        view: "codebase",
         codemap: { kind: "workspace", ws: "abc" },
         lensCtx: true,
       },
     };
     expect(roundTrip(link)).toEqual(link);
     expect(formatDeepLink(link)).toBe(
-      "#/architect/codemap?ws=abc&lens=intent%3Aauth&at=workspace&lensctx=1",
+      "#/architect/codebase?ws=abc&lens=intent%3Aauth&at=workspace&lensctx=1",
     );
     // off = omitted entirely
     expect(formatDeepLink({ ...link, architect: { ...link.architect, lensCtx: false } })).toBe(
-      "#/architect/codemap?ws=abc&lens=intent%3Aauth&at=workspace",
+      "#/architect/codebase?ws=abc&lens=intent%3Aauth&at=workspace",
     );
     expect(parseDeepLink("#/architect/codemap?ws=abc&at=workspace").architect?.lensCtx).toBeUndefined();
   });
@@ -364,7 +364,7 @@ describe("round trips", () => {
     const codemap: DeepLink = {
       ws: "abc",
       mode: "architect",
-      architect: { view: "codemap", codemap: { kind: "workspace", ws: "abc" }, sel: "mod:packages/core" },
+      architect: { view: "codebase", codemap: { kind: "workspace", ws: "abc" }, sel: "mod:packages/core" },
     };
     expect(roundTrip(codemap)).toEqual(codemap);
   });
@@ -602,7 +602,7 @@ describe("round trips", () => {
       ws: "abc",
       mode: "architect",
       architect: {
-        view: "codemap",
+        view: "codebase",
         codemap: { kind: "module", ws: "abc", path: "packages/core" },
         facets: true,
         file: "packages/core/src/bridge.ts",
@@ -618,7 +618,7 @@ describe("applyDeepLink", () => {
       mode: "architect",
       ws: "w1",
       architect: {
-        view: "codemap",
+        view: "codebase",
         codemap: { kind: "module", ws: "w1", path: "packages/core" },
         lod: "modules",
         diagram: "a.crystal",
@@ -748,16 +748,16 @@ describe("deepLinkNavIdentity", () => {
   });
 
   it("changes when the subview, drill level or document changes", () => {
-    expect(deepLinkNavIdentity({ mode: "architect", architect: { view: "codemap" } })).not.toBe(
+    expect(deepLinkNavIdentity({ mode: "architect", architect: { view: "codebase" } })).not.toBe(
       deepLinkNavIdentity(base),
     );
     const drillA: DeepLink = {
       mode: "architect",
-      architect: { view: "codemap", codemap: { kind: "module", ws: "w", path: "a" } },
+      architect: { view: "codebase", codemap: { kind: "module", ws: "w", path: "a" } },
     };
     const drillB: DeepLink = {
       mode: "architect",
-      architect: { view: "codemap", codemap: { kind: "module", ws: "w", path: "b" } },
+      architect: { view: "codebase", codemap: { kind: "module", ws: "w", path: "b" } },
     };
     expect(deepLinkNavIdentity(drillA)).not.toBe(deepLinkNavIdentity(drillB));
     expect(
@@ -899,14 +899,7 @@ describe("consolidated diagram views", () => {
   });
 
   it("vs travels on every architect subview", () => {
-    for (const view of [
-      "architecture",
-      "codebase",
-      "infra",
-      "systems",
-      "diagrams",
-      "codemap",
-    ] as const) {
+    for (const view of ["architecture", "codebase", "infra", "systems", "diagrams"] as const) {
       const link: DeepLink = {
         ws: "abc",
         mode: "architect",
@@ -914,6 +907,13 @@ describe("consolidated diagram views", () => {
       };
       expect(roundTrip(link)).toEqual(link);
     }
+  });
+
+  it("codemap is a permanent parse alias of codebase", () => {
+    const parsed = parseDeepLink("#/architect/codemap?ws=abc&at=module&path=packages/ui&vs=main");
+    expect(parsed.architect?.view).toBe("codebase");
+    expect(parsed.architect?.codemap).toEqual({ kind: "module", ws: "abc", path: "packages/ui" });
+    expect(parsed.architect?.vs).toBe("main");
   });
 
   it("back/forward onto an architecture URL replaces only its owned fields", () => {

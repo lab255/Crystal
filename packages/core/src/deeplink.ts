@@ -507,10 +507,11 @@ export function parseDeepLink(hash: string): DeepLink {
       view === "codebase" ||
       view === "infra" ||
       view === "systems" ||
-      view === "diagrams" ||
-      view === "codemap"
+      view === "diagrams"
     )
       a.view = view;
+    // Permanent alias: the code map became the codebase view.
+    else if (view === "codemap") a.view = "codebase";
     const system = params.get("system");
     if (system) a.system = system;
     const sysGroup = params.get("group");

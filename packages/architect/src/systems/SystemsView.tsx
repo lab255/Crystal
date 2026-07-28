@@ -1003,7 +1003,7 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
   const openCodemapModule = useCallback(
     (pkg: string) => {
       if (!activeWs) return;
-      nav({ architect: { view: "codemap", codemap: { kind: "module", ws: activeWs, path: pkg } } });
+      nav({ architect: { view: "codebase", codemap: { kind: "module", ws: activeWs, path: pkg } } });
     },
     [nav, activeWs],
   );
@@ -1020,7 +1020,7 @@ function SystemsInner({ onOpenCode }: SystemsViewProps) {
       nav({
         lens: sys.id,
         architect: {
-          view: "codemap",
+          view: "codebase",
           codemap: { kind: "module", ws: activeWs, path: pkg },
           lensCtx: true,
         },

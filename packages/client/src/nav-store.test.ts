@@ -52,7 +52,7 @@ describe("nav store", () => {
     const store = createNavStore({
       mode: "architect",
       architect: {
-        view: "codemap",
+        view: "codebase",
         codemap: { kind: "module", ws: "w1", path: "packages/core" },
         system: "sys:auth",
       },

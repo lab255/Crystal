@@ -92,16 +92,17 @@ const EMPTY_REFACTORS: never[] = [];
 const EMPTY_PROJECTS: never[] = [];
 const EMPTY_RUNS: never[] = [];
 
-type ArchitectView = "systems" | "diagrams" | "infra" | "codemap";
+type ArchitectView = "systems" | "diagrams" | "infra" | "codebase";
 
 export function ArchitectMode() {
   // View + draft selection live in the deep-linkable nav store.
   const nav = useNavUpdate();
   const rawView = useNav((l) => l.architect?.view) ?? "systems";
-  // The consolidated view ids (architecture/codebase) take over as each view
-  // migrates; until then, land them on the views they absorb.
+  // `codebase` is the consolidated id; `codemap` links (old bookmarks, other
+  // views' mints) land there. `architecture` lands on systems until Phase 3
+  // unifies it with the canvas.
   const view: ArchitectView =
-    rawView === "architecture" ? "systems" : rawView === "codebase" ? "codemap" : rawView;
+    rawView === "architecture" ? "systems" : rawView === "codemap" ? "codebase" : rawView;
   const setView = useCallback(
     (v: ArchitectView) => nav({ architect: { view: v } }),
     [nav],
@@ -144,17 +145,9 @@ export function ArchitectMode() {
 
   /** The standalone map: cross-workspace level, plus drilled module/file deep links. */
   const openWorkspacesMap = useCallback(
-    () => nav({ architect: { view: "codemap", codemap: { kind: "all" } } }),
+    () => nav({ architect: { view: "codebase", codemap: { kind: "all" } } }),
     [nav],
   );
-
-  // Module- and file-level code-map links open the standalone map drilled in
-  // ("expand this module" from the systems overview deep-links here). Only the
-  // plain workspace level stays unified into the canvas.
-  const codemapLevel = useNav((l) => l.architect?.codemap ?? null);
-  useEffect(() => {
-    if (view === "codemap" && codemapLevel?.kind === "workspace") setView("diagrams");
-  }, [view, codemapLevel, setView]);
 
   const startJourneyFromCode = useCallback(
     (seed: JourneySeed) => {
@@ -235,7 +228,8 @@ export function ArchitectMode() {
         </div>
         <div className="ml-auto flex items-center gap-0.5 rounded-lg bg-surface-2 p-0.5">
           {/* Cross-workspace map — always one click away when reviewing how the systems relate. */}
-          {tab("codemap", <Layers className="h-3.5 w-3.5" />, "Workspaces", openWorkspacesMap)}
+          {/* Restores its last drill level; the in-view breadcrumb reaches the cross-workspace map. */}
+          {tab("codebase", <Layers className="h-3.5 w-3.5" />, "Codebase")}
           {tab("systems", <Boxes className="h-3.5 w-3.5" />, "Systems")}
           {tab(
             "diagrams",
@@ -251,7 +245,7 @@ export function ArchitectMode() {
       <div className="min-h-0 flex-1">
         {view === "systems" ? (
           <SystemsView onOpenCode={openCodeFromSystems} />
-        ) : view === "codemap" ? (
+        ) : view === "codebase" ? (
           <CodeMapView
             origin={{ label: "Architecture", onExit: () => setView("diagrams") }}
             onEnterWorkspace={(ws) => {

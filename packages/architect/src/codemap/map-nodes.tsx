@@ -10,7 +10,7 @@ import {
   PackagePlus,
   Route,
 } from "lucide-react";
-import type { CodeSymbolKind } from "@crystal/core";
+import type { CodeSymbolKind, DiffMarkKind } from "@crystal/core";
 import { Badge, Spinner, Tooltip, cn } from "@crystal/ui";
 import { SymbolSnippet } from "../snippets.js";
 import { highlightAttrs } from "../use-highlight.js";
@@ -108,6 +108,28 @@ function IntentBadge({ mark }: { mark: "source" | "target" }) {
   );
 }
 
+/* ---- ref-review (vs <ref>) mark styling, shared by module + file nodes ---- */
+
+const DIFF_TONES: Record<
+  DiffMarkKind,
+  { label: string; badge: string; border: string }
+> = {
+  added: { label: "new", badge: "bg-ok/15 text-ok", border: "border-ok/70" },
+  removed: { label: "removed", badge: "bg-danger/15 text-danger", border: "border-danger/70 border-dashed" },
+  changed: { label: "changed", badge: "bg-warn/15 text-warn", border: "border-warn/70" },
+};
+
+function DiffBadge({ mark, detail }: { mark: DiffMarkKind; detail?: string }) {
+  const tone = DIFF_TONES[mark];
+  return (
+    <Tooltip content={detail ?? `${tone.label} vs the review ref`}>
+      <span className={cn("shrink-0 rounded-full px-1.5 text-[8.5px] leading-4", tone.badge)}>
+        {tone.label}
+      </span>
+    </Tooltip>
+  );
+}
+
 /* ---------------------------- module container ---------------------------- */
 
 export const ModuleNode = memo(function ModuleNode({ data, selected }: NodeProps<MapRfNode>) {
@@ -119,9 +141,10 @@ export const ModuleNode = memo(function ModuleNode({ data, selected }: NodeProps
     <div
       className={cn(
         "relative h-full w-full rounded-xl border-[1.5px] transition-colors",
-        selected ? "border-crystal-400" : "border-edge-strong",
+        selected ? "border-crystal-400" : d.diffMark ? DIFF_TONES[d.diffMark].border : "border-edge-strong",
         d.emphasis && "ring-2 ring-crystal-400/50",
         d.dimmed && "opacity-40",
+        d.ghost && "opacity-60",
         dragOver && "ring-2 ring-warn",
       )}
       style={{ background: `color-mix(in srgb, ${d.accent} 5%, var(--color-surface-1) 55%)` }}
@@ -134,18 +157,20 @@ export const ModuleNode = memo(function ModuleNode({ data, selected }: NodeProps
         className="flex h-10 cursor-grab items-center gap-1.5 rounded-t-[11px] border-b border-edge px-2.5 active:cursor-grabbing"
         style={{ background: `color-mix(in srgb, ${d.accent} 10%, transparent)` }}
       >
-        <button
-          type="button"
-          className="nodrag shrink-0 rounded p-0.5 text-ink-faint hover:text-ink"
-          onClick={(e) => {
-            e.stopPropagation();
-            actions.toggleModule(d.path);
-          }}
-          aria-label={`${d.expanded ? "Collapse" : "Expand"} ${d.name}`}
-          title={d.expanded ? "Collapse module" : "Expand module — show its files"}
-        >
-          {d.expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-        </button>
+        {!d.ghost ? (
+          <button
+            type="button"
+            className="nodrag shrink-0 rounded p-0.5 text-ink-faint hover:text-ink"
+            onClick={(e) => {
+              e.stopPropagation();
+              actions.toggleModule(d.path);
+            }}
+            aria-label={`${d.expanded ? "Collapse" : "Expand"} ${d.name}`}
+            title={d.expanded ? "Collapse module" : "Expand module — show its files"}
+          >
+            {d.expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+          </button>
+        ) : null}
         <Package className="h-3.5 w-3.5 shrink-0" style={{ color: d.accent }} />
         <span className="truncate text-xs font-semibold text-ink">{d.name}</span>
         {d.path !== "." ? (
@@ -169,9 +194,12 @@ export const ModuleNode = memo(function ModuleNode({ data, selected }: NodeProps
             <span className="shrink-0 rounded-full bg-warn/15 px-1.5 text-[9px] leading-4 text-warn">top</span>
           </Tooltip>
         ) : null}
+        {d.diffMark ? <DiffBadge mark={d.diffMark} detail={d.diffDetail} /> : null}
       </div>
       {!d.expanded && !d.loading ? (
-        <div className="px-2.5 py-1 text-[9.5px] text-ink-faint">double-click to zoom in</div>
+        <div className="px-2.5 py-1 text-[9.5px] text-ink-faint">
+          {d.ghost ? "existed at the review ref" : "double-click to zoom in"}
+        </div>
       ) : null}
       <Handle type="source" position={Position.Bottom} className="!h-1.5 !w-1.5 !border-none !bg-edge-strong" />
     </div>
@@ -195,8 +223,12 @@ export const FileNode = memo(function FileNode({ data, selected }: NodeProps<Map
             ? "border-warn/70"
             : selected
               ? "border-crystal-400"
-              : "border-edge-strong",
+              : d.diffMark
+                ? DIFF_TONES[d.diffMark].border
+                : "border-edge-strong",
         d.emphasis && "ring-2 ring-crystal-400/50",
+        d.dimmed && "opacity-40",
+        d.ghost && "opacity-60",
         dragOver && "ring-2 ring-warn",
       )}
       style={{ borderLeftWidth: 3, borderLeftColor: d.planned || d.moving ? "var(--color-warn)" : d.accent }}
@@ -205,7 +237,9 @@ export const FileNode = memo(function FileNode({ data, selected }: NodeProps<Map
           ? `Planned move from ${d.path} — apply the draft to execute`
           : d.moving
             ? `Pending move ${d.moveLabel} (draft)`
-            : `${d.path} — drag onto another module to plan a file move`
+            : d.ghost
+              ? `${d.path} — deleted since the review ref`
+              : `${d.path} — drag onto another module to plan a file move`
       }
       {...highlightAttrs({ file: d.path, module: d.module })}
       {...dropProps}
@@ -213,7 +247,7 @@ export const FileNode = memo(function FileNode({ data, selected }: NodeProps<Map
       {d.intentMark ? <IntentBadge mark={d.intentMark} /> : null}
       <Handle type="target" position={Position.Top} className="!h-1.5 !w-1.5 !border-none !bg-edge-strong" />
       <div className={cn("flex items-center gap-1.5 px-2 pt-1.5", !d.expanded && "pb-1.5")}>
-        {!d.planned ? (
+        {!d.planned && !d.ghost ? (
           <button
             type="button"
             className="nodrag shrink-0 rounded p-0.5 text-ink-faint hover:text-ink"
@@ -239,6 +273,10 @@ export const FileNode = memo(function FileNode({ data, selected }: NodeProps<Map
         ) : d.moving ? (
           <span className="ml-auto shrink-0 truncate rounded-full bg-warn/15 px-1.5 text-[8.5px] leading-4 text-warn">
             {d.moveLabel}
+          </span>
+        ) : d.diffMark ? (
+          <span className="ml-auto flex shrink-0">
+            <DiffBadge mark={d.diffMark} />
           </span>
         ) : d.exportCount ? (
           <span className="ml-auto shrink-0 rounded-full bg-surface-3 px-1.5 text-[9px] leading-4 text-ink-faint">
@@ -275,6 +313,7 @@ export const SymbolNode = memo(function SymbolNode({ data, selected }: NodeProps
             : selected
               ? "border-crystal-400"
               : "border-edge",
+        d.dimmed && "opacity-40",
         draggable && "cursor-grab active:cursor-grabbing",
       )}
       title={

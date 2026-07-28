@@ -126,11 +126,11 @@ export function CommandPalette({
       // exact screen, not just the mode.
       {
         id: "view.architect.workspaces",
-        title: "Architecture: Workspaces map",
+        title: "Architecture: Codebase map",
         icon: Layers,
         run: () => {
           onSwitchMode("architect");
-          nav({ architect: { view: "codemap", codemap: { kind: "all" } } });
+          nav({ architect: { view: "codebase", codemap: { kind: "all" } } });
         },
       },
       {

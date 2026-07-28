@@ -37,6 +37,8 @@ import {
 import {
   CODE_LOD_LEVELS,
   conceptDisplayName,
+  diffCodeMaps,
+  formatDiffCounts,
   indexFacetVisibility,
   lensLabel,
   matchHighlight,
@@ -54,10 +56,13 @@ import {
   type RefactorIntent,
 } from "@crystal/core";
 import {
+  DiagramLegend,
+  RefReviewBar,
   requestOpenFile,
   useCrystal,
   useNav,
   useNavUpdate,
+  useRefReview,
   useSymbolMenu,
   useWorkerMemo,
   useWorkspaces,
@@ -188,6 +193,12 @@ export function CodeMapView(props: CodeMapViewProps = {}) {
 
 const EMPTY_REFACTORS: RefactorIntent[] = [];
 const EMPTY_LENS_FILES: ReadonlyMap<string, "all" | ReadonlySet<string>> = new Map();
+const REF_NEED_SUMMARY = ["summary"] as const;
+const DIFF_LEGEND = [
+  { swatchClassName: "border border-ok/70 bg-ok/20", label: "added" },
+  { swatchClassName: "border border-dashed border-danger/70 bg-danger/15", label: "removed" },
+  { swatchClassName: "border border-warn/70 bg-warn/20", label: "changed" },
+] as const;
 
 interface CacheEntry<T> {
   gen: number;
@@ -707,6 +718,22 @@ function CodeMapInner({
     if (mapLens) setRefitNonce((n) => n + 1);
   }, [lensCtx, mapLens]);
 
+  /* ---- ref review ("vs <ref>") ---- */
+
+  const vsParam = useNav((l) => l.architect?.vs ?? null);
+  const setVsParam = useCallback((ref: string | null) => nav({ architect: { vs: ref } }), [nav]);
+  const refReview = useRefReview({
+    param: vsParam,
+    setParam: setVsParam,
+    need: REF_NEED_SUMMARY,
+  });
+  // The whole codebase diff — merged (ghost-bearing) summary + scene marks.
+  const codeMapDiff = useMemo(() => {
+    const base = refReview.snapshot?.summary;
+    if (!base || !summary) return null;
+    return diffCodeMaps(base, summary, { changedFiles: refReview.snapshot?.changedFiles });
+  }, [refReview.snapshot, summary]);
+
   /* ---- drag-a-symbol refactor intents (plan mode) ---- */
 
   const { activeDraft, dropNotice, setDropNotice, recordMove, recordFileMove, recordHoist } =
@@ -793,7 +820,10 @@ function CodeMapInner({
   const sceneInput = useMemo<MapSceneInput | null>(() => {
     if (!summary || !level || level.kind === "all") return null;
     return {
-      summary,
+      // Under a ref review, the ghost-merged summary carries removed
+      // modules/deps so deletions occupy space instead of vanishing.
+      summary: codeMapDiff ? codeMapDiff.summary : summary,
+      marks: codeMapDiff?.marks ?? null,
       moduleDetails: moduleDetailMap,
       fileDetails: fileDetailMap,
       expandedModules,
@@ -809,6 +839,7 @@ function CodeMapInner({
     };
   }, [
     summary,
+    codeMapDiff,
     level,
     moduleDetailMap,
     fileDetailMap,
@@ -825,11 +856,43 @@ function CodeMapInner({
   ]);
   // Built off-thread; the previous scene stays interactive while a newer
   // input computes.
-  const { value: scene } = useWorkerMemo<MapSceneInput, MapScene>(
+  const { value: builtScene } = useWorkerMemo<MapSceneInput, MapScene>(
     makeMapSceneWorker,
     buildMapScene,
     sceneInput,
   );
+
+  // Global find (the architect-wide box) dims misses — cheap main-thread
+  // decoration, like selection: never a reason to re-run the worker layout.
+  // A match lights its ancestors (context) and its descendants (contents).
+  const findQuery = (useNav((l) => l.architect?.find) ?? "").trim().toLowerCase();
+  const scene = useMemo<MapScene | null>(() => {
+    if (!builtScene || !findQuery) return builtScene;
+    const matches = (d: MapRfNode["data"]): boolean => {
+      if (d.nodeKind === "module" || d.nodeKind === "file")
+        return (
+          d.name.toLowerCase().includes(findQuery) || d.path.toLowerCase().includes(findQuery)
+        );
+      if (d.nodeKind === "symbol") return d.name.toLowerCase().includes(findQuery);
+      return false;
+    };
+    const parentOf = new Map(builtScene.nodes.map((n) => [n.id, n.parentId]));
+    const direct = new Set(builtScene.nodes.filter((n) => matches(n.data)).map((n) => n.id));
+    const lit = new Set<string>();
+    for (const n of builtScene.nodes) {
+      let hit = direct.has(n.id);
+      for (let p = parentOf.get(n.id); !hit && p; p = parentOf.get(p)) hit = direct.has(p);
+      if (!hit) continue;
+      lit.add(n.id);
+      for (let p = parentOf.get(n.id); p; p = parentOf.get(p)) lit.add(p);
+    }
+    return {
+      ...builtScene,
+      nodes: builtScene.nodes.map((n) =>
+        lit.has(n.id) ? n : { ...n, data: { ...n.data, dimmed: true } },
+      ),
+    };
+  }, [builtScene, findQuery]);
 
   // The coarsest LoD stop: modules grouped by the repository versioning them.
   const repoScene = useMemo(() => {
@@ -849,6 +912,11 @@ function CodeMapInner({
         accent: accentFor(r.path),
         icon: FolderGit2,
         badge: `${r.modules.length} pkg · ${r.fileCount} files`,
+        dimmed:
+          (findQuery &&
+            !`${r.name} ${r.path}`.toLowerCase().includes(findQuery) &&
+            !r.modules.some((m) => `${m.name} ${m.path}`.toLowerCase().includes(findQuery))) ||
+          undefined,
       },
     }));
     const edges: RfEdge[] = deps
@@ -873,7 +941,7 @@ function CodeMapInner({
         labelBgStyle: { fill: "var(--color-surface-1)", fillOpacity: 0.9 },
       }));
     return { nodes: layoutCross(nodes, edges), edges };
-  }, [lod, summary, level, mapLens]);
+  }, [lod, summary, level, mapLens, findQuery]);
 
   // Entity counts per LoD stop, for the slider readout.
   const lodCounts = useMemo(() => {
@@ -903,6 +971,8 @@ function CodeMapInner({
         icon: Layers,
         badge: `${w.fileTotal} files`,
         emphasis: w.id === activeWs,
+        dimmed:
+          (findQuery && !`${w.name} ${w.root}`.toLowerCase().includes(findQuery)) || undefined,
       },
     }));
     const edges: RfEdge[] = cross.edges.map((e) => ({
@@ -920,7 +990,7 @@ function CodeMapInner({
       labelBgStyle: { fill: "var(--color-surface-1)", fillOpacity: 0.9 },
     }));
     return { nodes: layoutCross(nodes, edges), edges };
-  }, [level, cross, activeWs]);
+  }, [level, cross, activeWs, findQuery]);
 
   /* ---- interactions ---- */
 
@@ -986,6 +1056,8 @@ function CodeMapInner({
    */
   const menuFor = useCallback(
     (data: MapRfNode["data"]): MenuEntry[] => {
+      // Review ghosts exist only at the ref — nothing local to act on.
+      if ((data.nodeKind === "module" || data.nodeKind === "file") && data.ghost) return [];
       if (data.nodeKind === "module") {
         const d = data as ModuleNodeData;
         return [
@@ -1220,6 +1292,33 @@ function CodeMapInner({
           <div className="absolute left-3 top-13 z-10 flex items-center gap-2 rounded-xl border border-edge bg-surface-2/95 px-2.5 py-1.5 text-xs shadow-xl shadow-black/30 backdrop-blur">
             <LodSlider level={lod} onChange={setLod} counts={lodCounts} />
             <span className="h-4 w-px bg-edge" />
+            <RefReviewBar
+              active={
+                refReview.active
+                  ? {
+                      ...refReview.active,
+                      commit: refReview.active.commit?.slice(0, 7),
+                      badge: codeMapDiff ? (
+                        <span className="rounded bg-surface-3 px-1 text-[9px] text-ink-muted">
+                          {formatDiffCounts(codeMapDiff.counts) || "no drift"}
+                        </span>
+                      ) : refReview.loading ? (
+                        <Spinner className="h-3 w-3" />
+                      ) : undefined,
+                    }
+                  : null
+              }
+              onReview={refReview.start}
+              onExit={refReview.exit}
+              loading={refReview.loading}
+              className="border-0 bg-transparent px-0 py-0 shadow-none"
+            />
+            {refReview.error ? (
+              <span className="max-w-48 truncate text-[10px] text-danger" title={refReview.error}>
+                {refReview.error}
+              </span>
+            ) : null}
+            <span className="h-4 w-px bg-edge" />
             <Tooltip content="Facet lenses — focus the map on the members of one concern (authentication, payments, …)">
               <button
                 type="button"
@@ -1280,6 +1379,12 @@ function CodeMapInner({
         {level?.kind === "all" && cross && cross.workspaces.length < 2 && !loading ? (
           <div className="absolute left-3 top-12 z-10 rounded-lg border border-edge bg-surface-2/95 px-2 py-1 text-[10px] text-ink-faint">
             Open another workspace (status bar picker) to see cross-workspace imports
+          </div>
+        ) : null}
+
+        {refReview.active && codeMapDiff && level && level.kind !== "all" ? (
+          <div className="absolute bottom-3 left-3 z-10">
+            <DiagramLegend entries={DIFF_LEGEND} />
           </div>
         ) : null}
 
@@ -1618,8 +1723,9 @@ function WorkspaceMapCanvas({
   const onNodeDoubleClick = useCallback(
     (_evt: unknown, node: RfNode) => {
       const data = node.data as MapRfNode["data"];
-      if (data.nodeKind === "module") onDrillModule((data as ModuleNodeData).path);
-      else if (data.nodeKind === "file") onDrillFile((data as FileNodeData).path);
+      // Ghosts exist only at the review ref — there is nothing local to drill into.
+      if (data.nodeKind === "module" && !data.ghost) onDrillModule((data as ModuleNodeData).path);
+      else if (data.nodeKind === "file" && !data.ghost) onDrillFile((data as FileNodeData).path);
     },
     [onDrillModule, onDrillFile],
   );

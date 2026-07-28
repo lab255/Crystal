@@ -48,7 +48,7 @@ describe("symbolMenuEntries", () => {
       {
         mode: "architect",
         architect: {
-          view: "codemap",
+          view: "codebase",
           codemap: { kind: "file", ws: "ws1", path: "src/a.ts" },
           sel: "sym:src/a.ts#fn",
         },

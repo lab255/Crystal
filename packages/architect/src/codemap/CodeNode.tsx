@@ -21,6 +21,8 @@ export interface CodeNodeData extends Record<string, unknown> {
   badge?: string;
   /** Visual emphasis for the focused node at file level. */
   emphasis?: boolean;
+  /** Outside the find query — rendered muted. */
+  dimmed?: boolean;
   /** Rendered dashed — used for cross-module boundary nodes. */
   boundary?: boolean;
   /** Accept dropped symbols (draft plan drag-refactor); called with the payload. */
@@ -48,6 +50,7 @@ export const CodeNode = memo(function CodeNode({ id, data, selected }: NodeProps
       className={cn(
         "relative min-w-36 max-w-52 cursor-pointer rounded-lg border bg-surface-2/95 px-2.5 py-1.5 shadow-md shadow-black/25 transition-shadow",
         data.emphasis && "ring-2 ring-crystal-400/50",
+        data.dimmed && "opacity-40",
         selected ? "border-crystal-400" : "border-edge-strong",
         dragOver && "ring-2 ring-warn",
         data.sim?.overloaded && !killed && "border-danger/60 shadow-lg shadow-danger/20",

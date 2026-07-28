@@ -687,3 +687,76 @@ describe("dropTargetAt", () => {
     expect(fileDropTargetAt(nodes, { x: -10_000, y: -10_000 }, A, "packages/core")).toBeNull();
   });
 });
+
+describe("buildMapScene — ref-review marks", () => {
+  it("tints modules and edges from marks and keeps ghost modules collapsed", () => {
+    const s = summary();
+    // ghost-merged summary: a removed module rides along
+    s.modules.push({ path: "packages/old", name: "old", fileCount: 3 });
+    const scene = buildMapScene(
+      input({
+        summary: s,
+        expandedModules: new Set(["packages/old"]), // stale expansion must not apply
+        marks: {
+          "m:packages/old": { kind: "removed", ghost: true },
+          "m:packages/core": { kind: "changed", detail: "2 files changed" },
+          "dep:packages/ui->packages/core": { kind: "changed", detail: "3 → 7 imports" },
+        },
+      }),
+    );
+    const old = scene.nodes.find((n) => n.id === moduleId("packages/old"))!;
+    const oldData = old.data as ModuleNodeData;
+    expect(oldData.ghost).toBe(true);
+    expect(oldData.diffMark).toBe("removed");
+    expect(oldData.expanded).toBe(false);
+    const core = scene.nodes.find((n) => n.id === moduleId("packages/core"))!;
+    expect((core.data as ModuleNodeData).diffMark).toBe("changed");
+    expect((core.data as ModuleNodeData).diffDetail).toBe("2 files changed");
+    const dep = scene.edges.find((e) => e.id === "dep:packages/ui->packages/core")!;
+    expect(dep.label).toBe("3 → 7 imports");
+  });
+
+  it("renders ghost cards for deleted files inside their expanded module", () => {
+    const gone = "packages/core/src/gone.ts";
+    const scene = buildMapScene(
+      input({
+        moduleDetails: new Map([["packages/core", coreDetail()]]),
+        expandedModules: new Set(["packages/core"]),
+        marks: { [`f:${gone}`]: { kind: "removed", ghost: true } },
+      }),
+    );
+    const ghost = scene.nodes.find((n) => n.id === fileId(gone))!;
+    expect(ghost).toBeDefined();
+    expect(ghost.parentId).toBe(moduleId("packages/core"));
+    const data = ghost.data as FileNodeData;
+    expect(data.ghost).toBe(true);
+    expect(data.diffMark).toBe("removed");
+    // surviving files carry their marks too
+    const sceneMarked = buildMapScene(
+      input({
+        moduleDetails: new Map([["packages/core", coreDetail()]]),
+        expandedModules: new Set(["packages/core"]),
+        marks: { [`f:${A}`]: { kind: "changed" } },
+      }),
+    );
+    const a = sceneMarked.nodes.find((n) => n.id === fileId(A))!;
+    expect((a.data as FileNodeData).diffMark).toBe("changed");
+  });
+
+  it("a deleted file outside the lens stays hidden", () => {
+    const gone = "packages/core/src/gone.ts";
+    const lens: MapLens = {
+      files: new Map([[A, "all"]]),
+      modules: new Set(["packages/core"]),
+    };
+    const scene = buildMapScene(
+      input({
+        moduleDetails: new Map([["packages/core", coreDetail()]]),
+        expandedModules: new Set(["packages/core"]),
+        lens,
+        marks: { [`f:${gone}`]: { kind: "removed", ghost: true } },
+      }),
+    );
+    expect(scene.nodes.find((n) => n.id === fileId(gone))).toBeUndefined();
+  });
+});

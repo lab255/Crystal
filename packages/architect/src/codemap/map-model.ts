@@ -7,6 +7,9 @@ import type {
   CodeModuleDep,
   CodeModuleDetail,
   CodeSymbolKind,
+  DiffMark,
+  DiffMarkKind,
+  DiffMarks,
   MoveFileIntent,
   MoveIntent,
 } from "@crystal/core";
@@ -100,6 +103,12 @@ export interface ModuleNodeData extends Record<string, unknown> {
   emphasis?: boolean;
   /** Lens-context neighbor — rendered muted, outside the facet itself. */
   dimmed?: boolean;
+  /** Ref-review mark (vs <ref>): added / removed / changed tint. */
+  diffMark?: DiffMarkKind;
+  /** Existed only at the review base — rendered as a ghost, not expandable. */
+  ghost?: boolean;
+  /** Mark tooltip detail ("12 → 30 files", "3 files changed"). */
+  diffDetail?: string;
 }
 
 export interface FileNodeData extends Record<string, unknown> {
@@ -121,6 +130,12 @@ export interface FileNodeData extends Record<string, unknown> {
   moving?: boolean;
   /** "→ dest" caption for a moving card. */
   moveLabel?: string;
+  /** Outside the find query / lens focus — rendered muted. */
+  dimmed?: boolean;
+  /** Ref-review mark (vs <ref>). */
+  diffMark?: DiffMarkKind;
+  /** Deleted vs the review base — a ghost card, not expandable. */
+  ghost?: boolean;
 }
 
 export interface SymbolNodeData extends Record<string, unknown> {
@@ -139,6 +154,8 @@ export interface SymbolNodeData extends Record<string, unknown> {
   moving?: boolean;
   /** "→ dest" caption for a moving chip. */
   moveLabel?: string;
+  /** Outside the find query — rendered muted. */
+  dimmed?: boolean;
 }
 
 /** "+N more files" chip inside a capped expanded module (unified canvas). */
@@ -229,6 +246,12 @@ export interface FileBuildInput {
   focusId?: string | null;
   /** Active facet lens — hides files/members outside it. */
   lens?: MapLens | null;
+  /**
+   * Ref-review marks keyed by scene id (`m:`/`f:`/`dep:`) — plain records, so
+   * they travel into the scene worker. When present, `summary` is expected to
+   * be the ghost-merged one from `diffCodeMaps` (removed modules ride along).
+   */
+  marks?: DiffMarks | null;
 }
 
 export interface MapSceneInput extends FileBuildInput {
@@ -291,19 +314,27 @@ export function packGrid(
 
 /* ---- edge styles ---- */
 
-function depEdge(source: string, target: string, weight: number): RfEdge {
+const DIFF_EDGE_COLOR: Record<DiffMarkKind, string> = {
+  added: "var(--color-ok)",
+  removed: "var(--color-danger)",
+  changed: "var(--color-warn)",
+};
+
+function depEdge(source: string, target: string, weight: number, mark?: DiffMark): RfEdge {
+  const stroke = mark ? DIFF_EDGE_COLOR[mark.kind] : "var(--color-edge-strong)";
   return {
     id: `dep:${source}->${target}`,
     source: moduleId(source),
     target: moduleId(target),
     style: {
-      stroke: "var(--color-edge-strong)",
+      stroke,
       strokeWidth: Math.min(1 + Math.log2(weight + 1), 4),
-      opacity: 0.75,
+      opacity: mark?.ghost ? 0.5 : 0.75,
+      ...(mark?.ghost ? { strokeDasharray: "6 4" } : {}),
     },
-    markerEnd: { type: MarkerType.ArrowClosed, color: "var(--color-edge-strong)", width: 14, height: 14 },
-    label: weight > 1 ? String(weight) : undefined,
-    labelStyle: { fill: "var(--color-ink-faint)", fontSize: 9 },
+    markerEnd: { type: MarkerType.ArrowClosed, color: stroke, width: 14, height: 14 },
+    label: mark?.detail ?? (weight > 1 ? String(weight) : undefined),
+    labelStyle: { fill: mark ? stroke : "var(--color-ink-faint)", fontSize: 9 },
     labelBgStyle: { fill: "var(--color-surface-1)", fillOpacity: 0.9 },
   };
 }
@@ -371,11 +402,15 @@ export function buildMapScene(input: MapSceneInput): MapScene {
     h: number;
   }[] = [];
 
+  const marks = input.marks ?? undefined;
+
   for (const m of visibleModules) {
     // Context neighbors always render collapsed — their files are outside the
-    // lens, so expanding them would show an empty shell.
+    // lens, so expanding them would show an empty shell. Ghost modules
+    // (removed vs the review base) have no local detail to expand into.
     const isContext = lens?.context?.has(m.path) ?? false;
-    const expanded = !isContext && input.expandedModules.has(m.path);
+    const isGhost = marks?.[moduleId(m.path)]?.ghost ?? false;
+    const expanded = !isContext && !isGhost && input.expandedModules.has(m.path);
     const detail = expanded ? input.moduleDetails.get(m.path) : undefined;
     if (!expanded || !detail) {
       moduleBuilds.push({
@@ -425,6 +460,43 @@ export function buildMapScene(input: MapSceneInput): MapScene {
         w: FILE_COLLAPSED_W,
         h: FILE_COLLAPSED_H,
       });
+    }
+
+    // ghost cards for files deleted vs the review base — they live only in
+    // the marks (the head detail can't list them), rendered collapsed so the
+    // deletion occupies space instead of silently vanishing
+    if (marks) {
+      for (const [key, mark] of Object.entries(marks)) {
+        if (!mark.ghost || !key.startsWith("f:")) continue;
+        const path = key.slice(2);
+        if (moduleOfPath(path, summary.modules) !== m.path) continue;
+        if (detail.files.some((f) => f.path === path)) continue;
+        if (lens && lensFileVisibility(lens, path) == null) continue;
+        files.push({
+          node: {
+            id: fileId(path),
+            type: "codeFile",
+            parentId: moduleId(m.path),
+            position: { x: 0, y: 0 },
+            width: FILE_COLLAPSED_W,
+            height: FILE_COLLAPSED_H,
+            draggable: false,
+            data: {
+              nodeKind: "file",
+              path,
+              module: m.path,
+              name: path.split("/").pop()!,
+              accent: accentFor(m.path),
+              expanded: false,
+              diffMark: "removed",
+              ghost: true,
+            },
+          },
+          symbols: [],
+          w: FILE_COLLAPSED_W,
+          h: FILE_COLLAPSED_H,
+        });
+      }
     }
 
     const packed = packGrid(
@@ -477,6 +549,7 @@ export function buildMapScene(input: MapSceneInput): MapScene {
     const override = input.positions?.get(b.module.path);
     const position = override ?? { x: dagrePos.x - b.w / 2, y: dagrePos.y - b.h / 2 };
     const id = moduleId(b.module.path);
+    const mark = marks?.[id];
     nodes.push({
       id,
       type: "codeModule",
@@ -497,6 +570,9 @@ export function buildMapScene(input: MapSceneInput): MapScene {
         intentMark: moduleMark.get(b.module.path),
         emphasis: input.focusId === id,
         dimmed: lens?.context?.has(b.module.path) || undefined,
+        diffMark: mark?.kind,
+        ghost: mark?.ghost,
+        diffDetail: mark?.detail,
       },
     });
     for (const f of b.files) {
@@ -511,7 +587,7 @@ export function buildMapScene(input: MapSceneInput): MapScene {
   const edges: RfEdge[] = [];
   for (const d of summary.deps) {
     if (!depVisible(d)) continue;
-    edges.push(depEdge(d.source, d.target, d.weight));
+    edges.push(depEdge(d.source, d.target, d.weight, marks?.[`dep:${d.source}->${d.target}`]));
   }
 
   // import neighborhood of the selected file
@@ -573,6 +649,7 @@ export function buildFile(
   const parentId = moduleId(module);
   const accent = accentFor(module);
   const marks = fileMarksFor(path, moves);
+  const diff = input.marks?.[id];
   const fileMove = moves.find(
     (m): m is MoveFileIntent => m.kind === "moveFile" && m.fromFile === path,
   );
@@ -590,6 +667,8 @@ export function buildFile(
     emphasis: input.focusId === id,
     moving: fileMove != null || undefined,
     moveLabel: fileMove ? `→ ${fileMove.toModule}` : undefined,
+    diffMark: diff?.kind,
+    ghost: diff?.ghost,
   };
 
   if (!expanded) {
