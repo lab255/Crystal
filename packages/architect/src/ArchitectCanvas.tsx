@@ -190,6 +190,10 @@ export interface ArchitectCanvasProps {
   onToggleFindings?: (on: boolean) => void;
   showChanges?: boolean;
   onToggleChanges?: (on: boolean) => void;
+  showInsights?: boolean;
+  onToggleInsights?: (on: boolean) => void;
+  showContracts?: boolean;
+  onToggleContracts?: (on: boolean) => void;
   /**
    * Ref-review marks keyed by node/edge id (vs <ref>) — added/removed/changed
    * tints; ghost-marked nodes render dashed and inert. The caller merges
@@ -355,6 +359,10 @@ function CanvasInner({
   onToggleFindings,
   showChanges,
   onToggleChanges,
+  showInsights,
+  onToggleInsights,
+  showContracts,
+  onToggleContracts,
   diffMarks,
 }: ArchitectCanvasProps) {
   const [selectedNodes, setSelectedNodes] = useState<ReadonlySet<string>>(new Set());
@@ -2385,6 +2393,10 @@ function CanvasInner({
             onToggleFindings={onToggleFindings}
             showChanges={showChanges}
             onToggleChanges={onToggleChanges}
+            showInsights={showInsights}
+            onToggleInsights={onToggleInsights}
+            showContracts={showContracts}
+            onToggleContracts={onToggleContracts}
             onOpenWorkspacesMap={onOpenWorkspacesMap}
           />
         </Panel>

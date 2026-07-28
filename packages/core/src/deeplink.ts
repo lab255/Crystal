@@ -343,6 +343,9 @@ export function formatDeepLink(link: DeepLink): string {
         if (a.draft && a.review) add("review", "1");
         if (a.journey) add("journey", a.journey);
         if (a.overlay) add("overlay", "1");
+        if (a.duplicates) add("dups", "1");
+        if (a.findings) add("findings", "1");
+        if (a.changes) add("changes", "1");
       }
     } else if (view === "codemap" || view === "codebase") {
       const cm = a.codemap;
@@ -502,16 +505,12 @@ export function parseDeepLink(hash: string): DeepLink {
     link.mode = "architect";
     const a: ArchitectLink = {};
     const view = segments[1];
-    if (
-      view === "architecture" ||
-      view === "codebase" ||
-      view === "infra" ||
-      view === "systems" ||
-      view === "diagrams"
-    )
+    if (view === "architecture" || view === "codebase" || view === "infra" || view === "systems")
       a.view = view;
-    // Permanent alias: the code map became the codebase view.
+    // Permanent aliases: the code map became the codebase view; the editable
+    // diagrams canvas was unified into the architecture view.
     else if (view === "codemap") a.view = "codebase";
+    else if (view === "diagrams") a.view = "architecture";
     const system = params.get("system");
     if (system) a.system = system;
     const sysGroup = params.get("group");
@@ -684,7 +683,7 @@ export function parseDeepLink(hash: string): DeepLink {
  * history navigation.
  */
 const ARCHITECT_VIEW_FIELDS: Record<ArchitectViewId, readonly (keyof ArchitectLink)[]> = {
-  architecture: ["view", "system", "sysGroup", "lensCtx", "edge", "expanded", "focus", "focusSolo", "insights", "contracts", "facets", "facet", "draft", "review", "journey", "overlay", "layers", "sel", "find", "vs"],
+  architecture: ["view", "system", "sysGroup", "lensCtx", "edge", "expanded", "focus", "focusSolo", "insights", "contracts", "facets", "facet", "draft", "review", "journey", "overlay", "layers", "duplicates", "findings", "changes", "sel", "find", "vs"],
   codebase: ["view", "codemap", "lod", "lensCtx", "duplicates", "findings", "changes", "facets", "file", "sel", "find", "vs"],
   systems: ["view", "system", "sysGroup", "lensCtx", "edge", "expanded", "focus", "focusSolo", "insights", "contracts", "facets", "sel", "find", "vs"],
   codemap: ["view", "codemap", "lod", "lensCtx", "duplicates", "findings", "changes", "facets", "file", "sel", "find", "vs"],

@@ -127,6 +127,20 @@ export function classifyExternalPackage(pkg: string): ExternalServiceMeta | null
   return null;
 }
 
+/**
+ * One named instance of a service — a specific bucket, queue, topic or table
+ * whose literal name was discoverable near the client code. Every queue and
+ * bucket is a different box on the architecture; the service-level dep is the
+ * fallback when no name is discoverable.
+ */
+export interface CodeExternalInstance {
+  /** The literal name as written ("uploads", "billing-events"). */
+  name: string;
+  /** Modules whose files mention this instance, heaviest first. */
+  clients: { module: string; weight: number }[];
+  weight: number;
+}
+
 /** One detected external service and the modules that import its client libraries. */
 export interface CodeExternalDep {
   /** Stable service id (`ExternalServiceMeta.id`). */
@@ -139,6 +153,68 @@ export interface CodeExternalDep {
   clients: { module: string; weight: number }[];
   /** Total import statements across all clients. */
   weight: number;
+  /** Named instances (buckets/queues/topics/tables), heaviest first. Absent when none were discoverable. */
+  instances?: CodeExternalInstance[];
+}
+
+/* ------------------------------------------------------------------ */
+/* Instance-name extraction                                            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Literal-name patterns per service id, matched against a file's source when
+ * that file imports the service's client packages. Deliberately conservative:
+ * a string literal at a well-known construction/call site, nothing inferred —
+ * a computed name simply falls back to the service-level node.
+ */
+const INSTANCE_PATTERNS: Record<string, RegExp[]> = {
+  s3: [/Bucket\s*:\s*["'`]([\w.-]+)["'`]/g],
+  gcs: [/\.bucket\(\s*["'`]([\w.-]+)["'`]/g],
+  "azure-blob": [/getContainerClient\(\s*["'`]([\w.-]+)["'`]/g],
+  "redis-queue": [/new\s+(?:Queue|Worker|QueueEvents|FlowProducer)\s*\(\s*["'`]([\w:.-]+)["'`]/g],
+  sqs: [/QueueUrl\s*:\s*["'`][^"'`]*\/([\w-]+)["'`]/g],
+  kafka: [/topics?\s*:\s*\[?\s*["'`]([\w.-]+)["'`]/g],
+  rabbitmq: [/(?:assertQueue|sendToQueue|bindQueue|assertExchange|publish)\s*\(\s*["'`]([\w:.-]+)["'`]/g],
+  dynamodb: [/TableName\s*:\s*["'`]([\w.-]+)["'`]/g],
+};
+
+/** A service instance name found in one file. */
+export interface ServiceInstanceHit {
+  serviceId: string;
+  name: string;
+}
+
+/**
+ * Scan one file's source for named service instances. `packages` is the
+ * file's external import list — only services actually imported there are
+ * scanned, so a stray `Bucket:` in unrelated code can't invent an S3 node.
+ */
+export function extractServiceInstances(
+  source: string,
+  packages: Iterable<string>,
+): ServiceInstanceHit[] {
+  const serviceIds = new Set<string>();
+  for (const pkg of packages) {
+    const meta = classifyExternalPackage(pkg);
+    if (meta && INSTANCE_PATTERNS[meta.id]) serviceIds.add(meta.id);
+  }
+  if (serviceIds.size === 0) return [];
+  const hits: ServiceInstanceHit[] = [];
+  const seen = new Set<string>();
+  for (const serviceId of serviceIds) {
+    for (const pattern of INSTANCE_PATTERNS[serviceId]!) {
+      pattern.lastIndex = 0;
+      for (const match of source.matchAll(pattern)) {
+        const name = match[1];
+        if (!name || name.length < 2) continue;
+        const key = `${serviceId}\0${name}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        hits.push({ serviceId, name });
+      }
+    }
+  }
+  return hits;
 }
 
 /** Node builtins — runtime platform, not dependencies worth mapping. */
@@ -202,38 +278,59 @@ export function aggregateExternalLibraries(
 /**
  * Aggregate raw (module, package) import observations into per-service
  * dependencies. Unrecognized packages are ignored — plain libraries are not
- * services.
+ * services. An observation may carry the instance names its file mentions
+ * (see {@link extractServiceInstances}); they roll up into per-instance
+ * client lists so each named bucket/queue/table can render as its own node.
  */
 export function aggregateExternalDeps(
-  imports: Iterable<{ module: string; pkg: string }>,
+  imports: Iterable<{ module: string; pkg: string; instances?: readonly string[] }>,
 ): CodeExternalDep[] {
   const services = new Map<
     string,
-    { meta: ExternalServiceMeta; packages: Map<string, number>; clients: Map<string, number> }
+    {
+      meta: ExternalServiceMeta;
+      packages: Map<string, number>;
+      clients: Map<string, number>;
+      instances: Map<string, Map<string, number>>;
+    }
   >();
-  for (const { module, pkg } of imports) {
+  for (const { module, pkg, instances } of imports) {
     const meta = classifyExternalPackage(pkg);
     if (!meta) continue;
     let entry = services.get(meta.id);
     if (!entry) {
-      entry = { meta, packages: new Map(), clients: new Map() };
+      entry = { meta, packages: new Map(), clients: new Map(), instances: new Map() };
       services.set(meta.id, entry);
     }
     entry.packages.set(pkg, (entry.packages.get(pkg) ?? 0) + 1);
     entry.clients.set(module, (entry.clients.get(module) ?? 0) + 1);
+    for (const name of instances ?? []) {
+      let byModule = entry.instances.get(name);
+      if (!byModule) entry.instances.set(name, (byModule = new Map()));
+      byModule.set(module, (byModule.get(module) ?? 0) + 1);
+    }
   }
+  const clientList = (clients: Map<string, number>) =>
+    [...clients.entries()]
+      .map(([module, weight]) => ({ module, weight }))
+      .sort((a, b) => b.weight - a.weight || a.module.localeCompare(b.module));
   return [...services.values()]
-    .map(({ meta, packages, clients }) => {
-      const clientList = [...clients.entries()]
-        .map(([module, weight]) => ({ module, weight }))
-        .sort((a, b) => b.weight - a.weight || a.module.localeCompare(b.module));
+    .map(({ meta, packages, clients, instances }) => {
+      const list = clientList(clients);
+      const instanceList: CodeExternalInstance[] = [...instances.entries()]
+        .map(([name, byModule]) => {
+          const c = clientList(byModule);
+          return { name, clients: c, weight: c.reduce((s, x) => s + x.weight, 0) };
+        })
+        .sort((a, b) => b.weight - a.weight || a.name.localeCompare(b.name));
       return {
         ...meta,
         packages: [...packages.entries()]
           .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
           .map(([pkg]) => pkg),
-        clients: clientList,
-        weight: clientList.reduce((sum, c) => sum + c.weight, 0),
+        clients: list,
+        weight: list.reduce((sum, c) => sum + c.weight, 0),
+        ...(instanceList.length > 0 ? { instances: instanceList } : {}),
       };
     })
     .sort((a, b) => b.weight - a.weight || a.name.localeCompare(b.name));

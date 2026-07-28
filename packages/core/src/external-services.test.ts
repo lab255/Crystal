@@ -5,6 +5,7 @@ import {
   aggregateExternalDeps,
   aggregateExternalLibraries,
   classifyExternalPackage,
+  extractServiceInstances,
 } from "./external-services.js";
 
 describe("classifyExternalPackage", () => {
@@ -101,5 +102,55 @@ describe("aggregateExternalLibraries", () => {
       2,
     );
     expect(libs.map((l) => l.pkg)).toEqual(["two", "one"]);
+  });
+});
+
+describe("extractServiceInstances", () => {
+  it("finds bucket/queue/table names only for imported services", () => {
+    const source = `
+      import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+      import { Queue } from "bullmq";
+      const emails = new Queue("email-jobs");
+      await s3.send(new PutObjectCommand({ Bucket: "user-uploads", Key: key }));
+      await s3.send(new GetObjectCommand({ Bucket: "user-uploads", Key: key }));
+      const params = { TableName: "sessions" }; // dynamo NOT imported — ignored
+    `;
+    const hits = extractServiceInstances(source, ["@aws-sdk/client-s3", "bullmq"]);
+    expect(hits).toEqual([
+      { serviceId: "s3", name: "user-uploads" },
+      { serviceId: "redis-queue", name: "email-jobs" },
+    ]);
+  });
+
+  it("returns nothing when no imported service has instance patterns", () => {
+    expect(extractServiceInstances(`Bucket: "x"`, ["stripe", "axios"])).toEqual([]);
+  });
+});
+
+describe("aggregateExternalDeps — instances", () => {
+  it("rolls instance names into per-instance client lists", () => {
+    const deps = aggregateExternalDeps([
+      { module: "packages/server", pkg: "@aws-sdk/client-s3", instances: ["uploads"] },
+      { module: "packages/server", pkg: "@aws-sdk/client-s3" },
+      { module: "packages/worker", pkg: "@aws-sdk/client-s3", instances: ["uploads", "exports"] },
+    ]);
+    const s3 = deps.find((d) => d.id === "s3")!;
+    expect(s3.weight).toBe(3);
+    expect(s3.instances).toEqual([
+      {
+        name: "uploads",
+        clients: [
+          { module: "packages/server", weight: 1 },
+          { module: "packages/worker", weight: 1 },
+        ],
+        weight: 2,
+      },
+      { name: "exports", clients: [{ module: "packages/worker", weight: 1 }], weight: 1 },
+    ]);
+  });
+
+  it("omits the instances field entirely when no names were observed", () => {
+    const deps = aggregateExternalDeps([{ module: "m", pkg: "stripe" }]);
+    expect(deps[0]!.instances).toBeUndefined();
   });
 });

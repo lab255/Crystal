@@ -152,20 +152,22 @@ describe("parseDeepLink", () => {
 });
 
 describe("round trips", () => {
-  it("architect diagrams with everything set", () => {
-    const link: DeepLink = {
+  it("legacy diagrams links land on the architecture view with their state intact", () => {
+    const parsed = parseDeepLink(
+      "#/architect/diagrams?ws=1a2b3c4d5e6f&diagram=.crystal/architecture/my%20api.crystal&facet=facet-auth1&draft=.crystal/arch-drafts/plan%261.crystal&journey=j-1&overlay=1",
+    );
+    expect(parsed).toEqual({
       ws: "1a2b3c4d5e6f",
       mode: "architect",
       architect: {
-        view: "diagrams",
+        view: "architecture",
         diagram: ".crystal/architecture/my api.crystal",
         facet: "facet-auth1",
         draft: ".crystal/arch-drafts/plan&1.crystal",
         journey: "j-1",
         overlay: true,
       },
-    };
-    expect(roundTrip(link)).toEqual(link);
+    });
   });
 
   it("api explorer selection round-trips (surfaces mode)", () => {
@@ -189,7 +191,7 @@ describe("round trips", () => {
   });
 
   it("global find travels on every architect subview", () => {
-    for (const view of ["systems", "diagrams", "infra", "codebase"] as const) {
+    for (const view of ["systems", "architecture", "infra", "codebase"] as const) {
       const link: DeepLink = {
         ws: "abc",
         mode: "architect",
@@ -203,14 +205,14 @@ describe("round trips", () => {
     const link: DeepLink = {
       ws: "abc",
       mode: "architect",
-      architect: { view: "diagrams", draft: ".crystal/architecture/drafts/plan.json", review: true },
+      architect: { view: "architecture", draft: ".crystal/architecture/drafts/plan.json", review: true },
     };
     expect(roundTrip(link)).toEqual(link);
     // review is a lens on a draft — meaningless (and omitted) without one
     expect(
-      formatDeepLink({ mode: "architect", architect: { view: "diagrams", review: true } }),
-    ).toBe("#/architect/diagrams");
-    expect(parseDeepLink("#/architect/diagrams?review=1").architect?.review).toBeUndefined();
+      formatDeepLink({ mode: "architect", architect: { view: "architecture", review: true } }),
+    ).toBe("#/architect/architecture");
+    expect(parseDeepLink("#/architect/architecture?review=1").architect?.review).toBeUndefined();
   });
 
   it("architect infra keeps the shared diagram selection", () => {
@@ -358,7 +360,7 @@ describe("round trips", () => {
     const diagrams: DeepLink = {
       ws: "abc",
       mode: "architect",
-      architect: { view: "diagrams", sel: "sym:packages/core/src/booking.ts#createBooking" },
+      architect: { view: "architecture", sel: "sym:packages/core/src/booking.ts#createBooking" },
     };
     expect(roundTrip(diagrams)).toEqual(diagrams);
     const codemap: DeepLink = {
@@ -899,7 +901,7 @@ describe("consolidated diagram views", () => {
   });
 
   it("vs travels on every architect subview", () => {
-    for (const view of ["architecture", "codebase", "infra", "systems", "diagrams"] as const) {
+    for (const view of ["architecture", "codebase", "infra", "systems"] as const) {
       const link: DeepLink = {
         ws: "abc",
         mode: "architect",

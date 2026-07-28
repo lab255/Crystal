@@ -161,16 +161,23 @@ export function deriveArchGraph(input: DeriveInput): ArchitectureGraph {
     label: l.weight > 1 ? String(l.weight) : "",
   }));
 
-  // Detected external services — each queue/bucket/SaaS a distinct node,
-  // wired from the systems whose modules import its client packages.
+  // Detected external services — each named bucket/queue/topic/table its own
+  // node when a literal name was discoverable, the service-level node as the
+  // fallback (and for clients no named instance claims). Every box is wired
+  // from the systems whose modules import the client packages.
   const edgeIds = new Set(edges.map((e) => e.id));
-  for (const dep of externals) {
-    const extId = externalNodeIdOf(dep.id);
+  const pushExternal = (
+    dep: CodeExternalDep,
+    extId: string,
+    label: string,
+    description: string,
+    clients: readonly { module: string; weight: number }[],
+  ) => {
     nodes.push({
       id: extId,
       kind: ARCH_KIND_OF_CATEGORY[dep.category] ?? "external",
-      label: dep.name,
-      description: `detected from ${dep.packages.join(", ")}`,
+      label,
+      description,
       parentId: null,
       position: { x: 0, y: 0 },
       size: null,
@@ -179,7 +186,7 @@ export function deriveArchGraph(input: DeriveInput): ArchitectureGraph {
       layer: null,
     });
     const consumers = new Map<string, number>();
-    for (const client of dep.clients) {
+    for (const client of clients) {
       const sys = systemOfModule(client.module, overview.systems, idOf);
       if (sys) consumers.set(sys, (consumers.get(sys) ?? 0) + client.weight);
     }
@@ -194,6 +201,32 @@ export function deriveArchGraph(input: DeriveInput): ArchitectureGraph {
         kind: edgeKindForCategory(dep.category),
         label: weight > 1 ? String(weight) : "",
       });
+    }
+  };
+  for (const dep of externals) {
+    const instances = dep.instances ?? [];
+    const claimed = new Set<string>();
+    for (const inst of instances) {
+      pushExternal(
+        dep,
+        `${externalNodeIdOf(dep.id)}:${slug(inst.name)}`,
+        inst.name,
+        `${dep.name} · detected from ${dep.packages.join(", ")}`,
+        inst.clients,
+      );
+      for (const c of inst.clients) claimed.add(c.module);
+    }
+    // Clients no named instance claims still need the service-level box.
+    const residual =
+      instances.length === 0 ? dep.clients : dep.clients.filter((c) => !claimed.has(c.module));
+    if (instances.length === 0 || residual.length > 0) {
+      pushExternal(
+        dep,
+        externalNodeIdOf(dep.id),
+        dep.name,
+        `detected from ${dep.packages.join(", ")}`,
+        residual,
+      );
     }
   }
 

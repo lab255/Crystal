@@ -154,3 +154,84 @@ describe("overview diff projection", () => {
     expect(ghosts.edges.map((e) => e.id)).toEqual(["link:sys:ui->sys:old"]);
   });
 });
+
+describe("instance-granular externals", () => {
+  it("derives one node per named instance plus a residual service node", () => {
+    const externals: CodeExternalDep[] = [
+      {
+        id: "s3",
+        name: "S3 / object storage",
+        category: "storage",
+        packages: ["@aws-sdk/client-s3"],
+        clients: [
+          { module: "packages/server", weight: 5 },
+          { module: "packages/worker", weight: 2 },
+        ],
+        weight: 7,
+        instances: [
+          { name: "uploads", clients: [{ module: "packages/server", weight: 3 }], weight: 3 },
+          { name: "exports", clients: [{ module: "packages/server", weight: 2 }], weight: 2 },
+        ],
+      },
+    ];
+    const graph = deriveArchGraph({
+      overview: overview([
+        system({
+          id: "sys:server",
+          name: "Server",
+          parts: [{ path: "packages/server", pkg: "packages/server", fileCount: 5 }],
+        }),
+        system({
+          id: "sys:worker",
+          name: "Worker",
+          parts: [{ path: "packages/worker", pkg: "packages/worker", fileCount: 2 }],
+        }),
+      ]),
+      externals,
+      modules: [],
+    });
+    const extIds = graph.nodes.filter((n) => n.id.startsWith("ext:")).map((n) => n.id);
+    // two named buckets + the residual service node (packages/worker unclaimed)
+    expect(extIds).toEqual(["ext:s3:uploads", "ext:s3:exports", "ext:s3"]);
+    const uploads = graph.nodes.find((n) => n.id === "ext:s3:uploads")!;
+    expect(uploads.label).toBe("uploads");
+    expect(uploads.kind).toBe("datastore");
+    expect(graph.edges.map((e) => e.id)).toEqual([
+      "extlink:sys:server->ext:s3:uploads",
+      "extlink:sys:server->ext:s3:exports",
+      "extlink:sys:worker->ext:s3",
+    ]);
+  });
+
+  it("fully claimed clients drop the residual service node", () => {
+    const externals: CodeExternalDep[] = [
+      {
+        id: "redis-queue",
+        name: "Redis queue",
+        category: "queue",
+        packages: ["bullmq"],
+        clients: [{ module: "packages/server", weight: 4 }],
+        weight: 4,
+        instances: [
+          { name: "emails", clients: [{ module: "packages/server", weight: 4 }], weight: 4 },
+        ],
+      },
+    ];
+    const graph = deriveArchGraph({
+      overview: overview([
+        system({
+          id: "sys:server",
+          name: "Server",
+          parts: [{ path: "packages/server", pkg: "packages/server", fileCount: 5 }],
+        }),
+      ]),
+      externals,
+      modules: [],
+    });
+    const extIds = graph.nodes.filter((n) => n.id.startsWith("ext:")).map((n) => n.id);
+    expect(extIds).toEqual(["ext:redis-queue:emails"]);
+    expect(graph.edges.map((e) => e.id)).toEqual([
+      "extlink:sys:server->ext:redis-queue:emails",
+    ]);
+  });
+});

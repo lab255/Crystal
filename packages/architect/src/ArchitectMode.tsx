@@ -85,6 +85,8 @@ import { ReviewPanel } from "./codemap/ReviewPanel.js";
 import type { MoveLikeIntent } from "./codemap/map-model.js";
 import { projectTrace, stepKeyOf } from "./dataflow.js";
 import { InfraView } from "./InfraView.js";
+import { ContractsPanel } from "./panels/ContractsPanel.js";
+import { InsightsPanel } from "./panels/InsightsPanel.js";
 import { FlowStepsPanel, JourneysSection, type JourneySeed } from "./JourneyPanel.js";
 import { JourneyProfilePanel } from "./ProfilePanel.js";
 import { useRefactorIntents } from "./refactor-intents.js";
@@ -107,17 +109,16 @@ const DIFF_LEGEND = [
   { swatchClassName: "border border-warn/70 bg-warn/20", label: "changed" },
 ] as const;
 
-type ArchitectView = "systems" | "diagrams" | "infra" | "codebase";
+type ArchitectView = "systems" | "architecture" | "infra" | "codebase";
 
 export function ArchitectMode() {
   // View + draft selection live in the deep-linkable nav store.
   const nav = useNavUpdate();
   const rawView = useNav((l) => l.architect?.view) ?? "systems";
-  // `codebase` is the consolidated id; `codemap` links (old bookmarks, other
-  // views' mints) land there. `architecture` lands on systems until Phase 3
-  // unifies it with the canvas.
+  // Consolidated ids: `architecture` absorbs the old `diagrams` canvas and
+  // `codebase` the old `codemap` — legacy links land on their successors.
   const view: ArchitectView =
-    rawView === "architecture" ? "systems" : rawView === "codemap" ? "codebase" : rawView;
+    rawView === "diagrams" ? "architecture" : rawView === "codemap" ? "codebase" : rawView;
   const setView = useCallback(
     (v: ArchitectView) => nav({ architect: { view: v } }),
     [nav],
@@ -151,7 +152,7 @@ export function ArchitectMode() {
   /** Drilling stays in the unified canvas: expand the node linked to the module. */
   const expandCode = useCallback(
     (module: string, file?: string, facet?: OpenCodeFacet) => {
-      setView("diagrams");
+      setView("architecture");
       setExpandRequest({ module, file, nonce: ++expandNonce.current });
       if (facet) setFacetRequest({ ...facet, nonce: expandNonce.current });
     },
@@ -167,7 +168,7 @@ export function ArchitectMode() {
   const startJourneyFromCode = useCallback(
     (seed: JourneySeed) => {
       setJourneySeed(seed);
-      setView("diagrams");
+      setView("architecture");
     },
     [setView],
   );
@@ -247,7 +248,7 @@ export function ArchitectMode() {
           {tab("codebase", <Layers className="h-3.5 w-3.5" />, "Codebase")}
           {tab("systems", <Boxes className="h-3.5 w-3.5" />, "Systems")}
           {tab(
-            "diagrams",
+            "architecture",
             <PencilRuler className="h-3.5 w-3.5" />,
             <>
               Architecture
@@ -262,10 +263,10 @@ export function ArchitectMode() {
           <SystemsView onOpenCode={openCodeFromSystems} />
         ) : view === "codebase" ? (
           <CodeMapView
-            origin={{ label: "Architecture", onExit: () => setView("diagrams") }}
+            origin={{ label: "Architecture", onExit: () => setView("architecture") }}
             onEnterWorkspace={(ws) => {
               if (ws !== activeWs) setActiveWs(ws);
-              setView("diagrams");
+              setView("architecture");
             }}
             onStartJourney={startJourneyFromCode}
             onRevealInDiagram={expandCode}
@@ -303,7 +304,7 @@ function DiagramsView({
   draftPath,
   onDraftPathChange: setDraftPath,
 }: {
-  variant: "diagrams" | "infra";
+  variant: "architecture" | "infra";
   expandRequest: { module: string; file?: string; nonce: number } | null;
   facetRequest: (OpenCodeFacet & { nonce: number }) | null;
   onExpandCode: (module: string, file?: string) => void;
@@ -709,6 +710,33 @@ function DiagramsView({
     (on: boolean) => nav({ architect: { changes: on } }),
     [nav],
   );
+  // Insights + contracts — ported from the systems overview; same deep-link
+  // params, so old systems URLs land with the right panels open.
+  const showInsights = useNav((l) => l.architect?.insights) ?? false;
+  const setShowInsights = useCallback(
+    (on: boolean) => nav({ architect: { insights: on } }),
+    [nav],
+  );
+  const showContracts = useNav((l) => l.architect?.contracts) ?? false;
+  const setShowContracts = useCallback(
+    (on: boolean) => nav({ architect: { contracts: on } }),
+    [nav],
+  );
+  /** Selected boundary — raw "source->target" overview key (the `edge` param). */
+  const activeEdgeKey = useNav((l) => l.architect?.edge) ?? null;
+  const setActiveEdgeKey = useCallback(
+    (key: string | null) => nav({ architect: { edge: key, ...(key ? { contracts: true } : {}) } }),
+    [nav],
+  );
+  /** Focus a system on the canvas by its RAW overview id (panels speak raw ids). */
+  const focusSystem = useCallback(
+    (rawId: string) => {
+      if (!overviewData) return;
+      const canonical = canonicalSystemIds(overviewData.systems).get(rawId) ?? rawId;
+      setHighlightRequest({ nodeId: canonical, nonce: ++highlightNonce.current });
+    },
+    [overviewData],
+  );
 
   useEffect(() => {
     if (!notice) return;
@@ -905,7 +933,7 @@ function DiagramsView({
           </Tooltip>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2">
-          {variant === "diagrams" && rendered ? (
+          {variant === "architecture" && rendered ? (
             <>
               <div className="flex items-center justify-between px-1.5 pb-1">
                 <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-faint">
@@ -1050,6 +1078,10 @@ function DiagramsView({
                   onToggleFindings={setShowFindings}
                   showChanges={showChanges}
                   onToggleChanges={setShowChanges}
+                  showInsights={showInsights}
+                  onToggleInsights={setShowInsights}
+                  showContracts={showContracts}
+                  onToggleContracts={setShowContracts}
                 />
               )}
               {activeDraft ? (
@@ -1144,7 +1176,7 @@ function DiagramsView({
         ) : null}
       </main>
             </Pane>
-            {variant === "diagrams" && activeJourney && journeyTrace && effectiveGraph ? (
+            {variant === "architecture" && activeJourney && journeyTrace && effectiveGraph ? (
               <Pane defaultSize={240} minSize={130} maxSize="60%">
                 <JourneyProfilePanel
                   trace={journeyTrace}
@@ -1158,7 +1190,7 @@ function DiagramsView({
           </Split>
         </Pane>
 
-        {variant === "diagrams" && activeJourney ? (
+        {variant === "architecture" && activeJourney ? (
           <Pane defaultSize={320} minSize={224} maxSize={520}>
             <FlowStepsPanel
               journey={activeJourney}
@@ -1172,7 +1204,7 @@ function DiagramsView({
           </Pane>
         ) : null}
 
-        {variant === "diagrams" && showDuplicates ? (
+        {variant === "architecture" && showDuplicates ? (
           <Pane defaultSize={384} minSize={260} maxSize={640}>
             <DuplicatesPanel
               ws={activeWs ?? undefined}
@@ -1184,7 +1216,7 @@ function DiagramsView({
           </Pane>
         ) : null}
 
-        {variant === "diagrams" && showFindings ? (
+        {variant === "architecture" && showFindings ? (
           <Pane defaultSize={384} minSize={260} maxSize={640}>
             <ReviewPanel
               ws={activeWs ?? undefined}
@@ -1195,12 +1227,38 @@ function DiagramsView({
           </Pane>
         ) : null}
 
-        {variant === "diagrams" && showChanges ? (
+        {variant === "architecture" && showChanges ? (
           <Pane defaultSize={384} minSize={260} maxSize={640}>
             <ChangesPanel
               ws={activeWs ?? undefined}
               onOpenFile={(file, line) => requestOpenFile(file, line)}
               onClose={() => setShowChanges(false)}
+            />
+          </Pane>
+        ) : null}
+
+        {variant === "architecture" && showInsights && overviewData ? (
+          <Pane defaultSize={320} minSize={240} maxSize={560}>
+            <InsightsPanel
+              overview={overviewData}
+              onFocusSystem={focusSystem}
+              onSelectEdge={(key) => setActiveEdgeKey(key)}
+              onClose={() => setShowInsights(false)}
+            />
+          </Pane>
+        ) : null}
+
+        {variant === "architecture" && showContracts && overviewData ? (
+          <Pane defaultSize={384} minSize={280} maxSize={640}>
+            <ContractsPanel
+              overview={overviewData}
+              activeEdgeKey={activeEdgeKey}
+              onSelectEdge={setActiveEdgeKey}
+              onFocusSystem={focusSystem}
+              onClose={() => {
+                setActiveEdgeKey(null);
+                setShowContracts(false);
+              }}
             />
           </Pane>
         ) : null}

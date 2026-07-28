@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ClipboardCheck, Copy, History, Layers, LayoutGrid, Maximize2, Network, Radar, Rows3, X, ZoomIn } from "lucide-react";
+import { ClipboardCheck, Copy, Handshake, History, Layers, LayoutGrid, Lightbulb, Maximize2, Network, Radar, Rows3, X, ZoomIn } from "lucide-react";
 import type { ArchEdgeKind, ArchitectureGraph, CodeLodLevel } from "@crystal/core";
 import { Button, Tooltip, cn } from "@crystal/ui";
 import { EDGE_KIND_STYLE } from "./model.js";
@@ -28,6 +28,10 @@ export function Toolbar({
   onToggleFindings,
   showChanges,
   onToggleChanges,
+  showInsights,
+  onToggleInsights,
+  showContracts,
+  onToggleContracts,
   onOpenWorkspacesMap,
 }: {
   graph: ArchitectureGraph;
@@ -53,6 +57,10 @@ export function Toolbar({
   onToggleFindings?: (on: boolean) => void;
   showChanges?: boolean;
   onToggleChanges?: (on: boolean) => void;
+  showInsights?: boolean;
+  onToggleInsights?: (on: boolean) => void;
+  showContracts?: boolean;
+  onToggleContracts?: (on: boolean) => void;
   /** Open the cross-workspace map (all open workspaces and their imports). */
   onOpenWorkspacesMap?: () => void;
 }) {
@@ -252,6 +260,42 @@ export function Toolbar({
           >
             <History className="h-3.5 w-3.5" />
             changes
+          </button>
+        </Tooltip>
+      ) : null}
+      {onToggleInsights ? (
+        <Tooltip content="Insights — dependency cycles, layering violations, coupling hubs, orphans">
+          <button
+            type="button"
+            aria-pressed={showInsights}
+            onClick={() => onToggleInsights(!showInsights)}
+            className={cn(
+              "flex h-6 items-center gap-1.5 rounded-md px-1.5 text-[11px] transition-colors",
+              showInsights
+                ? "bg-crystal-500/15 text-crystal-300"
+                : "text-ink-faint hover:text-ink-muted",
+            )}
+          >
+            <Lightbulb className="h-3.5 w-3.5" />
+            insights
+          </button>
+        </Tooltip>
+      ) : null}
+      {onToggleContracts ? (
+        <Tooltip content="Contracts — every symbol crossing a system boundary, with import and call sites">
+          <button
+            type="button"
+            aria-pressed={showContracts}
+            onClick={() => onToggleContracts(!showContracts)}
+            className={cn(
+              "flex h-6 items-center gap-1.5 rounded-md px-1.5 text-[11px] transition-colors",
+              showContracts
+                ? "bg-crystal-500/15 text-crystal-300"
+                : "text-ink-faint hover:text-ink-muted",
+            )}
+          >
+            <Handshake className="h-3.5 w-3.5" />
+            contracts
           </button>
         </Tooltip>
       ) : null}

@@ -5,7 +5,9 @@ import {
   aggregateExternalDeps,
   aggregateExternalLibraries,
   bestServedRoute,
+  classifyExternalPackage,
   detectEndpointValidation,
+  extractServiceInstances,
   routeSegments,
   routesMatchSuffix,
 } from "@crystal/core";
@@ -152,6 +154,12 @@ interface ParsedFile {
   /** FNV-1a 64 hash of the file text (the code-index enrichment freshness key). */
   hash: string;
   loc: number;
+  /**
+   * Named service instances (buckets, queues, topics, tables) whose literal
+   * names appear in this file — extracted at parse time, when the source is
+   * in hand (see core `extractServiceInstances`).
+   */
+  serviceInstances?: { serviceId: string; name: string }[];
   imports: { specifier: string; names: string[]; line?: number; defaultName?: string }[];
   exports: CodeSymbol[];
   symbols: ParsedSymbol[];
@@ -1760,7 +1768,19 @@ export class CodeMapAnalyzer {
         if (!parsed || parsed.mtimeMs !== stat.mtimeMs) {
           try {
             const text = await fs.readFile(abs, "utf8");
-            parsed = { mtimeMs: stat.mtimeMs, hash: fnv1a64(text), ...parseSource(rel, text) };
+            const core = parseSource(rel, text);
+            const serviceInstances = extractServiceInstances(
+              text,
+              core.imports
+                .map((i) => packageNameOf(i.specifier))
+                .filter((p): p is string => p != null),
+            );
+            parsed = {
+              mtimeMs: stat.mtimeMs,
+              hash: fnv1a64(text),
+              ...core,
+              ...(serviceInstances.length > 0 ? { serviceInstances } : {}),
+            };
             this.parseCache.set(rel, parsed);
           } catch {
             return;
@@ -1914,12 +1934,30 @@ export class CodeMapAnalyzer {
   async summary(): Promise<CodeMapSummary> {
     await this.ensureFresh();
     const weights = new Map<string, number>();
-    const externalImports: { module: string; pkg: string }[] = [];
+    const externalImports: { module: string; pkg: string; instances?: string[] }[] = [];
+    // Instance names attach once per (file, service) — a file importing three
+    // client packages of one service must not triple-count its bucket names.
+    const instancesAttached = new Set<string>();
     for (const record of this.records.values()) {
       for (const imp of record.resolvedImports) {
         if (!imp.resolved) {
           const pkg = packageNameOf(imp.specifier);
-          if (pkg) externalImports.push({ module: record.module, pkg });
+          if (pkg) {
+            const serviceId = classifyExternalPackage(pkg)?.id;
+            const attachKey = serviceId ? `${record.path}\0${serviceId}` : null;
+            const instances =
+              attachKey && !instancesAttached.has(attachKey)
+                ? record.serviceInstances
+                    ?.filter((h) => h.serviceId === serviceId)
+                    .map((h) => h.name)
+                : undefined;
+            if (attachKey) instancesAttached.add(attachKey);
+            externalImports.push({
+              module: record.module,
+              pkg,
+              ...(instances && instances.length > 0 ? { instances } : {}),
+            });
+          }
           continue;
         }
         const target = this.moduleOf(imp.resolved);
