@@ -97,7 +97,11 @@ type ArchitectView = "systems" | "diagrams" | "infra" | "codemap";
 export function ArchitectMode() {
   // View + draft selection live in the deep-linkable nav store.
   const nav = useNavUpdate();
-  const view = useNav((l) => l.architect?.view) ?? "systems";
+  const rawView = useNav((l) => l.architect?.view) ?? "systems";
+  // The consolidated view ids (architecture/codebase) take over as each view
+  // migrates; until then, land them on the views they absorb.
+  const view: ArchitectView =
+    rawView === "architecture" ? "systems" : rawView === "codebase" ? "codemap" : rawView;
   const setView = useCallback(
     (v: ArchitectView) => nav({ architect: { view: v } }),
     [nav],

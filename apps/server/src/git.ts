@@ -133,6 +133,41 @@ const MAIN_REFS = ["main", "master"] as const;
  *   merge-base of `ref` and HEAD (the ref itself when there is no merge-base,
  *   e.g. detached or unrelated histories). `base` echoes the ref.
  */
+/**
+ * Working tree vs merge-base(ref, HEAD), with per-file git statuses — the
+ * status-bearing sibling of `changedFiles`'s ref branch, feeding the ref
+ * review's added/modified/deleted marks. Renames count as delete + add so
+ * both sides of the rename render truthfully.
+ */
+export async function changedFilesStatus(
+  root: string,
+  repoRel: string,
+  ref: string,
+): Promise<{ path: string; status: "added" | "modified" | "deleted" }[]> {
+  const cwd = resolveInRoot(root, repoRel || ".");
+  let target = ref;
+  try {
+    target = (await runGit(cwd, ["merge-base", ref, "HEAD"])).trim() || ref;
+  } catch {
+    /* no merge-base — diff against the ref itself */
+  }
+  const out = await runGit(cwd, ["diff", "--name-status", "-M", target]).catch(() => "");
+  const files: { path: string; status: "added" | "modified" | "deleted" }[] = [];
+  for (const line of out.split("\n")) {
+    if (!line.trim()) continue;
+    const [code, ...paths] = line.split("\t");
+    if (!code || paths.length === 0) continue;
+    const kind = code[0];
+    if (kind === "A") files.push({ path: paths[0]!, status: "added" });
+    else if (kind === "D") files.push({ path: paths[0]!, status: "deleted" });
+    else if (kind === "R" && paths.length >= 2) {
+      files.push({ path: paths[0]!, status: "deleted" });
+      files.push({ path: paths[1]!, status: "added" });
+    } else files.push({ path: paths[paths.length - 1]!, status: "modified" });
+  }
+  return files;
+}
+
 export async function changedFiles(
   root: string,
   repoRel: string,

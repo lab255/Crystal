@@ -24,6 +24,7 @@ import {
   buildSystemOverview,
   computeReviewFindings,
   createArchDraft,
+  createArchOverlay,
   diffSystemOverviews,
   openQuestionsOfWorkflow,
   profileOverlay,
@@ -45,7 +46,15 @@ import { AgentManager } from "./agent-manager.js";
 import { HubEngine, type HubProjects } from "./hub-engine.js";
 import { hubDataDir, workspaceIdFor } from "./paths.js";
 import { deleteAt, listDir, mkdirAt, readFileCapped, renameAt, writeFileAt } from "./fs-api.js";
-import { changedFiles, gitCheckout, gitLog, gitRefs, gitStatus, gitSync } from "./git.js";
+import {
+  changedFiles,
+  changedFilesStatus,
+  gitCheckout,
+  gitLog,
+  gitRefs,
+  gitStatus,
+  gitSync,
+} from "./git.js";
 import { HUB_MCP_ID, handleMcpRequest, isMcpRequest } from "./mcp/http.js";
 import { INTERACTIVE_PROMPT_DELAY_MS, launchInteractiveRun } from "./interactive.js";
 import { overviewSourcesAtRef, snapshotAtRef, surfacesSnapshotAtRef } from "./ref-snapshot.js";
@@ -406,6 +415,14 @@ export async function startCrystalServer(opts: {
       broadcast("workspace.changed", { ws: rt.id });
       return { ok: true };
     },
+    "arch.getOverlay": async ({ ws }) => {
+      const overlay = await registry.get(ws).store.loadArchOverlay();
+      return { overlay: overlay ?? createArchOverlay() };
+    },
+    "arch.saveOverlay": async ({ ws, overlay }) => {
+      await registry.get(ws).store.saveArchOverlay(overlay);
+      return { ok: true };
+    },
     "archdraft.create": ({ ws, draft }) => registry.get(ws).store.createArchDraft(draft),
     "archdraft.fromRef": async ({ ws, archPath, ref, repoPath }) => {
       const rt = registry.get(ws);
@@ -613,6 +630,53 @@ export async function startCrystalServer(opts: {
       const head = { ...buildSystemOverview(headSources, index), generatedAt };
       const base = { ...buildSystemOverview(atRef.sources, index), generatedAt };
       return { ref, commit: atRef.commit, base, head, diff: diffSystemOverviews(base, head) };
+    },
+    "codemap.snapshotAtRef": async ({ ws, ref, repoPath, need }) => {
+      const rt = registry.get(ws);
+      const repo = repoPath ?? ".";
+      const wants = new Set(need ?? ["overview"]);
+      const changed = changedFilesStatus(rt.root, repo, ref);
+      // Overview-only reviews take the cheap in-memory blob-parse path;
+      // anything needing the code map or surfaces materializes the ref's
+      // tree and runs the full analyzer (LRU-cached per commit).
+      if (!wants.has("summary") && !wants.has("surfaces")) {
+        const [{ index }, atRef, changes] = await Promise.all([
+          rt.codeindex.get(),
+          overviewSourcesAtRef(rt.root, repo, ref),
+          changed,
+        ]);
+        return {
+          ref,
+          commit: atRef.commit,
+          changedFiles: changes,
+          overview: {
+            ...buildSystemOverview(atRef.sources, index),
+            generatedAt: new Date().toISOString(),
+          },
+        };
+      }
+      const [{ index }, snap, changes] = await Promise.all([
+        rt.codeindex.get(),
+        surfacesSnapshotAtRef(rt.root, repo, ref),
+        changed,
+      ]);
+      return {
+        ref,
+        commit: snap.commit,
+        changedFiles: changes,
+        ...(wants.has("summary") ? { summary: snap.summary } : {}),
+        ...(wants.has("overview")
+          ? {
+              // The head's semantic index clusters both sides so system ids
+              // stay comparable across refs (same convention as overviewDiff).
+              overview: {
+                ...buildSystemOverview(snap.sources, index),
+                generatedAt: new Date().toISOString(),
+              },
+            }
+          : {}),
+        ...(wants.has("surfaces") ? { surfaces: { report: snap.report, calls: snap.calls } } : {}),
+      };
     },
     "codemap.symbolSource": ({ ws, file, symbol }) =>
       registry.get(ws).codemap.symbolSource(file, symbol),

@@ -41,6 +41,8 @@ export const CRYSTAL_DIR = ".crystal";
 export const WORKSPACE_FILE = `${CRYSTAL_DIR}/workspace.json`;
 export const ARCHITECTURE_DIR = `${CRYSTAL_DIR}/architecture`;
 export const ARCH_DRAFTS_DIR = `${ARCHITECTURE_DIR}/drafts`;
+/** The one canonical architecture's user-authored half (see arch-overlay.ts). */
+export const ARCH_OVERLAY_FILE = `${ARCHITECTURE_DIR}/overlay.json`;
 export const PROJECTS_DIR = `${CRYSTAL_DIR}/projects`;
 /** Per-workspace todo list with traffic-light statuses (see todo.ts). */
 export const TODOS_FILE = `${CRYSTAL_DIR}/todos.json`;

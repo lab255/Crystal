@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { AgentRosterSchema, type AgentRoster } from "./agent-profile.js";
 import { ArchDraftSchema, type ArchDraft } from "./arch-draft.js";
+import { ArchOverlaySchema, type ArchOverlay } from "./arch-overlay.js";
 import { ArchitectureGraphSchema, type ArchitectureGraph } from "./architecture.js";
 import {
   CodeEnrichmentSchema,
@@ -34,6 +35,7 @@ export const CRYSTAL_FILE_VERSION = 1;
 export type CrystalFileKind =
   | "architecture"
   | "archdraft"
+  | "arch-overlay"
   | "project"
   | "workspace"
   | "survey"
@@ -48,6 +50,7 @@ const EnvelopeSchema = z.object({
   kind: z.enum([
     "architecture",
     "archdraft",
+    "arch-overlay",
     "project",
     "workspace",
     "survey",
@@ -63,6 +66,7 @@ const EnvelopeSchema = z.object({
 const DATA_SCHEMAS = {
   architecture: ArchitectureGraphSchema,
   archdraft: ArchDraftSchema,
+  "arch-overlay": ArchOverlaySchema,
   project: ProjectSchema,
   workspace: WorkspaceManifestSchema,
   survey: ArchSurveySchema,
@@ -76,6 +80,7 @@ const DATA_SCHEMAS = {
 export interface KindDataMap {
   architecture: ArchitectureGraph;
   archdraft: ArchDraft;
+  "arch-overlay": ArchOverlay;
   project: Project;
   workspace: WorkspaceManifest;
   survey: ArchSurvey;

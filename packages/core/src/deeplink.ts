@@ -62,7 +62,20 @@ export type CrystalModeId =
   | "jobs"
   | "surfaces"
   | "quality";
-export type ArchitectViewId = "systems" | "diagrams" | "infra" | "codemap";
+/**
+ * Architect subviews. The target trio is `architecture` (unified systems +
+ * diagrams + surfaces map), `codebase` (code map + ref diff) and `infra`;
+ * `systems`, `diagrams` and `codemap` are the legacy ids they absorb — kept
+ * in the union while the views migrate, then reduced to permanent parse
+ * aliases so old links keep landing.
+ */
+export type ArchitectViewId =
+  | "architecture"
+  | "codebase"
+  | "infra"
+  | "systems"
+  | "diagrams"
+  | "codemap";
 export type OrchestratorTabId = "board" | "runs" | "agents" | "workflows" | "costs";
 
 /** Mirrors the code map's drill levels (all workspaces → workspace → module → file). */
@@ -136,6 +149,17 @@ export interface ArchitectLink {
    * (systems, code diagrams, infrastructure); each view dims what misses.
    */
   find?: string;
+  /**
+   * Ref review — the git ref this view is being compared against ("vs
+   * <ref>"). One shared mechanism across all architect subviews: the view
+   * renders head state with added/removed/changed marks and ghosts.
+   */
+  vs?: string;
+  /**
+   * Architecture-view optional layers, comma-separated ("screens,endpoints").
+   * Unset renders the module/system altitude only.
+   */
+  layers?: string;
 }
 
 export interface OrchestrateLink {
@@ -301,7 +325,7 @@ export function formatDeepLink(link: DeepLink): string {
     // back-navigation onto this URL lands on a different screen.
     const view = a.view ?? "systems";
     path += `/${view}`;
-    if (view === "systems") {
+    if (view === "systems" || view === "architecture") {
       if (a.system) add("system", a.system);
       if (a.sysGroup) add("group", a.sysGroup);
       if (link.lens && a.lensCtx) add("lensctx", "1");
@@ -312,7 +336,15 @@ export function formatDeepLink(link: DeepLink): string {
       if (a.insights) add("insights", "1");
       if (a.contracts) add("contracts", "1");
       if (a.facets) add("facets", "1");
-    } else if (view === "codemap") {
+      if (view === "architecture") {
+        if (a.layers) add("layers", a.layers);
+        if (a.facet) add("facet", a.facet);
+        if (a.draft) add("draft", a.draft);
+        if (a.draft && a.review) add("review", "1");
+        if (a.journey) add("journey", a.journey);
+        if (a.overlay) add("overlay", "1");
+      }
+    } else if (view === "codemap" || view === "codebase") {
       const cm = a.codemap;
       if (cm) {
         add("at", cm.kind);
@@ -340,6 +372,7 @@ export function formatDeepLink(link: DeepLink): string {
     }
     if (a.sel) add("sel", a.sel);
     if (a.find) add("find", a.find);
+    if (a.vs) add("vs", a.vs);
   } else if (mode === "orchestrate") {
     const o = link.orchestrate ?? {};
     const tab = o.tab ?? "board";
@@ -469,7 +502,14 @@ export function parseDeepLink(hash: string): DeepLink {
     link.mode = "architect";
     const a: ArchitectLink = {};
     const view = segments[1];
-    if (view === "systems" || view === "diagrams" || view === "infra" || view === "codemap")
+    if (
+      view === "architecture" ||
+      view === "codebase" ||
+      view === "infra" ||
+      view === "systems" ||
+      view === "diagrams" ||
+      view === "codemap"
+    )
       a.view = view;
     const system = params.get("system");
     if (system) a.system = system;
@@ -515,6 +555,10 @@ export function parseDeepLink(hash: string): DeepLink {
     const lod = params.get("lod");
     if (lod && (CODE_LOD_LEVELS as readonly string[]).includes(lod)) a.lod = lod as CodeLodLevel;
     if (params.get("lensctx") === "1") a.lensCtx = true;
+    const vs = params.get("vs");
+    if (vs) a.vs = vs;
+    const layers = params.get("layers");
+    if (layers) a.layers = layers;
     if (Object.keys(a).length) link.architect = a;
   } else if (mode === "orchestrate") {
     link.mode = "orchestrate";
@@ -639,10 +683,12 @@ export function parseDeepLink(hash: string): DeepLink {
  * history navigation.
  */
 const ARCHITECT_VIEW_FIELDS: Record<ArchitectViewId, readonly (keyof ArchitectLink)[]> = {
-  systems: ["view", "system", "sysGroup", "lensCtx", "edge", "expanded", "focus", "focusSolo", "insights", "contracts", "facets", "sel", "find"],
-  codemap: ["view", "codemap", "lod", "lensCtx", "duplicates", "findings", "changes", "facets", "file", "sel", "find"],
-  diagrams: ["view", "diagram", "facet", "draft", "review", "journey", "overlay", "sel", "find"],
-  infra: ["view", "diagram", "facet", "draft", "review", "journey", "overlay", "sel", "find"],
+  architecture: ["view", "system", "sysGroup", "lensCtx", "edge", "expanded", "focus", "focusSolo", "insights", "contracts", "facets", "facet", "draft", "review", "journey", "overlay", "layers", "sel", "find", "vs"],
+  codebase: ["view", "codemap", "lod", "lensCtx", "duplicates", "findings", "changes", "facets", "file", "sel", "find", "vs"],
+  systems: ["view", "system", "sysGroup", "lensCtx", "edge", "expanded", "focus", "focusSolo", "insights", "contracts", "facets", "sel", "find", "vs"],
+  codemap: ["view", "codemap", "lod", "lensCtx", "duplicates", "findings", "changes", "facets", "file", "sel", "find", "vs"],
+  diagrams: ["view", "diagram", "facet", "draft", "review", "journey", "overlay", "sel", "find", "vs"],
+  infra: ["view", "diagram", "facet", "draft", "review", "journey", "overlay", "sel", "find", "vs"],
 };
 
 const ORCHESTRATE_TAB_FIELDS: Record<OrchestratorTabId, readonly (keyof OrchestrateLink)[]> = {
@@ -747,7 +793,7 @@ export function deepLinkNavIdentity(link: DeepLink): string {
   if (mode === "architect") {
     const a = link.architect ?? {};
     const view = a.view ?? "systems";
-    if (view === "codemap") {
+    if (view === "codemap" || view === "codebase") {
       const cm = a.codemap;
       const at = !cm
         ? ""
@@ -760,6 +806,8 @@ export function deepLinkNavIdentity(link: DeepLink): string {
     }
     if (view === "diagrams" || view === "infra")
       return `architect/${view}/${a.diagram ?? ""}|${a.draft ?? ""}`;
+    if (view === "architecture")
+      return `architect/${view}/${a.facet ?? ""}|${a.draft ?? ""}`;
     return `architect/${view}`;
   }
   if (mode === "orchestrate") {

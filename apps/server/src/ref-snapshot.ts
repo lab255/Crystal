@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import type {
   CodeArchSnapshot,
+  CodeMapSummary,
   CodeModule,
   CodeModuleDep,
   OverviewSourceFile,
@@ -179,6 +180,8 @@ export interface SurfacesSnapshot {
   calls: ScreenApiCall[];
   /** Overview inputs from the same snapshot — `buildSystemOverview` fodder. */
   sources: OverviewSourceFile[];
+  /** The code map at the ref, from the same analyzer pass — `diffCodeMaps` fodder. */
+  summary: CodeMapSummary;
 }
 
 /** Non-code files the surfaces analyzer reads: manifests, ts configs, prisma. */
@@ -266,7 +269,8 @@ async function buildSurfacesSnapshot(
     const report = await analyzer.surfaces();
     const { calls } = await analyzer.surfaceMap();
     const sources = await analyzer.overviewSourceFiles();
-    return { commit, report, calls, sources };
+    const summary = await analyzer.summary();
+    return { commit, report, calls, sources, summary };
   } finally {
     await fs.rm(tmp, { recursive: true, force: true }).catch(() => {});
   }

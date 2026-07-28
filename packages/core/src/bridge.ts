@@ -1,6 +1,8 @@
 import type { AgentProfile, AgentProfileScope, AgentRoster } from "./agent-profile.js";
 import type { ArchDraft } from "./arch-draft.js";
+import type { ArchOverlay } from "./arch-overlay.js";
 import type { ArchitectureGraph } from "./architecture.js";
+import type { ChangedRefFile } from "./code-map-diff.js";
 import type { AgentRole, AgentRun, RunEvent, RunPurpose, WorkerSpec } from "./agent.js";
 import type { CodeIndex, FacetSuggestion } from "./code-index.js";
 import type { ReviewFinding } from "./code-review.js";
@@ -24,7 +26,12 @@ import type { Project, TaskItem } from "./project.js";
 import type { ClaimResult, TaskPatch } from "./orchestration.js";
 import type { CoverageReport, QualityRun, TestRunnerInfo } from "./quality.js";
 import type { RefactorApplyResult, RefactorIntent, RefactorPlan } from "./refactor.js";
-import type { SurfaceMapReport, SurfacesRefBundle, SurfacesReport } from "./surfaces.js";
+import type {
+  ScreenApiCall,
+  SurfaceMapReport,
+  SurfacesRefBundle,
+  SurfacesReport,
+} from "./surfaces.js";
 import type { SystemOverview } from "./system-overview.js";
 import type { SystemOverviewDiff } from "./system-insights.js";
 import type { SystemsLayout } from "./systems-layout.js";
@@ -206,6 +213,15 @@ export interface BridgeMethods {
   "arch.save": { params: WsScope & { path: string; graph: ArchitectureGraph }; result: { ok: true } };
   "arch.create": { params: WsScope & { name: string }; result: { path: string; graph: ArchitectureGraph } };
   "arch.delete": { params: WsScope & { path: string }; result: { ok: true } };
+  /**
+   * The workspace's architecture overlay — the user-authored half of the one
+   * canonical architecture diagram (overrides on derived nodes, manual
+   * nodes/edges, environments, journeys, facets). Created on first read; the
+   * first read also migrates legacy per-diagram `.crystal` files and
+   * `systems-layout.json` into it (losslessly — old files are left in place).
+   */
+  "arch.getOverlay": { params: WsScope; result: { overlay: ArchOverlay } };
+  "arch.saveOverlay": { params: WsScope & { overlay: ArchOverlay }; result: { ok: true } };
   "archdraft.create": {
     params: WsScope & { draft: ArchDraft };
     result: { path: string; draft: ArchDraft };
@@ -521,6 +537,32 @@ export interface BridgeMethods {
       base: SystemOverview;
       head: SystemOverview;
       diff: SystemOverviewDiff;
+    };
+  };
+  /**
+   * The unified ref snapshot behind every "vs <ref>" review: the codebase
+   * state at a git ref, in whichever projections the caller needs. `summary`
+   * and `surfaces` require materializing the ref's tree and running the full
+   * analyzer (LRU-cached per commit); a `need` of exactly `["overview"]`
+   * takes the cheap in-memory blob-parse path. `changedFiles` (working tree
+   * vs merge-base with the ref) always rides along so file-level "changed"
+   * marks come from the same resolution as the structural diff. Diffing
+   * itself is client-side (`diffCodeMaps`, `diffSystemOverviews`) — the
+   * server only snapshots.
+   */
+  "codemap.snapshotAtRef": {
+    params: WsScope & {
+      ref: string;
+      repoPath?: string;
+      need?: ("summary" | "overview" | "surfaces")[];
+    };
+    result: {
+      ref: string;
+      commit: string;
+      changedFiles: ChangedRefFile[];
+      summary?: CodeMapSummary;
+      overview?: SystemOverview;
+      surfaces?: { report: SurfacesReport; calls: ScreenApiCall[] };
     };
   };
   /** Source text of one top-level symbol (capped). */

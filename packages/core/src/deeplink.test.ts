@@ -851,3 +851,100 @@ describe("mode aliases", () => {
     expect(parseDeepLink("#/definitely-not-a-mode").mode).toBeUndefined();
   });
 });
+
+describe("consolidated diagram views", () => {
+  it("architecture round-trips systems-style and diagram-style state together", () => {
+    const link: DeepLink = {
+      ws: "abc",
+      mode: "architect",
+      architect: {
+        view: "architecture",
+        system: "sys:auth",
+        sysGroup: "layers",
+        edge: "sys:auth->sys:api",
+        expanded: "sys:auth,sys:api",
+        focus: "sys:auth",
+        focusSolo: true,
+        insights: true,
+        contracts: true,
+        facets: true,
+        layers: "screens,endpoints",
+        facet: "facet-1",
+        draft: ".crystal/architecture/drafts/plan.crystal",
+        review: true,
+        journey: "j-1",
+        overlay: true,
+        sel: "n:auth",
+        find: "queue",
+        vs: "main",
+      },
+    };
+    expect(roundTrip(link)).toEqual(link);
+  });
+
+  it("codebase round-trips the drill level, lod and vs-ref", () => {
+    const link: DeepLink = {
+      ws: "abc",
+      mode: "architect",
+      architect: {
+        view: "codebase",
+        codemap: { kind: "module", ws: "abc", path: "packages/core" },
+        lod: "members",
+        duplicates: true,
+        file: "packages/core/src/bridge.ts",
+        vs: "release/0.9",
+      },
+    };
+    expect(roundTrip(link)).toEqual(link);
+  });
+
+  it("vs travels on every architect subview", () => {
+    for (const view of [
+      "architecture",
+      "codebase",
+      "infra",
+      "systems",
+      "diagrams",
+      "codemap",
+    ] as const) {
+      const link: DeepLink = {
+        ws: "abc",
+        mode: "architect",
+        architect: { view, vs: "feature/x" },
+      };
+      expect(roundTrip(link)).toEqual(link);
+    }
+  });
+
+  it("back/forward onto an architecture URL replaces only its owned fields", () => {
+    const current: DeepLink = {
+      mode: "architect",
+      architect: {
+        view: "architecture",
+        focus: "sys:auth",
+        vs: "main",
+        codemap: { kind: "module", ws: "abc", path: "packages/core" }, // codebase state survives
+      },
+    };
+    const next = parseDeepLink("#/architect/architecture?ws=abc&facet=facet-2");
+    const applied = applyDeepLink(current, next);
+    expect(applied.architect?.facet).toBe("facet-2");
+    expect(applied.architect?.focus).toBeUndefined(); // owned + absent → cleared
+    expect(applied.architect?.vs).toBeUndefined();
+    expect(applied.architect?.codemap).toEqual({ kind: "module", ws: "abc", path: "packages/core" });
+  });
+
+  it("nav identity: architecture is a place per facet/draft, codebase per drill level", () => {
+    const at = (architect: DeepLink["architect"]) =>
+      deepLinkNavIdentity({ mode: "architect", architect });
+    expect(at({ view: "architecture", facet: "f1" })).not.toBe(
+      at({ view: "architecture", facet: "f2" }),
+    );
+    expect(at({ view: "architecture", facet: "f1", sel: "a" })).toBe(
+      at({ view: "architecture", facet: "f1", sel: "b" }),
+    );
+    expect(at({ view: "codebase", codemap: { kind: "module", ws: "w", path: "a" } })).not.toBe(
+      at({ view: "codebase", codemap: { kind: "module", ws: "w", path: "b" } }),
+    );
+  });
+});

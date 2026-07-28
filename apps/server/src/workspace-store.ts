@@ -4,7 +4,9 @@ import {
   AGENTS_FILE,
   ARCHITECTURE_DIR,
   ARCH_DRAFTS_DIR,
+  ARCH_OVERLAY_FILE,
   AgentRosterSchema,
+  ArchOverlaySchema,
   CRYSTAL_DIR,
   PROJECTS_DIR,
   SYSTEMS_LAYOUT_FILE,
@@ -24,6 +26,7 @@ import {
   slugify,
   type AgentRoster,
   type ArchDraft,
+  type ArchOverlay,
   type ArchitectureGraph,
   type Project,
   type SystemsLayout,
@@ -225,6 +228,27 @@ export class WorkspaceStore {
     const file = resolveInRoot(this.root, FACETS_FILE);
     await fs.mkdir(path.dirname(file), { recursive: true });
     await fs.writeFile(file, `${JSON.stringify(parsed, null, 2)}\n`, "utf8");
+  }
+
+  /**
+   * Load the architecture overlay — the user-authored half of the one
+   * canonical architecture diagram. Null until first saved; the caller
+   * (server handler) decides whether an absent overlay means "create empty"
+   * or "migrate legacy diagrams".
+   */
+  async loadArchOverlay(): Promise<ArchOverlay | null> {
+    const file = resolveInRoot(this.root, ARCH_OVERLAY_FILE);
+    if (!(await exists(file))) return null;
+    return parseCrystalFile("arch-overlay", await fs.readFile(file, "utf8"));
+  }
+
+  async saveArchOverlay(overlay: ArchOverlay): Promise<void> {
+    // Validate before writing — a bad payload must not corrupt the file for
+    // every later read.
+    const parsed = ArchOverlaySchema.parse(overlay);
+    const file = resolveInRoot(this.root, ARCH_OVERLAY_FILE);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, serializeCrystalFile("arch-overlay", parsed), "utf8");
   }
 
   /** Load the systems-overview arrangement (null until the user first edits it). */

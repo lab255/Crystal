@@ -109,6 +109,23 @@ export {
   type RefComboboxProps,
 } from "./git-refs.js";
 export {
+  useRefReview,
+  type RefReviewState,
+  type RefSnapshot,
+  type RefSnapshotNeed,
+} from "./ref-review.js";
+export {
+  DiagramLegend,
+  DiagramShell,
+  DiagramToolbarGroup,
+  type DiagramLegendEntry,
+} from "./diagram/DiagramShell.js";
+export {
+  formatIdList,
+  parseIdList,
+  toggleIdInList,
+} from "./diagram/selection.js";
+export {
   symbolMenuEntries,
   useSymbolMenu,
   type SymbolMenuContext,
