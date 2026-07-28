@@ -22,6 +22,30 @@ then honest presentation of uncertainty, then the ambitious product surfaces.
 
 ---
 
+## Shipped (2026-07-28 — the three-diagram consolidation)
+
+*Five separately-grown diagram mechanisms (systems overview, editable diagrams
+canvas, infra view, code map, surfaces system map) collapsed into three
+standardized views — `architecture` / `codebase` / `infra` — with one diff
+vocabulary, one vs-ref review, one selection/facet story. Ten commits, each
+verified against a live bridge + Playwright.*
+
+| Capability | Where |
+| --- | --- |
+| **One canonical architecture**: derived from `codemap.overview` + detected external services (stable ids `sys:`/`ext:<svc>[:<instance>]`/`link:`/`screen:`/`flow:`), composed with a persisted user overlay; canvas edits round-trip through `extractOverlay` (only real drags pin positions; auto-layout at reserved LOD footprints owns the rest); legacy diagrams + systems-layout migrate losslessly ONCE on first read, each old diagram becoming a facet with `sourcePath` | `core/arch-derive.ts`, `core/arch-overlay.ts`, `core/arch-migrate.ts`, `ArchitectMode.tsx` |
+| **One vs-ref review on all three views**: `codemap.snapshotAtRef` (cheap in-memory overview path vs full-analyzer materialization, LRU per commit, statused changed files riding along) + client `useRefReview` + shared `DiffMarks`/ghost vocabulary; codebase map gains file-level diff with ghost deletions; architecture gains marks/ghosts + a categorized entry panel; infra tints placed drift. Replaces `codemap.overviewDiff` (still feeding the legacy systems tab), `surfaces.atRef` (deleted) and `archdraft.fromRef` (deleted) | `core/diagram-diff.ts`, `core/code-map-diff.ts`, `client/ref-review.ts`, `panels/DiffPanel.tsx` |
+| **Named service instances**: literal bucket/queue/topic/table names extracted at parse time (gated on the file importing that service's client) become distinct `ext:` nodes — every queue and bucket a different box | `core/external-services.ts` (`extractServiceInstances`), `server/code-map.ts`, `core/arch-derive.ts` |
+| **Surfaces map folded in**: screens render as grouped frontend nodes with screen→system flow edges (`layers=screens`); `#/surfaces/map` is a permanent parse redirect (`ep:` selections → API explorer); SystemMapView/worker/diff deleted; surfaces defaults to Screens | `core/arch-derive.ts`, `deeplink.ts`, `SurfacesMode.tsx` |
+| **Contracts + Insights on the unified canvas**: the boundary inspector and cycles/violations/hubs/orphans as panels with canvas focus; same deep-link params the systems overview used | `panels/ContractsPanel.tsx`, `panels/InsightsPanel.tsx` |
+| Consolidated ids with permanent aliases (`diagrams`→`architecture`, `codemap`→`codebase`), `vs`/`layers` params, the dups/findings/changes encoding gap closed, bare-codemap-boot bug fixed, find wired on the codebase map | `deeplink.ts`, `CodeMapView.tsx` |
+
+Still open on this thread: role-visibility chips + focus-filter parity on the
+architecture canvas (careful: a role filter must not leak into
+`extractOverlay` as hiddenIds — re-inject filtered nodes before extraction,
+the same rule as review ghosts), then the legacy `systems` tab (and its
+`codemap.overviewDiff`) can retire; the surfaces arch side pane still embeds
+`SystemsView`.
+
 ## Shipped (this pass)
 
 Fixed and verified against appliance — dead files went **74 → 5** (all five real),
