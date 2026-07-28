@@ -130,7 +130,12 @@ build/sign (+notarize on macOS) → signed updater `latest.json`).
 - Waking an agent goes through `AgentManager.deliver`, never a bare
   `resumeChain`: a chain that is mid-turn cannot be resumed (two `--resume`s
   fork the session), so the message is queued and flushed when the turn
-  settles. Interactive runs (the native Claude TUI on a workspace PTY,
+  settles. A resumed turn is the *same conversation*: `resumeChain` re-enters
+  the chain's worktree (`adoptWorktreePath` — resuming into the plain repo
+  would strand the session's own edits; skipped only when another live run
+  holds that working copy), and the UI collapses resume chains to one row
+  (`groupRunsByManager` faces each chain by its latest turn; `agent.message`
+  returns the resumed turn's id so surfaces follow the conversation). Interactive runs (the native Claude TUI on a workspace PTY,
   `run.terminalId` set; `terminalWs` when the hub owns the run but a workspace
   hosts the terminal) are the exception `deliver` handles first: the message
   is typed into the terminal as one bracketed paste — the TUI queues mid-turn
@@ -190,8 +195,18 @@ build/sign (+notarize on macOS) → signed updater `latest.json`).
   or membership functions into a scene web worker; derive plain id Sets on the main thread
   and dim at render time (same rule as react-flow node data).
 
+- Permission modes: spawns default to `--permission-mode acceptEdits`; a profile (or
+  dispatch) may request `bypassPermissions`, but the roster's
+  `allowBypassPermissions` flag is workspace consent — `AgentManager.gatedPermissionMode`
+  downgrades ungranted requests to acceptEdits at every spawn choke point (start,
+  prepareInteractive, resumed turns re-resolve per turn). The hub's manager never gets
+  bypass (it resolves against the global library, not a workspace roster).
+
 ## Gotchas
 
+- `apps/server/src/agent-manager.ts` contains a NUL byte in a string literal, so
+  ripgrep/Grep treats it as binary — search it with `grep -a` (or Read), not the Grep
+  tool.
 - Agent prompts are piped to the Claude CLI over **stdin**; never pass user text as a
   shell argument. The CLI binary is resolved by `claude-bin.ts` (own-PATH scan → known
   install dirs → POSIX login shell) because the desktop sidecar inherits a GUI launch

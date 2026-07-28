@@ -137,18 +137,32 @@ over stdin (never shell-interpolated). The
 NDJSON stream is normalized into a stable `AgentEvent` union, broadcast live over the
 bridge, and persisted for replay. Session ids are captured so runs can be resumed.
 
-Every dispatch also has an **interactive** twin: run the same agent as the native
-Claude TUI on a PTY in the terminal panel (a task's "Terminal" button, a workflow's or
-program's "Start in terminal"). The session keeps its Crystal MCP tools, so decisions
+**Interactive is the default dispatch**: the same agent as the native Claude TUI on a
+PTY in the (drag-resizable) terminal panel — a task's "Run", a workflow's "Start", a
+program's "Start in terminal"; headless stays one button away for fire-and-forget and
+worktree-isolated runs. The session keeps its Crystal MCP tools, so decisions
 are still **logged on the board** with `ask_question` — but the agent puts them to you
 natively with AskUserQuestion in the terminal, and closes the board copy with
 `resolve_question` once you answer there. Answers given from the board or hub are typed
 straight into the live terminal; after it closes, the session's pinned id lets the same
 conversation continue headlessly, and its token bill is harvested from the session
-transcript so interactive work costs roll up like any other run. Agents waiting on you
+transcript so interactive work costs roll up like any other run. Messaging any settled
+run resumes its session as a new *turn of the same conversation* — the run list shows
+one row per session (with a turn count), a resumed turn re-enters the chain's worktree,
+and the surface follows the conversation to the newest turn. Agents waiting on you
 are surfaced everywhere: yellow traffic lights, a "waiting on you" chip on overview
 cards, question previews on board cards, and a one-click "Start manager" recovery when
 a board has READY work but no live manager.
+
+Spend is attributed as it happens: the Orchestrate **Costs** tab slices the workspace's
+bill along one axis — epic, human owner, workflow, agent profile, or any `dimension:value`
+tag the board's labels carry (multi-dimensional: a task tagged `area:ui` and `area:db`
+bills both slices in full) — with per-model splits, live-run markers, and a residual
+"No task" row so the total always reconciles. Programs roll the same numbers up across
+projects in the Hub. A workspace can also opt into `bypassPermissions` runs (the
+roster's **Bypass** toggle, off by default): profiles may then run with
+`--dangerously-skip-permissions`; without the toggle such requests are downgraded to
+`acceptEdits`.
 
 With **worktree isolation** enabled, the run executes in a disposable
 `git worktree` under `~/.crystal/…/worktrees/<run-id>` instead of the repo itself:
