@@ -5,6 +5,7 @@ import {
   Play,
   Plus,
   Sparkles,
+  TerminalSquare,
   Trash2,
   UserCog,
   Wand2,
@@ -13,6 +14,7 @@ import {
   AGENT_PERMISSION_MODES,
   AGENT_PROFILE_KINDS,
   AGENT_PROFILE_SCOPES,
+  MODEL_HINTS,
   MODEL_PRESETS,
   RUN_PURPOSES,
   agentTag,
@@ -24,19 +26,17 @@ import {
   type AgentProfileScope,
   type RunPurpose,
 } from "@crystal/core";
-import { formatRunCost, useAgents, useCrystal, useWorkspace } from "@crystal/client";
-import { Badge, Button, EmptyState, Input, Textarea, cn } from "@crystal/ui";
+import {
+  formatRunCost,
+  useAgents,
+  useCrystal,
+  useTerminals,
+  useWorkspace,
+  useWorkspaces,
+} from "@crystal/client";
+import { Badge, Button, EmptyState, Field, Input, Select, Textarea, cn } from "@crystal/ui";
 import { MANAGER_PREAMBLE } from "./prompt.js";
 import { RunsPane } from "./RunsPane.js";
-
-const selectClasses =
-  "h-8 rounded-lg border border-edge bg-surface-1 px-2 text-[13px] text-ink " +
-  "focus:border-crystal-500/60 focus:outline-none";
-
-// Same model hints as the template builder's stage datalist — free text stays
-// allowed (any Claude model alias/id the CLI accepts). "auto" follows the
-// roster's model preset for the profile's kind.
-const MODEL_HINTS = ["auto", "fable", "opus", "sonnet", "haiku"] as const;
 
 const EMPTY_PROFILES: AgentProfile[] = [];
 
@@ -170,8 +170,9 @@ export function AgentsTab({
           <div className="shrink-0 space-y-1.5 border-t border-edge px-3 py-2">
             <label className="flex items-center gap-2 text-[11px] text-ink-muted">
               <span className="w-16 shrink-0">Preset</span>
-              <select
-                className={cn(selectClasses, "h-6 min-w-0 flex-1 text-[11px]")}
+              <Select
+                size="xs"
+                className="min-w-0 flex-1"
                 value={presetById(roster.preset).id}
                 onChange={(e) => updateRoster({ ...roster, preset: e.target.value })}
                 aria-label="Model preset"
@@ -182,12 +183,13 @@ export function AgentsTab({
                     {p.name} — {p.description}
                   </option>
                 ))}
-              </select>
+              </Select>
             </label>
             <label className="flex items-center gap-2 text-[11px] text-ink-muted">
               <span className="w-16 shrink-0">Default</span>
-              <select
-                className={cn(selectClasses, "h-6 min-w-0 flex-1 text-[11px]")}
+              <Select
+                size="xs"
+                className="min-w-0 flex-1"
                 value={roster.defaultAgentId ?? ""}
                 onChange={(e) =>
                   updateRoster({ ...roster, defaultAgentId: e.target.value || null })
@@ -200,12 +202,13 @@ export function AgentsTab({
                     {p.name}
                   </option>
                 ))}
-              </select>
+              </Select>
             </label>
             <label className="flex items-center gap-2 text-[11px] text-ink-muted">
               <span className="w-16 shrink-0">Manager</span>
-              <select
-                className={cn(selectClasses, "h-6 min-w-0 flex-1 text-[11px]")}
+              <Select
+                size="xs"
+                className="min-w-0 flex-1"
                 value={roster.managerAgentId ?? ""}
                 onChange={(e) =>
                   updateRoster({ ...roster, managerAgentId: e.target.value || null })
@@ -218,7 +221,28 @@ export function AgentsTab({
                     {p.name}
                   </option>
                 ))}
-              </select>
+              </Select>
+            </label>
+            <label
+              className="flex items-center gap-2 text-[11px] text-ink-muted"
+              title="Allow profiles with permission mode 'bypassPermissions' to run with all permission prompts skipped (--dangerously-skip-permissions). Off, such runs are downgraded to acceptEdits. Workspace-wide consent — leave off unless you trust every dispatch in this workspace."
+            >
+              <span className="w-16 shrink-0">Bypass</span>
+              <span className="flex min-w-0 flex-1 items-center gap-1.5">
+                <input
+                  type="checkbox"
+                  checked={roster.allowBypassPermissions}
+                  onChange={(e) =>
+                    updateRoster({ ...roster, allowBypassPermissions: e.target.checked })
+                  }
+                  aria-label="Allow bypass-permissions runs in this workspace"
+                />
+                <span className={roster.allowBypassPermissions ? "text-warn" : undefined}>
+                  {roster.allowBypassPermissions
+                    ? "dangerously-skip-permissions allowed"
+                    : "permission prompts enforced"}
+                </span>
+              </span>
             </label>
           </div>
         ) : null}
@@ -406,17 +430,17 @@ function ProfileEditor({
       </div>
 
       <div className="grid grid-cols-2 gap-2">
-        <EditorField label="Name">
+        <Field label="Name">
           <Input
             value={name}
             onChange={(e) => setName(e.target.value)}
             aria-label="Agent name"
             className="h-7 text-xs"
           />
-        </EditorField>
-        <EditorField label="Kind" hint="Specialists win dispatch for tasks whose tags overlap">
-          <select
-            className={cn(selectClasses, "h-7 w-full text-xs")}
+        </Field>
+        <Field label="Kind" hint="Specialists win dispatch for tasks whose tags overlap">
+          <Select
+            size="sm"
             value={kind}
             onChange={(e) => setKind(e.target.value as AgentProfile["kind"])}
             aria-label="Agent kind"
@@ -426,9 +450,9 @@ function ProfileEditor({
                 {k}
               </option>
             ))}
-          </select>
-        </EditorField>
-        <EditorField label="Model" hint="Claude model alias or id, passed as --model">
+          </Select>
+        </Field>
+        <Field label="Model" hint="Claude model alias or id, passed as --model">
           <Input
             value={model}
             onChange={(e) => setModel(e.target.value)}
@@ -441,8 +465,8 @@ function ProfileEditor({
               <option key={m} value={m} />
             ))}
           </datalist>
-        </EditorField>
-        <EditorField label="Skills" hint="Comma-separated, woven into dispatch prompts">
+        </Field>
+        <Field label="Skills" hint="Comma-separated, woven into dispatch prompts">
           <Input
             value={skills}
             onChange={(e) => setSkills(e.target.value)}
@@ -450,8 +474,8 @@ function ProfileEditor({
             aria-label="Agent skills"
             className="h-7 text-xs"
           />
-        </EditorField>
-        <EditorField label="Tags" hint="Context tags this specialist owns (auto-assignment)">
+        </Field>
+        <Field label="Tags" hint="Context tags this specialist owns (auto-assignment)">
           <Input
             value={tags}
             onChange={(e) => setTags(e.target.value)}
@@ -459,10 +483,13 @@ function ProfileEditor({
             aria-label="Agent tags"
             className="h-7 text-xs"
           />
-        </EditorField>
-        <EditorField label="Permission mode" hint="Unset keeps acceptEdits (headless default)">
-          <select
-            className={cn(selectClasses, "h-7 w-full text-xs")}
+        </Field>
+        <Field
+          label="Permission mode"
+          hint="Unset keeps acceptEdits (headless default); bypassPermissions needs the workspace Bypass toggle"
+        >
+          <Select
+            size="sm"
             value={permissionMode}
             onChange={(e) => setPermissionMode(e.target.value as "" | AgentPermissionMode)}
             aria-label="Permission mode"
@@ -473,11 +500,11 @@ function ProfileEditor({
                 {m}
               </option>
             ))}
-          </select>
-        </EditorField>
+          </Select>
+        </Field>
       </div>
 
-      <EditorField
+      <Field
         label="Standing instructions"
         hint="Passed as --append-system-prompt on every run, so they survive --resume turns"
         className="mt-2"
@@ -490,10 +517,10 @@ function ProfileEditor({
           aria-label="Standing instructions"
           className="text-xs"
         />
-      </EditorField>
+      </Field>
 
       <div className="mt-2 grid grid-cols-2 gap-2">
-        <EditorField label="Allowed tools" hint="One pattern per line, merged over the run allowlist">
+        <Field label="Allowed tools" hint="One pattern per line, merged over the run allowlist">
           <Textarea
             value={allowedTools}
             onChange={(e) => setAllowedTools(e.target.value)}
@@ -502,8 +529,8 @@ function ProfileEditor({
             aria-label="Allowed tools"
             className="font-mono text-xs"
           />
-        </EditorField>
-        <EditorField label="Disallowed tools" hint="One pattern per line — --disallowedTools">
+        </Field>
+        <Field label="Disallowed tools" hint="One pattern per line — --disallowedTools">
           <Textarea
             value={disallowedTools}
             onChange={(e) => setDisallowedTools(e.target.value)}
@@ -512,13 +539,13 @@ function ProfileEditor({
             aria-label="Disallowed tools"
             className="font-mono text-xs"
           />
-        </EditorField>
+        </Field>
       </div>
 
       <div className="mt-2 flex items-center gap-3">
-        <EditorField label="Default purpose" className="flex-1">
-          <select
-            className={cn(selectClasses, "h-7 w-full text-xs")}
+        <Field label="Default purpose" className="flex-1">
+          <Select
+            size="sm"
             value={purpose}
             onChange={(e) => setPurpose(e.target.value as "" | RunPurpose)}
             aria-label="Default purpose"
@@ -529,8 +556,8 @@ function ProfileEditor({
                 {p}
               </option>
             ))}
-          </select>
-        </EditorField>
+          </Select>
+        </Field>
         <label className="mt-4 flex cursor-pointer items-center gap-1.5 text-[11px] text-ink-muted">
           <input
             type="checkbox"
@@ -543,9 +570,9 @@ function ProfileEditor({
       </div>
 
       <div className="mt-3 flex items-center gap-2 border-t border-edge pt-2">
-        <EditorField label="Scope" className="w-44">
-          <select
-            className={cn(selectClasses, "h-7 w-full text-xs")}
+        <Field label="Scope" className="w-44">
+          <Select
+            size="sm"
             value={scope}
             onChange={(e) => setScope(e.target.value as AgentProfileScope)}
             aria-label="Profile scope"
@@ -555,8 +582,8 @@ function ProfileEditor({
                 {s === "project" ? "project — .crystal/agents.json" : "library — ~/.crystal/agents"}
               </option>
             ))}
-          </select>
-        </EditorField>
+          </Select>
+        </Field>
         {scopeMoves ? (
           <span className="text-[10px] text-warn">
             Saving moves this profile to the {scope} scope — one id never lives in both.
@@ -574,28 +601,6 @@ function ProfileEditor({
         </span>
       </div>
       {error ? <p className="mt-2 text-[11px] text-danger">{error}</p> : null}
-    </div>
-  );
-}
-
-function EditorField({
-  label,
-  hint,
-  className,
-  children,
-}: {
-  label: string;
-  hint?: string;
-  className?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className={className}>
-      <div className="mb-1 flex items-baseline gap-1.5">
-        <span className="text-[11px] font-medium text-ink">{label}</span>
-        {hint ? <span className="truncate text-[10px] text-ink-faint">{hint}</span> : null}
-      </div>
-      {children}
     </div>
   );
 }
@@ -635,6 +640,8 @@ function DispatchPanel({
   const { client } = useCrystal();
   const start = useAgents((s) => s.start);
   const repos = useWorkspace((s) => s.info?.manifest.repos ?? EMPTY_REPOS);
+  const activeWs = useWorkspaces((s) => s.activeId);
+  const focusTerminal = useTerminals((s) => s.focusTerminal);
 
   const [prompt, setPrompt] = useState("");
   const [manager, setManager] = useState(true);
@@ -650,25 +657,38 @@ function DispatchPanel({
 
   const repoId = repos.find((r) => r.path === cwd)?.id ?? null;
 
-  async function dispatch(): Promise<void> {
+  /**
+   * Interactive is the default dispatch: the native Claude TUI on a workspace
+   * PTY, questions answered right in the terminal panel. Headless (`-p`
+   * stream-json) stays one button away — worktree isolation implies it, since
+   * an interactive session lives in the repo checkout.
+   */
+  async function dispatch(interactive: boolean): Promise<void> {
     const text = prompt.trim();
     if (!text) return;
     setBusy(true);
     setError(null);
     try {
-      const run = await start({
+      const params = {
         prompt: manager ? MANAGER_PREAMBLE + text : text,
         cwd,
         repoId,
-        isolation: isolate ? "worktree" : "none",
-        role: manager ? "manager" : null,
+        role: manager ? ("manager" as const) : null,
         purpose,
         agentId: agentId || null,
         tags: manager ? ["role:manager", `purpose:${purpose}`] : [`purpose:${purpose}`],
         model: modelOverride.trim() || null,
-      });
-      setPrompt("");
-      onDispatched(run.id);
+      };
+      if (interactive && !isolate) {
+        const { run, terminal } = await client.request("agent.interactive", params);
+        setPrompt("");
+        if (activeWs) await focusTerminal(activeWs, terminal.id);
+        onDispatched(run.id);
+      } else {
+        const run = await start({ ...params, isolation: isolate ? "worktree" : "none" });
+        setPrompt("");
+        onDispatched(run.id);
+      }
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -714,7 +734,7 @@ function DispatchPanel({
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
           onKeyDown={(e) => {
-            if ((e.metaKey || e.ctrlKey) && e.key === "Enter") void dispatch();
+            if ((e.metaKey || e.ctrlKey) && e.key === "Enter") void dispatch(!isolate);
           }}
           rows={5}
           placeholder={
@@ -735,8 +755,9 @@ function DispatchPanel({
           Manager mode — delegate to worker agents
         </label>
         <div className="mt-2 flex items-center gap-2">
-          <select
-            className={cn(selectClasses, "h-7 flex-1 text-xs")}
+          <Select
+            size="sm"
+            className="flex-1"
             value={agentId}
             onChange={(e) => setAgentId(e.target.value)}
             aria-label="Agent profile"
@@ -747,7 +768,7 @@ function DispatchPanel({
                 {p.name} ({p.model})
               </option>
             ))}
-          </select>
+          </Select>
           <Input
             value={modelOverride}
             onChange={(e) => setModelOverride(e.target.value)}
@@ -763,8 +784,9 @@ function DispatchPanel({
           </datalist>
         </div>
         <div className="mt-2 flex items-center gap-2">
-          <select
-            className={cn(selectClasses, "h-7 flex-1 text-xs")}
+          <Select
+            size="sm"
+            className="flex-1"
             value={purpose}
             onChange={(e) => setPurpose(e.target.value as RunPurpose)}
             aria-label="Run purpose"
@@ -774,9 +796,10 @@ function DispatchPanel({
                 {p}
               </option>
             ))}
-          </select>
-          <select
-            className={cn(selectClasses, "h-7 flex-1 text-xs")}
+          </Select>
+          <Select
+            size="sm"
+            className="flex-1"
             value={cwd}
             onChange={(e) => setCwd(e.target.value)}
             aria-label="Working directory"
@@ -789,15 +812,32 @@ function DispatchPanel({
                   {r.name}
                 </option>
               ))}
-          </select>
+          </Select>
           <Button
             variant="primary"
             size="sm"
             disabled={busy || !prompt.trim()}
-            onClick={() => void dispatch()}
+            onClick={() => void dispatch(!isolate)}
+            title={
+              isolate
+                ? "Worktree isolation implies a headless run — the diff is reviewed from the run surface"
+                : "Run as a native interactive Claude session in the terminal panel"
+            }
           >
-            <Play className="h-3 w-3" /> Dispatch
+            {isolate ? <Play className="h-3 w-3" /> : <TerminalSquare className="h-3 w-3" />}{" "}
+            Dispatch
           </Button>
+          {!isolate ? (
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={busy || !prompt.trim()}
+              onClick={() => void dispatch(false)}
+              title="Run headless (stream-json in the background) — watch it from the runs list"
+            >
+              <Play className="h-3 w-3" /> Headless
+            </Button>
+          ) : null}
         </div>
         <label className="mt-2 flex cursor-pointer items-center gap-1.5 text-[11px] text-ink-muted">
           <input

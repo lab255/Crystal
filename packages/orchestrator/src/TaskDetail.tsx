@@ -30,25 +30,15 @@ import {
   useWorkspace,
   useWorkspaces,
 } from "@crystal/client";
-import { Badge, Button, StatusDot, Textarea, cn } from "@crystal/ui";
+import { Badge, Button, Field, Select, StatusDot, Textarea, cn } from "@crystal/ui";
 import { buildTaskPrompt } from "./prompt.js";
 
-const selectClasses =
+// Text inputs styled to sit flush beside the shared <Select> fields.
+const inputClasses =
   "w-full h-8 rounded-lg border border-edge bg-surface-1 px-2 text-[13px] text-ink " +
   "focus:border-crystal-500/60 focus:outline-none";
 
 const NEW_EPIC = "__new_epic__";
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div>
-      <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-ink-faint">
-        {label}
-      </div>
-      {children}
-    </div>
-  );
-}
 
 export function TaskDetail({
   project,
@@ -286,8 +276,7 @@ export function TaskDetail({
 
         <div className="grid grid-cols-2 gap-2">
           <Field label="Status">
-            <select
-              className={selectClasses}
+            <Select
               value={task.status}
               onChange={(e) => patchTask({ status: e.target.value as TaskStatus })}
             >
@@ -296,11 +285,10 @@ export function TaskDetail({
                   {TASK_STATUS_LABELS[s]}
                 </option>
               ))}
-            </select>
+            </Select>
           </Field>
           <Field label="Priority">
-            <select
-              className={selectClasses}
+            <Select
               value={task.priority}
               onChange={(e) => patchTask({ priority: e.target.value as TaskPriority })}
             >
@@ -309,11 +297,10 @@ export function TaskDetail({
                   {p}
                 </option>
               ))}
-            </select>
+            </Select>
           </Field>
           <Field label="Size">
-            <select
-              className={selectClasses}
+            <Select
               value={task.size ?? ""}
               onChange={(e) =>
                 patchTask({ size: e.target.value ? (e.target.value as TaskSize) : null })
@@ -325,7 +312,7 @@ export function TaskDetail({
                   {s}
                 </option>
               ))}
-            </select>
+            </Select>
           </Field>
           <Field label="Epic">
             {epicDraft !== null ? (
@@ -342,12 +329,11 @@ export function TaskDetail({
                   else if (e.key === "Escape") setEpicDraft(null);
                 }}
                 placeholder="Epic name…"
-                className={cn(selectClasses, "placeholder:text-ink-faint")}
+                className={cn(inputClasses, "placeholder:text-ink-faint")}
                 aria-label="New epic name"
               />
             ) : (
-              <select
-                className={selectClasses}
+              <Select
                 value={task.epicId ?? ""}
                 onChange={(e) => {
                   if (e.target.value === NEW_EPIC) setEpicDraft("");
@@ -361,15 +347,15 @@ export function TaskDetail({
                   </option>
                 ))}
                 <option value={NEW_EPIC}>+ New epic…</option>
-              </select>
+              </Select>
             )}
           </Field>
         </div>
 
         <div className="grid grid-cols-2 gap-2">
           <Field label="Agent owner">
-            <select
-              className={cn(selectClasses, !task.owners.agentId && "text-warn")}
+            <Select
+              className={cn(!task.owners.agentId && "text-warn")}
               value={task.owners.agentId ?? ""}
               onChange={(e) =>
                 patchTask({ owners: { ...task.owners, agentId: e.target.value || null } })
@@ -381,7 +367,7 @@ export function TaskDetail({
                   {a.name} · {a.model}
                 </option>
               ))}
-            </select>
+            </Select>
           </Field>
           <Field label="Human owner">
             <input
@@ -389,7 +375,7 @@ export function TaskDetail({
               onChange={(e) => setHuman(e.target.value)}
               onBlur={() => patchTask({ owners: { ...task.owners, human: human.trim() || null } })}
               placeholder={roster?.defaultHuman || "who's accountable?"}
-              className={cn(selectClasses, !task.owners.human && "border-warn/40")}
+              className={cn(inputClasses, !task.owners.human && "border-warn/40")}
               aria-label="Human owner"
             />
           </Field>
@@ -457,8 +443,9 @@ export function TaskDetail({
                 </button>
               );
             })}
-            <select
-              className={cn(selectClasses, "h-7 text-xs text-ink-muted")}
+            <Select
+              size="sm"
+              className="text-ink-muted"
               value=""
               onChange={(e) => {
                 if (e.target.value) patchTask({ blockedBy: [...task.blockedBy, e.target.value] });
@@ -479,7 +466,7 @@ export function TaskDetail({
                     {t.title} [{t.status}]
                   </option>
                 ))}
-            </select>
+            </Select>
           </div>
         </Field>
 
@@ -551,8 +538,9 @@ export function TaskDetail({
             aria-label="Agent prompt"
           />
           <div className="mt-2 flex items-center gap-2">
-            <select
-              className={cn(selectClasses, "h-7 flex-1 text-xs")}
+            <Select
+              size="sm"
+              className="flex-1"
               value={purpose}
               onChange={(e) => setPurpose(e.target.value as RunPurpose)}
               aria-label="Run purpose"
@@ -562,9 +550,10 @@ export function TaskDetail({
                   {p}
                 </option>
               ))}
-            </select>
-            <select
-              className={cn(selectClasses, "h-7 flex-1 text-xs")}
+            </Select>
+            <Select
+              size="sm"
+              className="flex-1"
               value={cwd}
               onChange={(e) => setCwd(e.target.value)}
               aria-label="Working directory"
@@ -577,23 +566,27 @@ export function TaskDetail({
                     {r.name}
                   </option>
                 ))}
-            </select>
+            </Select>
+            {/* Interactive is the default dispatch: the native TUI in the
+                terminal panel, questions answered in place. Headless stays a
+                click away for fire-and-forget runs. */}
             <Button
               variant="primary"
-              size="sm"
-              disabled={starting || !effectivePrompt.trim()}
-              onClick={() => void runAgent()}
-            >
-              <Play className="h-3 w-3" /> Run
-            </Button>
-            <Button
-              variant="secondary"
               size="sm"
               disabled={starting || !effectivePrompt.trim()}
               onClick={() => void runInteractive()}
               title="Run as a native interactive Claude session in the terminal panel — answer its questions there (or later from the board, where they are still logged)"
             >
-              <TerminalSquare className="h-3 w-3" /> Terminal
+              <TerminalSquare className="h-3 w-3" /> Run
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={starting || !effectivePrompt.trim()}
+              onClick={() => void runAgent()}
+              title="Run headless (stream-json in the background) — watch it from the Runs tab, no terminal"
+            >
+              <Play className="h-3 w-3" /> Headless
             </Button>
           </div>
           {dispatchError ? (

@@ -67,6 +67,13 @@ export interface AgentStartParams {
   permissionMode?: AgentPermissionMode | null;
   /** Git branch for the run's worktree (implies worktree isolation). */
   branch?: string | null;
+  /**
+   * Existing worktree this run continues in (resume-chain continuity: a
+   * resumed turn must see the same working copy its session edited, not the
+   * plain repo). Server-internal — never exposed over the bridge; the caller
+   * (resumeChain) has verified the directory still exists.
+   */
+  adoptWorktreePath?: string | null;
 }
 
 /** What an interactive dispatch needs from the caller (no resume, no worktrees). */
@@ -440,8 +447,31 @@ export class AgentManager {
    * Plain runs (jobs, consoles) keep the CLI's own default, as before.
    */
   presetResolver: (() => Promise<ModelPreset>) | null = null;
+  /**
+   * Set by the host: whether this workspace consented to
+   * `permissionMode: "bypassPermissions"` (the roster's
+   * `allowBypassPermissions` flag). Unset or false, a bypass request is
+   * downgraded to acceptEdits at the spawn choke points — profiles and
+   * dispatch params can *ask* for bypass, only workspace policy grants it.
+   */
+  bypassResolver: (() => Promise<boolean>) | null = null;
   /** Mount window before an interactive session takes deliveries (test seam). */
   interactiveReadyMs = INTERACTIVE_READY_MS;
+
+  /** The permission mode a spawn may actually use (workspace bypass gate). */
+  private async gatedPermissionMode(
+    run: AgentRun,
+    requested: AgentPermissionMode | null | undefined,
+  ): Promise<AgentPermissionMode | null> {
+    if (requested !== "bypassPermissions") return requested ?? null;
+    const allowed = await this.bypassResolver?.().catch(() => false);
+    if (allowed) return requested;
+    this.record(run, {
+      type: "stderr",
+      text: "bypassPermissions requested but not enabled for this workspace — running with acceptEdits.",
+    });
+    return "acceptEdits";
+  }
 
   /** The preset-fallback model for a run with none: managers/workers only. */
   private async presetModelFor(params: {
@@ -603,7 +633,17 @@ export class AgentManager {
     this.indexTags(run);
     this.runEvents.set(run.id, []);
 
-    if (run.isolation === "worktree") {
+    if (params.adoptWorktreePath) {
+      // A resumed turn continues in its chain's worktree — the session's
+      // earlier edits live there, not in the repo checkout.
+      run.worktreePath = params.adoptWorktreePath;
+      cwdAbs = params.adoptWorktreePath;
+      this.record(run, {
+        type: "status",
+        status: "queued",
+        message: `Continuing in worktree: ${params.adoptWorktreePath}${run.branch ? ` (branch ${run.branch})` : ""}`,
+      });
+    } else if (run.isolation === "worktree") {
       try {
         cwdAbs = await this.acquireWorktree(run, cwdAbs);
       } catch (err) {
@@ -627,7 +667,7 @@ export class AgentManager {
       appendSystemPrompt: params.appendSystemPrompt,
       allowedTools: params.allowedTools,
       disallowedTools: params.disallowedTools,
-      permissionMode: params.permissionMode,
+      permissionMode: await this.gatedPermissionMode(run, params.permissionMode),
     });
 
     const claudeBin = await this.claudePath();
@@ -766,7 +806,7 @@ export class AgentManager {
       appendSystemPrompt: params.appendSystemPrompt,
       allowedTools: params.allowedTools,
       disallowedTools: params.disallowedTools,
-      permissionMode: params.permissionMode,
+      permissionMode: await this.gatedPermissionMode(run, params.permissionMode),
     });
     const claudeBin = await this.claudePath();
 
@@ -1077,26 +1117,76 @@ export class AgentManager {
       const overlay = root.agentId
         ? await this.profileResolver?.(root.agentId).catch(() => null)
         : null;
-      return this.start({
-        prompt,
-        cwd: root.cwd,
-        taskId: root.taskId,
-        projectId: root.projectId,
-        repoId: root.repoId,
-        resumeSessionId: session,
-        resumedFromRunId: latest.id,
-        agentId: root.agentId,
-        // Resumed turns stay on the chain's model — the CLI would otherwise
-        // fall back to its configured default mid-conversation.
-        model: latest.model ?? root.model ?? null,
-        appendSystemPrompt: overlay?.appendPrompt ?? null,
-        allowedTools: overlay?.allowedTools,
-        disallowedTools: overlay?.disallowedTools,
-        permissionMode: overlay?.permissionMode ?? null,
-        role: root.role === "manager" ? "manager" : null,
-        purpose: root.purpose,
-        tags: root.tags,
-      });
+      // Session continuity is also *working-copy* continuity: an isolated
+      // chain's edits live in its worktree, so a resumed turn must run there —
+      // resuming into the plain repo would strand the session's own work.
+      const wtHolder = [...chain].reverse().find((r) => r.worktreePath);
+      const startTurn = async (): Promise<AgentRun | null> => {
+        const worktree = wtHolder?.worktreePath ?? null;
+        // Never share a working copy with a live run outside this chain (a
+        // fresh worker may hold the same track branch's worktree). This scan
+        // is sound only because check-and-start runs under the branch lock
+        // below for branch-bound worktrees — start() registers the run
+        // synchronously before the next lock holder's scan.
+        const contested = worktree
+          ? [...this.runs.values()].some(
+              (r) =>
+                r.worktreePath === worktree &&
+                (r.status === "running" || r.status === "queued"),
+            )
+          : false;
+        const exists =
+          worktree != null && (await fs.access(worktree).then(() => true, () => false));
+        const adopt = worktree && exists && !contested ? worktree : null;
+        const run = await this.start({
+          prompt,
+          cwd: root.cwd,
+          taskId: root.taskId,
+          projectId: root.projectId,
+          repoId: root.repoId,
+          resumeSessionId: session,
+          resumedFromRunId: latest.id,
+          agentId: root.agentId,
+          // Resumed turns stay on the chain's model — the CLI would otherwise
+          // fall back to its configured default mid-conversation.
+          model: latest.model ?? root.model ?? null,
+          appendSystemPrompt: overlay?.appendPrompt ?? null,
+          allowedTools: overlay?.allowedTools,
+          disallowedTools: overlay?.disallowedTools,
+          permissionMode: overlay?.permissionMode ?? null,
+          role: root.role === "manager" ? "manager" : null,
+          purpose: root.purpose,
+          tags: root.tags,
+          isolation: adopt ? "worktree" : undefined,
+          adoptWorktreePath: adopt,
+          branch: adopt ? (wtHolder?.branch ?? null) : null,
+        });
+        if (worktree && !adopt) {
+          // Falling back to the repo checkout is visible, never silent — the
+          // session's earlier edits stay in the worktree it could not enter.
+          this.record(run, {
+            type: "stderr",
+            text: contested
+              ? `Chain worktree ${worktree} is in use by a live run — this turn resumed in the repo checkout instead.`
+              : `Chain worktree ${worktree} no longer exists — this turn resumed in the repo checkout.`,
+          });
+        }
+        return run;
+      };
+      // Branch worktrees are a shared track identity across chains, so the
+      // adoption check and the start must hold the same per-(repo, branch)
+      // lock acquireWorktree uses — without it two resumes (or a resume
+      // racing a fresh dispatch) both pass the live-holder scan before
+      // either registers its run, and two live Claude processes end up
+      // editing one working copy.
+      if (wtHolder?.branch) {
+        const key = `${wtHolder.cwd} ${wtHolder.branch}`;
+        const prevLock = this.branchLocks.get(key) ?? Promise.resolve();
+        const task = prevLock.then(startTurn, startTurn);
+        this.branchLocks.set(key, task.catch(() => {}));
+        return task;
+      }
+      return startTurn();
     });
     this.resumeLocks.set(rootId, attempt.catch(() => {}));
     return attempt;

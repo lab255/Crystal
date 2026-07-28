@@ -1,6 +1,8 @@
 import { useMemo, useState } from "react";
 import { AlertTriangle, GripVertical, Info } from "lucide-react";
 import {
+  AUTO_MODEL,
+  MODEL_HINTS,
   RUN_PURPOSES,
   STAGE_ARCHETYPES,
   TASK_STATUSES,
@@ -14,7 +16,7 @@ import {
   type WorkflowStageDef,
   type WorkflowTemplate,
 } from "@crystal/core";
-import { Badge, Input, Textarea, Tooltip, cn } from "@crystal/ui";
+import { Badge, Field, Input, Select, Textarea, Tooltip, cn } from "@crystal/ui";
 import { STAGE_DND_MIME, WorkflowGraph } from "./WorkflowGraph.js";
 
 /**
@@ -237,8 +239,8 @@ function StageInspector({
             />
           </Field>
           <Field label="Worker purpose">
-            <select
-              className="h-7 w-full rounded-lg border border-edge bg-surface-1 px-2 text-xs text-ink focus:border-crystal-500/60 focus:outline-none"
+            <Select
+              size="sm"
               value={stage.purpose}
               onChange={(e) => onPatch({ purpose: e.target.value as RunPurpose })}
               aria-label="Stage purpose"
@@ -248,14 +250,14 @@ function StageInspector({
                   {p}
                 </option>
               ))}
-            </select>
+            </Select>
           </Field>
           <Field
             label="Board column"
             hint="Where this stage's tasks sit on the orchestrator board while it works"
           >
-            <select
-              className="h-7 w-full rounded-lg border border-edge bg-surface-1 px-2 text-xs text-ink focus:border-crystal-500/60 focus:outline-none"
+            <Select
+              size="sm"
               value={stage.boardStatus ?? ""}
               onChange={(e) =>
                 onPatch({ boardStatus: (e.target.value || null) as TaskStatus | null })
@@ -268,7 +270,7 @@ function StageInspector({
                   {TASK_STATUS_LABELS[s]}
                 </option>
               ))}
-            </select>
+            </Select>
           </Field>
           <Field label="Model" hint="Cost routing — heavyweight only where code gets written">
             <Input
@@ -280,10 +282,11 @@ function StageInspector({
               className="h-7 text-xs"
             />
             <datalist id="wf-builder-models">
-              <option value="fable" />
-              <option value="opus" />
-              <option value="sonnet" />
-              <option value="haiku" />
+              {/* A stage model rides dispatch_worker's raw `model` — only profile
+                  models resolve the "auto" sentinel, so it is excluded here. */}
+              {MODEL_HINTS.filter((m) => m !== AUTO_MODEL).map((m) => (
+                <option key={m} value={m} />
+              ))}
             </datalist>
           </Field>
           <label className="flex items-center gap-2 text-xs text-ink">
@@ -364,25 +367,5 @@ function StageInspector({
         )}
       </div>
     </aside>
-  );
-}
-
-function Field({
-  label,
-  hint,
-  children,
-}: {
-  label: string;
-  hint?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div>
-      <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-ink-faint">
-        {label}
-      </div>
-      {children}
-      {hint ? <p className="mt-1 text-[10px] text-ink-faint">{hint}</p> : null}
-    </div>
   );
 }

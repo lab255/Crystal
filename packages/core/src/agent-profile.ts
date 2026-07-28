@@ -87,6 +87,14 @@ export function presetById(id?: string | null): ModelPreset {
 export const AUTO_MODEL = "auto";
 
 /**
+ * Model aliases offered wherever a model is picked or hinted (profile editor,
+ * dispatch override, template stages, workflow manager). Free text stays
+ * allowed everywhere — any alias/id the CLI accepts — this is the one shared
+ * suggestion list, so pickers can't drift out of sync.
+ */
+export const MODEL_HINTS = [AUTO_MODEL, "fable", "opus", "sonnet", "haiku"] as const;
+
+/**
  * A profile's concrete `--model` value: its own pin always wins; "auto"
  * resolves by the run's place in the hierarchy — a manager gets the preset's
  * manager model whatever profile it runs as (orchestration is a role, not a
@@ -105,8 +113,17 @@ export function resolveProfileModel(
 /**
  * `--permission-mode` for the profile's runs. Unset keeps today's behavior
  * (acceptEdits — headless runs have nobody to answer prompts).
+ * `bypassPermissions` (the CLI's dangerously-skip-permissions mode) is only
+ * honored when the workspace roster opts in via `allowBypassPermissions` —
+ * the server downgrades it to acceptEdits otherwise, so a profile copied into
+ * a workspace that never consented cannot skip its permission prompts.
  */
-export const AGENT_PERMISSION_MODES = ["default", "acceptEdits", "plan"] as const;
+export const AGENT_PERMISSION_MODES = [
+  "default",
+  "acceptEdits",
+  "plan",
+  "bypassPermissions",
+] as const;
 export const AgentPermissionModeSchema = z.enum(AGENT_PERMISSION_MODES);
 export type AgentPermissionMode = z.infer<typeof AgentPermissionModeSchema>;
 
@@ -168,6 +185,13 @@ export const AgentRosterSchema = z.object({
   defaultHuman: z.string().default(""),
   /** Model preset id (see MODEL_PRESETS); null/unknown means the default. */
   preset: z.string().nullish(),
+  /**
+   * Workspace consent for `permissionMode: "bypassPermissions"` runs
+   * (`--dangerously-skip-permissions`). Off by default; without it the server
+   * downgrades bypass requests to acceptEdits. Workspace policy, not profile
+   * data — a library profile must not smuggle bypass into every project.
+   */
+  allowBypassPermissions: z.boolean().default(false),
 });
 export type AgentRoster = z.infer<typeof AgentRosterSchema>;
 

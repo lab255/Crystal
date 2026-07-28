@@ -1,4 +1,4 @@
-import { useCallback, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, type ReactNode } from "react";
 import { Bot } from "lucide-react";
 import type { AgentRun } from "@crystal/core";
 import { RunSurface, useCrystal, useRunSurface } from "@crystal/client";
@@ -39,9 +39,40 @@ export function RunsPane({
   const run = surface.run;
 
   const onSend = useCallback(
-    (text: string) => (run ? messageRun(client, run, text) : Promise.resolve()),
-    [client, run],
+    async (text: string) => {
+      if (!run) return;
+      const result = await messageRun(client, run, text);
+      // A delivered message resumed the chain as a fresh turn — follow it, or
+      // the user is stranded watching the superseded turn while the reply
+      // streams into a run they'd have to find themselves.
+      if (result.runId && result.runId !== run.id) onSelect(result.runId);
+      return result;
+    },
+    [client, run, onSelect],
   );
+
+  // Follow the conversation when a queued delivery lands later: a new turn
+  // grown from the *selected tip* advances selection with it. Selecting an
+  // older turn on purpose is respected — it already had a successor when
+  // selected, so it never auto-advances away.
+  const lastSelected = useRef<string | null>(null);
+  const hadSuccessor = useRef(false);
+  useEffect(() => {
+    // No baseline from an unloaded list: the store starts empty, and a
+    // deep-linked older turn would otherwise record "no successor" before
+    // refresh() lands — then bounce to the tip the moment runs arrive.
+    if (runs.length === 0) return;
+    const successor = selectedRunId
+      ? runs.find((r) => r.resumedFromRunId === selectedRunId)
+      : undefined;
+    if (selectedRunId !== lastSelected.current) {
+      lastSelected.current = selectedRunId;
+      hadSuccessor.current = successor != null;
+      return;
+    }
+    if (!selectedRunId || hadSuccessor.current || !successor) return;
+    onSelect(successor.id);
+  }, [runs, selectedRunId, onSelect]);
 
   const list = (
     <RunList

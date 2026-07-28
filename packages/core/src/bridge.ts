@@ -433,7 +433,12 @@ export interface BridgeMethods {
    */
   "agent.message": {
     params: WsScope & { runId: string; text: string };
-    result: { queued: boolean };
+    /**
+     * `runId` is the run now carrying the conversation: the freshly resumed
+     * turn, or the live interactive run the text was typed into. Null only
+     * when the message was queued (chain mid-turn) — flushed on settlement.
+     */
+    result: { queued: boolean; runId: string | null };
   };
   "agent.cancel": { params: WsScope & { runId: string }; result: { ok: true } };
   "agent.list": { params: WsScope; result: { runs: AgentRun[] } };

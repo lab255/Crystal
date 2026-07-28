@@ -345,7 +345,7 @@ describe("groupRunsByManager", () => {
     // Roots keep input order; workers are pulled out from the top level.
     expect(nodes.map((n) => n.run.id)).toEqual(["s3", "m1"]);
     const managerNode = nodes.find((n) => n.run.id === "m1")!;
-    expect(managerNode.workers.map((w) => w.id)).toEqual(["w1", "w2"]); // oldest-first
+    expect(managerNode.workers.map((w) => w.run.id)).toEqual(["w1", "w2"]); // oldest-first
   });
 
   it("promotes orphaned workers to roots so nothing is hidden", () => {
@@ -354,5 +354,38 @@ describe("groupRunsByManager", () => {
     expect(nodes).toHaveLength(1);
     expect(nodes[0]!.run.id).toBe("w9");
     expect(nodes[0]!.workers).toEqual([]);
+  });
+
+  it("collapses a resume chain to one node faced by its latest turn", () => {
+    const first = run("t1");
+    const second = run("t2", { resumedFromRunId: "t1" });
+    const third = run("t3", { resumedFromRunId: "t2" });
+    // Newest-first input, as the store hands them back.
+    const nodes = groupRunsByManager([third, second, first]);
+
+    expect(nodes).toHaveLength(1);
+    expect(nodes[0]!.run.id).toBe("t3"); // the face is the latest turn
+    expect(nodes[0]!.turns.map((t) => t.id)).toEqual(["t1", "t2", "t3"]);
+  });
+
+  it("merges session-only turns into their chain (console resumes carry no run link)", () => {
+    const first = run("t1", { sessionId: "sess-a" });
+    const consoleTurn = run("t2", { sessionId: "sess-a" }); // no resumedFromRunId
+    const nodes = groupRunsByManager([consoleTurn, first]);
+
+    expect(nodes).toHaveLength(1);
+    expect(nodes[0]!.run.id).toBe("t2");
+    expect(nodes[0]!.turns.map((t) => t.id)).toEqual(["t1", "t2"]);
+  });
+
+  it("keeps a resumed manager's workers under the one session node", () => {
+    const manager = run("m1", { role: "manager" });
+    const worker = run("w2", { parentRunId: "m1", role: "worker" });
+    const woken = run("m3", { resumedFromRunId: "m1", role: "manager" });
+    const nodes = groupRunsByManager([woken, worker, manager]);
+
+    expect(nodes).toHaveLength(1);
+    expect(nodes[0]!.run.id).toBe("m3");
+    expect(nodes[0]!.workers.map((w) => w.run.id)).toEqual(["w2"]);
   });
 });

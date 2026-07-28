@@ -104,6 +104,10 @@ export class WorkspaceRuntime {
     // chain turns) resolves through the merged project+library view.
     this.agents.profileResolver = (agentId) => this.resolveProfile(agentId);
     this.agents.presetResolver = () => this.resolvePreset();
+    // Workspace consent for dangerously-skip-permissions runs (roster flag) —
+    // read per spawn, so flipping the toggle applies to the next run.
+    this.agents.bypassResolver = async () =>
+      (await this.agentLibrary.roster()).allowBypassPermissions;
     this.terminals = new TerminalManager(root);
     this.analysis = new AnalysisBackend(root);
     this.codemap = createCodeMapFacade(this.analysis);

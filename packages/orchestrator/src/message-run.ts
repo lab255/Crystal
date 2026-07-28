@@ -9,12 +9,16 @@ import type { BridgeClient } from "@crystal/client";
  * through the hub's, and everything else via the generic `agent.message`
  * (verbatim `deliver` on the run's chain). One home for the decision so every
  * composer — Runs tab, Agents tab, workflow detail — steers identically.
+ *
+ * `runId` is the turn now carrying the conversation, when the route reports
+ * one (the generic route's resumed turn) — callers use it to keep the surface
+ * on the session instead of stranding the user on the superseded turn.
  */
 export async function messageRun(
   client: BridgeClient,
   run: AgentRun,
   text: string,
-): Promise<{ queued: boolean }> {
+): Promise<{ queued: boolean; runId?: string | null }> {
   const workflowId = workflowIdOfRun(run);
   if (workflowId) {
     const { queued } = await client.request("workflow.message", { workflowId, text });
@@ -25,6 +29,6 @@ export async function messageRun(
     const { queued } = await client.request("hub.message", { programId, text });
     return { queued };
   }
-  const { queued } = await client.request("agent.message", { runId: run.id, text });
-  return { queued };
+  const { queued, runId } = await client.request("agent.message", { runId: run.id, text });
+  return { queued, runId };
 }

@@ -1,8 +1,21 @@
 import { useMemo } from "react";
-import { GitBranch, TerminalSquare } from "lucide-react";
-import { groupRunsByManager, type AgentRun } from "@crystal/core";
+import { GitBranch, MessagesSquare, TerminalSquare } from "lucide-react";
+import { groupRunsByManager, type AgentRun, type RunNode } from "@crystal/core";
 import { formatRunCost } from "@crystal/client";
 import { StatusDot, cn } from "@crystal/ui";
+import { MANAGER_PREAMBLE } from "./prompt.js";
+
+/**
+ * A row's headline: the conversation's opening prompt, with the fixed manager
+ * preamble stripped — otherwise every manager session titles as the same
+ * boilerplate first sentence and the list becomes unscannable.
+ */
+function runHeadline(prompt: string): string {
+  const own = prompt.startsWith(MANAGER_PREAMBLE)
+    ? prompt.slice(MANAGER_PREAMBLE.length)
+    : prompt;
+  return own.trimStart().split("\n")[0] || prompt.split("\n")[0]!;
+}
 
 /**
  * Reusable agent-run sidepane. Renders a scrollable, selectable list of runs —
@@ -12,8 +25,11 @@ import { StatusDot, cn } from "@crystal/ui";
  * (all runs, one task's runs, one purpose) and own selection via
  * `selectedRunId` / `onSelect`.
  *
- * Runs are grouped into a manager→worker forest ({@link groupRunsByManager}):
- * a manager's dispatched workers nest beneath it; standalone runs render flat.
+ * Runs are grouped into a session forest ({@link groupRunsByManager}): a
+ * resume chain collapses to one row faced by its latest turn (steering an
+ * agent grows the conversation, it never mints a new row), and a manager's
+ * dispatched workers nest beneath it. A row is selected when *any* turn of
+ * its chain is — the surface's turn strip handles picking older turns.
  */
 export function RunList({
   runs,
@@ -61,22 +77,21 @@ export function RunList({
           nodes.map((node) => (
             <div key={node.run.id}>
               <RunListItem
-                run={node.run}
-                selected={selectedRunId === node.run.id}
+                node={node}
+                selectedRunId={selectedRunId}
                 onSelect={onSelect}
-                workerCount={node.workers.length}
                 wsName={wsNameOf?.(node.run)}
               />
               {node.workers.length > 0 ? (
                 <div className="ml-3.5 mt-1 space-y-1 border-l border-edge/70 pl-1.5">
                   {node.workers.map((w) => (
                     <RunListItem
-                      key={w.id}
-                      run={w}
-                      selected={selectedRunId === w.id}
+                      key={w.run.id}
+                      node={w}
+                      selectedRunId={selectedRunId}
                       onSelect={onSelect}
                       worker
-                      wsName={wsNameOf?.(w)}
+                      wsName={wsNameOf?.(w.run)}
                     />
                   ))}
                 </div>
@@ -89,26 +104,31 @@ export function RunList({
   );
 }
 
-/** One run row: status, prompt headline, timestamp and cost. */
+/** One session row: status, prompt headline, turn count, timestamp and cost. */
 function RunListItem({
-  run,
-  selected,
+  node,
+  selectedRunId,
   onSelect,
-  workerCount = 0,
   worker = false,
   wsName,
 }: {
-  run: AgentRun;
-  selected: boolean;
+  node: RunNode;
+  selectedRunId: string | null;
   onSelect: (id: string) => void;
-  /** Number of workers dispatched by this run (shown as a manager badge). */
-  workerCount?: number;
   /** Render as a nested worker row (denser). */
   worker?: boolean;
   /** Workspace name chip (cross-workspace lists only). */
   wsName?: string | null;
 }) {
-  const isManager = run.role === "manager" || workerCount > 0;
+  const run = node.run;
+  const isManager = run.role === "manager" || node.workers.length > 0;
+  const selected =
+    selectedRunId != null && node.turns.some((t) => t.id === selectedRunId);
+  // The whole chain's bill — the face turn alone under-reports a steered
+  // session. All-null turns stay "—" (an interactive session mid-flight).
+  const costUsd = node.turns.some((t) => t.costUsd != null)
+    ? node.turns.reduce((sum, t) => sum + (t.costUsd ?? 0), 0)
+    : null;
   return (
     <button
       type="button"
@@ -127,7 +147,8 @@ function RunListItem({
             worker ? "text-[11px] text-ink-muted" : "text-xs text-ink",
           )}
         >
-          <span className="truncate">{run.prompt.split("\n")[0]}</span>
+          {/* The conversation is titled by how it started, not the latest wake-up prompt. */}
+          <span className="truncate">{runHeadline(node.turns[0]!.prompt)}</span>
           {run.terminalId ? (
             <span
               className="ml-auto flex shrink-0 items-center gap-0.5 rounded-full bg-surface-3 px-1.5 text-[9px] font-medium text-ink-muted"
@@ -137,21 +158,33 @@ function RunListItem({
               interactive
             </span>
           ) : null}
+          {node.turns.length > 1 ? (
+            <span
+              className={cn(
+                "flex shrink-0 items-center gap-0.5 rounded-full bg-surface-3 px-1.5 text-[9px] font-medium text-ink-muted",
+                !run.terminalId && "ml-auto",
+              )}
+              title={`${node.turns.length} turns in this session`}
+            >
+              <MessagesSquare className="h-2.5 w-2.5" />
+              {node.turns.length}
+            </span>
+          ) : null}
           {isManager ? (
             <span
               className={cn(
                 "flex shrink-0 items-center gap-0.5 rounded-full bg-crystal-500/15 px-1.5 text-[9px] font-medium text-crystal-300",
-                !run.terminalId && "ml-auto",
+                !run.terminalId && node.turns.length === 1 && "ml-auto",
               )}
             >
               <GitBranch className="h-2.5 w-2.5" />
-              {workerCount || ""}
+              {node.workers.length || ""}
             </span>
           ) : null}
         </span>
         <span className="mt-0.5 flex items-center gap-1 text-[10px] text-ink-faint">
           <span className="truncate">
-            {new Date(run.createdAt).toLocaleString()} · {formatRunCost(run.costUsd)}
+            {new Date(node.turns[0]!.createdAt).toLocaleString()} · {formatRunCost(costUsd)}
           </span>
           {wsName ? (
             <span className="shrink-0 rounded-full bg-surface-3 px-1.5 text-[9px] font-medium text-ink-faint">

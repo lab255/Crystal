@@ -1,9 +1,13 @@
+import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AgentRun } from "@crystal/core";
 import { AgentManager } from "./agent-manager.js";
+
+const exec = promisify(execFile);
 
 /**
  * The wake-up loop, end-to-end against a stand-in CLI.
@@ -143,6 +147,84 @@ describe("agent wake-ups", () => {
     expect(typed[0]).toContain(`Worker ${worker.id} settled: completed`);
     // Typed into the TUI, never a --resume of the live chain (that would fork).
     expect(await mgr.chainRuns(manager.id)).toHaveLength(1);
+  });
+
+  it("resumes an isolated chain in its own worktree, not the plain repo", async () => {
+    // Regression: a resumed turn ran in the repo checkout while the session's
+    // earlier edits lived in its worktree — steering an isolated agent
+    // silently stranded its work.
+    const mgr = await makeManager(150);
+    const root = path.join(tmp!, "root");
+    await exec("git", ["init"], { cwd: root });
+    await exec(
+      "git",
+      ["-c", "user.email=t@crystal.test", "-c", "user.name=t", "commit", "--allow-empty", "-m", "init"],
+      { cwd: root },
+    );
+
+    const run = await mgr.start({ prompt: "isolated work", isolation: "worktree" });
+    expect(run.worktreePath).toBeTruthy();
+    await mgr.waitForSettled(run.id);
+
+    const resumed = await mgr.deliver(run.id, "follow-up: keep going.");
+    expect(resumed).not.toBeNull();
+    expect(resumed!.resumedFromRunId).toBe(run.id);
+    // Same working copy, and the record says so (diff/apply keep working).
+    expect(resumed!.worktreePath).toBe(run.worktreePath);
+    await mgr.waitForSettled(resumed!.id);
+  });
+
+  it("two chains sharing a track worktree never both resume into it", async () => {
+    // Regression: the adoption check ran outside the branch lock, so two
+    // concurrent delivers (or a deliver racing a fresh dispatch) both passed
+    // the live-holder scan before either registered its run — two live Claude
+    // processes editing one working copy.
+    const mgr = await makeManager(600);
+    const root = path.join(tmp!, "root");
+    await exec("git", ["init"], { cwd: root });
+    await exec(
+      "git",
+      ["-c", "user.email=t@crystal.test", "-c", "user.name=t", "commit", "--allow-empty", "-m", "init"],
+      { cwd: root },
+    );
+
+    const first = await mgr.start({ prompt: "track work", isolation: "worktree", branch: "track/x" });
+    await mgr.waitForSettled(first.id);
+    // Second chain adopts the same track worktree (branch = identity).
+    const second = await mgr.start({ prompt: "more track work", isolation: "worktree", branch: "track/x" });
+    await mgr.waitForSettled(second.id);
+    expect(second.worktreePath).toBe(first.worktreePath);
+
+    const [r1, r2] = await Promise.all([
+      mgr.deliver(first.id, "continue A"),
+      mgr.deliver(second.id, "continue B"),
+    ]);
+    expect(r1).not.toBeNull();
+    expect(r2).not.toBeNull();
+    // Exactly one adopted the shared worktree; the loser fell back visibly.
+    const adopters = [r1!, r2!].filter((r) => r.worktreePath === first.worktreePath);
+    expect(adopters).toHaveLength(1);
+    await mgr.waitForSettled(r1!.id);
+    await mgr.waitForSettled(r2!.id);
+  });
+
+  it("grants bypassPermissions only with workspace consent", async () => {
+    const mgr = await makeManager(50);
+    // Default-deny: no resolver wired (or a false one) downgrades the run.
+    const denied = await mgr.prepareInteractive({
+      prompt: "x",
+      permissionMode: "bypassPermissions",
+    });
+    expect(denied.args[denied.args.indexOf("--permission-mode") + 1]).toBe("acceptEdits");
+
+    mgr.bypassResolver = async () => true;
+    const granted = await mgr.prepareInteractive({
+      prompt: "x",
+      permissionMode: "bypassPermissions",
+    });
+    expect(granted.args[granted.args.indexOf("--permission-mode") + 1]).toBe(
+      "bypassPermissions",
+    );
   });
 
   it("delivers a message queued on a worker's own chain when the worker settles", async () => {

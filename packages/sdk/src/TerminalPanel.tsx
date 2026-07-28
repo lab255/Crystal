@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Bot, ChevronDown, Plus, Square, TerminalSquare, X } from "lucide-react";
 import {
   useFleetConnections,
@@ -26,6 +26,82 @@ import { XtermView } from "./XtermView.js";
  * With more than one server, the + menu lists (server · workspace) pairs and
  * tab labels carry the server name.
  */
+const PANEL_HEIGHT_KEY = "crystal.terminalPanel.height";
+const PANEL_DEFAULT_HEIGHT = 256;
+const PANEL_MIN_HEIGHT = 120;
+/** Keep some app visible above the panel however far it is dragged. */
+const PANEL_MIN_APP_ABOVE = 160;
+
+function clampPanelHeight(px: number): number {
+  const max = Math.max(PANEL_MIN_HEIGHT, window.innerHeight - PANEL_MIN_APP_ABOVE);
+  return Math.min(max, Math.max(PANEL_MIN_HEIGHT, Math.round(px)));
+}
+
+function loadPanelHeight(): number {
+  const stored = Number(localStorage.getItem(PANEL_HEIGHT_KEY));
+  // Clamped against the *current* window: a height dragged out on a large
+  // display must not swallow the whole app when reopened on a small one.
+  return clampPanelHeight(Number.isFinite(stored) && stored > 0 ? stored : PANEL_DEFAULT_HEIGHT);
+}
+
+/**
+ * The drag handle on the panel's top edge. Pointer-capture drag (works past
+ * the window edge), Escape-free: releasing anywhere commits, double-click
+ * resets to the default height. The xterm panes below follow via their own
+ * ResizeObserver → `terminal.resize` loop, so the PTY tracks every drag.
+ */
+function usePanelResize(): {
+  height: number;
+  onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => void;
+  reset: () => void;
+} {
+  const [height, setHeight] = useState<number>(() =>
+    typeof window === "undefined" ? PANEL_DEFAULT_HEIGHT : loadPanelHeight(),
+  );
+  const persist = useCallback((px: number) => {
+    setHeight(px);
+    try {
+      localStorage.setItem(PANEL_HEIGHT_KEY, String(px));
+    } catch {
+      /* storage full/blocked — the session keeps its size anyway */
+    }
+  }, []);
+
+  // Shrinking the window re-clamps the display height (the handle sits at the
+  // panel's top edge — off-screen, it could never be grabbed again). The
+  // stored preference is left alone, so a temporary shrink doesn't lose it.
+  useEffect(() => {
+    const onResize = () => setHeight((h) => clampPanelHeight(h));
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  const onPointerDown = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      const startY = e.clientY;
+      const startHeight = height;
+      const target = e.currentTarget;
+      target.setPointerCapture(e.pointerId);
+      const onMove = (ev: PointerEvent) => {
+        persist(clampPanelHeight(startHeight + (startY - ev.clientY)));
+      };
+      const onUp = () => {
+        target.removeEventListener("pointermove", onMove);
+        target.removeEventListener("pointerup", onUp);
+        target.removeEventListener("pointercancel", onUp);
+      };
+      target.addEventListener("pointermove", onMove);
+      target.addEventListener("pointerup", onUp);
+      target.addEventListener("pointercancel", onUp);
+    },
+    [height, persist],
+  );
+
+  return { height, onPointerDown, reset: () => persist(PANEL_DEFAULT_HEIGHT) };
+}
+
 export function TerminalPanel({ onClose }: { onClose: () => void }) {
   const tabs = useTerminals((s) => s.tabs);
   const activeTabId = useTerminals((s) => s.activeTabId);
@@ -52,9 +128,21 @@ export function TerminalPanel({ onClose }: { onClose: () => void }) {
       : [],
   );
   const active = tabs.find((t) => t.id === activeTabId) ?? null;
+  const resize = usePanelResize();
 
   return (
-    <div className="flex h-64 shrink-0 flex-col border-t border-edge bg-surface-1">
+    <div
+      style={{ height: resize.height }}
+      className="relative flex shrink-0 flex-col border-t border-edge bg-surface-1"
+    >
+      <div
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="Resize terminal panel"
+        onPointerDown={resize.onPointerDown}
+        onDoubleClick={resize.reset}
+        className="absolute inset-x-0 -top-1 z-10 h-2 cursor-row-resize touch-none hover:bg-crystal-500/30 active:bg-crystal-500/40"
+      />
       <div className="flex h-8 shrink-0 items-center gap-0.5 border-b border-edge px-1.5">
         <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto">
           {tabs.map((t) => {

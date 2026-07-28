@@ -64,6 +64,11 @@ describe("claudeRunArgs", () => {
     expect(args).not.toContain("--append-system-prompt");
     expect(args).not.toContain("--disallowedTools");
   });
+
+  it("passes bypassPermissions through — the workspace gate runs before argv is built", () => {
+    const args = claudeRunArgs({ permissionMode: "bypassPermissions" });
+    expect(args[args.indexOf("--permission-mode") + 1]).toBe("bypassPermissions");
+  });
 });
 
 describe("claudeInteractiveArgs", () => {

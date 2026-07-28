@@ -72,6 +72,7 @@ describe("matchAgent", () => {
     ],
     defaultAgentId: "gen",
     defaultHuman: "eliot",
+    allowBypassPermissions: false,
   };
 
   it("dispatches tagged work to the specialist with the largest overlap", () => {

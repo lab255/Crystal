@@ -15,6 +15,8 @@ import {
   Workflow as WorkflowIcon,
 } from "lucide-react";
 import {
+  AUTO_MODEL,
+  MODEL_HINTS,
   TASK_STATUSES,
   TASK_STATUS_LABELS,
   boardColumnStages,
@@ -43,7 +45,17 @@ import {
   useWorkspace,
   useWorkspaces,
 } from "@crystal/client";
-import { Badge, Button, EmptyState, Input, Spinner, Textarea, Tooltip, cn } from "@crystal/ui";
+import {
+  Badge,
+  Button,
+  EmptyState,
+  Input,
+  Select,
+  Spinner,
+  Textarea,
+  Tooltip,
+  cn,
+} from "@crystal/ui";
 import { TemplateBuilder } from "./TemplateBuilder.js";
 import { TemplateEditor } from "./TemplateEditor.js";
 import { WorkflowGraph } from "./WorkflowGraph.js";
@@ -699,8 +711,8 @@ function NewWorkflowPanel({
           className="mt-2"
         />
         <div className="mt-2 flex items-center gap-2">
-          <select
-            className="h-8 flex-1 rounded-lg border border-edge bg-surface-1 px-2 text-[13px] text-ink focus:border-crystal-500/60 focus:outline-none"
+          <Select
+            className="flex-1"
             value={template?.id ?? ""}
             onChange={(e) => selectTemplate(e.target.value)}
             aria-label="Workflow template"
@@ -710,7 +722,7 @@ function NewWorkflowPanel({
                 {t.name} ({t.stages.length} stages)
               </option>
             ))}
-          </select>
+          </Select>
           <Tooltip content="Change the stages for this run only — the template is untouched">
             <Button
               variant="ghost"
@@ -771,8 +783,8 @@ function NewWorkflowPanel({
             aria-label="Budget in USD"
             className="w-40"
           />
-          <select
-            className="h-8 flex-1 rounded-lg border border-edge bg-surface-1 px-2 text-[13px] text-ink focus:border-crystal-500/60 focus:outline-none"
+          <Select
+            className="flex-1"
             value={projectId}
             onChange={(e) => setProjectId(e.target.value)}
             aria-label="Project board"
@@ -783,40 +795,44 @@ function NewWorkflowPanel({
                 {p.project.name}
               </option>
             ))}
-          </select>
+          </Select>
           <Tooltip content={`The orchestrator model for this run only. The project preset (${preset.name}) is set on the Agents tab.`}>
-            <select
-              className="h-8 w-44 rounded-lg border border-edge bg-surface-1 px-2 text-[13px] text-ink focus:border-crystal-500/60 focus:outline-none"
+            <Select
+              className="w-44"
               value={managerModel}
               onChange={(e) => setManagerModel(e.target.value)}
               aria-label="Manager model"
             >
               <option value="">Manager: {preset.manager} (preset)</option>
-              {["fable", "opus", "sonnet"]
-                .filter((m) => m !== preset.manager)
-                .map((m) => (
-                  <option key={m} value={m}>
-                    Manager: {m}
-                  </option>
-                ))}
-            </select>
+              {/* "" already means "follow the preset", so the auto sentinel is redundant here. */}
+              {MODEL_HINTS.filter((m) => m !== AUTO_MODEL && m !== preset.manager).map((m) => (
+                <option key={m} value={m}>
+                  Manager: {m}
+                </option>
+              ))}
+            </Select>
           </Tooltip>
-          <Button
-            variant="primary"
-            size="sm"
-            disabled={busy || !name.trim() || !goal.trim() || tweakProblems.length > 0}
-            onClick={() => void create()}
-          >
-            <Play className="h-3 w-3" /> Start
-          </Button>
+          {/* Interactive is the default: the manager runs as a native Claude
+              session in the terminal panel. Headless stays available for
+              unattended workflows. */}
           <Tooltip content="Host the manager as a native interactive Claude session in the terminal panel — it asks you decisions directly (AskUserQuestion, still logged on the board), and you steer it by typing.">
             <Button
-              variant="secondary"
+              variant="primary"
               size="sm"
               disabled={busy || !name.trim() || !goal.trim() || tweakProblems.length > 0}
               onClick={() => void create(true)}
             >
-              <TerminalSquare className="h-3 w-3" /> Start in terminal
+              <TerminalSquare className="h-3 w-3" /> Start
+            </Button>
+          </Tooltip>
+          <Tooltip content="Run the manager headless in the background — steer it from the workflow's composer instead of a terminal.">
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={busy || !name.trim() || !goal.trim() || tweakProblems.length > 0}
+              onClick={() => void create()}
+            >
+              <Play className="h-3 w-3" /> Start headless
             </Button>
           </Tooltip>
         </div>

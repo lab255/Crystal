@@ -231,38 +231,96 @@ export function runsForTask(taskId: string, runs: AgentRun[]): AgentRun[] {
   return runs.filter((r) => r.taskId === taskId);
 }
 
-/** A manager (or standalone) run with the worker runs it dispatched beneath it. */
+/** A logical session (its resume chain collapsed) with its worker sessions beneath it. */
 export interface RunNode {
+  /** The chain's face: its latest turn. */
   run: AgentRun;
-  /** Worker runs pointing at `run.id`, oldest first for stable reading. */
-  workers: AgentRun[];
+  /** Every turn of the chain, oldest first (length 1 = never resumed). */
+  turns: AgentRun[];
+  /** Worker sessions dispatched by any turn of this chain, oldest first. */
+  workers: RunNode[];
 }
 
 /**
- * Fold a flat run list into a manager→worker forest for display. A run is a
- * root unless its `parentRunId` names another run *present in the list*; each
- * root carries its workers (sorted by creation). Root order follows the input
- * (the store hands runs back newest-first), so a manager keeps its slot while
- * its workers nest under it. Orphaned workers (parent absent) fall back to
- * roots so nothing is ever hidden.
+ * Fold a flat run list into a session forest for display. Two collapses
+ * happen at once:
+ *
+ * - **Resume chains collapse to one node.** Every `deliver`/wake-up resume
+ *   mints a fresh run record for the *same* logical Claude session
+ *   (`resumedFromRunId` links, `sessionId` as corroborating evidence for
+ *   console turns that carry only the session). Listing each turn as its own
+ *   row made a steered agent look like a brand-new one — one conversation,
+ *   one row. The node's face is the latest turn; older turns stay reachable
+ *   through `turns` (the surface's turn strip).
+ * - **Workers nest under their manager's session**, whichever turn of the
+ *   manager dispatched them. Orphaned workers (parent absent from the list)
+ *   fall back to roots so nothing is ever hidden.
+ *
+ * Root order follows the input (the store hands runs back newest-first) by
+ * each session's newest turn, so a freshly resumed session keeps its slot.
  */
 export function groupRunsByManager(runs: AgentRun[]): RunNode[] {
-  const ids = new Set(runs.map((r) => r.id));
-  const workersByParent = new Map<string, AgentRun[]>();
+  const byId = new Map(runs.map((r) => [r.id, r]));
+
+  // 1. Chain membership: resume-link roots, then merge chains sharing a
+  // sessionId (an agent-console turn resumes by session with no run link).
+  const chainKeyOf = new Map<string, string>();
+  const bySession = new Map<string, string>();
+  const alias = new Map<string, string>(); // chain key -> canonical key
+  const canon = (key: string): string => {
+    let k = key;
+    while (alias.has(k)) k = alias.get(k)!;
+    return k;
+  };
   for (const r of runs) {
-    const parent = r.parentRunId;
-    if (!parent || !ids.has(parent)) continue;
-    const list = workersByParent.get(parent);
-    if (list) list.push(r);
-    else workersByParent.set(parent, [r]);
+    const key = canon(chainRootId(r.id, byId));
+    chainKeyOf.set(r.id, key);
+    if (!r.sessionId) continue;
+    const prior = bySession.get(r.sessionId);
+    if (prior === undefined) bySession.set(r.sessionId, key);
+    else if (canon(prior) !== key) alias.set(key, canon(prior));
   }
-  const nodes: RunNode[] = [];
+
+  const chains = new Map<string, AgentRun[]>();
   for (const r of runs) {
-    if (r.parentRunId && ids.has(r.parentRunId)) continue; // rendered under its manager
-    const workers = (workersByParent.get(r.id) ?? []).sort((a, b) =>
-      a.createdAt.localeCompare(b.createdAt),
+    const key = canon(chainKeyOf.get(r.id)!);
+    const list = chains.get(key);
+    if (list) list.push(r);
+    else chains.set(key, [r]);
+  }
+
+  const nodeOf = new Map<string, RunNode>();
+  const faceKeyOfRunId = new Map<string, string>();
+  for (const [key, turns] of chains) {
+    turns.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+    nodeOf.set(key, { run: turns[turns.length - 1]!, turns, workers: [] });
+    for (const t of turns) faceKeyOfRunId.set(t.id, key);
+  }
+
+  // 2. Manager→worker nesting between sessions. A chain is a worker chain if
+  // any of its turns was dispatched by a run in the list (the dispatch link
+  // lives on the original worker run; resumed worker turns carry no parent).
+  const childKeys = new Set<string>();
+  for (const [key, node] of nodeOf) {
+    const parentRunId = node.turns.find((t) => t.parentRunId)?.parentRunId;
+    const parentKey = parentRunId ? faceKeyOfRunId.get(parentRunId) : undefined;
+    if (parentKey === undefined || parentKey === key) continue;
+    nodeOf.get(parentKey)!.workers.push(node);
+    childKeys.add(key);
+  }
+
+  const nodes: RunNode[] = [];
+  const seen = new Set<string>();
+  for (const r of runs) {
+    const key = faceKeyOfRunId.get(r.id)!;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (childKeys.has(key)) continue; // rendered under its manager
+    const node = nodeOf.get(key)!;
+    node.workers.sort(
+      (a, b) => a.turns[0]!.createdAt.localeCompare(b.turns[0]!.createdAt),
     );
-    nodes.push({ run: r, workers });
+    nodes.push(node);
   }
   return nodes;
 }

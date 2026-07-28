@@ -544,7 +544,7 @@ export async function startCrystalServer(opts: {
       // Verbatim delivery: deliver() types into a live TUI, resumes an idle
       // chain, or queues for the next settlement — never a board-keeping tail.
       const run = await rt.agents.deliver(runId, text);
-      return { queued: run == null };
+      return { queued: run == null, runId: run?.id ?? null };
     },
     "agent.dispatchWorker": async ({ ws, managerRunId, spec }) => {
       const run = await registry.get(ws).agents.dispatchWorker(managerRunId, spec);
