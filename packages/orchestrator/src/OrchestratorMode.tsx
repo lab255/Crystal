@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Bot, ChevronDown, KanbanSquare, ListTodo, Network, Plus, Sparkles } from "lucide-react";
+import {
+  Bot,
+  ChevronDown,
+  Coins,
+  KanbanSquare,
+  ListTodo,
+  Network,
+  Plus,
+  Sparkles,
+} from "lucide-react";
 import {
   RUN_PURPOSES,
   openQuestions,
@@ -25,6 +34,7 @@ import {
 } from "@crystal/ui";
 import { AgentsTab } from "./AgentsTab.js";
 import { Board } from "./Board.js";
+import { CostsTab } from "./CostsTab.js";
 import { QuestionsStrip } from "./QuestionsStrip.js";
 import { RunsPane } from "./RunsPane.js";
 import { TaskDetail } from "./TaskDetail.js";
@@ -83,6 +93,11 @@ export function OrchestratorMode() {
   const purposeFilter = useNav((l) => l.orchestrate?.purpose) ?? null;
   const setPurposeFilter = useCallback(
     (p: RunPurpose | null) => nav({ orchestrate: { purpose: p } }),
+    [nav],
+  );
+  const costBy = useNav((l) => l.orchestrate?.costBy) ?? null;
+  const setCostBy = useCallback(
+    (axis: string) => nav({ orchestrate: { costBy: axis } }),
     [nav],
   );
 
@@ -168,6 +183,9 @@ export function OrchestratorMode() {
           <TabButton active={tab === "agents"} onClick={() => setTab("agents")}>
             <Sparkles className="h-3.5 w-3.5" /> Agents
           </TabButton>
+          <TabButton active={tab === "costs"} onClick={() => setTab("costs")}>
+            <Coins className="h-3.5 w-3.5" /> Costs
+          </TabButton>
         </div>
       </header>
 
@@ -242,6 +260,8 @@ export function OrchestratorMode() {
           />
         ) : tab === "agents" ? (
           <AgentsTab selectedRunId={runId} onSelectRun={setRunId} />
+        ) : tab === "costs" ? (
+          <CostsTab project={current?.project ?? null} axis={costBy} onAxisChange={setCostBy} />
         ) : (
           <RunsPane
             runs={filteredRuns}

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { nowIso, uid } from "./ids.js";
-import { usageTotalTokens, type AgentRun, type AgentUsage } from "./agent.js";
+import { isAgentTag, usageTotalTokens, type AgentRun, type AgentUsage } from "./agent.js";
+import { tagsInDimension } from "./tags.js";
 import {
   CostRollupSchema,
   TaskPrioritySchema,
@@ -309,6 +310,250 @@ export function taskLiveUsage(
   );
   if (total.tokens === 0 && total.costUsd === 0 && !task.cost && mine.length === 0) return null;
   return total;
+}
+
+/* ------------------------------------------------------------------ */
+/* Cost attribution by axis                                            */
+/* ------------------------------------------------------------------ */
+
+/** One row of a cost-attribution view: everything billed to one value of the axis. */
+export interface CostSlice {
+  /** Stable identity within the axis (epic id, owner name, tag value, workflow id…). */
+  key: string;
+  label: string;
+  costUsd: number;
+  tokens: number;
+  /** Board tasks contributing (task-derived axes; 0 for run-derived axes). */
+  taskCount: number;
+  /** Runs contributing (run-derived axes; 0 for task-derived axes). */
+  runCount: number;
+  /** Live (running/queued) runs currently adding to this slice. */
+  liveCount: number;
+  /** Cost split by model, largest first (durable rollups + live runs). */
+  byModel: { model: string; costUsd: number }[];
+}
+
+/**
+ * Attribution axes. Task-derived axes (`epic`, `human`, `tag:<dimension>`)
+ * fold each task's bill — durable rollup plus live top-up, via
+ * {@link taskLiveUsage} — under the task's value of the axis; runs that never
+ * touched a board task land in a trailing "No task" slice so the view's total
+ * still reconciles with real spend. Run-derived axes (`workflow`, `agent`)
+ * group the run list by attribution tag.
+ *
+ * `tag:` is deliberately multi-dimensional: a task tagged `ui` and `db`
+ * contributes its full bill to both slices — attribution along a dimension is
+ * a lens, not a partition, and halving the dollars would misstate what each
+ * area actually cost.
+ */
+export type CostAxis = "epic" | "human" | "workflow" | "agent" | `tag:${string}`;
+
+const NO_TASK_KEY = "__no_task__";
+const NO_VALUE_KEY = "__none__";
+/** Residue slices ("No task", "No epic", "Unassigned", "No <dim> tag"…). */
+const RESIDUE_KEYS = new Set([NO_TASK_KEY, NO_VALUE_KEY]);
+
+/** Live = still accruing; both states bill via {@link taskLiveUsage}. */
+function isLive(run: Pick<AgentRun, "status">): boolean {
+  return run.status === "running" || run.status === "queued";
+}
+
+/** A task's model split: the durable rollup's byModel plus live runs' estimates. */
+function taskModelSplit(task: TaskItem, runs: readonly AgentRun[]): Map<string, number> {
+  const split = new Map<string, number>();
+  for (const [model, m] of Object.entries(task.cost?.byModel ?? {})) {
+    split.set(model, (split.get(model) ?? 0) + m.costUsd);
+  }
+  for (const r of runs) {
+    if (r.taskId !== task.id) continue;
+    // With a rollup, settled runs are already inside it — only live runs top
+    // up. Without one, every attributed run counts (taskLiveUsage's rule).
+    if (task.cost && !isLive(r)) continue;
+    const model = r.model ?? "unknown";
+    split.set(model, (split.get(model) ?? 0) + runCostUsd(r));
+  }
+  return split;
+}
+
+function finishSlices(slices: CostSlice[]): CostSlice[] {
+  const kept = slices.filter((s) => s.costUsd > 0 || s.tokens > 0 || s.liveCount > 0);
+  for (const s of kept) s.byModel.sort((a, b) => b.costUsd - a.costUsd);
+  // Residues ("No task", "No epic", "Unassigned", untagged) trail their
+  // peers at equal cost, so a residue never outranks a real slice it ties
+  // with.
+  return kept.sort(
+    (a, b) =>
+      b.costUsd - a.costUsd ||
+      Number(RESIDUE_KEYS.has(a.key)) - Number(RESIDUE_KEYS.has(b.key)),
+  );
+}
+
+/** Fold one task set (grouped) plus non-task runs into slices. */
+function taskAxisSlices(
+  groupOf: (task: TaskItem) => { key: string; label: string }[],
+  project: Project,
+  runs: readonly AgentRun[],
+): CostSlice[] {
+  const slices = new Map<string, CostSlice>();
+  const slice = (key: string, label: string): CostSlice => {
+    let s = slices.get(key);
+    if (!s) {
+      s = { key, label, costUsd: 0, tokens: 0, taskCount: 0, runCount: 0, liveCount: 0, byModel: [] };
+      slices.set(key, s);
+    }
+    return s;
+  };
+  const modelTotals = new Map<string, Map<string, number>>();
+  for (const task of project.tasks) {
+    const usage = taskLiveUsage(task, runs);
+    if (!usage) continue;
+    const live = runs.filter((r) => r.taskId === task.id && isLive(r)).length;
+    const split = taskModelSplit(task, runs);
+    for (const g of groupOf(task)) {
+      const s = slice(g.key, g.label);
+      s.costUsd += usage.costUsd;
+      s.tokens += usage.tokens;
+      s.taskCount += 1;
+      s.liveCount += live;
+      const totals = modelTotals.get(g.key) ?? new Map<string, number>();
+      for (const [model, usd] of split) totals.set(model, (totals.get(model) ?? 0) + usd);
+      modelTotals.set(g.key, totals);
+    }
+  }
+  // Money spent outside any board task — the view's total must reconcile
+  // with real spend, not silently hide it. Two shapes: runs that never had a
+  // task (managers, jobs, consoles), and runs whose task was deleted after
+  // billing (taskId no longer on the board; scoped by projectId so another
+  // board's task-runs don't leak in).
+  const taskIds = new Set(project.tasks.map((t) => t.id));
+  const orphanTotals = new Map<string, number>();
+  for (const r of runs) {
+    const orphaned =
+      r.taskId == null || (!taskIds.has(r.taskId) && r.projectId === project.id);
+    if (!orphaned) continue;
+    const usd = runCostUsd(r);
+    const tokens = usageTotalTokens(r.usage);
+    if (usd === 0 && tokens === 0 && !isLive(r)) continue;
+    const s = slice(NO_TASK_KEY, "No task (managers, jobs, consoles)");
+    s.costUsd += usd;
+    s.tokens += tokens;
+    s.runCount += 1;
+    if (isLive(r)) s.liveCount += 1;
+    const model = r.model ?? "unknown";
+    orphanTotals.set(model, (orphanTotals.get(model) ?? 0) + usd);
+  }
+  for (const [key, s] of slices) {
+    const totals = key === NO_TASK_KEY ? orphanTotals : modelTotals.get(key);
+    s.byModel = [...(totals ?? new Map())].map(([model, costUsd]) => ({ model, costUsd }));
+  }
+  return finishSlices([...slices.values()]);
+}
+
+/** Group the run list by an attribution-tag value (workflow / agent axes). */
+function runAxisSlices(
+  runs: readonly AgentRun[],
+  valueOf: (run: AgentRun) => string | null,
+  untaggedLabel: string,
+): CostSlice[] {
+  const slices = new Map<string, CostSlice>();
+  const modelTotals = new Map<string, Map<string, number>>();
+  for (const r of runs) {
+    const usd = runCostUsd(r);
+    const tokens = usageTotalTokens(r.usage);
+    if (usd === 0 && tokens === 0 && !isLive(r)) continue;
+    const value = valueOf(r);
+    const key = value ?? NO_TASK_KEY;
+    let s = slices.get(key);
+    if (!s) {
+      s = {
+        key,
+        label: value ?? untaggedLabel,
+        costUsd: 0,
+        tokens: 0,
+        taskCount: 0,
+        runCount: 0,
+        liveCount: 0,
+        byModel: [],
+      };
+      slices.set(key, s);
+    }
+    s.costUsd += usd;
+    s.tokens += tokens;
+    s.runCount += 1;
+    if (isLive(r)) s.liveCount += 1;
+    const model = r.model ?? "unknown";
+    const totals = modelTotals.get(key) ?? new Map<string, number>();
+    totals.set(model, (totals.get(model) ?? 0) + usd);
+    modelTotals.set(key, totals);
+  }
+  for (const [key, s] of slices) {
+    s.byModel = [...(modelTotals.get(key) ?? new Map())].map(([model, costUsd]) => ({
+      model,
+      costUsd,
+    }));
+  }
+  return finishSlices([...slices.values()]);
+}
+
+/**
+ * THE cost-attribution fold: the project's spend sliced along one axis.
+ * Pure — the UI hands it the board and the run list and renders rows.
+ */
+export function costSlices(
+  axis: CostAxis,
+  project: Project | null,
+  runs: readonly AgentRun[],
+): CostSlice[] {
+  if (axis === "workflow") {
+    return runAxisSlices(
+      runs,
+      (r) => r.tags.find((t) => t.startsWith("workflow:"))?.slice("workflow:".length) ?? null,
+      "No workflow",
+    );
+  }
+  if (axis === "agent") {
+    return runAxisSlices(
+      runs,
+      (r) => {
+        const tag = r.tags.find(isAgentTag);
+        return tag ? tag.slice("agent:".length) : null;
+      },
+      "No profile",
+    );
+  }
+  if (!project) return [];
+  if (axis === "epic") {
+    const epicName = new Map(project.epics.map((e) => [e.id, e.name]));
+    return taskAxisSlices(
+      (task) =>
+        task.epicId && epicName.has(task.epicId)
+          ? [{ key: task.epicId, label: epicName.get(task.epicId)! }]
+          : [{ key: NO_VALUE_KEY, label: "No epic" }],
+      project,
+      runs,
+    );
+  }
+  if (axis === "human") {
+    return taskAxisSlices(
+      (task) => {
+        const owner = task.owners.human?.trim();
+        return [owner ? { key: owner, label: owner } : { key: NO_VALUE_KEY, label: "Unassigned" }];
+      },
+      project,
+      runs,
+    );
+  }
+  const dimension = axis.slice("tag:".length);
+  return taskAxisSlices(
+    (task) => {
+      const values = tagsInDimension(task.labels, dimension);
+      return values.length
+        ? values.map((v) => ({ key: v, label: v }))
+        : [{ key: NO_VALUE_KEY, label: `No ${dimension} tag` }];
+    },
+    project,
+    runs,
+  );
 }
 
 /* ------------------------------------------------------------------ */

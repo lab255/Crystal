@@ -3,6 +3,7 @@ import { chainRootId, createAgentRun, touchedFileFromToolUse, type AgentRun } fr
 import {
   claimLease,
   checkWrite,
+  costSlices,
   estimateCostUsd,
   formatCost,
   leaseValid,
@@ -205,6 +206,114 @@ describe("taskLiveUsage", () => {
     expect(usage!.tokens).toBe(1100);
     expect(usage!.costUsd).toBeCloseTo(0.21, 5);
     expect(taskLiveUsage(createTask("empty"), [])).toBeNull();
+  });
+});
+
+describe("costSlices", () => {
+  function runFor(
+    taskId: string | null,
+    status: AgentRun["status"],
+    cost: number,
+    over: Partial<AgentRun> = {},
+  ): AgentRun {
+    const r = createAgentRun({ prompt: "x", taskId, tags: over.tags });
+    r.status = status;
+    r.usage = { inputTokens: 100, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, apiCalls: 1 };
+    r.costUsd = cost;
+    Object.assign(r, over, { tags: r.tags });
+    return r;
+  }
+
+  function board() {
+    const project = createProject("p");
+    const epic = { id: "epic_ui", name: "UI polish", description: "" };
+    project.epics.push(epic);
+    const a = createTask("build picker");
+    a.epicId = "epic_ui";
+    a.owners = { agentId: null, human: "eliot" };
+    a.labels = ["area:ui", "area:sdk"];
+    a.cost = { totalTokens: 1000, costUsd: 2, runCount: 1, byModel: { opus: { totalTokens: 1000, costUsd: 2 } }, updatedAt: "x" };
+    const b = createTask("index db");
+    b.owners = { agentId: null, human: "" };
+    b.labels = ["area:db"];
+    b.cost = { totalTokens: 500, costUsd: 1, runCount: 1, byModel: { sonnet: { totalTokens: 500, costUsd: 1 } }, updatedAt: "x" };
+    project.tasks.push(a, b);
+    return { project, a, b };
+  }
+
+  it("slices by epic, with un-epiced tasks and non-task runs kept visible", () => {
+    const { project } = board();
+    const orphan = runFor(null, "completed", 0.5);
+    const slices = costSlices("epic", project, [orphan]);
+    expect(slices.map((s) => s.label)).toEqual(["UI polish", "No epic", "No task (managers, jobs, consoles)"]);
+    expect(slices[0]!.costUsd).toBeCloseTo(2);
+    expect(slices[0]!.byModel[0]).toEqual({ model: "opus", costUsd: 2 });
+    expect(slices[2]!.runCount).toBe(1);
+    // The view's total reconciles with everything actually spent.
+    expect(slices.reduce((n, s) => n + s.costUsd, 0)).toBeCloseTo(3.5);
+  });
+
+  it("slices by human owner with an Unassigned residue", () => {
+    const { project } = board();
+    const slices = costSlices("human", project, []);
+    expect(slices.map((s) => s.label)).toEqual(["eliot", "Unassigned"]);
+  });
+
+  it("tag slices are a lens, not a partition — multi-tagged tasks count fully in each", () => {
+    const { project } = board();
+    const slices = costSlices("tag:area", project, []);
+    const byLabel = new Map(slices.map((s) => [s.label, s.costUsd]));
+    expect(byLabel.get("ui")).toBeCloseTo(2);
+    expect(byLabel.get("sdk")).toBeCloseTo(2); // full bill in both dimensions' values
+    expect(byLabel.get("db")).toBeCloseTo(1);
+  });
+
+  it("adds live runs on top of the durable rollup and counts them live", () => {
+    const { project, a } = board();
+    const live = runFor(a.id, "running", 0.25, { model: "opus" });
+    const slices = costSlices("epic", project, [live]);
+    expect(slices[0]!.costUsd).toBeCloseTo(2.25);
+    expect(slices[0]!.liveCount).toBe(1);
+  });
+
+  it("residue slices trail real slices they tie with, on every axis", () => {
+    const project = createProject("p");
+    const epic = { id: "epic_a", name: "Real epic", description: "" };
+    project.epics.push(epic);
+    const inEpic = createTask("in epic");
+    inEpic.epicId = "epic_a";
+    inEpic.cost = { totalTokens: 100, costUsd: 1, runCount: 1, byModel: {}, updatedAt: "x" };
+    const noEpic = createTask("no epic");
+    noEpic.cost = { totalTokens: 100, costUsd: 1, runCount: 1, byModel: {}, updatedAt: "x" };
+    // "No epic" iterates first from the task order — it must still trail.
+    project.tasks.push(noEpic, inEpic);
+    const slices = costSlices("epic", project, []);
+    expect(slices.map((s) => s.label)).toEqual(["Real epic", "No epic"]);
+  });
+
+  it("keeps spend of deleted tasks visible in the No-task residue", () => {
+    const { project } = board();
+    const deletedTaskRun = runFor("task_deleted", "completed", 0.75);
+    deletedTaskRun.projectId = project.id;
+    const otherBoardRun = runFor("task_other", "completed", 9);
+    otherBoardRun.projectId = "proj_other";
+    const slices = costSlices("epic", project, [deletedTaskRun, otherBoardRun]);
+    const residue = slices.find((s) => s.label.startsWith("No task"));
+    // The deleted task's bill reconciles here; another board's task-runs don't leak in.
+    expect(residue?.costUsd).toBeCloseTo(0.75);
+  });
+
+  it("slices runs by workflow and agent attribution tags", () => {
+    const w1 = runFor(null, "completed", 1, { tags: ["workflow:wf_a"] });
+    const w2 = runFor(null, "completed", 2, { tags: ["workflow:wf_a"] });
+    const solo = runFor(null, "completed", 0.5);
+    const byWorkflow = costSlices("workflow", null, [w1, w2, solo]);
+    expect(byWorkflow[0]).toMatchObject({ key: "wf_a", costUsd: 3, runCount: 2 });
+    expect(byWorkflow[1]!.label).toBe("No workflow");
+
+    const agented = runFor(null, "completed", 4, { tags: ["agent:agent_generalist"] });
+    const byAgent = costSlices("agent", null, [agented]);
+    expect(byAgent[0]).toMatchObject({ key: "agent_generalist", costUsd: 4 });
   });
 });
 

@@ -63,7 +63,7 @@ export type CrystalModeId =
   | "surfaces"
   | "quality";
 export type ArchitectViewId = "systems" | "diagrams" | "infra" | "codemap";
-export type OrchestratorTabId = "board" | "runs" | "agents" | "workflows";
+export type OrchestratorTabId = "board" | "runs" | "agents" | "workflows" | "costs";
 
 /** Mirrors the code map's drill levels (all workspaces → workspace → module → file). */
 export type CodeMapLevelLink =
@@ -168,6 +168,12 @@ export interface OrchestrateLink {
   filter?: string;
   /** Board owner filter: "agent:<profileId>" or "human:<name>". */
   owner?: string;
+  /**
+   * Costs-tab attribution axis: "epic", "human" (owner), "workflow",
+   * "agent", or "tag:<dimension>" (multi-dimension label attribution).
+   * Unset = epic.
+   */
+  costBy?: string;
 }
 
 export interface CodeLink {
@@ -350,6 +356,7 @@ export function formatDeepLink(link: DeepLink): string {
     if (tab === "workflows" && o.workflow) add("workflow", o.workflow);
     if (tab === "workflows" && o.builder) add("builder", "1");
     if (tab === "workflows" && o.builder && o.template) add("template", o.template);
+    if (tab === "costs" && o.costBy) add("by", o.costBy);
   } else if (mode === "code") {
     if (link.code?.file) add("file", link.code.file);
   } else if (mode === "surfaces") {
@@ -513,7 +520,14 @@ export function parseDeepLink(hash: string): DeepLink {
     link.mode = "orchestrate";
     const o: OrchestrateLink = {};
     const tab = segments[1];
-    if (tab === "board" || tab === "runs" || tab === "agents" || tab === "workflows") o.tab = tab;
+    if (
+      tab === "board" ||
+      tab === "runs" ||
+      tab === "agents" ||
+      tab === "workflows" ||
+      tab === "costs"
+    )
+      o.tab = tab;
     const project = params.get("project");
     if (project) o.project = project;
     const task = params.get("task");
@@ -538,6 +552,8 @@ export function parseDeepLink(hash: string): DeepLink {
     if (params.get("builder") === "1") o.builder = true;
     const template = params.get("template");
     if (template) o.template = template;
+    const costBy = params.get("by");
+    if (costBy) o.costBy = costBy;
     if (Object.keys(o).length) link.orchestrate = o;
   } else if (mode === "code") {
     link.mode = "code";
@@ -634,6 +650,7 @@ const ORCHESTRATE_TAB_FIELDS: Record<OrchestratorTabId, readonly (keyof Orchestr
   runs: ["tab", "project", "run", "purpose"],
   agents: ["tab", "project", "run"],
   workflows: ["tab", "project", "workflow", "builder", "template"],
+  costs: ["tab", "project", "costBy"],
 };
 
 const SURFACES_VIEW_FIELDS: Record<SurfaceViewId, readonly (keyof SurfacesLink)[]> = {
