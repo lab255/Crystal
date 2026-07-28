@@ -169,19 +169,19 @@ export function useArchHighlight(): ArchHighlight {
       system: (systemId) =>
         nav({
           surfaces: { arch: true },
-          architect: { view: "systems", system: systemId, edge: null },
+          architect: { view: "architecture", system: systemId, edge: null },
         }),
       edge: (edgeId) =>
         nav({
           surfaces: { arch: true },
-          architect: { view: "systems", edge: edgeId, system: null },
+          architect: { view: "architecture", edge: edgeId, system: null },
         }),
       file: (file, line) => {
         const sys = systemOfFile(file);
         if (sys)
           nav({
             surfaces: { arch: true },
-            architect: { view: "systems", system: sys.id, edge: null },
+            architect: { view: "architecture", system: sys.id, edge: null },
           });
         else requestOpenFile(file, line);
       },
@@ -194,12 +194,12 @@ export function useArchHighlight(): ArchHighlight {
         const sel = formatHighlightSel({ file, symbol, label: symbol });
         nav({
           surfaces: { arch: true },
-          architect: { view: "systems", system: sys.id, edge: null, ...(sel ? { sel } : {}) },
+          architect: { view: "architecture", system: sys.id, edge: null, ...(sel ? { sel } : {}) },
         });
       },
       // Selection (system/edge) lives in the architect section and merges, so
       // the full view opens exactly where the pane was pointing.
-      expand: () => nav({ mode: "architect", architect: { view: "systems" } }),
+      expand: () => nav({ mode: "architect", architect: { view: "architecture" } }),
     }),
     [nav, systemOfFile],
   );

@@ -39,12 +39,14 @@ verified against a live bridge + Playwright.*
 | **Contracts + Insights on the unified canvas**: the boundary inspector and cycles/violations/hubs/orphans as panels with canvas focus; same deep-link params the systems overview used | `panels/ContractsPanel.tsx`, `panels/InsightsPanel.tsx` |
 | Consolidated ids with permanent aliases (`diagrams`→`architecture`, `codemap`→`codebase`), `vs`/`layers` params, the dups/findings/changes encoding gap closed, bare-codemap-boot bug fixed, find wired on the codebase map | `deeplink.ts`, `CodeMapView.tsx` |
 
-Still open on this thread: role-visibility chips + focus-filter parity on the
-architecture canvas (careful: a role filter must not leak into
-`extractOverlay` as hiddenIds — re-inject filtered nodes before extraction,
-the same rule as review ghosts), then the legacy `systems` tab (and its
-`codemap.overviewDiff`) can retire; the surfaces arch side pane still embeds
-`SystemsView`.
+Completed in the same pass: role chips + focus filter on the unified canvas
+(view filters re-inject before `extractOverlay`, same rule as review
+ghosts), and the legacy `systems` tab fully retired — `SystemsView` deleted,
+`systems` a permanent parse alias (`?system=` settles into `sel`), the
+surfaces arch side pane embeds the live canonical canvas (`ArchPane` over
+the shared `useCanonicalArchitecture` hook), and `codemap.overviewDiff` +
+`syslayout.*` left the bridge. The architect mode is exactly the three
+views.
 
 ## Shipped (this pass)
 

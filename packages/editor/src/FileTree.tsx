@@ -66,7 +66,7 @@ export function FileTree({
             type: "item",
             label: "Show architecture diagrams",
             icon: Boxes,
-            onSelect: () => nav({ mode: "architect", architect: { view: "diagrams" } }),
+            onSelect: () => nav({ mode: "architect", architect: { view: "architecture" } }),
           },
           // Shared cross-view block; the editor's own "Open" replaces its
           // editor entry.

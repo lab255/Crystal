@@ -346,7 +346,7 @@ function SurveySection({ scoped, runs }: { scoped: Scoped | null; runs: AgentRun
           onClick={() =>
             updateNav({
               mode: "architect",
-              architect: { view: "diagrams", diagram: imported.path },
+              architect: { view: "architecture", diagram: imported.path },
             })
           }
           className="mt-2 flex items-center gap-1 text-[11px] text-crystal-300 hover:text-crystal-200"

@@ -103,7 +103,7 @@ export function projectMenuEntries(ws: string, ctx: HubMenuContext): MenuEntry[]
       type: "item",
       label: "Open the project's architecture",
       icon: Boxes,
-      onSelect: () => go({ mode: "architect", architect: { view: "systems" } }),
+      onSelect: () => go({ mode: "architect", architect: { view: "architecture" } }),
     },
   ];
 }

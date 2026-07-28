@@ -147,7 +147,7 @@ export function BranchSwitcher() {
 
   const applyLens = useCallback(
     (s: IndexFacetSuggestion) => {
-      updateNav({ mode: "architect", architect: { view: "systems" }, lens: s.tags.join(",") });
+      updateNav({ mode: "architect", architect: { view: "architecture" }, lens: s.tags.join(",") });
     },
     [updateNav],
   );

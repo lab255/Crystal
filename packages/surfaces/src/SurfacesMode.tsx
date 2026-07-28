@@ -16,7 +16,7 @@ import {
 import type { SurfaceViewId } from "@crystal/core";
 import { useNav, useNavUpdate } from "@crystal/client";
 import { Pane as SplitPane, Split, Spinner, Tooltip, cn, useSidePaneLayout } from "@crystal/ui";
-import { SystemsView } from "@crystal/architect";
+import { ArchPane } from "@crystal/architect";
 import { ApiExplorer } from "./ApiExplorer.js";
 import { ComponentsView } from "./ComponentsView.js";
 import { SchemasView } from "./SchemasView.js";
@@ -225,11 +225,6 @@ function ArchSidePane() {
   const nav = useNavUpdate();
   const arch = useArchHighlight();
   const { compact } = useSidePaneLayout();
-  const selectedSystem = useNav((l) => l.architect?.system ?? null);
-  const { overview } = useSurfaces();
-  const systemName = selectedSystem
-    ? (overview?.systems.find((s) => s.id === selectedSystem)?.name ?? null)
-    : null;
 
   return (
     <div className="flex h-full min-h-0 flex-col border-l border-edge bg-surface-0">
@@ -238,9 +233,6 @@ function ArchSidePane() {
         <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-faint">
           Architecture
         </span>
-        {systemName ? (
-          <span className="min-w-0 truncate text-[11px] text-ink">{systemName}</span>
-        ) : null}
         <span className="ml-auto flex items-center gap-1">
           <Tooltip content="Open the full architecture view (keeps this selection)">
             <button
@@ -273,7 +265,7 @@ function ArchSidePane() {
         </span>
       </div>
       <div className="min-h-0 flex-1">
-        <SystemsView />
+        <ArchPane />
       </div>
     </div>
   );

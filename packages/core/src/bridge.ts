@@ -32,8 +32,6 @@ import type {
   SurfacesReport,
 } from "./surfaces.js";
 import type { SystemOverview } from "./system-overview.js";
-import type { SystemOverviewDiff } from "./system-insights.js";
-import type { SystemsLayout } from "./systems-layout.js";
 import type { TerminalChunk, TerminalInfo } from "./terminal.js";
 import type { TodoList } from "./todo.js";
 import type { TemplateScope, Workflow, WorkflowSpend, WorkflowTemplate } from "./workflow.js";
@@ -304,13 +302,6 @@ export interface BridgeMethods {
   };
   /** Delete a profile from whichever scope holds it (the default agent is refused). */
   "agents.removeProfile": { params: WsScope & { id: string }; result: { ok: true } };
-  /**
-   * Hand arrangement of the systems overview (`.crystal/systems-layout.json`).
-   * `layout` is null until the user first edits the canvas — views auto-group
-   * a fresh overview client-side (see systems-layout.ts).
-   */
-  "syslayout.get": { params: WsScope; result: { layout: SystemsLayout | null } };
-  "syslayout.save": { params: WsScope & { layout: SystemsLayout }; result: { ok: true } };
   "fs.list": { params: WsScope & { path: string }; result: { entries: FileEntry[] } };
   "fs.read": { params: WsScope & { path: string }; result: { content: string; truncated: boolean } };
   "fs.write": { params: WsScope & { path: string; content: string }; result: { ok: true } };
@@ -514,21 +505,6 @@ export interface BridgeMethods {
    * and weighted inter-system links (see system-overview.ts).
    */
   "codemap.overview": { params: WsScope; result: SystemOverview };
-  /**
-   * Systems-level ref review: the overview at a git ref (branch / commit / PR
-   * head) diffed against the working tree — which systems appeared, which
-   * links and external services changed. `repoPath` scopes to a nested repo.
-   */
-  "codemap.overviewDiff": {
-    params: WsScope & { ref: string; repoPath?: string };
-    result: {
-      ref: string;
-      commit: string;
-      base: SystemOverview;
-      head: SystemOverview;
-      diff: SystemOverviewDiff;
-    };
-  };
   /**
    * The unified ref snapshot behind every "vs <ref>" review: the codebase
    * state at a git ref, in whichever projections the caller needs. `summary`

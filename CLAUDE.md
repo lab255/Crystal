@@ -197,8 +197,9 @@ build/sign (+notarize on macOS) → signed updater `latest.json`).
   a scene web worker; derive plain id Sets on the main thread and dim at render time
   (same rule as react-flow node data).
 
-- The architect mode is three consolidated views — `architecture`, `codebase`, `infra`
-  (legacy `diagrams`/`codemap` ids are permanent parse aliases in `deeplink.ts`). The
+- The architect mode is exactly three views — `architecture`, `codebase`, `infra`
+  (legacy `systems`/`diagrams`/`codemap` ids are permanent parse aliases in
+  `deeplink.ts`; `?system=` focuses a node and settles into `sel`). The
   architecture is ONE canonical graph per workspace, **derived** from
   `codemap.overview` + detected external services (`core/arch-derive.ts` — stable
   canonical ids `sys:`/`ext:<svc>[:<instance>]`/`link:`/`extlink:`/`screen:`/`flow:`;

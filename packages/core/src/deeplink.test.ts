@@ -82,12 +82,12 @@ describe("formatDeepLink", () => {
     expect(hash).toBe("#/code");
   });
 
-  it("defaults the architect view to systems — what ArchitectMode renders when unset", () => {
-    expect(formatDeepLink({ mode: "architect" })).toBe("#/architect/systems");
+  it("defaults the architect view to architecture — what ArchitectMode renders when unset", () => {
+    expect(formatDeepLink({ mode: "architect" })).toBe("#/architect/architecture");
     // Params set before the user ever touches the view switcher land on the
-    // systems branch, not silently dropped by a diagrams default.
+    // architecture branch, not silently dropped by another view's default.
     expect(formatDeepLink({ mode: "architect", architect: { system: "sys:auth" } })).toBe(
-      "#/architect/systems?system=sys%3Aauth",
+      "#/architect/architecture?system=sys%3Aauth",
     );
   });
 
@@ -191,7 +191,7 @@ describe("round trips", () => {
   });
 
   it("global find travels on every architect subview", () => {
-    for (const view of ["systems", "architecture", "infra", "codebase"] as const) {
+    for (const view of ["architecture", "infra", "codebase"] as const) {
       const link: DeepLink = {
         ws: "abc",
         mode: "architect",
@@ -215,13 +215,12 @@ describe("round trips", () => {
     expect(parseDeepLink("#/architect/architecture?review=1").architect?.review).toBeUndefined();
   });
 
-  it("architect infra keeps the shared diagram selection", () => {
-    const link: DeepLink = {
-      ws: "abc",
-      mode: "architect",
-      architect: { view: "infra", diagram: "a.crystal" },
-    };
-    expect(roundTrip(link)).toEqual(link);
+  it("legacy ?diagram= links parse for the facet resolver but are never re-emitted", () => {
+    const parsed = parseDeepLink("#/architect/infra?ws=abc&diagram=a.crystal");
+    expect(parsed.architect?.diagram).toBe("a.crystal");
+    expect(
+      formatDeepLink({ ws: "abc", mode: "architect", architect: { view: "infra" } }),
+    ).toBe("#/architect/infra?ws=abc");
   });
 
   it("code map levels", () => {
@@ -302,54 +301,44 @@ describe("round trips", () => {
     expect(parseDeepLink("#/architect/codemap?ws=abc&at=workspace").architect?.lensCtx).toBeUndefined();
   });
 
-  it("systems grouping with the global lens", () => {
+  it("system focus selection with the global lens", () => {
     const link: DeepLink = {
       ws: "abc",
       lens: "intent:auth",
       mode: "architect",
       architect: {
-        view: "systems",
+        view: "architecture",
         system: "sys:auth",
-        sysGroup: "layers",
       },
     };
     expect(roundTrip(link)).toEqual(link);
     expect(formatDeepLink(link)).toBe(
-      "#/architect/systems?ws=abc&lens=intent%3Aauth&system=sys%3Aauth&group=layers",
+      "#/architect/architecture?ws=abc&lens=intent%3Aauth&system=sys%3Aauth",
     );
-    // "modules" (the default) round-trips too when explicitly set
-    const modules: DeepLink = {
-      ws: "abc",
-      mode: "architect",
-      architect: { view: "systems", sysGroup: "modules" },
-    };
-    expect(roundTrip(modules)).toEqual(modules);
   });
 
-  it("systems lens context toggle (system-id lens)", () => {
+  it("architecture lens context toggle (system-id lens)", () => {
     const link: DeepLink = {
       ws: "abc",
       lens: "sys:auth",
       mode: "architect",
       architect: {
-        view: "systems",
+        view: "architecture",
         lensCtx: true,
       },
     };
     expect(roundTrip(link)).toEqual(link);
-    expect(formatDeepLink(link)).toBe("#/architect/systems?ws=abc&lens=sys%3Aauth&lensctx=1");
+    expect(formatDeepLink(link)).toBe(
+      "#/architect/architecture?ws=abc&lens=sys%3Aauth&lensctx=1",
+    );
     // lensCtx without a lens is meaningless — not emitted
     expect(
       formatDeepLink({
         ws: "abc",
         mode: "architect",
-        architect: { view: "systems", lensCtx: true },
+        architect: { view: "architecture", lensCtx: true },
       }),
-    ).toBe("#/architect/systems?ws=abc");
-  });
-
-  it("drops an unknown group value instead of propagating it", () => {
-    expect(parseDeepLink("#/architect/systems?group=bogus").architect?.sysGroup).toBeUndefined();
+    ).toBe("#/architect/architecture?ws=abc");
   });
 
   it("drops an unknown lod value instead of propagating it", () => {
@@ -553,60 +542,59 @@ describe("round trips", () => {
     expect(b).toBe(a);
   });
 
-  it("systems panels, edge selection and in-place expansion", () => {
+  it("architecture panels and edge selection", () => {
     const link: DeepLink = {
       ws: "abc",
       mode: "architect",
       architect: {
-        view: "systems",
+        view: "architecture",
         edge: "sys:auth->sys:data",
-        expanded: "sys:auth,sys:submission",
         contracts: true,
       },
     };
     expect(roundTrip(link)).toEqual(link);
     expect(formatDeepLink(link)).toBe(
-      "#/architect/systems?ws=abc&edge=sys%3Aauth-%3Esys%3Adata&expand=sys%3Aauth,sys%3Asubmission&contracts=1",
+      "#/architect/architecture?ws=abc&edge=sys%3Aauth-%3Esys%3Adata&contracts=1",
     );
     const insights: DeepLink = {
       ws: "abc",
       mode: "architect",
-      architect: { view: "systems", insights: true, facets: true },
+      architect: { view: "architecture", insights: true, facets: true },
     };
     expect(roundTrip(insights)).toEqual(insights);
   });
 
-  it("systems focus filter with optional solo flag", () => {
+  it("architecture focus filter with optional solo flag", () => {
     const link: DeepLink = {
       ws: "abc",
       mode: "architect",
       architect: {
-        view: "systems",
+        view: "architecture",
         focus: "sys:auth,sys:data",
         focusSolo: true,
       },
     };
     expect(roundTrip(link)).toEqual(link);
     expect(formatDeepLink(link)).toBe(
-      "#/architect/systems?ws=abc&focus=sys%3Aauth,sys%3Adata&solo=1",
+      "#/architect/architecture?ws=abc&focus=sys%3Aauth,sys%3Adata&solo=1",
     );
     // neighbors shown by default — solo omitted when off
     const neighbors: DeepLink = {
       ws: "abc",
       mode: "architect",
-      architect: { view: "systems", focus: "sys:auth" },
+      architect: { view: "architecture", focus: "sys:auth" },
     };
     expect(roundTrip(neighbors)).toEqual(neighbors);
-    expect(formatDeepLink(neighbors)).toBe("#/architect/systems?ws=abc&focus=sys%3Aauth");
+    expect(formatDeepLink(neighbors)).toBe("#/architect/architecture?ws=abc&focus=sys%3Aauth");
     // solo without a focus set is meaningless — not emitted, not parsed
     expect(
       formatDeepLink({
         ws: "abc",
         mode: "architect",
-        architect: { view: "systems", focusSolo: true },
+        architect: { view: "architecture", focusSolo: true },
       }),
-    ).toBe("#/architect/systems?ws=abc");
-    expect(parseDeepLink("#/architect/systems?solo=1").architect?.focusSolo).toBeUndefined();
+    ).toBe("#/architect/architecture?ws=abc");
+    expect(parseDeepLink("#/architect/architecture?solo=1").architect?.focusSolo).toBeUndefined();
   });
 
   it("code map facets panel and selected file card", () => {
@@ -637,19 +625,18 @@ describe("applyDeepLink", () => {
         system: "sys:auth",
       },
     };
-    // Back onto a systems URL: systems-owned fields are replaced (stale
-    // `system` cleared, `sysGroup` applied); the drill level, LoD and the
-    // diagrams selection — which a systems URL cannot express — survive.
+    // Back onto an architecture URL: its owned fields are replaced (stale
+    // `system` and legacy `diagram` cleared, `focus` applied); the drill
+    // level and LoD — which it cannot express — survive.
     const next = applyDeepLink(current, {
       mode: "architect",
-      architect: { view: "systems", sysGroup: "layers" },
+      architect: { view: "architecture", focus: "sys:auth" },
     });
     expect(next.architect).toEqual({
-      view: "systems",
-      sysGroup: "layers",
+      view: "architecture",
+      focus: "sys:auth",
       codemap: { kind: "module", ws: "w1", path: "packages/core" },
       lod: "modules",
-      diagram: "a.crystal",
     });
   });
 
@@ -674,10 +661,10 @@ describe("applyDeepLink", () => {
   it("treats a bare architect URL as the default view with nothing selected", () => {
     const current: DeepLink = {
       mode: "architect",
-      architect: { view: "systems", system: "sys:auth", lod: "members" },
+      architect: { view: "architecture", system: "sys:auth", lod: "members" },
     };
     const next = applyDeepLink(current, { mode: "architect" });
-    // systems-owned fields clear; the code map's LoD survives.
+    // architecture-owned fields clear; the code map's LoD survives.
     expect(next.architect).toEqual({ lod: "members" });
   });
 
@@ -744,13 +731,13 @@ describe("applyDeepLink (hub)", () => {
 });
 
 describe("deepLinkNavIdentity", () => {
-  const base: DeepLink = { mode: "architect", architect: { view: "systems" } };
+  const base: DeepLink = { mode: "architect", architect: { view: "architecture" } };
 
   it("ignores selections and panels", () => {
     expect(
       deepLinkNavIdentity({
         ...base,
-        architect: { view: "systems", system: "sys:auth", insights: true },
+        architect: { view: "architecture", system: "sys:auth", insights: true },
       }),
     ).toBe(deepLinkNavIdentity(base));
   });
@@ -773,9 +760,9 @@ describe("deepLinkNavIdentity", () => {
     };
     expect(deepLinkNavIdentity(drillA)).not.toBe(deepLinkNavIdentity(drillB));
     expect(
-      deepLinkNavIdentity({ mode: "architect", architect: { view: "diagrams", diagram: "a" } }),
+      deepLinkNavIdentity({ mode: "architect", architect: { view: "infra", draft: "a" } }),
     ).not.toBe(
-      deepLinkNavIdentity({ mode: "architect", architect: { view: "diagrams", diagram: "b" } }),
+      deepLinkNavIdentity({ mode: "architect", architect: { view: "infra", draft: "b" } }),
     );
     expect(deepLinkNavIdentity({ mode: "code", code: { file: "a.ts" } })).not.toBe(
       deepLinkNavIdentity({ mode: "code", code: { file: "b.ts" } }),
@@ -872,9 +859,7 @@ describe("consolidated diagram views", () => {
       architect: {
         view: "architecture",
         system: "sys:auth",
-        sysGroup: "layers",
         edge: "sys:auth->sys:api",
-        expanded: "sys:auth,sys:api",
         focus: "sys:auth",
         focusSolo: true,
         insights: true,
@@ -911,7 +896,7 @@ describe("consolidated diagram views", () => {
   });
 
   it("vs travels on every architect subview", () => {
-    for (const view of ["architecture", "codebase", "infra", "systems"] as const) {
+    for (const view of ["architecture", "codebase", "infra"] as const) {
       const link: DeepLink = {
         ws: "abc",
         mode: "architect",
@@ -919,6 +904,16 @@ describe("consolidated diagram views", () => {
       };
       expect(roundTrip(link)).toEqual(link);
     }
+  });
+
+  it("systems is a permanent parse alias of architecture", () => {
+    const parsed = parseDeepLink(
+      "#/architect/systems?ws=abc&system=sys%3Aauth&insights=1&focus=sys%3Aauth",
+    );
+    expect(parsed.architect?.view).toBe("architecture");
+    expect(parsed.architect?.system).toBe("sys:auth");
+    expect(parsed.architect?.insights).toBe(true);
+    expect(parsed.architect?.focus).toBe("sys:auth");
   });
 
   it("codemap is a permanent parse alias of codebase", () => {

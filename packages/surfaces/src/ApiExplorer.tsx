@@ -231,7 +231,7 @@ export function ApiExplorer({ appUrl }: { appUrl: string | null }) {
       label: "Open in architecture view",
       icon: Boxes,
       onSelect: () =>
-        nav({ mode: "architect", architect: { view: "systems", system: r.system.id } }),
+        nav({ mode: "architect", architect: { view: "architecture", system: r.system.id } }),
     },
     {
       type: "item",
@@ -557,7 +557,7 @@ function ApiDetail({
               type="button"
               onClick={() => arch.system(system.id)}
               onDoubleClick={() =>
-                nav({ mode: "architect", architect: { view: "systems", system: system.id } })
+                nav({ mode: "architect", architect: { view: "architecture", system: system.id } })
               }
               className="flex items-center gap-1 rounded-md border border-edge bg-surface-2 px-1.5 py-0.5 hover:text-ink"
             >
@@ -647,7 +647,7 @@ function ApiDetail({
                     type="button"
                     onClick={() => arch.system(sys.id)}
                     onDoubleClick={() =>
-                      nav({ mode: "architect", architect: { view: "systems", system: sys.id } })
+                      nav({ mode: "architect", architect: { view: "architecture", system: sys.id } })
                     }
                     className="flex items-center gap-1 rounded-full border border-edge bg-surface-2 px-2 py-0.5 text-[10px] text-ink-muted hover:text-ink"
                   >
@@ -673,7 +673,7 @@ function ApiDetail({
                   onDoubleClick={() =>
                     nav({
                       mode: "architect",
-                      architect: { view: "systems", system: null, edge: `${l.source}->${l.target}` },
+                      architect: { view: "architecture", system: null, edge: `${l.source}->${l.target}` },
                     })
                   }
                   className="flex items-center gap-1 rounded-full border border-accent-amber/40 bg-accent-amber/10 px-2 py-0.5 text-[10px] text-accent-amber hover:brightness-110"

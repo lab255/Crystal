@@ -3,9 +3,9 @@ import { createNavStore } from "./nav-store.js";
 
 describe("nav store", () => {
   it("merges section patches field-by-field", () => {
-    const store = createNavStore({ mode: "architect", architect: { view: "diagrams" } });
-    store.getState().update({ architect: { diagram: "a.crystal" } });
-    expect(store.getState().link.architect).toEqual({ view: "diagrams", diagram: "a.crystal" });
+    const store = createNavStore({ mode: "architect", architect: { view: "architecture" } });
+    store.getState().update({ architect: { facet: "facet-1" } });
+    expect(store.getState().link.architect).toEqual({ view: "architecture", facet: "facet-1" });
   });
 
   it("clears fields with null and drops empty sections", () => {
@@ -57,12 +57,12 @@ describe("nav store", () => {
         system: "sys:auth",
       },
     });
-    // Popping back onto a systems URL clears stale systems selections but
+    // Popping back onto an architecture URL clears its stale selections but
     // must not erase the code-map drill level (the URL never carried it).
-    store.getState().apply({ mode: "architect", architect: { view: "systems", sysGroup: "layers" } });
+    store.getState().apply({ mode: "architect", architect: { view: "architecture", focus: "sys:auth" } });
     expect(store.getState().link.architect).toEqual({
-      view: "systems",
-      sysGroup: "layers",
+      view: "architecture",
+      focus: "sys:auth",
       codemap: { kind: "module", ws: "w1", path: "packages/core" },
     });
   });

@@ -23,15 +23,12 @@ import {
 import {
   ARCH_OVERLAY_FILE,
   canonicalSystemIds,
-  composeArchitecture,
   countMarks,
   createArchDraft as newArchDraft,
   createArchFacet,
   createEpic,
   createTask,
-  deriveArchGraph,
   diffSystemOverviews,
-  extractOverlay,
   formatDiffCounts,
   overviewDiffGhosts,
   overviewDiffMarks,
@@ -39,10 +36,8 @@ import {
   matchAgent,
   mergeDiagramIntoOverlay,
   mergeGraphs,
-  reconcileOverlay,
   suggestFacets,
   type ArchDraft,
-  type ArchOverlay,
   type ArchitectureGraph,
   type CodeIndex,
   type CodeMapSummary,
@@ -102,11 +97,10 @@ import { useRefactorIntents } from "./refactor-intents.js";
 import { buildHoistPrompt } from "./refactor-prompts.js";
 import { ApplyRefactorsDialog, RefactorChip, useIntentProblems } from "./RefactorPanel.js";
 import { autoLayout } from "./layout.js";
-import { estimateModuleFootprint } from "./live-code.js";
 import { ReviewView } from "./ReviewView.js";
 import { SurveySection } from "./SurveyPanel.js";
+import { useCanonicalArchitecture } from "./use-canonical-architecture.js";
 import { ROLE_META } from "./systems/role-meta.js";
-import { SystemsView, type OpenCodeFacet } from "./systems/SystemsView.js";
 
 const EMPTY_DRAFTS: never[] = [];
 const EMPTY_REFACTORS: never[] = [];
@@ -120,16 +114,14 @@ const DIFF_LEGEND = [
   { swatchClassName: "border border-warn/70 bg-warn/20", label: "changed" },
 ] as const;
 
-type ArchitectView = "systems" | "architecture" | "infra" | "codebase";
+type ArchitectView = "architecture" | "infra" | "codebase";
 
 export function ArchitectMode() {
   // View + draft selection live in the deep-linkable nav store.
   const nav = useNavUpdate();
-  const rawView = useNav((l) => l.architect?.view) ?? "systems";
-  // Consolidated ids: `architecture` absorbs the old `diagrams` canvas and
-  // `codebase` the old `codemap` — legacy links land on their successors.
-  const view: ArchitectView =
-    rawView === "diagrams" ? "architecture" : rawView === "codemap" ? "codebase" : rawView;
+  // Legacy view ids never reach the store — the deep-link codec aliases
+  // them at parse time (systems/diagrams → architecture, codemap → codebase).
+  const view = useNav((l) => l.architect?.view) ?? "architecture";
   const setView = useCallback(
     (v: ArchitectView) => nav({ architect: { view: v } }),
     [nav],
@@ -141,12 +133,6 @@ export function ArchitectMode() {
     file?: string;
     nonce: number;
   } | null>(null);
-  // "Open in code" from the systems view also carries the slice being looked
-  // at — DiagramsView materializes it as a facet and activates it, so the
-  // destination (view + diagram + facet) is a shareable deep link.
-  const [facetRequest, setFacetRequest] = useState<(OpenCodeFacet & { nonce: number }) | null>(
-    null,
-  );
   // "Start journey here…" on a symbol prefills the journey dialog.
   const [journeySeed, setJourneySeed] = useState<JourneySeed | null>(null);
   // Lifted here so the code map sees the open draft (drag-refactor targets it).
@@ -162,10 +148,9 @@ export function ArchitectMode() {
 
   /** Drilling stays in the unified canvas: expand the node linked to the module. */
   const expandCode = useCallback(
-    (module: string, file?: string, facet?: OpenCodeFacet) => {
+    (module: string, file?: string) => {
       setView("architecture");
       setExpandRequest({ module, file, nonce: ++expandNonce.current });
-      if (facet) setFacetRequest({ ...facet, nonce: expandNonce.current });
     },
     [setView],
   );
@@ -182,12 +167,6 @@ export function ArchitectMode() {
       setView("architecture");
     },
     [setView],
-  );
-
-  /** Systems-view "Open in code": reveal the module, carrying the facet along. */
-  const openCodeFromSystems = useCallback(
-    (module: string, facet?: OpenCodeFacet) => expandCode(module, undefined, facet),
-    [expandCode],
   );
 
   // Global find — one query shared by every subview (each dims its misses);
@@ -257,7 +236,6 @@ export function ArchitectMode() {
           {/* Cross-workspace map — always one click away when reviewing how the systems relate. */}
           {/* Restores its last drill level; the in-view breadcrumb reaches the cross-workspace map. */}
           {tab("codebase", <Layers className="h-3.5 w-3.5" />, "Codebase")}
-          {tab("systems", <Boxes className="h-3.5 w-3.5" />, "Systems")}
           {tab(
             "architecture",
             <PencilRuler className="h-3.5 w-3.5" />,
@@ -270,9 +248,7 @@ export function ArchitectMode() {
         </div>
       </header>
       <div className="min-h-0 flex-1">
-        {view === "systems" ? (
-          <SystemsView onOpenCode={openCodeFromSystems} />
-        ) : view === "codebase" ? (
+        {view === "codebase" ? (
           <CodeMapView
             origin={{ label: "Architecture", onExit: () => setView("architecture") }}
             onEnterWorkspace={(ws) => {
@@ -288,7 +264,6 @@ export function ArchitectMode() {
           <DiagramsView
             variant={view}
             expandRequest={expandRequest}
-            facetRequest={facetRequest}
             onExpandCode={expandCode}
             onOpenWorkspacesMap={openWorkspacesMap}
             journeySeed={journeySeed}
@@ -306,7 +281,6 @@ export function ArchitectMode() {
 function DiagramsView({
   variant,
   expandRequest,
-  facetRequest,
   onExpandCode,
   onOpenWorkspacesMap,
   journeySeed,
@@ -317,7 +291,6 @@ function DiagramsView({
 }: {
   variant: "architecture" | "infra";
   expandRequest: { module: string; file?: string; nonce: number } | null;
-  facetRequest: (OpenCodeFacet & { nonce: number }) | null;
   onExpandCode: (module: string, file?: string) => void;
   onOpenWorkspacesMap: () => void;
   journeySeed: JourneySeed | null;
@@ -329,8 +302,6 @@ function DiagramsView({
   const archDrafts = useWorkspace((s) => s.info?.archDrafts ?? EMPTY_DRAFTS);
   const loading = useWorkspace((s) => s.loading && !s.info);
   const pendingSaves = useWorkspace((s) => s.pendingSaves);
-  const overlay = useWorkspace((s) => s.archOverlay);
-  const loadArchOverlay = useWorkspace((s) => s.loadArchOverlay);
   const updateArchOverlay = useWorkspace((s) => s.updateArchOverlay);
   const updateArchDraft = useWorkspace((s) => s.updateArchDraft);
   const createDraftFile = useWorkspace((s) => s.createArchDraft);
@@ -352,7 +323,6 @@ function DiagramsView({
     [nav],
   );
 
-  // Live code map for the diagram overlay — kept fresh by codemap.changed.
   const { client } = useCrystal();
   const connection = useConnectionState();
   const activeWs = useWorkspaces((s) => s.activeId);
@@ -361,52 +331,8 @@ function DiagramsView({
     (on: boolean) => nav({ architect: { overlay: on } }),
     [nav],
   );
-  const [codeSummary, setCodeSummary] = useState<CodeMapSummary | null>(null);
-
-  const fetchSummary = useCallback(async () => {
-    try {
-      setCodeSummary(await client.request("codemap.get", {}));
-    } catch {
-      // Bridge closed or workspace has no analyzable code; overlay stays off.
-    }
-  }, [client]);
-
-  useEffect(() => {
-    if (connection === "open") void fetchSummary();
-  }, [fetchSummary, connection]);
-  useEffect(
-    () =>
-      client.events.on("codemap.changed", ({ ws }) => {
-        if (!activeWs || ws === activeWs) void fetchSummary();
-      }),
-    [client, fetchSummary, activeWs],
-  );
 
   /* ---- the one canonical architecture: derived ∘ overlay ---- */
-
-  useEffect(() => {
-    if (connection === "open") void loadArchOverlay();
-  }, [connection, loadArchOverlay]);
-
-  // The logical overview drives the derivation; follows the code.
-  const [overviewData, setOverviewData] = useState<SystemOverview | null>(null);
-  const fetchOverview = useCallback(async () => {
-    try {
-      setOverviewData(await client.request("codemap.overview", {}));
-    } catch {
-      // No analyzable code yet — the canvas stays empty until it appears.
-    }
-  }, [client]);
-  useEffect(() => {
-    if (connection === "open") void fetchOverview();
-  }, [fetchOverview, connection]);
-  useEffect(
-    () =>
-      client.events.on("codemap.changed", ({ ws }) => {
-        if (!activeWs || ws === activeWs) void fetchOverview();
-      }),
-    [client, fetchOverview, activeWs],
-  );
 
   // Screens layer (the folded-in surfaces map): screens + their API call
   // flows join the derivation when the `layers` param asks for them.
@@ -442,58 +368,8 @@ function DiagramsView({
     });
   }, [client, screensOn, fetchScreens, activeWs]);
 
-  const derived = useMemo(
-    () =>
-      overviewData && codeSummary
-        ? deriveArchGraph({
-            overview: overviewData,
-            externals: codeSummary.externals ?? [],
-            modules: codeSummary.modules,
-            surfaces: screensOn ? screensData : null,
-          })
-        : null,
-    [overviewData, codeSummary, screensOn, screensData],
-  );
-  // Fold the fresh derivation through the overlay (drops dead positional
-  // overrides, keeps semantic ones as stale).
-  const reconciled = useMemo(
-    () => (overlay && derived ? reconcileOverlay(overlay, derived).overlay : null),
-    [overlay, derived],
-  );
-  /**
-   * What the canvas shows: composed, then auto-laid-out — except nodes the
-   * user positioned (overrides) or created (manual), which keep their own
-   * coordinates. This is also the `rendered` baseline `extractOverlay` diffs
-   * drags against, so deterministic layout positions never persist.
-   */
-  const rendered = useMemo(() => {
-    if (!derived || !reconciled) return null;
-    const composed = composeArchitecture(derived, reconciled);
-    // Reserved LOD footprints, same convention as the canvas's own
-    // auto-layout: each code-linked node is laid out at the size its zoomed
-    // expansion needs, so zooming into code never overlaps neighbors.
-    const reserve = new Map<string, { width: number; height: number }>();
-    if (overviewData) {
-      const idOfRaw = canonicalSystemIds(overviewData.systems);
-      for (const s of overviewData.systems) {
-        if (s.fileCount > 0)
-          reserve.set(idOfRaw.get(s.id) ?? s.id, estimateModuleFootprint(s.fileCount));
-      }
-    }
-    const laid = autoLayout(composed, { mode: "flow", reserve });
-    // Auto-layout owns every node without an explicit x/y override — manual
-    // nodes included until their first drag records one.
-    const pinned = new Set<string>();
-    for (const [id, o] of Object.entries(reconciled.overrides)) {
-      if (o.x != null && o.y != null) pinned.add(id);
-    }
-    if (pinned.size === 0) return laid;
-    const composedById = new Map(composed.nodes.map((n) => [n.id, n]));
-    return {
-      ...laid,
-      nodes: laid.nodes.map((n) => (pinned.has(n.id) ? (composedById.get(n.id) ?? n) : n)),
-    };
-  }, [derived, reconciled, overviewData]);
+  const { overviewData, codeSummary, reconciled, rendered, commitEdited } =
+    useCanonicalArchitecture({ surfaces: screensOn ? screensData : null });
 
   /* ---- ref review: "vs <ref>" on the canonical architecture ---- */
 
@@ -524,6 +400,7 @@ function DiagramsView({
       ]),
     [archDiff],
   );
+
   /* ---- view filters: role chips + the focus filter (shared vocabulary) ---- */
 
   const [hiddenRoles, setHiddenRoles] = useState<ReadonlySet<SystemRole>>(EMPTY_ROLE_SET);
@@ -603,7 +480,7 @@ function DiagramsView({
   /** A canvas edit of the canonical graph → overlay ops, debounce-persisted. */
   const commitCanonical = useCallback(
     (edited: ArchitectureGraph) => {
-      if (!derived || !rendered || !reconciled) return;
+      if (!rendered) return;
       // Review ghosts exist only at the base ref — never part of the edit.
       let clean =
         ghostIds.size === 0
@@ -634,9 +511,9 @@ function DiagramsView({
           ],
         };
       }
-      updateArchOverlay(extractOverlay({ derived, rendered, edited: clean, prev: reconciled }));
+      commitEdited(clean);
     },
-    [derived, rendered, reconciled, ghostIds, viewFilteredIds, updateArchOverlay],
+    [rendered, ghostIds, viewFilteredIds, commitEdited],
   );
 
   /** Focus-filter entries prepended to system nodes' context menus. */
@@ -714,46 +591,6 @@ function DiagramsView({
     }
   }, [effectiveGraph, activeFacetId, setActiveFacetId]);
 
-  // A facet handed over by the systems view ("Open in code"): highlight just
-  // the files the user was looking at. Matching nodes are found through their
-  // code links; a same-named facet is refreshed rather than duplicated. The
-  // facet persists on the diagram and activates via nav, so the resulting
-  // screen (?diagram=…&facet=…) is a shareable deep link.
-  const consumedFacetNonce = useRef(0);
-  useEffect(() => {
-    if (!facetRequest || facetRequest.nonce === consumedFacetNonce.current) return;
-    if (!infoLoaded || !effectiveGraph) return;
-    consumedFacetNonce.current = facetRequest.nonce;
-    const modules = new Set(facetRequest.modules);
-    const inPaths = (file: string) =>
-      facetRequest.paths.some((p) => file === p || file.startsWith(`${p}/`));
-    const nodeIds = effectiveGraph.nodes
-      .filter(
-        (n) =>
-          (n.codeModule && modules.has(n.codeModule)) || (n.codeFile && inPaths(n.codeFile)),
-      )
-      .map((n) => n.id);
-    // Nothing mapped on this diagram — the expand request still reveals the module.
-    if (nodeIds.length === 0) return;
-    const existing = effectiveGraph.facets.find(
-      (f) => f.name.trim().toLowerCase() === facetRequest.name.trim().toLowerCase(),
-    );
-    const description = `Files of “${facetRequest.name}” — from the systems overview`;
-    if (existing) {
-      commitGraph({
-        ...effectiveGraph,
-        facets: effectiveGraph.facets.map((f) =>
-          f.id === existing.id ? { ...f, nodeIds, description: f.description || description } : f,
-        ),
-      });
-      setActiveFacetId(existing.id);
-    } else {
-      const facet = { ...createArchFacet(facetRequest.name, nodeIds), description };
-      commitGraph({ ...effectiveGraph, facets: [...effectiveGraph.facets, facet] });
-      setActiveFacetId(facet.id);
-    }
-  }, [facetRequest, infoLoaded, effectiveGraph, commitGraph, setActiveFacetId]);
-
   /* ---- journeys / dataflow lens ---- */
   const activeJourneyId = useNav((l) => l.architect?.journey) ?? null;
   const setActiveJourneyId = useCallback(
@@ -825,6 +662,18 @@ function DiagramsView({
     },
     [flow],
   );
+
+  // `?system=` links (surfaces "show on architecture", hub menus, old
+  // systems-overview URLs) focus that system's node and settle into the
+  // durable `sel` selection.
+  const systemParam = useNav((l) => l.architect?.system) ?? null;
+  useEffect(() => {
+    if (!systemParam || !overviewData || !rendered) return;
+    const canonical = canonicalSystemIds(overviewData.systems).get(systemParam) ?? systemParam;
+    setHighlightRequest({ nodeId: canonical, nonce: ++highlightNonce.current });
+    nav({ architect: { system: null, sel: `node:${canonical}` } });
+  }, [systemParam, overviewData, rendered, nav]);
+
 
   const draftRefactors = activeDraft?.draft.refactors ?? EMPTY_REFACTORS;
   const refactorProblems = useIntentProblems(draftRefactors);
@@ -1493,7 +1342,7 @@ function DiagramsView({
           </Pane>
         ) : null}
 
-        {variant === "architecture" && showContracts && overviewData ? (
+        {variant === "architecture" && (showContracts || activeEdgeKey != null) && overviewData ? (
           <Pane defaultSize={384} minSize={280} maxSize={640}>
             <ContractsPanel
               overview={overviewData}

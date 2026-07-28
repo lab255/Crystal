@@ -63,19 +63,11 @@ export type CrystalModeId =
   | "surfaces"
   | "quality";
 /**
- * Architect subviews. The target trio is `architecture` (unified systems +
- * diagrams + surfaces map), `codebase` (code map + ref diff) and `infra`;
- * `systems`, `diagrams` and `codemap` are the legacy ids they absorb — kept
- * in the union while the views migrate, then reduced to permanent parse
- * aliases so old links keep landing.
+ * Architect subviews — the consolidated trio. The legacy ids (`systems`,
+ * `diagrams`, `codemap`) are permanent parse aliases onto their successors,
+ * never emitted.
  */
-export type ArchitectViewId =
-  | "architecture"
-  | "codebase"
-  | "infra"
-  | "systems"
-  | "diagrams"
-  | "codemap";
+export type ArchitectViewId = "architecture" | "codebase" | "infra";
 export type OrchestratorTabId = "board" | "runs" | "agents" | "workflows" | "costs";
 
 /** Mirrors the code map's drill levels (all workspaces → workspace → module → file). */
@@ -87,10 +79,11 @@ export type CodeMapLevelLink =
 
 export interface ArchitectLink {
   view?: ArchitectViewId;
-  /** Selected logical system id on the systems overview (e.g. "sys:auth"). */
+  /**
+   * Focus this system's node on the architecture canvas (e.g. "sys:auth") —
+   * consumed once and settled into `sel`. Minted by surfaces/hub links.
+   */
   system?: string;
-  /** Systems overview grouping: module clusters (default) or layer bands. */
-  sysGroup?: "modules" | "layers";
   /** Selected architecture `.crystal` file path (diagrams + infra views). */
   diagram?: string;
   /** Active facet id — a named lens over the selected diagram. */
@@ -126,8 +119,6 @@ export interface ArchitectLink {
   contracts?: boolean;
   /** Selected boundary edge on the systems overview ("source->target"). */
   edge?: string;
-  /** Systems expanded in place into their components — comma-separated ids. */
-  expanded?: string;
   /**
    * Systems-overview focus filter: comma-separated system ids. When set, the
    * canvas shows only these systems (plus their first-degree neighbors) and
@@ -318,31 +309,27 @@ export function formatDeepLink(link: DeepLink): string {
     const a = link.architect ?? {};
     // Default view — must match what ArchitectMode renders when unset, or a
     // back-navigation onto this URL lands on a different screen.
-    const view = a.view ?? "systems";
+    const view = a.view ?? "architecture";
     path += `/${view}`;
-    if (view === "systems" || view === "architecture") {
+    if (view === "architecture") {
       if (a.system) add("system", a.system);
-      if (a.sysGroup) add("group", a.sysGroup);
       if (link.lens && a.lensCtx) add("lensctx", "1");
       if (a.edge) add("edge", a.edge);
-      if (a.expanded) add("expand", a.expanded);
       if (a.focus) add("focus", a.focus);
       if (a.focus && a.focusSolo) add("solo", "1");
       if (a.insights) add("insights", "1");
       if (a.contracts) add("contracts", "1");
       if (a.facets) add("facets", "1");
-      if (view === "architecture") {
-        if (a.layers) add("layers", a.layers);
-        if (a.facet) add("facet", a.facet);
-        if (a.draft) add("draft", a.draft);
-        if (a.draft && a.review) add("review", "1");
-        if (a.journey) add("journey", a.journey);
-        if (a.overlay) add("overlay", "1");
-        if (a.duplicates) add("dups", "1");
-        if (a.findings) add("findings", "1");
-        if (a.changes) add("changes", "1");
-      }
-    } else if (view === "codemap" || view === "codebase") {
+      if (a.layers) add("layers", a.layers);
+      if (a.facet) add("facet", a.facet);
+      if (a.draft) add("draft", a.draft);
+      if (a.draft && a.review) add("review", "1");
+      if (a.journey) add("journey", a.journey);
+      if (a.overlay) add("overlay", "1");
+      if (a.duplicates) add("dups", "1");
+      if (a.findings) add("findings", "1");
+      if (a.changes) add("changes", "1");
+    } else if (view === "codebase") {
       const cm = a.codemap;
       if (cm) {
         add("at", cm.kind);
@@ -361,7 +348,7 @@ export function formatDeepLink(link: DeepLink): string {
       if (a.facets) add("facets", "1");
       if (a.file) add("file", a.file);
     } else {
-      if (a.diagram) add("diagram", a.diagram);
+      // infra
       if (a.facet) add("facet", a.facet);
       if (a.draft) add("draft", a.draft);
       if (a.draft && a.review) add("review", "1");
@@ -500,16 +487,14 @@ export function parseDeepLink(hash: string): DeepLink {
     link.mode = "architect";
     const a: ArchitectLink = {};
     const view = segments[1];
-    if (view === "architecture" || view === "codebase" || view === "infra" || view === "systems")
-      a.view = view;
-    // Permanent aliases: the code map became the codebase view; the editable
-    // diagrams canvas was unified into the architecture view.
+    if (view === "architecture" || view === "codebase" || view === "infra") a.view = view;
+    // Permanent aliases: the code map became the codebase view; the systems
+    // overview and the editable diagrams canvas both unified into the
+    // architecture view.
     else if (view === "codemap") a.view = "codebase";
-    else if (view === "diagrams") a.view = "architecture";
+    else if (view === "diagrams" || view === "systems") a.view = "architecture";
     const system = params.get("system");
     if (system) a.system = system;
-    const sysGroup = params.get("group");
-    if (sysGroup === "modules" || sysGroup === "layers") a.sysGroup = sysGroup;
     const diagram = params.get("diagram");
     if (diagram) a.diagram = diagram;
     const facet = params.get("facet");
@@ -528,8 +513,6 @@ export function parseDeepLink(hash: string): DeepLink {
     if (params.get("contracts") === "1") a.contracts = true;
     const edge = params.get("edge");
     if (edge) a.edge = edge;
-    const expanded = params.get("expand");
-    if (expanded) a.expanded = expanded;
     const focus = params.get("focus");
     if (focus) a.focus = focus;
     if (focus && params.get("solo") === "1") a.focusSolo = true;
@@ -692,11 +675,8 @@ export function parseDeepLink(hash: string): DeepLink {
  * history navigation.
  */
 const ARCHITECT_VIEW_FIELDS: Record<ArchitectViewId, readonly (keyof ArchitectLink)[]> = {
-  architecture: ["view", "system", "sysGroup", "lensCtx", "edge", "expanded", "focus", "focusSolo", "insights", "contracts", "facets", "facet", "draft", "review", "journey", "overlay", "layers", "duplicates", "findings", "changes", "sel", "find", "vs"],
+  architecture: ["view", "system", "diagram", "lensCtx", "edge", "focus", "focusSolo", "insights", "contracts", "facets", "facet", "draft", "review", "journey", "overlay", "layers", "duplicates", "findings", "changes", "sel", "find", "vs"],
   codebase: ["view", "codemap", "lod", "lensCtx", "duplicates", "findings", "changes", "facets", "file", "sel", "find", "vs"],
-  systems: ["view", "system", "sysGroup", "lensCtx", "edge", "expanded", "focus", "focusSolo", "insights", "contracts", "facets", "sel", "find", "vs"],
-  codemap: ["view", "codemap", "lod", "lensCtx", "duplicates", "findings", "changes", "facets", "file", "sel", "find", "vs"],
-  diagrams: ["view", "diagram", "facet", "draft", "review", "journey", "overlay", "sel", "find", "vs"],
   infra: ["view", "diagram", "facet", "draft", "review", "journey", "overlay", "sel", "find", "vs"],
 };
 
@@ -757,7 +737,7 @@ export function applyDeepLink(current: DeepLink, next: DeepLink): DeepLink {
   if (next.lens) link.lens = next.lens;
   else delete link.lens;
   if (next.mode === "architect") {
-    const view = next.architect?.view ?? "systems";
+    const view = next.architect?.view ?? "architecture";
     const merged = replaceOwned(current.architect, next.architect, ARCHITECT_VIEW_FIELDS[view]);
     if (merged) link.architect = merged;
     else delete link.architect;
@@ -800,8 +780,8 @@ export function deepLinkNavIdentity(link: DeepLink): string {
   if (!mode) return "";
   if (mode === "architect") {
     const a = link.architect ?? {};
-    const view = a.view ?? "systems";
-    if (view === "codemap" || view === "codebase") {
+    const view = a.view ?? "architecture";
+    if (view === "codebase") {
       const cm = a.codemap;
       const at = !cm
         ? ""
@@ -812,11 +792,8 @@ export function deepLinkNavIdentity(link: DeepLink): string {
             : `${cm.kind}:${cm.ws}:${cm.path}`;
       return `architect/${view}/${at}`;
     }
-    if (view === "diagrams" || view === "infra")
-      return `architect/${view}/${a.diagram ?? ""}|${a.draft ?? ""}`;
-    if (view === "architecture")
-      return `architect/${view}/${a.facet ?? ""}|${a.draft ?? ""}`;
-    return `architect/${view}`;
+    if (view === "infra") return `architect/${view}/${a.draft ?? ""}`;
+    return `architect/architecture/${a.facet ?? ""}|${a.draft ?? ""}`;
   }
   if (mode === "orchestrate") {
     const o = link.orchestrate ?? {};

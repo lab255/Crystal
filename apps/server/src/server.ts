@@ -22,7 +22,6 @@ import {
   applyProfileOverlay,
   buildSystemOverview,
   computeReviewFindings,
-  diffSystemOverviews,
   migrateLegacyToOverlay,
   openQuestionsOfWorkflow,
   profileOverlay,
@@ -483,13 +482,6 @@ export async function startCrystalServer(opts: {
       await registry.get(ws).agentLibrary.removeProfile(id);
       return { ok: true };
     },
-    "syslayout.get": async ({ ws }) => ({
-      layout: await registry.get(ws).store.loadSystemsLayout(),
-    }),
-    "syslayout.save": async ({ ws, layout }) => {
-      await registry.get(ws).store.saveSystemsLayout(layout);
-      return { ok: true };
-    },
     "facets.get": async ({ ws }) => ({ facets: await registry.get(ws).store.loadFacets() }),
     "facets.save": async ({ ws, facets }) => {
       await registry.get(ws).store.saveFacets(facets);
@@ -613,18 +605,6 @@ export async function startCrystalServer(opts: {
         ...buildSystemOverview(sources, index),
         generatedAt: new Date().toISOString(),
       };
-    },
-    "codemap.overviewDiff": async ({ ws, ref, repoPath }) => {
-      const rt = registry.get(ws);
-      const [headSources, { index }, atRef] = await Promise.all([
-        rt.codemap.overviewSourceFiles(),
-        rt.codeindex.get(),
-        overviewSourcesAtRef(rt.root, repoPath ?? ".", ref),
-      ]);
-      const generatedAt = new Date().toISOString();
-      const head = { ...buildSystemOverview(headSources, index), generatedAt };
-      const base = { ...buildSystemOverview(atRef.sources, index), generatedAt };
-      return { ref, commit: atRef.commit, base, head, diff: diffSystemOverviews(base, head) };
     },
     "codemap.snapshotAtRef": async ({ ws, ref, repoPath, need }) => {
       const rt = registry.get(ws);

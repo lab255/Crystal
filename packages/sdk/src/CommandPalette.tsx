@@ -134,12 +134,12 @@ export function CommandPalette({
         },
       },
       {
-        id: "view.architect.systems",
-        title: "Architecture: Systems overview",
+        id: "view.architect.architecture",
+        title: "Architecture: Live diagram",
         icon: Boxes,
         run: () => {
           onSwitchMode("architect");
-          nav({ architect: { view: "systems" } });
+          nav({ architect: { view: "architecture" } });
         },
       },
       ...(
@@ -178,15 +178,6 @@ export function CommandPalette({
         },
       },
       {
-        id: "view.architect.code",
-        title: "Architecture: Code diagrams",
-        icon: PencilRuler,
-        run: () => {
-          onSwitchMode("architect");
-          nav({ architect: { view: "diagrams" } });
-        },
-      },
-      {
         id: "view.architect.infra",
         title: "Architecture: Infrastructure",
         icon: Globe2,
@@ -220,7 +211,7 @@ export function CommandPalette({
         icon: PencilRuler,
         run: () => {
           onSwitchMode("architect");
-          nav({ architect: { view: "diagrams", diagram: a.path, facet: null } });
+          nav({ architect: { view: "architecture", diagram: a.path, facet: null } });
         },
       })),
       ...architectures.flatMap((a) =>
@@ -230,7 +221,7 @@ export function CommandPalette({
           icon: Sparkles,
           run: () => {
             onSwitchMode("architect");
-            nav({ architect: { view: "diagrams", diagram: a.path, facet: f.id } });
+            nav({ architect: { view: "architecture", diagram: a.path, facet: f.id } });
           },
         })),
       ),
