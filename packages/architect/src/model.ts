@@ -8,6 +8,8 @@ import {
   type ArchNode,
   type ArchNodeKind,
   type ArchitectureGraph,
+  type DiffMark,
+  type DiffMarks,
   type HighlightRef,
 } from "@crystal/core";
 import {
@@ -105,8 +107,17 @@ export type ArchRfNode = RfNode<{
    * stamped onto the DOM as data attributes — see use-highlight.ts.
    */
   hlRef?: HighlightRef;
+  /** Ref-review mark (vs <ref>) — added/removed/changed tint, ghost render. */
+  diff?: DiffMark;
 }>;
 export type ArchRfEdge = RfEdge<{ kind: ArchEdgeKind; lane?: number }>;
+
+/** Shared diff tinting for the architecture views (matches the codebase map). */
+export const DIFF_EDGE_STROKE: Record<DiffMark["kind"], string> = {
+  added: "var(--color-ok)",
+  removed: "var(--color-danger)",
+  changed: "var(--color-warn)",
+};
 
 export function rfTypeFor(kind: ArchNodeKind): string {
   if (isContainerKind(kind)) return "container";
@@ -118,15 +129,19 @@ export function toRfNodes(
   graph: ArchitectureGraph,
   selectedIds: ReadonlySet<string>,
   slots?: ReadonlyMap<string, { width: number; height: number }>,
+  marks?: DiffMarks | null,
 ): ArchRfNode[] {
   return topoOrderNodes(graph).map((n) => {
     const container = isContainerKind(n.kind);
+    const mark = marks?.[n.id];
     const node: ArchRfNode = {
       id: n.id,
       type: rfTypeFor(n.kind),
       position: { ...n.position },
-      data: { arch: n },
+      data: { arch: n, ...(mark ? { diff: mark } : {}) },
       selected: selectedIds.has(n.id),
+      // Ghosts exist only at the review base — inert on the canvas.
+      ...(mark?.ghost ? { draggable: false, connectable: false } : {}),
       dragHandle: container ? ".arch-container-header" : undefined,
     };
     if (n.parentId) node.parentId = n.parentId;
@@ -159,6 +174,7 @@ export const EDGE_KIND_STYLE: Record<
 export function toRfEdges(
   graph: ArchitectureGraph,
   selectedIds: ReadonlySet<string>,
+  marks?: DiffMarks | null,
 ): ArchRfEdge[] {
   // Small diagrams read best with curves; past the threshold, orthogonal
   // bus-bar routing keeps the dependency web sorted and legible.
@@ -176,25 +192,27 @@ export function toRfEdges(
   const lanes = busbar ? assignLanes(graph.edges, absX) : null;
   return graph.edges.map((e) => {
     const style = EDGE_KIND_STYLE[e.kind];
+    const mark = marks?.[e.id];
+    const stroke = mark ? DIFF_EDGE_STROKE[mark.kind] : style.stroke;
     return {
       id: e.id,
       source: e.source,
       target: e.target,
-      label: e.label || undefined,
+      label: mark?.detail ?? (e.label || undefined),
       selected: selectedIds.has(e.id),
       data: { kind: e.kind, lane: lanes?.get(e.id) ?? 0 },
       type: busbar ? "busbar" : "default",
       style: {
-        stroke: style.stroke,
-        strokeWidth: 1.5,
-        strokeDasharray: style.dash,
-        opacity: 0.9,
+        stroke,
+        strokeWidth: mark ? 2 : 1.5,
+        strokeDasharray: mark?.ghost ? "6 4" : style.dash,
+        opacity: mark?.ghost ? 0.55 : 0.9,
       },
-      labelStyle: { fill: "var(--color-ink-muted)", fontSize: 10 },
+      labelStyle: { fill: mark ? stroke : "var(--color-ink-muted)", fontSize: 10 },
       labelBgStyle: { fill: "var(--color-surface-1)", fillOpacity: 0.9 },
       labelBgPadding: [4, 2] as [number, number],
       labelBgBorderRadius: 4,
-      markerEnd: { type: MarkerType.ArrowClosed, color: style.stroke, width: 16, height: 16 },
+      markerEnd: { type: MarkerType.ArrowClosed, color: stroke, width: 16, height: 16 },
     };
   });
 }

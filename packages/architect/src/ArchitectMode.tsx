@@ -23,12 +23,17 @@ import {
   ARCH_OVERLAY_FILE,
   canonicalSystemIds,
   composeArchitecture,
+  countMarks,
   createArchDraft as newArchDraft,
   createArchFacet,
   createEpic,
   createTask,
   deriveArchGraph,
+  diffSystemOverviews,
   extractOverlay,
+  formatDiffCounts,
+  overviewDiffGhosts,
+  overviewDiffMarks,
   graphsEqual,
   matchAgent,
   mergeDiagramIntoOverlay,
@@ -47,11 +52,14 @@ import {
   type TaskItem,
 } from "@crystal/core";
 import {
+  DiagramLegend,
+  RefReviewBar,
   useAgents,
   useConnectionState,
   useCrystal,
   useNav,
   useNavUpdate,
+  useRefReview,
   useWorkspace,
   useWorkspaces,
 } from "@crystal/client";
@@ -92,6 +100,12 @@ const EMPTY_DRAFTS: never[] = [];
 const EMPTY_REFACTORS: never[] = [];
 const EMPTY_PROJECTS: never[] = [];
 const EMPTY_RUNS: never[] = [];
+const REF_NEED_OVERVIEW = ["overview"] as const;
+const DIFF_LEGEND = [
+  { swatchClassName: "border border-ok/70 bg-ok/20", label: "added" },
+  { swatchClassName: "border border-dashed border-danger/70 bg-danger/15", label: "removed" },
+  { swatchClassName: "border border-warn/70 bg-warn/20", label: "changed" },
+] as const;
 
 type ArchitectView = "systems" | "diagrams" | "infra" | "codebase";
 
@@ -434,13 +448,72 @@ function DiagramsView({
     };
   }, [derived, reconciled, overviewData]);
 
+  /* ---- ref review: "vs <ref>" on the canonical architecture ---- */
+
+  const vsParam = useNav((l) => l.architect?.vs ?? null);
+  const setVsParam = useCallback((ref: string | null) => nav({ architect: { vs: ref } }), [nav]);
+  const refReview = useRefReview({
+    param: vsParam,
+    setParam: setVsParam,
+    need: REF_NEED_OVERVIEW,
+  });
+  const archDiff = useMemo(() => {
+    const base = refReview.snapshot?.overview;
+    if (!base || !overviewData) return null;
+    const idOfRaw = canonicalSystemIds(overviewData.systems);
+    const idOf = (raw: string) => idOfRaw.get(raw) ?? raw;
+    const diff = diffSystemOverviews(base, overviewData);
+    return { marks: overviewDiffMarks(diff, idOf), ghosts: overviewDiffGhosts(diff, idOf) };
+  }, [refReview.snapshot, overviewData]);
+  const ghostIds = useMemo(
+    () =>
+      new Set([
+        ...(archDiff?.ghosts.nodes.map((n) => n.id) ?? []),
+        ...(archDiff?.ghosts.edges.map((e) => e.id) ?? []),
+      ]),
+    [archDiff],
+  );
+  /**
+   * What the canvas shows under a review: the rendered graph plus base-only
+   * ghosts, laid out together so removals occupy space. `rendered` itself
+   * stays ghost-free — it is the baseline drafts and overlay extraction
+   * diff against.
+   */
+  const displayGraph = useMemo(() => {
+    if (!rendered || !archDiff || ghostIds.size === 0) return rendered;
+    const nodeIds = new Set(rendered.nodes.map((n) => n.id));
+    const merged: ArchitectureGraph = {
+      ...rendered,
+      nodes: [...rendered.nodes, ...archDiff.ghosts.nodes.filter((g) => !nodeIds.has(g.id))],
+      edges: [
+        ...rendered.edges,
+        ...archDiff.ghosts.edges.filter((g) => !rendered.edges.some((e) => e.id === g.id)),
+      ],
+    };
+    const laid = autoLayout(merged, { mode: "flow" });
+    const renderedById = new Map(rendered.nodes.map((n) => [n.id, n]));
+    return {
+      ...laid,
+      nodes: laid.nodes.map((n) => renderedById.get(n.id) ?? n),
+    };
+  }, [rendered, archDiff, ghostIds]);
+
   /** A canvas edit of the canonical graph → overlay ops, debounce-persisted. */
   const commitCanonical = useCallback(
     (edited: ArchitectureGraph) => {
       if (!derived || !rendered || !reconciled) return;
-      updateArchOverlay(extractOverlay({ derived, rendered, edited, prev: reconciled }));
+      // Review ghosts exist only at the base ref — never part of the edit.
+      const clean =
+        ghostIds.size === 0
+          ? edited
+          : {
+              ...edited,
+              nodes: edited.nodes.filter((n) => !ghostIds.has(n.id)),
+              edges: edited.edges.filter((e) => !ghostIds.has(e.id)),
+            };
+      updateArchOverlay(extractOverlay({ derived, rendered, edited: clean, prev: reconciled }));
     },
-    [derived, rendered, reconciled, updateArchOverlay],
+    [derived, rendered, reconciled, ghostIds, updateArchOverlay],
   );
 
   // Old `?diagram=` deep links resolve to the facet their diagram migrated to.
@@ -956,7 +1029,8 @@ function DiagramsView({
               ) : (
                 <ArchitectCanvas
                   key={activeDraft ? activeDraft.path : "canonical"}
-                  graph={activeDraft ? activeDraft.draft.graph : rendered}
+                  graph={activeDraft ? activeDraft.draft.graph : (displayGraph ?? rendered)}
+                  diffMarks={activeDraft ? null : (archDiff?.marks ?? null)}
                   onChange={commitGraph}
                   codeSummary={codeSummary}
                   overlayOn={overlayOn}
@@ -1011,6 +1085,39 @@ function DiagramsView({
                 onConfirm={() => void finalizeApply()}
                 busy={applyBusy}
               />
+              {!activeDraft ? (
+                <div className="absolute right-3 top-3 z-10 flex flex-col items-end gap-2">
+                  <RefReviewBar
+                    active={
+                      refReview.active
+                        ? {
+                            ...refReview.active,
+                            commit: refReview.active.commit?.slice(0, 7),
+                            badge: archDiff ? (
+                              <span className="rounded bg-surface-3 px-1 text-[9px] text-ink-muted">
+                                {formatDiffCounts(countMarks(archDiff.marks)) || "no drift"}
+                              </span>
+                            ) : refReview.loading ? (
+                              <Spinner className="h-3 w-3" />
+                            ) : undefined,
+                          }
+                        : null
+                    }
+                    onReview={refReview.start}
+                    onExit={refReview.exit}
+                    loading={refReview.loading}
+                  />
+                  {refReview.error ? (
+                    <span
+                      className="max-w-64 truncate rounded-lg border border-danger/40 bg-surface-1/95 px-2 py-1 text-[10px] text-danger"
+                      title={refReview.error}
+                    >
+                      {refReview.error}
+                    </span>
+                  ) : null}
+                  {refReview.active && archDiff ? <DiagramLegend entries={DIFF_LEGEND} /> : null}
+                </div>
+              ) : null}
             </>
           )
         ) : (

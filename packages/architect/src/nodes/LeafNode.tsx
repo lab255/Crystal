@@ -6,6 +6,7 @@ import { KIND_META, accentOf, type ArchRfNode } from "../model.js";
 import type { BlockPreview } from "../live-code.js";
 import { STAGE_TEXT_PX, useLodConfig } from "../lod-config.js";
 import { highlightAttrs } from "../use-highlight.js";
+import { DiffCornerBadge, diffBorderStyle, diffNodeClass } from "./diff-badge.js";
 
 /** Natural chip metrics at scale 1 (matches the rendered css below). */
 const CHIP_H = 28;
@@ -107,9 +108,15 @@ export const LeafNode = memo(function LeafNode({ data, selected }: NodeProps<Arc
           "relative flex h-full w-full flex-col rounded-xl border bg-surface-2/95 shadow-md shadow-black/30 transition-shadow",
           selected ? "border-crystal-400 shadow-lg shadow-crystal-500/20" : "border-edge-strong",
           data.flow?.step === null && "opacity-30",
+          diffNodeClass(data.diff),
         )}
-        style={{ borderLeftWidth: 3, borderLeftColor: accent }}
+        style={{
+          borderLeftWidth: 3,
+          borderLeftColor: accent,
+          ...(selected ? {} : diffBorderStyle(data.diff)),
+        }}
       >
+        {data.diff ? <DiffCornerBadge mark={data.diff} /> : null}
         {flowBadge}
         <Handle type="target" position={Position.Top} className="!h-2 !w-2 !border-none !bg-edge-strong" />
         {showChips && preview ? (
@@ -262,9 +269,15 @@ export const LeafNode = memo(function LeafNode({ data, selected }: NodeProps<Arc
         "transition-shadow",
         selected ? "border-crystal-400 shadow-lg shadow-crystal-500/20" : "border-edge-strong",
         data.flow?.step === null && "opacity-30",
+        diffNodeClass(data.diff),
       )}
-      style={{ borderLeftWidth: 3, borderLeftColor: accent }}
+      style={{
+        borderLeftWidth: 3,
+        borderLeftColor: accent,
+        ...(selected ? {} : diffBorderStyle(data.diff)),
+      }}
     >
+      {data.diff ? <DiffCornerBadge mark={data.diff} /> : null}
       {flowBadge}
       <Handle type="target" position={Position.Top} className="!h-2 !w-2 !border-none !bg-edge-strong" />
       <div className="flex items-center gap-2">

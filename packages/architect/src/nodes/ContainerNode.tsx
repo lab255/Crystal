@@ -3,6 +3,7 @@ import { memo } from "react";
 import { Spinner, cn } from "@crystal/ui";
 import { KIND_META, accentOf, type ArchRfNode } from "../model.js";
 import { highlightAttrs } from "../use-highlight.js";
+import { DiffCornerBadge, diffBorderStyle, diffNodeClass } from "./diff-badge.js";
 
 export const ContainerNode = memo(function ContainerNode({
   data,
@@ -21,12 +22,15 @@ export const ContainerNode = memo(function ContainerNode({
         "relative h-full w-full rounded-xl border-[1.5px] transition-colors",
         selected ? "border-crystal-400" : "border-edge-strong",
         data.flow?.step === null && "opacity-30",
+        diffNodeClass(data.diff),
       )}
       style={{
         background: `color-mix(in srgb, ${accent} 4%, var(--color-surface-1) 60%)`,
         borderStyle: arch.kind === "group" ? "dashed" : "solid",
+        ...(selected ? {} : diffBorderStyle(data.diff)),
       }}
     >
+      {data.diff ? <DiffCornerBadge mark={data.diff} /> : null}
       {data.flow != null && data.flow.step !== null ? (
         <span
           className="absolute -left-2 -top-2 z-10 flex h-5 min-w-5 items-center justify-center rounded-full bg-crystal-500 px-1 font-mono text-[10px] font-bold text-white shadow-md"

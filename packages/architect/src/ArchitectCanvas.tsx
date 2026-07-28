@@ -56,6 +56,7 @@ import {
   type CodeFileDetail,
   type CodeLodLevel,
   type CodeMapSummary,
+  type DiffMarks,
   type CodeModuleDetail,
   type HighlightRef,
 } from "@crystal/core";
@@ -189,6 +190,12 @@ export interface ArchitectCanvasProps {
   onToggleFindings?: (on: boolean) => void;
   showChanges?: boolean;
   onToggleChanges?: (on: boolean) => void;
+  /**
+   * Ref-review marks keyed by node/edge id (vs <ref>) — added/removed/changed
+   * tints; ghost-marked nodes render dashed and inert. The caller merges
+   * ghost nodes into `graph` itself (they need layout like everything else).
+   */
+  diffMarks?: DiffMarks | null;
 }
 
 const GHOST_STROKE = "var(--color-crystal-400)";
@@ -348,6 +355,7 @@ function CanvasInner({
   onToggleFindings,
   showChanges,
   onToggleChanges,
+  diffMarks,
 }: ArchitectCanvasProps) {
   const [selectedNodes, setSelectedNodes] = useState<ReadonlySet<string>>(new Set());
   const [selectedEdges, setSelectedEdges] = useState<ReadonlySet<string>>(new Set());
@@ -872,7 +880,7 @@ function CanvasInner({
   const externalHover = hoverSource !== "canvas" ? extHover : null;
 
   const rfNodes = useMemo<CanvasNode[]>(() => {
-    let nodes: CanvasNode[] = toRfNodes(viewGraph, selectedNodes, slotSizes).map((n) => {
+    let nodes: CanvasNode[] = toRfNodes(viewGraph, selectedNodes, slotSizes, diffMarks).map((n) => {
       const hlRef = nodeHlRefs.get(n.id);
       return hlRef ? ({ ...n, data: { ...n.data, hlRef } } as ArchRfNode) : n;
     });
@@ -987,10 +995,10 @@ function CanvasInner({
       });
     }
     return nodes;
-  }, [viewGraph, selectedNodes, slotSizes, overlay, blockPreviews, flow, expanded, codeContent, dragOverrides, displacements, dragActive, hoverNeighborhood, hovered, flashId, findMisses, nodeHlRefs, externalHover, pinned, hlRefForChild]);
+  }, [viewGraph, selectedNodes, slotSizes, diffMarks, overlay, blockPreviews, flow, expanded, codeContent, dragOverrides, displacements, dragActive, hoverNeighborhood, hovered, flashId, findMisses, nodeHlRefs, externalHover, pinned, hlRefForChild]);
 
   const rfEdges = useMemo(() => {
-    let edges = [...toRfEdges(viewGraph, selectedEdges), ...(codeContent.edges as ArchRfEdge[])];
+    let edges = [...toRfEdges(viewGraph, selectedEdges, diffMarks), ...(codeContent.edges as ArchRfEdge[])];
     if (overlay) edges = applyOverlayToEdges(edges, overlay);
     if (flow) edges = applyFlowToEdges(edges, flow);
     if (hovered) {
@@ -1011,7 +1019,7 @@ function CanvasInner({
       });
     }
     return edges;
-  }, [viewGraph, selectedEdges, overlay, flow, codeContent, hovered]);
+  }, [viewGraph, selectedEdges, diffMarks, overlay, flow, codeContent, hovered]);
 
   const onNodesChange = useCallback(
     (changes: NodeChange<CanvasNode>[]) => {
