@@ -22,7 +22,6 @@ import { ComponentsView } from "./ComponentsView.js";
 import { SchemasView } from "./SchemasView.js";
 import { ScreensView } from "./ScreensView.js";
 import { StoriesView } from "./StoriesView.js";
-import { SystemMapView } from "./map/SystemMapView.js";
 import { SurfacesProvider, useArchHighlight, useSurfaces } from "./common.js";
 
 /**
@@ -33,7 +32,6 @@ import { SurfacesProvider, useArchHighlight, useSurfaces } from "./common.js";
  */
 
 const VIEW_META: { id: SurfaceViewId; label: string; icon: typeof AppWindow }[] = [
-  { id: "map", label: "System Map", icon: Waypoints },
   { id: "screens", label: "Screens", icon: AppWindow },
   { id: "components", label: "Components", icon: ComponentIcon },
   { id: "stories", label: "Stories", icon: BookOpenText },
@@ -51,10 +49,10 @@ export function SurfacesMode() {
 
 function SurfacesShell() {
   const nav = useNavUpdate();
-  // The system map is the mode's front door — the full-stack overview greets
-  // first, the focused lists are one tab away (must match the deep-link
-  // codec's default or refreshing the bare URL would switch views).
-  const view = useNav((l) => l.surfaces?.view) ?? "map";
+  // Screens are the mode's front door (the system map folded into the
+  // architecture view; must match the deep-link codec's default or
+  // refreshing the bare URL would switch views).
+  const view = useNav((l) => l.surfaces?.view) ?? "screens";
   const find = useNav((l) => l.surfaces?.find) ?? "";
   const archOpen = useNav((l) => l.surfaces?.arch ?? false);
   const archPane = useSidePaneLayout();
@@ -130,9 +128,7 @@ function SurfacesShell() {
                 <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
               </button>
             </Tooltip>
-            {view !== "map" ? (
-              // The map IS the architecture — the side pane only assists the
-              // focused list views.
+            {(
               <Tooltip content="Toggle the architecture side pane — callers and integrations highlight there">
                 <button
                   type="button"
@@ -147,7 +143,7 @@ function SurfacesShell() {
                   <Boxes className="h-3.5 w-3.5" />
                 </button>
               </Tooltip>
-            ) : null}
+            )}
             <div className="ml-auto flex items-center gap-0.5 rounded-lg bg-surface-2 p-0.5">
               {VIEW_META.map(({ id, label, icon: Icon }) => (
                 <button
@@ -195,8 +191,6 @@ function SurfacesShell() {
                   Retry
                 </button>
               </div>
-            ) : view === "map" ? (
-              <SystemMapView />
             ) : view === "screens" ? (
               <ScreensView />
             ) : view === "components" ? (
@@ -211,7 +205,7 @@ function SurfacesShell() {
           </div>
         </div>
       </SplitPane>
-      {archOpen && view !== "map" ? (
+      {archOpen ? (
         <SplitPane defaultSize={archPane.defaultSize} minSize={340} maxSize="70%">
           <ArchSidePane />
         </SplitPane>

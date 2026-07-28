@@ -29,7 +29,6 @@ import type { RefactorApplyResult, RefactorIntent, RefactorPlan } from "./refact
 import type {
   ScreenApiCall,
   SurfaceMapReport,
-  SurfacesRefBundle,
   SurfacesReport,
 } from "./surfaces.js";
 import type { SystemOverview } from "./system-overview.js";
@@ -676,17 +675,6 @@ export interface BridgeMethods {
    * surfaces report's screens). Recomputed lazily with the code map.
    */
   "surfaces.map": { params: WsScope; result: SurfaceMapReport };
-  /**
-   * The product surfaces at a git ref (report + overview + screen→endpoint
-   * calls), rebuilt from a snapshot of the ref's tree by the same analyzer
-   * the live data uses. Powers the system map's ref review — the client
-   * diffs the bundle against its live data. `repoPath` scopes to a nested
-   * repo (same contract as `codemap.overviewDiff`).
-   */
-  "surfaces.atRef": {
-    params: WsScope & { ref: string; repoPath?: string };
-    result: SurfacesRefBundle;
-  };
   /** How (and whether) this workspace can run tests — see quality.ts. */
   "quality.detect": { params: WsScope; result: TestRunnerInfo };
   /**

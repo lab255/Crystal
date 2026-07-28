@@ -476,15 +476,25 @@ describe("round trips", () => {
     expect(parseDeepLink("#/surfaces/apis").surfaces?.arch).toBeUndefined();
   });
 
-  it("surfaces defaults to the system map and scopes params per subview", () => {
-    expect(formatDeepLink({ mode: "surfaces" })).toBe("#/surfaces/map");
-    // The map's node selection round-trips.
-    const map: DeepLink = {
-      ws: "abc",
+  it("surfaces defaults to screens and scopes params per subview", () => {
+    // The system map folded into the architecture view.
+    expect(formatDeepLink({ mode: "surfaces" })).toBe("#/surfaces/screens");
+    // Legacy map links redirect: sys/screen nodes land selected on the
+    // architecture canvas with the screens layer on…
+    expect(parseDeepLink("#/surfaces/map?node=screen%3Anext-app%3A%2Fbook&find=book")).toEqual({
+      mode: "architect",
+      architect: {
+        view: "architecture",
+        layers: "screens",
+        sel: "node:screen:next-app:/book",
+        find: "book",
+      },
+    });
+    // …and endpoint selections land in the API explorer, which owns them.
+    expect(parseDeepLink("#/surfaces/map?node=ep%3AGET%20%2Favailability")).toEqual({
       mode: "surfaces",
-      surfaces: { view: "map", node: "ep:GET /availability", find: "book" },
-    };
-    expect(roundTrip(map)).toEqual(map);
+      surfaces: { view: "apis", api: "GET /availability" },
+    });
     // A components URL cannot carry a screen selection.
     expect(
       formatDeepLink({
@@ -780,9 +790,9 @@ describe("deepLinkNavIdentity", () => {
         surfaces: { view: "screens", screen: "next-app:/", demo: true },
       }),
     ).toBe(deepLinkNavIdentity(screens));
-    // The bare mode is the system map — the mode's default view.
+    // The bare mode is the screens list — the mode's default view.
     expect(deepLinkNavIdentity({ mode: "surfaces" })).toBe(
-      deepLinkNavIdentity({ mode: "surfaces", surfaces: { view: "map" } }),
+      deepLinkNavIdentity({ mode: "surfaces", surfaces: { view: "screens" } }),
     );
     expect(deepLinkNavIdentity({ mode: "surfaces", surfaces: { view: "apis" } })).not.toBe(
       deepLinkNavIdentity(screens),

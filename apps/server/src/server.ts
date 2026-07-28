@@ -743,20 +743,6 @@ export async function startCrystalServer(opts: {
     },
     "surfaces.get": ({ ws }) => registry.get(ws).codemap.surfaces(),
     "surfaces.map": ({ ws }) => registry.get(ws).codemap.surfaceMap(),
-    "surfaces.atRef": async ({ ws, ref, repoPath }) => {
-      const rt = registry.get(ws);
-      const [{ index }, snap] = await Promise.all([
-        rt.codeindex.get(),
-        surfacesSnapshotAtRef(rt.root, repoPath ?? ".", ref),
-      ]);
-      // The head's semantic index clusters both sides — same convention as
-      // `codemap.overviewDiff`, so system ids stay comparable across refs.
-      const overview = {
-        ...buildSystemOverview(snap.sources, index),
-        generatedAt: new Date().toISOString(),
-      };
-      return { ref, commit: snap.commit, report: snap.report, overview, calls: snap.calls };
-    },
     "quality.detect": ({ ws }) => registry.get(ws).quality.detect(),
     "quality.run": ({ ws, ...params }) => registry.get(ws).quality.run(params),
     "quality.cancel": ({ ws, runId }) => registry.get(ws).quality.cancel(runId),

@@ -207,11 +207,6 @@ export interface CodeLink {
 
 export interface SurfacesLink {
   view?: SurfaceViewId;
-  /**
-   * Selected system-map node (map view) — `screen:<ScreenSurface.id>`,
-   * a raw `SystemModule.id` (already `sys:`-prefixed) or `ep:<METHOD> <path>`.
-   */
-  node?: string;
   /** Selected screen id (`ScreenSurface.id`). */
   screen?: string;
   /** Selected component, `${file}#${name}`. */
@@ -397,11 +392,11 @@ export function formatDeepLink(link: DeepLink): string {
     if (link.code?.file) add("file", link.code.file);
   } else if (mode === "surfaces") {
     const s = link.surfaces ?? {};
-    const view = s.view ?? "map";
+    // Default must match what SurfacesMode renders when unset ("screens" —
+    // the system map moved into the architecture view).
+    const view = s.view ?? "screens";
     path += `/${view}`;
-    if (view === "map") {
-      if (s.node) add("node", s.node);
-    } else if (view === "screens") {
+    if (view === "screens") {
       if (s.screen) add("screen", s.screen);
       if (s.demo) add("demo", "1");
     } else if (view === "components") {
@@ -603,12 +598,28 @@ export function parseDeepLink(hash: string): DeepLink {
     link.mode = "code";
     const file = params.get("file");
     if (file) link.code = { file };
+  } else if (mode === "surfaces" && segments[1] === "map") {
+    // The system map moved into the architecture view — screens + flows land
+    // there (same precedent as architect/apis → surfaces/apis). Endpoint
+    // selections belong to the API explorer, which owns endpoint identity.
+    const node = params.get("node");
+    if (node?.startsWith("ep:")) {
+      link.mode = "surfaces";
+      link.surfaces = { view: "apis", api: node.slice(3) };
+      return link;
+    }
+    link.mode = "architect";
+    const a: ArchitectLink = { view: "architecture", layers: "screens" };
+    if (node) a.sel = `node:${node}`;
+    const find = params.get("find");
+    if (find) a.find = find;
+    link.architect = a;
+    return link;
   } else if (mode === "surfaces") {
     link.mode = "surfaces";
     const s: SurfacesLink = {};
     const view = segments[1];
     if (
-      view === "map" ||
       view === "screens" ||
       view === "components" ||
       view === "stories" ||
@@ -616,8 +627,6 @@ export function parseDeepLink(hash: string): DeepLink {
       view === "schemas"
     )
       s.view = view;
-    const node = params.get("node");
-    if (node) s.node = node;
     const screen = params.get("screen");
     if (screen) s.screen = screen;
     const component = params.get("component");
@@ -700,7 +709,6 @@ const ORCHESTRATE_TAB_FIELDS: Record<OrchestratorTabId, readonly (keyof Orchestr
 };
 
 const SURFACES_VIEW_FIELDS: Record<SurfaceViewId, readonly (keyof SurfacesLink)[]> = {
-  map: ["view", "node", "find"],
   screens: ["view", "screen", "demo", "arch", "find"],
   components: ["view", "component", "arch", "find"],
   stories: ["view", "story", "demo", "arch", "find"],
@@ -762,7 +770,7 @@ export function applyDeepLink(current: DeepLink, next: DeepLink): DeepLink {
     if (next.code) link.code = next.code;
     else delete link.code;
   } else if (next.mode === "surfaces") {
-    const view = next.surfaces?.view ?? "map";
+    const view = next.surfaces?.view ?? "screens";
     const merged = replaceOwned(current.surfaces, next.surfaces, SURFACES_VIEW_FIELDS[view]);
     if (merged) link.surfaces = merged;
     else delete link.surfaces;
@@ -815,7 +823,7 @@ export function deepLinkNavIdentity(link: DeepLink): string {
     return `orchestrate/${o.tab ?? "board"}/${o.project ?? ""}`;
   }
   if (mode === "code") return `code/${link.code?.file ?? ""}`;
-  if (mode === "surfaces") return `surfaces/${link.surfaces?.view ?? "map"}`;
+  if (mode === "surfaces") return `surfaces/${link.surfaces?.view ?? "screens"}`;
   if (mode === "quality") return `quality/${link.quality?.view ?? "tests"}`;
   // Opening a program is a place of its own — the back button should walk
   // portfolio → program, not every delivery click inside one. Only the
