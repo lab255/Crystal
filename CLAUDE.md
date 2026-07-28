@@ -2,7 +2,8 @@
 
 Crystal is a pnpm-workspace IDE with eight modes (cross-project overview with traffic-light
 todos, the hub — cross-project programs dispatched to per-project orchestrators,
-architecture diagrammer, surfaces explorer — screens/components/stories/APIs/schemas,
+architecture diagrammer (three consolidated views: derived-architecture / codebase /
+infrastructure, one shared vs-ref review), surfaces explorer — screens/components/stories/APIs/schemas,
 PM/agent orchestration, Monaco editor, quality — test runner + coverage, jobs hub) plus a
 bottom terminal panel that runs shells and agent consoles in any open workspace. Read
 `README.md` for the product shape; this file is the mechanics.
@@ -190,10 +191,37 @@ build/sign (+notarize on macOS) → signed updater `latest.json`).
   on lens/workspace change and on `codemap.changed` for diff lenses. Views *dim* non-members
   (surfaces/quality, same treatment as the find box) or *compact* to them (code map);
   membership is gated on the store key matching the active param so a half-switched lens
-  never leaks. Don't confuse this with the per-diagram `ArchFacet` (filters one drawing by
-  node ids) — the global lens is workspace-scoped and mode-spanning. Never send the matcher
-  or membership functions into a scene web worker; derive plain id Sets on the main thread
-  and dim at render time (same rule as react-flow node data).
+  never leaks. Don't confuse this with the architecture's own `ArchFacet` (a named view
+  over the one canonical diagram, stored in the overlay) — the global lens is
+  workspace-scoped and mode-spanning. Never send the matcher or membership functions into
+  a scene web worker; derive plain id Sets on the main thread and dim at render time
+  (same rule as react-flow node data).
+
+- The architect mode is three consolidated views — `architecture`, `codebase`, `infra`
+  (legacy `diagrams`/`codemap` ids are permanent parse aliases in `deeplink.ts`). The
+  architecture is ONE canonical graph per workspace, **derived** from
+  `codemap.overview` + detected external services (`core/arch-derive.ts` — stable
+  canonical ids `sys:`/`ext:<svc>[:<instance>]`/`link:`/`extlink:`/`screen:`/`flow:`;
+  named buckets/queues/tables get their own `ext:` instance nodes) and **composed** with
+  the user-authored overlay (`core/arch-overlay.ts`, envelope kind `arch-overlay` at
+  `.crystal/architecture/overlay.json`). Views edit a plain `ArchitectureGraph`;
+  persistence goes through `extractOverlay(derived, rendered, edited, prev)` — only real
+  drags become position overrides (auto-layout owns everything else, laid out at
+  reserved LOD footprints so zoom-into-code never reflows), manual nodes/edges and
+  hidden ids round-trip, and legacy diagram files migrate losslessly ONCE on the first
+  `arch.getOverlay` (files are read, never rewritten; each becomes an `ArchFacet` with
+  `sourcePath` so old `?diagram=` links resolve). Never let review ghosts reach
+  `extractOverlay` — strip them first, or they persist as manual nodes.
+
+- Ref review ("vs `<ref>`", the `vs` deep-link param) is ONE mechanism across all three
+  views: `useRefReview` (client) drives the shared `RefReviewBar` and resolves
+  `codemap.snapshotAtRef` — `need: ["overview"]` takes the cheap in-memory blob path,
+  `summary`/`surfaces` materialize the ref's tree through the full analyzer (LRU per
+  commit); statused changed files always ride along. Diffing is client-side onto the
+  shared `DiffMarks` vocabulary (`core/diagram-diff.ts`: added/removed/changed, removed
+  = ghosts merged BEFORE layout so deletions occupy space). Marks are plain records —
+  worker-safe — keyed by scene ids (`m:`/`f:`/`dep:` on the codebase map, canonical ids
+  on architecture/infra).
 
 - Permission modes: spawns default to `--permission-mode acceptEdits`; a profile (or
   dispatch) may request `bypassPermissions`, but the roster's

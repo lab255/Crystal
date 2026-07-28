@@ -88,6 +88,7 @@ import type { MoveLikeIntent } from "./codemap/map-model.js";
 import { projectTrace, stepKeyOf } from "./dataflow.js";
 import { InfraView } from "./InfraView.js";
 import { ContractsPanel } from "./panels/ContractsPanel.js";
+import { DiffPanel } from "./panels/DiffPanel.js";
 import { InsightsPanel } from "./panels/InsightsPanel.js";
 import { FlowStepsPanel, JourneysSection, type JourneySeed } from "./JourneyPanel.js";
 import { JourneyProfilePanel } from "./ProfilePanel.js";
@@ -501,7 +502,11 @@ function DiagramsView({
     const idOfRaw = canonicalSystemIds(overviewData.systems);
     const idOf = (raw: string) => idOfRaw.get(raw) ?? raw;
     const diff = diffSystemOverviews(base, overviewData);
-    return { marks: overviewDiffMarks(diff, idOf), ghosts: overviewDiffGhosts(diff, idOf) };
+    return {
+      diff,
+      marks: overviewDiffMarks(diff, idOf),
+      ghosts: overviewDiffGhosts(diff, idOf),
+    };
   }, [refReview.snapshot, overviewData]);
   const ghostIds = useMemo(
     () =>
@@ -1286,6 +1291,18 @@ function DiagramsView({
               onFocusSystem={focusSystem}
               onSelectEdge={(key) => setActiveEdgeKey(key)}
               onClose={() => setShowInsights(false)}
+            />
+          </Pane>
+        ) : null}
+
+        {variant === "architecture" && refReview.active && archDiff ? (
+          <Pane defaultSize={320} minSize={240} maxSize={560}>
+            <DiffPanel
+              vsRef={refReview.active.ref}
+              diff={archDiff.diff}
+              onFocusSystem={focusSystem}
+              onSelectEdge={(key) => setActiveEdgeKey(key)}
+              onClose={refReview.exit}
             />
           </Pane>
         ) : null}
