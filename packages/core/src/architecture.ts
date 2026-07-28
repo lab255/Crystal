@@ -217,6 +217,11 @@ export const ArchFacetSchema = z.object({
   description: z.string().default(""),
   /** Member node ids; an empty facet shows the whole diagram until nodes are added. */
   nodeIds: z.array(z.string()).default([]),
+  /**
+   * Legacy diagram this facet was migrated from (`.crystal/architecture/…`)
+   * — lets old `?diagram=` deep links resolve to their facet.
+   */
+  sourcePath: z.string().nullish(),
 });
 export type ArchFacet = z.infer<typeof ArchFacetSchema>;
 

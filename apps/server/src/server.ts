@@ -24,8 +24,8 @@ import {
   buildSystemOverview,
   computeReviewFindings,
   createArchDraft,
-  createArchOverlay,
   diffSystemOverviews,
+  migrateLegacyToOverlay,
   openQuestionsOfWorkflow,
   profileOverlay,
   suggestFacets,
@@ -416,8 +416,24 @@ export async function startCrystalServer(opts: {
       return { ok: true };
     },
     "arch.getOverlay": async ({ ws }) => {
-      const overlay = await registry.get(ws).store.loadArchOverlay();
-      return { overlay: overlay ?? createArchOverlay() };
+      const rt = registry.get(ws);
+      const existing = await rt.store.loadArchOverlay();
+      if (existing) return { overlay: existing };
+      // First read: fold the legacy per-diagram world in, losslessly and
+      // once. Legacy files are read, never rewritten or deleted.
+      const [info, layout, sources, { index }] = await Promise.all([
+        rt.store.load(),
+        rt.store.loadSystemsLayout(),
+        rt.codemap.overviewSourceFiles(),
+        rt.codeindex.get(),
+      ]);
+      const overlay = migrateLegacyToOverlay({
+        diagrams: info.architectures,
+        layout,
+        overview: { ...buildSystemOverview(sources, index), generatedAt: new Date().toISOString() },
+      });
+      await rt.store.saveArchOverlay(overlay);
+      return { overlay };
     },
     "arch.saveOverlay": async ({ ws, overlay }) => {
       await registry.get(ws).store.saveArchOverlay(overlay);

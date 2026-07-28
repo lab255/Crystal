@@ -733,6 +733,14 @@ function CodeMapInner({
     if (!base || !summary) return null;
     return diffCodeMaps(base, summary, { changedFiles: refReview.snapshot?.changedFiles });
   }, [refReview.snapshot, summary]);
+  // Entering/leaving a review re-poses the map (ghost modules join/leave the
+  // layout) — refit so the diff is in view, not off-canvas.
+  const hadDiff = useRef(codeMapDiff != null);
+  useEffect(() => {
+    if (hadDiff.current === (codeMapDiff != null)) return;
+    hadDiff.current = codeMapDiff != null;
+    setRefitNonce((n) => n + 1);
+  }, [codeMapDiff]);
 
   /* ---- drag-a-symbol refactor intents (plan mode) ---- */
 

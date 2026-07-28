@@ -56,10 +56,15 @@ export const ArchOverlaySchema = z.object({
   overrides: z.record(ArchNodeOverrideSchema).default({}),
   /** Nodes the derivation can't see — queues, buckets, notes, planned services. */
   manualNodes: z.array(ArchNodeSchema).default([]),
-  /** User-drawn edges (between any mix of derived and manual nodes). */
+  /**
+   * User-drawn edges — and *edited* derived edges: a manual edge sharing a
+   * derived edge's id overrides it in the composition (kind/label edits).
+   */
   manualEdges: z.array(ArchEdgeSchema).default([]),
   /** Derived node ids the user removed from the diagram (subtree-inclusive). */
   hiddenIds: z.array(z.string()).default([]),
+  /** Derived edge ids the user removed ("this arrow is wrong"). */
+  hiddenEdgeIds: z.array(z.string()).default([]),
   /** Workspace-scoped environments (previously per-diagram). */
   environments: z.array(ArchEnvironmentSchema).default([]),
   journeys: z.array(JourneySchema).default([]),
@@ -148,9 +153,11 @@ export function composeArchitecture(
     nodes.push(override ? applyOverride(manual, override) : manual);
   }
   const nodeIds = new Set(nodes.map((n) => n.id));
+  const hiddenEdges = new Set(overlay.hiddenEdgeIds);
   const edgeIds = new Set<string>();
-  const edges = [...derived.edges, ...overlay.manualEdges].filter((e) => {
-    if (edgeIds.has(e.id)) return false;
+  // Manual first — a manual edge sharing a derived id is an edge override.
+  const edges = [...overlay.manualEdges, ...derived.edges].filter((e) => {
+    if (edgeIds.has(e.id) || hiddenEdges.has(e.id)) return false;
     edgeIds.add(e.id);
     return nodeIds.has(e.source) && nodeIds.has(e.target);
   });
@@ -200,5 +207,138 @@ export function reconcileOverlay(
     }
   }
   const hiddenIds = overlay.hiddenIds.filter((id) => known.has(id));
-  return { overlay: { ...overlay, overrides, hiddenIds }, staleIds };
+  const derivedEdgeIds = new Set(derived.edges.map((e) => e.id));
+  const hiddenEdgeIds = overlay.hiddenEdgeIds.filter((id) => derivedEdgeIds.has(id));
+  return { overlay: { ...overlay, overrides, hiddenIds, hiddenEdgeIds }, staleIds };
+}
+
+/* ------------------------------------------------------------------ */
+/* Canvas edit → overlay                                               */
+/* ------------------------------------------------------------------ */
+
+const sameJson = (a: unknown, b: unknown): boolean =>
+  JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+
+function overrideFor(
+  derivedNode: ArchNode,
+  renderedNode: ArchNode | undefined,
+  edited: ArchNode,
+): ArchNodeOverride | null {
+  const o: ArchNodeOverride = {};
+  // Position is judged against the *rendered* node — auto-layout owns derived
+  // positions, so only an actual drag away from what was shown persists.
+  const shown = renderedNode ?? derivedNode;
+  if (edited.position.x !== shown.position.x || edited.position.y !== shown.position.y) {
+    o.x = edited.position.x;
+    o.y = edited.position.y;
+  }
+  if ((edited.parentId ?? null) !== (derivedNode.parentId ?? null))
+    o.parentId = edited.parentId ?? null;
+  if (!sameJson(edited.size, shown.size)) o.size = edited.size ?? null;
+  if (edited.label !== derivedNode.label) o.label = edited.label;
+  if (edited.kind !== derivedNode.kind) o.kind = edited.kind;
+  if (edited.description !== derivedNode.description) o.description = edited.description;
+  if (!sameJson(edited.tech, derivedNode.tech)) o.tech = edited.tech;
+  if ((edited.layer ?? null) !== (derivedNode.layer ?? null)) o.layer = edited.layer ?? null;
+  if ((edited.accent ?? null) !== (derivedNode.accent ?? null)) o.accent = edited.accent ?? null;
+  if ((edited.href ?? null) !== (derivedNode.href ?? null)) o.href = edited.href ?? null;
+  if (!sameJson(edited.sim, derivedNode.sim)) o.sim = edited.sim ?? null;
+  if (!sameJson(edited.placements, derivedNode.placements)) o.placements = edited.placements;
+  return Object.keys(o).length > 0 ? o : null;
+}
+
+/**
+ * Translate a canvas edit back into the overlay: the views keep operating on
+ * a plain `ArchitectureGraph` (`edited`), and persistence extracts what the
+ * user actually authored by diffing against the derivation (`derived`) and
+ * against what was on screen (`rendered` — the composed graph post-layout,
+ * so auto-layout positions never persist as overrides).
+ *
+ * `prev` carries forward stale semantic overrides on vanished ids (the
+ * reconcile contract) — everything else is recomputed from the edit.
+ */
+export function extractOverlay(args: {
+  derived: ArchitectureGraph;
+  rendered: ArchitectureGraph;
+  edited: ArchitectureGraph;
+  prev: ArchOverlay;
+}): ArchOverlay {
+  const { derived, rendered, edited, prev } = args;
+  const derivedById = new Map(derived.nodes.map((n) => [n.id, n]));
+  const renderedById = new Map(rendered.nodes.map((n) => [n.id, n]));
+  const editedIds = new Set(edited.nodes.map((n) => n.id));
+
+  const overrides: Record<string, ArchNodeOverride> = {};
+  const manualNodes: ArchNode[] = [];
+  for (const node of edited.nodes) {
+    const derivedNode = derivedById.get(node.id);
+    if (!derivedNode) {
+      manualNodes.push(node);
+      // A manual node's position is user-authored the moment it is placed or
+      // dragged — record it as an x/y override so the renderer pins it
+      // (auto-layout owns everything without one). Migrated manual nodes
+      // start unpinned; their first drag lands here.
+      const shown = renderedById.get(node.id);
+      if (!shown || shown.position.x !== node.position.x || shown.position.y !== node.position.y) {
+        overrides[node.id] = { ...overrides[node.id], x: node.position.x, y: node.position.y };
+      } else if (prev.overrides[node.id]?.x != null) {
+        // already pinned and unmoved — keep the pin
+        const p = prev.overrides[node.id]!;
+        overrides[node.id] = { ...overrides[node.id], x: p.x, y: p.y };
+      }
+      continue;
+    }
+    const o = overrideFor(derivedNode, renderedById.get(node.id), node);
+    if (o) overrides[node.id] = o;
+  }
+  // Stale semantic customizations on ids that no longer derive survive the
+  // round trip — the id may come back (see reconcileOverlay).
+  const manualIds = new Set(manualNodes.map((n) => n.id));
+  for (const [id, o] of Object.entries(prev.overrides)) {
+    if (!derivedById.has(id) && !manualIds.has(id) && !isPositionalOverride(o)) overrides[id] = o;
+  }
+
+  const derivedEdgeById = new Map(derived.edges.map((e) => [e.id, e]));
+  const editedEdgeIds = new Set(edited.edges.map((e) => e.id));
+  const manualEdges = edited.edges.filter((e) => {
+    const d = derivedEdgeById.get(e.id);
+    return !d || d.kind !== e.kind || d.label !== e.label;
+  });
+
+  const hiddenIds = derived.nodes
+    .filter((n) => !editedIds.has(n.id))
+    .map((n) => n.id)
+    // A hidden container already hides its subtree in the composition —
+    // keeping only subtree roots keeps the list minimal and un-hiding sane.
+    .filter((id, _i, all) => {
+      let cur = derivedById.get(id)?.parentId ?? null;
+      while (cur) {
+        if (all.includes(cur)) return false;
+        cur = derivedById.get(cur)?.parentId ?? null;
+      }
+      return true;
+    });
+
+  const hiddenEdgeIds = derived.edges
+    .filter(
+      (e) =>
+        !editedEdgeIds.has(e.id) &&
+        // an edge whose endpoint went hidden/vanished is dropped by
+        // composition anyway — only record deliberate edge deletions
+        editedIds.has(e.source) &&
+        editedIds.has(e.target),
+    )
+    .map((e) => e.id);
+
+  return {
+    overrides,
+    manualNodes,
+    manualEdges,
+    hiddenIds,
+    hiddenEdgeIds,
+    environments: edited.environments,
+    journeys: edited.journeys,
+    facets: edited.facets,
+    viewport: edited.viewport ?? prev.viewport ?? null,
+  };
 }

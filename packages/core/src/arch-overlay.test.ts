@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   composeArchitecture,
   createArchOverlay,
+  extractOverlay,
   isPositionalOverride,
   reconcileOverlay,
   setNodeOverride,
@@ -63,7 +64,7 @@ describe("composeArchitecture", () => {
     expect(auth.label).toBe("Auth service");
     expect(auth.accent).toBe("cyan");
     expect(composed.nodes.map((n) => n.id)).toContain("queue:jobs");
-    expect(composed.edges.map((e) => e.id)).toEqual(["e1", "m1"]);
+    expect(composed.edges.map((e) => e.id)).toEqual(["m1", "e1"]);
     expect(composed.environments).toBe(o.environments);
   });
 
@@ -163,5 +164,132 @@ describe("isPositionalOverride", () => {
     expect(isPositionalOverride({ x: 1, y: 2, parentId: null, size: null })).toBe(true);
     expect(isPositionalOverride({ x: 1, y: 2, label: "A" })).toBe(false);
     expect(isPositionalOverride({})).toBe(true);
+  });
+});
+
+describe("extractOverlay", () => {
+  const derivedGraph = () =>
+    derived(
+      [node("sys:auth", { label: "Auth", kind: "service" }), node("sys:ui")],
+      [edge("link:sys:ui->sys:auth", "sys:ui", "sys:auth")],
+    );
+  /** What was on screen: composed + auto-layout positions. */
+  const renderedGraph = (): ArchitectureGraph => ({
+    ...derivedGraph(),
+    nodes: derivedGraph().nodes.map((n, i) => ({ ...n, position: { x: i * 200, y: 50 } })),
+  });
+
+  it("persists only real drags — auto-layout positions never become overrides", () => {
+    const rendered = renderedGraph();
+    const out = extractOverlay({
+      derived: derivedGraph(),
+      rendered,
+      edited: rendered, // untouched
+      prev: createArchOverlay(),
+    });
+    expect(out.overrides).toEqual({});
+    expect(out.manualNodes).toEqual([]);
+    expect(out.manualEdges).toEqual([]);
+    expect(out.hiddenIds).toEqual([]);
+    expect(out.hiddenEdgeIds).toEqual([]);
+  });
+
+  it("captures drags, semantic edits, manual nodes/edges and deletions", () => {
+    const rendered = renderedGraph();
+    const queue = node("queue:jobs", { kind: "queue", label: "Jobs", position: { x: 5, y: 6 } });
+    const edited: ArchitectureGraph = {
+      ...rendered,
+      nodes: [
+        { ...rendered.nodes[0]!, position: { x: 400, y: 80 }, label: "Auth service" },
+        // sys:ui deleted
+        queue,
+      ],
+      edges: [
+        // derived edge deleted; manual edge added
+        edge("m1", "sys:auth", "queue:jobs"),
+      ],
+    };
+    const out = extractOverlay({
+      derived: derivedGraph(),
+      rendered,
+      edited,
+      prev: createArchOverlay(),
+    });
+    expect(out.overrides["sys:auth"]).toEqual({ x: 400, y: 80, label: "Auth service" });
+    expect(out.hiddenIds).toEqual(["sys:ui"]);
+    expect(out.manualNodes).toEqual([queue]);
+    // a freshly placed manual node is pinned where the user dropped it
+    expect(out.overrides["queue:jobs"]).toEqual({ x: 5, y: 6 });
+    expect(out.manualEdges.map((e) => e.id)).toEqual(["m1"]);
+    // the derived edge's endpoint went hidden — composition drops it, so it
+    // is NOT a deliberate edge deletion
+    expect(out.hiddenEdgeIds).toEqual([]);
+  });
+
+  it("records deliberate edge deletions and edge overrides", () => {
+    const rendered = renderedGraph();
+    const out = extractOverlay({
+      derived: derivedGraph(),
+      rendered,
+      edited: { ...rendered, edges: [] },
+      prev: createArchOverlay(),
+    });
+    expect(out.hiddenEdgeIds).toEqual(["link:sys:ui->sys:auth"]);
+
+    const reKinded = extractOverlay({
+      derived: derivedGraph(),
+      rendered,
+      edited: {
+        ...rendered,
+        edges: [{ ...rendered.edges[0]!, kind: "async" as const }],
+      },
+      prev: createArchOverlay(),
+    });
+    expect(reKinded.manualEdges).toHaveLength(1);
+    expect(reKinded.manualEdges[0]!.kind).toBe("async");
+    expect(reKinded.hiddenEdgeIds).toEqual([]);
+  });
+
+  it("keeps stale semantic overrides from prev (vanished ids may re-derive)", () => {
+    const rendered = renderedGraph();
+    const prev = overlay({
+      overrides: {
+        "sys:gone": { label: "Renamed", sim: { replicas: 2 } },
+        "sys:gone-positional": { x: 1, y: 2 },
+      },
+    });
+    const out = extractOverlay({
+      derived: derivedGraph(),
+      rendered,
+      edited: rendered,
+      prev,
+    });
+    expect(out.overrides["sys:gone"]).toBeDefined();
+    expect(out.overrides["sys:gone-positional"]).toBeUndefined();
+  });
+
+  it("round-trips: compose(derived, extract(edit)) reproduces the edit", () => {
+    const rendered = renderedGraph();
+    const edited: ArchitectureGraph = {
+      ...rendered,
+      nodes: [
+        { ...rendered.nodes[0]!, position: { x: 42, y: 42 }, accent: "cyan" as const },
+        rendered.nodes[1]!,
+        node("note:1", { kind: "note", label: "TODO", position: { x: 9, y: 9 } }),
+      ],
+    };
+    const out = extractOverlay({
+      derived: derivedGraph(),
+      rendered,
+      edited,
+      prev: createArchOverlay(),
+    });
+    const recomposed = composeArchitecture(derivedGraph(), out);
+    const auth = recomposed.nodes.find((n) => n.id === "sys:auth")!;
+    expect(auth.position).toEqual({ x: 42, y: 42 });
+    expect(auth.accent).toBe("cyan");
+    expect(recomposed.nodes.map((n) => n.id)).toContain("note:1");
+    // un-overridden node falls back to the derived position (layout re-poses it)
+    expect(recomposed.nodes.find((n) => n.id === "sys:ui")!.position).toEqual({ x: 0, y: 0 });
   });
 });

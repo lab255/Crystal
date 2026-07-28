@@ -138,6 +138,9 @@ export class WorkspaceStore {
     const out: { path: string; data: T }[] = [];
     for (const name of await fs.readdir(abs)) {
       if (!name.endsWith(".json")) continue;
+      // The canonical-architecture overlay lives in the architecture dir but
+      // is its own envelope kind, not a diagram.
+      if (kind === "architecture" && name === "overlay.json") continue;
       const file = path.join(abs, name);
       try {
         const data = parseCrystalFile(kind, await fs.readFile(file, "utf8")) as T;

@@ -1,8 +1,9 @@
 import { createStore, type StoreApi } from "zustand/vanilla";
-import { AGENTS_FILE } from "@crystal/core";
+import { AGENTS_FILE, ARCH_OVERLAY_FILE } from "@crystal/core";
 import type {
   AgentRoster,
   ArchDraft,
+  ArchOverlay,
   ArchitectureGraph,
   Project,
   WorkspaceInfo,
@@ -14,12 +15,22 @@ export interface WorkspaceState {
   info: WorkspaceInfo | null;
   /** Agent roster (`.crystal/agents.json`) — dispatch profiles + default human. */
   roster: AgentRoster | null;
+  /**
+   * The canonical architecture's user-authored half (see core arch-overlay.ts).
+   * Null until `loadArchOverlay` — the first server read migrates legacy
+   * diagrams into it.
+   */
+  archOverlay: ArchOverlay | null;
   loading: boolean;
   error: string | null;
   /** Paths with unsaved (debounced, in-flight) changes. */
   pendingSaves: Record<string, boolean>;
 
   refresh(): Promise<void>;
+  /** Fetch the architecture overlay once (idempotent while loaded). */
+  loadArchOverlay(): Promise<void>;
+  /** Optimistically update + debounce-persist the architecture overlay. */
+  updateArchOverlay(overlay: ArchOverlay): void;
   saveManifest(manifest: WorkspaceManifest): Promise<void>;
   /** Optimistically update + debounce-persist an architecture graph. */
   updateArchitecture(path: string, graph: ArchitectureGraph): void;
@@ -81,6 +92,7 @@ export function createWorkspaceStore(client: BridgeClient): WorkspaceStore {
     return {
       info: null,
       roster: null,
+      archOverlay: null,
       loading: false,
       error: null,
       pendingSaves: {},
@@ -92,10 +104,44 @@ export function createWorkspaceStore(client: BridgeClient): WorkspaceStore {
             client.request("workspace.get", {}),
             client.request("agents.get", {}),
           ]);
-          set({ info, roster: agents.roster, loading: false, error: null });
+          const prev = get().info;
+          set({
+            info,
+            roster: agents.roster,
+            loading: false,
+            error: null,
+            // The overlay is workspace-scoped — a workspace switch invalidates it.
+            ...(prev && prev.id !== info.id ? { archOverlay: null } : {}),
+          });
         } catch (err) {
           set({ loading: false, error: (err as Error).message });
         }
+      },
+
+      async loadArchOverlay() {
+        if (get().archOverlay) return;
+        try {
+          const { overlay } = await client.request("arch.getOverlay", {});
+          set({ archOverlay: overlay });
+        } catch (err) {
+          set({ error: (err as Error).message });
+        }
+      },
+
+      updateArchOverlay(overlay) {
+        const info = get().info;
+        set({ archOverlay: overlay });
+        if (!info) return;
+        // Capture the workspace now: a flush after the user switches
+        // workspaces must still write to the one the edit was made in.
+        const ws = info.id;
+        schedule(ARCH_OVERLAY_FILE, async () => {
+          // Unlike path-keyed saves, the overlay key is constant across
+          // workspaces — after a switch the store holds the NEW workspace's
+          // overlay, so a late flush must fall back to the captured snapshot.
+          const latest = get().info?.id === ws ? get().archOverlay : overlay;
+          if (latest) await client.request("arch.saveOverlay", { ws, overlay: latest });
+        });
       },
 
       async saveManifest(manifest) {

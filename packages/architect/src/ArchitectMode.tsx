@@ -6,38 +6,44 @@ import {
   Boxes,
   Check,
   CloudUpload,
-  FolderGit2,
   GitBranch,
   GitCompareArrows,
   GitMerge,
   Globe2,
-  History,
   Layers,
   MoreHorizontal,
   PencilRuler,
   Plus,
-  RefreshCw,
   Search,
   Sparkles,
   Trash2,
   X,
 } from "lucide-react";
 import {
+  ARCH_OVERLAY_FILE,
+  canonicalSystemIds,
+  composeArchitecture,
   createArchDraft as newArchDraft,
   createArchFacet,
   createEpic,
   createTask,
+  deriveArchGraph,
+  extractOverlay,
   graphsEqual,
   matchAgent,
+  mergeDiagramIntoOverlay,
   mergeGraphs,
+  reconcileOverlay,
   suggestFacets,
   type ArchDraft,
+  type ArchOverlay,
   type ArchitectureGraph,
   type CodeIndex,
   type CodeMapSummary,
   type CodeTrace,
   type CodeTraceStep,
   type FacetSuggestion,
+  type SystemOverview,
   type TaskItem,
 } from "@crystal/core";
 import {
@@ -51,9 +57,6 @@ import {
 } from "@crystal/client";
 import {
   Button,
-  Dialog,
-  DialogClose,
-  DialogContent,
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -67,7 +70,6 @@ import {
   cn,
 } from "@crystal/ui";
 import { ArchitectCanvas } from "./ArchitectCanvas.js";
-import { detectDrift, driftSignature, type ArchDrift } from "./auto-map.js";
 import { CodeMapView, requestOpenFile } from "./codemap/CodeMapView.js";
 import { ChangesPanel } from "./codemap/ChangesPanel.js";
 import { DuplicatesPanel } from "./codemap/DuplicatesPanel.js";
@@ -80,13 +82,12 @@ import { JourneyProfilePanel } from "./ProfilePanel.js";
 import { useRefactorIntents } from "./refactor-intents.js";
 import { buildHoistPrompt } from "./refactor-prompts.js";
 import { ApplyRefactorsDialog, RefactorChip, useIntentProblems } from "./RefactorPanel.js";
-import { ReviewDialog } from "./ReviewDialog.js";
+import { autoLayout } from "./layout.js";
+import { estimateModuleFootprint } from "./live-code.js";
 import { ReviewView } from "./ReviewView.js";
-import { canSeedFromCodeMap, seedFromCodeMap } from "./seed.js";
 import { SurveySection } from "./SurveyPanel.js";
 import { SystemsView, type OpenCodeFacet } from "./systems/SystemsView.js";
 
-const EMPTY_ARCHITECTURES: never[] = [];
 const EMPTY_DRAFTS: never[] = [];
 const EMPTY_REFACTORS: never[] = [];
 const EMPTY_PROJECTS: never[] = [];
@@ -235,7 +236,7 @@ export function ArchitectMode() {
             "diagrams",
             <PencilRuler className="h-3.5 w-3.5" />,
             <>
-              Code
+              Architecture
               <span className="rounded-full bg-ok/15 px-1.5 text-[9px] text-ok">live</span>
             </>,
           )}
@@ -299,13 +300,12 @@ function DiagramsView({
   draftPath: string | null;
   onDraftPathChange: (path: string | null) => void;
 }) {
-  const architectures = useWorkspace((s) => s.info?.architectures ?? EMPTY_ARCHITECTURES);
   const archDrafts = useWorkspace((s) => s.info?.archDrafts ?? EMPTY_DRAFTS);
   const loading = useWorkspace((s) => s.loading && !s.info);
   const pendingSaves = useWorkspace((s) => s.pendingSaves);
-  const updateArchitecture = useWorkspace((s) => s.updateArchitecture);
-  const createArchitecture = useWorkspace((s) => s.createArchitecture);
-  const deleteArchitecture = useWorkspace((s) => s.deleteArchitecture);
+  const overlay = useWorkspace((s) => s.archOverlay);
+  const loadArchOverlay = useWorkspace((s) => s.loadArchOverlay);
+  const updateArchOverlay = useWorkspace((s) => s.updateArchOverlay);
   const updateArchDraft = useWorkspace((s) => s.updateArchDraft);
   const createDraftFile = useWorkspace((s) => s.createArchDraft);
   const deleteArchDraft = useWorkspace((s) => s.deleteArchDraft);
@@ -315,18 +315,9 @@ function DiagramsView({
 
   const nav = useNavUpdate();
   const infoLoaded = useWorkspace((s) => s.info != null);
-  const selectedPath = useNav((l) => l.architect?.diagram) ?? null;
-  const setSelectedPath = useCallback(
-    (path: string | null) => nav({ architect: { diagram: path } }),
-    [nav],
-  );
-  const [createOpen, setCreateOpen] = useState(false);
-  const [newName, setNewName] = useState("");
-  const [seedMode, setSeedMode] = useState<"code" | "blank">("code");
   const [notice, setNotice] = useState<string | null>(null);
   const [applyDialogOpen, setApplyDialogOpen] = useState(false);
   const [applyBusy, setApplyBusy] = useState(false);
-  const [reviewDialogOpen, setReviewDialogOpen] = useState(false);
 
   // Split-pane draft review (deep-linkable: ?draft=…&review=1).
   const reviewOn = useNav((l) => l.architect?.review) ?? false;
@@ -365,25 +356,111 @@ function DiagramsView({
     [client, fetchSummary, activeWs],
   );
 
-  const selected =
-    architectures.find((a) => a.path === selectedPath) ?? architectures[0] ?? null;
+  /* ---- the one canonical architecture: derived ∘ overlay ---- */
 
   useEffect(() => {
-    if (selected && selected.path !== selectedPath) setSelectedPath(selected.path);
-  }, [selected?.path]);
+    if (connection === "open") void loadArchOverlay();
+  }, [connection, loadArchOverlay]);
+
+  // The logical overview drives the derivation; follows the code.
+  const [overviewData, setOverviewData] = useState<SystemOverview | null>(null);
+  const fetchOverview = useCallback(async () => {
+    try {
+      setOverviewData(await client.request("codemap.overview", {}));
+    } catch {
+      // No analyzable code yet — the canvas stays empty until it appears.
+    }
+  }, [client]);
+  useEffect(() => {
+    if (connection === "open") void fetchOverview();
+  }, [fetchOverview, connection]);
+  useEffect(
+    () =>
+      client.events.on("codemap.changed", ({ ws }) => {
+        if (!activeWs || ws === activeWs) void fetchOverview();
+      }),
+    [client, fetchOverview, activeWs],
+  );
+
+  const derived = useMemo(
+    () =>
+      overviewData && codeSummary
+        ? deriveArchGraph({
+            overview: overviewData,
+            externals: codeSummary.externals ?? [],
+            modules: codeSummary.modules,
+          })
+        : null,
+    [overviewData, codeSummary],
+  );
+  // Fold the fresh derivation through the overlay (drops dead positional
+  // overrides, keeps semantic ones as stale).
+  const reconciled = useMemo(
+    () => (overlay && derived ? reconcileOverlay(overlay, derived).overlay : null),
+    [overlay, derived],
+  );
+  /**
+   * What the canvas shows: composed, then auto-laid-out — except nodes the
+   * user positioned (overrides) or created (manual), which keep their own
+   * coordinates. This is also the `rendered` baseline `extractOverlay` diffs
+   * drags against, so deterministic layout positions never persist.
+   */
+  const rendered = useMemo(() => {
+    if (!derived || !reconciled) return null;
+    const composed = composeArchitecture(derived, reconciled);
+    // Reserved LOD footprints, same convention as the canvas's own
+    // auto-layout: each code-linked node is laid out at the size its zoomed
+    // expansion needs, so zooming into code never overlaps neighbors.
+    const reserve = new Map<string, { width: number; height: number }>();
+    if (overviewData) {
+      const idOfRaw = canonicalSystemIds(overviewData.systems);
+      for (const s of overviewData.systems) {
+        if (s.fileCount > 0)
+          reserve.set(idOfRaw.get(s.id) ?? s.id, estimateModuleFootprint(s.fileCount));
+      }
+    }
+    const laid = autoLayout(composed, { mode: "flow", reserve });
+    // Auto-layout owns every node without an explicit x/y override — manual
+    // nodes included until their first drag records one.
+    const pinned = new Set<string>();
+    for (const [id, o] of Object.entries(reconciled.overrides)) {
+      if (o.x != null && o.y != null) pinned.add(id);
+    }
+    if (pinned.size === 0) return laid;
+    const composedById = new Map(composed.nodes.map((n) => [n.id, n]));
+    return {
+      ...laid,
+      nodes: laid.nodes.map((n) => (pinned.has(n.id) ? (composedById.get(n.id) ?? n) : n)),
+    };
+  }, [derived, reconciled, overviewData]);
+
+  /** A canvas edit of the canonical graph → overlay ops, debounce-persisted. */
+  const commitCanonical = useCallback(
+    (edited: ArchitectureGraph) => {
+      if (!derived || !rendered || !reconciled) return;
+      updateArchOverlay(extractOverlay({ derived, rendered, edited, prev: reconciled }));
+    },
+    [derived, rendered, reconciled, updateArchOverlay],
+  );
+
+  // Old `?diagram=` deep links resolve to the facet their diagram migrated to.
+  const diagramParam = useNav((l) => l.architect?.diagram) ?? null;
+  useEffect(() => {
+    if (!diagramParam || !reconciled) return;
+    const facet = reconciled.facets.find((f) => f.sourcePath === diagramParam);
+    nav({ architect: { diagram: null, ...(facet ? { facet: facet.id } : {}) } });
+  }, [diagramParam, reconciled, nav]);
 
   const activeDraft = archDrafts.find((d) => d.path === draftPath) ?? null;
 
-  // Leave draft mode if the draft vanished or the user switched architectures.
-  // Only once workspace info is in — a deep-linked draft must survive loading.
+  // Leave draft mode if the draft vanished. Only once workspace info is in —
+  // a deep-linked draft must survive loading.
   useEffect(() => {
-    if (infoLoaded && draftPath && (!activeDraft || activeDraft.draft.archPath !== selected?.path)) {
-      setDraftPath(null);
-    }
-  }, [infoLoaded, draftPath, activeDraft, selected?.path]);
+    if (infoLoaded && draftPath && !activeDraft) setDraftPath(null);
+  }, [infoLoaded, draftPath, activeDraft]);
 
   // The graph being edited right now — the draft's while a draft is open.
-  const effectiveGraph = activeDraft ? activeDraft.draft.graph : (selected?.graph ?? null);
+  const effectiveGraph = activeDraft ? activeDraft.draft.graph : rendered;
   const commitGraph = useCallback(
     (graph: ArchitectureGraph) => {
       if (activeDraft) {
@@ -392,11 +469,11 @@ function DiagramsView({
           graph,
           updatedAt: new Date().toISOString(),
         });
-      } else if (selected) {
-        updateArchitecture(selected.path, graph);
+      } else {
+        commitCanonical(graph);
       }
     },
-    [activeDraft, selected, updateArchDraft, updateArchitecture],
+    [activeDraft, updateArchDraft, commitCanonical],
   );
 
   /* ---- facets: named lenses over the selected diagram ---- */
@@ -566,104 +643,20 @@ function DiagramsView({
     return () => clearTimeout(t);
   }, [notice]);
 
-  const selectedDrafts = selected
-    ? archDrafts.filter((d) => d.draft.archPath === selected.path)
-    : [];
-  const draftStale = (d: ArchDraft) =>
-    selected != null && d.archPath === selected.path && !graphsEqual(d.base, selected.graph);
+  const selectedDrafts = archDrafts;
+  // A draft's base predating the current canonical graph (code moved on, or
+  // the draft was made against a pre-migration diagram) — open to rebase.
+  const draftStale = (d: ArchDraft) => rendered != null && !graphsEqual(d.base, rendered);
 
   const saving = Object.keys(pendingSaves).length > 0;
 
-  const canSeed = canSeedFromCodeMap(codeSummary);
-
-  /* ---- auto-mapper: an empty diagram populates itself from the code map ---- */
-  // The server creates a blank "Overview" architecture for fresh workspaces;
-  // the moment the code map is analyzable, map it — nothing user-made is at
-  // stake (the graph has zero nodes) and the seed is fully editable after.
-  const autoMappedPaths = useRef(new Set<string>());
-  const selectedPathKey = selected?.path ?? null;
-  const selectedIsEmpty = selected != null && selected.graph.nodes.length === 0;
-  useEffect(() => {
-    if (loading || !infoLoaded || !selectedPathKey || !selectedIsEmpty || activeDraft) return;
-    if (!canSeedFromCodeMap(codeSummary)) return;
-    if (autoMappedPaths.current.has(selectedPathKey)) return;
-    autoMappedPaths.current.add(selectedPathKey);
-    const current = architectures.find((a) => a.path === selectedPathKey);
-    if (!current || current.graph.nodes.length > 0) return;
-    const seededGraph = seedFromCodeMap(current.graph, codeSummary);
-    updateArchitecture(selectedPathKey, seededGraph);
-    setOverlayOn(true);
-    const mapped = seededGraph.nodes.filter((n) => n.codeModule).length;
-    setNotice(
-      `Auto-mapped ${mapped} module${mapped === 1 ? "" : "s"} from the codebase. Edit freely — drift from the code will be flagged here.`,
-    );
-  }, [
-    loading,
-    infoLoaded,
-    selectedPathKey,
-    selectedIsEmpty,
-    activeDraft,
-    codeSummary,
-    architectures,
-    updateArchitecture,
-    setOverlayOn,
-  ]);
-
-  /* ---- drift detector: the saved diagram vs. the live code map ---- */
-  // Recomputes whenever the code map re-analyzes (codemap.changed refreshes
-  // codeSummary) or the diagram is edited. Structural changes only — see
-  // auto-map.ts. Hidden while a draft is open: drafts have their own rebase.
-  const drift = useMemo<ArchDrift | null>(
-    () => (selected && !activeDraft ? detectDrift(selected.graph, codeSummary) : null),
-    [selected, activeDraft, codeSummary],
-  );
-  const [driftDismissed, setDriftDismissed] = useState<string | null>(null);
-  const driftSig = drift && selected ? driftSignature(selected.path, drift) : null;
-  const driftVisible = drift != null && driftSig !== driftDismissed;
-
-  /** One click: write the code map's projection over the diagram. */
-  const syncDrift = useCallback(() => {
-    if (!selected || !drift) return;
-    updateArchitecture(selected.path, drift.projected);
-    setNotice(
-      `Diagram synced to the code — ${drift.total} change${drift.total === 1 ? "" : "s"} applied.`,
-    );
-  }, [selected, drift, updateArchitecture]);
-
-  /** Review first: the projection becomes a draft, opened in split review. */
-  const reviewDrift = useCallback(async () => {
-    if (!selected || !drift) return;
-    const draft = newArchDraft(
-      "Code drift",
-      selected.path,
-      selected.graph,
-      new Date().toISOString(),
-    );
-    const created = await createDraftFile({ ...draft, graph: drift.projected });
-    setDraftPath(created.path);
-    setReviewOn(true);
-  }, [selected, drift, createDraftFile, setDraftPath, setReviewOn]);
-
-  async function handleCreate() {
-    const name = newName.trim();
-    if (!name) return;
-    const created = await createArchitecture(name);
-    if (seedMode === "code" && canSeedFromCodeMap(codeSummary)) {
-      updateArchitecture(created.path, seedFromCodeMap(created.graph, codeSummary));
-      setOverlayOn(true);
-    }
-    setSelectedPath(created.path);
-    setNewName("");
-    setCreateOpen(false);
-  }
-
   async function startDraft() {
-    if (!selected) return;
+    if (!rendered) return;
     const n = selectedDrafts.length + 1;
     const draft = newArchDraft(
       `Plan ${n > 1 ? n : ""}`.trim(),
-      selected.path,
-      selected.graph,
+      ARCH_OVERLAY_FILE,
+      rendered,
       new Date().toISOString(),
     );
     const created = await createDraftFile(draft);
@@ -671,7 +664,7 @@ function DiagramsView({
   }
 
   function applyDraft() {
-    if (!activeDraft || !selected) return;
+    if (!activeDraft || !rendered) return;
     if (activeDraft.draft.refactors.length > 0) {
       setApplyDialogOpen(true);
       return;
@@ -680,17 +673,17 @@ function DiagramsView({
   }
 
   async function finalizeApply() {
-    if (!activeDraft || !selected) return;
+    if (!activeDraft || !rendered) return;
     setApplyBusy(true);
     try {
       let graph = activeDraft.draft.graph;
       let notes: string[] = [];
-      if (!graphsEqual(activeDraft.draft.base, selected.graph)) {
-        const merged = mergeGraphs(activeDraft.draft.base, activeDraft.draft.graph, selected.graph);
+      if (!graphsEqual(activeDraft.draft.base, rendered)) {
+        const merged = mergeGraphs(activeDraft.draft.base, activeDraft.draft.graph, rendered);
         graph = merged.graph;
         notes = merged.conflicts;
       }
-      updateArchitecture(selected.path, graph);
+      commitCanonical(graph);
 
       const moves = activeDraft.draft.refactors.filter(
         (r) => r.kind === "move" || r.kind === "moveFile",
@@ -792,11 +785,11 @@ function DiagramsView({
   }
 
   function rebaseActiveDraft() {
-    if (!activeDraft || !selected) return;
-    const merged = mergeGraphs(activeDraft.draft.base, activeDraft.draft.graph, selected.graph);
+    if (!activeDraft || !rendered) return;
+    const merged = mergeGraphs(activeDraft.draft.base, activeDraft.draft.graph, rendered);
     updateArchDraft(activeDraft.path, {
       ...activeDraft.draft,
-      base: selected.graph,
+      base: rendered,
       graph: merged.graph,
       updatedAt: new Date().toISOString(),
     });
@@ -820,97 +813,41 @@ function DiagramsView({
           <aside className="flex h-full w-full flex-col bg-surface-1">
         <div className="flex items-center justify-between px-3 py-2.5">
           <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-faint">
-            Architectures
+            Architecture
           </span>
-          <div className="flex items-center gap-1">
-            <Tooltip content={saving ? "Saving…" : "All changes saved to .crystal/"}>
-              <span className="text-ink-faint">
-                {saving ? (
-                  <CloudUpload className="h-3.5 w-3.5 animate-pulse text-info" />
-                ) : (
-                  <Check className="h-3.5 w-3.5 text-ok/70" />
-                )}
-              </span>
-            </Tooltip>
-            <Tooltip content="New architecture">
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                onClick={() => setCreateOpen(true)}
-                aria-label="New architecture"
-              >
-                <Plus className="h-3.5 w-3.5" />
-              </Button>
-            </Tooltip>
-          </div>
+          <Tooltip
+            content={
+              saving
+                ? "Saving…"
+                : "Derived from the code — your edits save to .crystal/architecture/overlay.json"
+            }
+          >
+            <span className="text-ink-faint">
+              {saving ? (
+                <CloudUpload className="h-3.5 w-3.5 animate-pulse text-info" />
+              ) : (
+                <Check className="h-3.5 w-3.5 text-ok/70" />
+              )}
+            </span>
+          </Tooltip>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2">
-          {architectures.map((a) => (
-            <div
-              key={a.path}
-              className={cn(
-                "group flex items-center gap-2 rounded-lg px-2 py-1.5 text-[13px] cursor-pointer",
-                selected?.path === a.path
-                  ? "bg-crystal-500/15 text-ink"
-                  : "text-ink-muted hover:bg-surface-2 hover:text-ink",
-              )}
-              onClick={() => setSelectedPath(a.path)}
-            >
-              <Boxes className="h-3.5 w-3.5 shrink-0 opacity-70" />
-              <span className="min-w-0 flex-1 truncate">{a.graph.name}</span>
-              <span className="text-[10px] text-ink-faint">{a.graph.nodes.length}</span>
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    className="opacity-0 group-hover:opacity-100 data-[state=open]:opacity-100"
-                    onClick={(e) => e.stopPropagation()}
-                    aria-label="Architecture actions"
-                  >
-                    <MoreHorizontal className="h-3.5 w-3.5" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="start">
-                  <DropdownMenuItem
-                    className="text-danger"
-                    onSelect={() => void deleteArchitecture(a.path)}
-                  >
-                    <Trash2 className="h-3.5 w-3.5" /> Delete
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
-          ))}
-
-          {variant === "diagrams" && selected ? (
+          {variant === "diagrams" && rendered ? (
             <>
-              <div className="mt-3 flex items-center justify-between px-1.5 pb-1">
+              <div className="flex items-center justify-between px-1.5 pb-1">
                 <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-faint">
                   Draft plans
                 </span>
-                <div className="flex items-center">
-                  <Tooltip content="Review a commit or branch — its code architecture becomes a draft, diffed against this diagram">
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      onClick={() => setReviewDialogOpen(true)}
-                      aria-label="Review a commit or branch"
-                    >
-                      <History className="h-3.5 w-3.5" />
-                    </Button>
-                  </Tooltip>
-                  <Tooltip content={`New draft plan of “${selected.graph.name}”`}>
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      onClick={() => void startDraft()}
-                      aria-label="New draft plan"
-                    >
-                      <Plus className="h-3.5 w-3.5" />
-                    </Button>
-                  </Tooltip>
-                </div>
+                <Tooltip content="New draft plan — rearrange safely, apply when ready">
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    onClick={() => void startDraft()}
+                    aria-label="New draft plan"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                  </Button>
+                </Tooltip>
               </div>
               {selectedDrafts.map((d) => (
                 <div
@@ -983,7 +920,15 @@ function DiagramsView({
             </>
           ) : null}
 
-          <SurveySection onImported={setSelectedPath} onNotice={setNotice} />
+          <SurveySection
+            onImportGraph={(path, graph) => {
+              if (overviewData && reconciled)
+                updateArchOverlay(
+                  mergeDiagramIntoOverlay(reconciled, { path, graph }, overviewData),
+                );
+            }}
+            onNotice={setNotice}
+          />
         </div>
       </aside>
         </Pane>
@@ -996,12 +941,12 @@ function DiagramsView({
           <div className="flex h-full items-center justify-center">
             <Spinner />
           </div>
-        ) : selected ? (
+        ) : rendered ? (
           variant === "infra" ? (
             <InfraView
-              key={selected.path}
-              graph={selected.graph}
-              onChange={(graph) => updateArchitecture(selected.path, graph)}
+              key="canonical"
+              graph={rendered}
+              onChange={commitCanonical}
               summary={codeSummary}
             />
           ) : (
@@ -1010,8 +955,8 @@ function DiagramsView({
                 <ReviewView key={activeDraft.path} draft={activeDraft.draft} />
               ) : (
                 <ArchitectCanvas
-                  key={activeDraft ? activeDraft.path : selected.path}
-                  graph={activeDraft ? activeDraft.draft.graph : selected.graph}
+                  key={activeDraft ? activeDraft.path : "canonical"}
+                  graph={activeDraft ? activeDraft.draft.graph : rendered}
                   onChange={commitGraph}
                   codeSummary={codeSummary}
                   overlayOn={overlayOn}
@@ -1059,14 +1004,6 @@ function DiagramsView({
                   }
                 />
               ) : null}
-              {!activeDraft && driftVisible && drift ? (
-                <DriftBar
-                  drift={drift}
-                  onSync={syncDrift}
-                  onReview={() => void reviewDrift()}
-                  onDismiss={() => setDriftDismissed(driftSig)}
-                />
-              ) : null}
               <ApplyRefactorsDialog
                 open={applyDialogOpen}
                 onOpenChange={(open) => !applyBusy && setApplyDialogOpen(open)}
@@ -1077,41 +1014,11 @@ function DiagramsView({
             </>
           )
         ) : (
-          <EmptyState
-            icon={Boxes}
-            title="No architectures yet"
-            action={
-              <div className="flex items-center gap-2">
-                {canSeed ? (
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    onClick={() => {
-                      setSeedMode("code");
-                      setCreateOpen(true);
-                    }}
-                  >
-                    <FolderGit2 className="h-3.5 w-3.5" /> Map my codebase
-                  </Button>
-                ) : null}
-                <Button
-                  variant={canSeed ? "secondary" : "primary"}
-                  size="sm"
-                  onClick={() => {
-                    setSeedMode("blank");
-                    setCreateOpen(true);
-                  }}
-                >
-                  <Plus className="h-3.5 w-3.5" /> Blank canvas
-                </Button>
-              </div>
-            }
-          >
-            {canSeed
-              ? "Start from a diagram of your modules and imports — linked to the live code map — or from a blank canvas."
-              : "Model your system as nested groups of services, stores and flows."}{" "}
-            Diagrams are saved to <code className="text-ink">.crystal/architecture/</code> in
-            your repo.
+          <EmptyState icon={Boxes} title="Deriving the architecture…">
+            The diagram derives itself from your code the moment the code map has
+            analyzable TypeScript/JavaScript. Your edits — positions, groups, added
+            queues and stores — persist in{" "}
+            <code className="text-ink">.crystal/architecture/overlay.json</code>.
           </EmptyState>
         )}
         {notice ? (
@@ -1192,70 +1099,6 @@ function DiagramsView({
         ) : null}
       </Split>
 
-      {selected ? (
-        <ReviewDialog
-          open={reviewDialogOpen}
-          onOpenChange={setReviewDialogOpen}
-          archPath={selected.path}
-          onCreated={(path) => {
-            setDraftPath(path);
-            setReviewOn(true);
-          }}
-        />
-      ) : null}
-
-      <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-        <DialogContent
-          title="New architecture"
-          description="Saved as a versionable file in .crystal/architecture/"
-        >
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              void handleCreate();
-            }}
-            className="space-y-3"
-          >
-            <Input
-              autoFocus
-              value={newName}
-              onChange={(e) => setNewName(e.target.value)}
-              placeholder="e.g. Payments platform"
-            />
-            {canSeed ? (
-              <div className="grid grid-cols-2 gap-2" role="radiogroup" aria-label="Starting point">
-                <SeedChoice
-                  active={seedMode === "code"}
-                  onSelect={() => setSeedMode("code")}
-                  icon={<FolderGit2 className="h-3.5 w-3.5" />}
-                  title="Map my codebase"
-                >
-                  {codeSummary!.modules.filter((m) => m.fileCount > 0).length} modules and their
-                  imports, linked to the live code map
-                </SeedChoice>
-                <SeedChoice
-                  active={seedMode === "blank"}
-                  onSelect={() => setSeedMode("blank")}
-                  icon={<PencilRuler className="h-3.5 w-3.5" />}
-                  title="Blank canvas"
-                >
-                  Start empty and build from the palette
-                </SeedChoice>
-              </div>
-            ) : null}
-            <div className="flex justify-end gap-2">
-              <DialogClose asChild>
-                <Button variant="ghost" size="sm">
-                  Cancel
-                </Button>
-              </DialogClose>
-              <Button type="submit" variant="primary" size="sm" disabled={!newName.trim()}>
-                Create
-              </Button>
-            </div>
-          </form>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }
@@ -1493,89 +1336,6 @@ function FacetsSection({
         </div>
       ) : null}
     </>
-  );
-}
-
-/** One selectable starting-point card in the "New architecture" dialog. */
-function SeedChoice({
-  active,
-  onSelect,
-  icon,
-  title,
-  children,
-}: {
-  active: boolean;
-  onSelect: () => void;
-  icon: React.ReactNode;
-  title: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      role="radio"
-      aria-checked={active}
-      onClick={onSelect}
-      className={cn(
-        "rounded-lg border px-2.5 py-2 text-left transition-colors",
-        active
-          ? "border-crystal-500/60 bg-crystal-500/10"
-          : "border-edge bg-surface-1 hover:bg-surface-2",
-      )}
-    >
-      <span className={cn("flex items-center gap-1.5 text-xs font-semibold", active ? "text-ink" : "text-ink-muted")}>
-        {icon} {title}
-      </span>
-      <span className="mt-1 block text-[10.5px] leading-snug text-ink-faint">{children}</span>
-    </button>
-  );
-}
-
-/**
- * Floating bar shown when the code has structurally drifted from the diagram
- * (modules or import relationships appeared/disappeared): sync in one click,
- * or stage the projection as a draft and review it side by side. Dismissing
- * hides this exact drift; any further code movement re-surfaces it.
- */
-function DriftBar({
-  drift,
-  onSync,
-  onReview,
-  onDismiss,
-}: {
-  drift: ArchDrift;
-  onSync: () => void;
-  onReview: () => void;
-  onDismiss: () => void;
-}) {
-  return (
-    <div className="absolute left-1/2 top-3 z-20 flex -translate-x-1/2 items-center gap-2 rounded-xl border border-info/40 bg-surface-2/95 py-1 pl-2.5 pr-1 shadow-xl shadow-black/30 backdrop-blur">
-      <GitCompareArrows className="h-3.5 w-3.5 shrink-0 text-info" />
-      <Tooltip content={drift.items.join(" · ")}>
-        <span className="text-xs font-semibold text-ink">
-          Code drift — {drift.total} change{drift.total === 1 ? "" : "s"}
-        </span>
-      </Tooltip>
-      <span className="hidden max-w-64 truncate text-[10px] text-ink-faint md:inline">
-        {drift.items.slice(0, 2).join(" · ")}
-      </span>
-      <div className="h-4 w-px bg-edge" />
-      <Tooltip content="Update the diagram to match the code — hand-drawn nodes, notes and flows stay untouched">
-        <Button variant="primary" size="xs" onClick={onSync}>
-          <RefreshCw className="h-3 w-3" /> Sync
-        </Button>
-      </Tooltip>
-      <Tooltip content="Stage the changes as a draft and review them side by side first">
-        <Button variant="secondary" size="xs" onClick={onReview}>
-          <GitCompareArrows className="h-3 w-3" /> Review
-        </Button>
-      </Tooltip>
-      <Tooltip content="Hide until the code moves again">
-        <Button variant="ghost" size="icon-sm" onClick={onDismiss} aria-label="Dismiss drift">
-          <X className="h-3.5 w-3.5" />
-        </Button>
-      </Tooltip>
-    </div>
   );
 }
 
