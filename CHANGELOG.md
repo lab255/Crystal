@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.10.0 (2026-07-28)
+
+### Features
+
+- retire the legacy systems tab — the mode is exactly three views ([`21c3cc0`](https://github.com/eliotlim/crystal/commit/21c3cc0))
+- role chips + focus filter on the Architecture canvas ([`9616ff6`](https://github.com/eliotlim/crystal/commit/9616ff6))
+- the system map folds into the Architecture view ([`ff50dc3`](https://github.com/eliotlim/crystal/commit/ff50dc3))
+- categorized diff entry panel for the architecture vs-ref review; docs ([`ad83007`](https://github.com/eliotlim/crystal/commit/ad83007))
+- screens layer on the Architecture canvas; retire the draft-from-ref pipeline ([`1e9a01a`](https://github.com/eliotlim/crystal/commit/1e9a01a))
+- vs-ref drift on the Infrastructure view ([`85f1230`](https://github.com/eliotlim/crystal/commit/85f1230))
+- architecture view id, contracts+insights panels, named service instances ([`20d8302`](https://github.com/eliotlim/crystal/commit/20d8302))
+- vs-ref review on the Architecture canvas ([`67488e5`](https://github.com/eliotlim/crystal/commit/67488e5))
+- one canonical architecture — derived graph + overlay ([`aa72b84`](https://github.com/eliotlim/crystal/commit/aa72b84))
+- codebase view — code map with first-class ref review ([`3871d00`](https://github.com/eliotlim/crystal/commit/3871d00))
+- shared diagram foundations for the three-view consolidation ([`7213900`](https://github.com/eliotlim/crystal/commit/7213900))
+
+### ⚠ BREAKING CHANGES
+
+- retire the legacy systems tab — the mode is exactly three views ([`21c3cc0`](https://github.com/eliotlim/crystal/commit/21c3cc0))
+- the system map folds into the Architecture view ([`ff50dc3`](https://github.com/eliotlim/crystal/commit/ff50dc3))
+
 ## v0.9.0 (2026-07-28)
 
 ### Features
