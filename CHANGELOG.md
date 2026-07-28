@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.9.0 (2026-07-28)
+
+### Features
+
+- Costs tab with per-axis spend attribution ([`e12c5df`](https://github.com/eliotlim/crystal/commit/e12c5df))
+- interactive-first dispatch, session-chain collapse, gated bypass permissions ([`e3f53ce`](https://github.com/eliotlim/crystal/commit/e3f53ce))
+- shared Select, Field and CommandList primitives across pickers ([`54c763c`](https://github.com/eliotlim/crystal/commit/54c763c))
+
 ## v0.8.0 (2026-07-27)
 
 ### Features
