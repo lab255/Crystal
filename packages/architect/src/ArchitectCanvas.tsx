@@ -50,6 +50,7 @@ import {
   isContainerKind,
   matchHighlight,
   uid,
+  type ArchNode,
   type ArchEdgeKind,
   type ArchNodeKind,
   type ArchitectureGraph,
@@ -197,6 +198,8 @@ export interface ArchitectCanvasProps {
   /** Screens layer toggle (the folded-in surfaces map). */
   showScreens?: boolean;
   onToggleScreens?: (on: boolean) => void;
+  /** View-supplied entries prepended to a node's context menu (focus filter…). */
+  extraNodeEntries?: (node: ArchNode) => MenuEntry[];
   /**
    * Ref-review marks keyed by node/edge id (vs <ref>) — added/removed/changed
    * tints; ghost-marked nodes render dashed and inert. The caller merges
@@ -368,6 +371,7 @@ function CanvasInner({
   onToggleContracts,
   showScreens,
   onToggleScreens,
+  extraNodeEntries,
   diffMarks,
 }: ArchitectCanvasProps) {
   const [selectedNodes, setSelectedNodes] = useState<ReadonlySet<string>>(new Set());
@@ -1940,6 +1944,7 @@ function CanvasInner({
 
       return [
         { type: "heading", label: node.label },
+        ...(extraNodeEntries?.(node) ?? []),
         {
           type: "item",
           label: "Rename",
@@ -2194,6 +2199,7 @@ function CanvasInner({
     pin,
     pinned,
     symbolMenu,
+    extraNodeEntries,
   ]);
 
   const mapActions = useMemo<MapActions>(

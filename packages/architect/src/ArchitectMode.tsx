@@ -6,6 +6,7 @@ import {
   Boxes,
   Check,
   CloudUpload,
+  Crosshair,
   GitBranch,
   GitCompareArrows,
   GitMerge,
@@ -47,15 +48,19 @@ import {
   type CodeMapSummary,
   type CodeTrace,
   type CodeTraceStep,
+  type ArchNode,
   type FacetSuggestion,
   type SurfaceMapReport,
   type SurfacesReport,
   type SystemOverview,
+  type SystemRole,
   type TaskItem,
 } from "@crystal/core";
 import {
   DiagramLegend,
   RefReviewBar,
+  parseIdList,
+  toggleIdInList,
   useAgents,
   useConnectionState,
   useCrystal,
@@ -78,6 +83,7 @@ import {
   Spinner,
   Tooltip,
   cn,
+  type MenuEntry,
 } from "@crystal/ui";
 import { ArchitectCanvas } from "./ArchitectCanvas.js";
 import { CodeMapView, requestOpenFile } from "./codemap/CodeMapView.js";
@@ -99,6 +105,7 @@ import { autoLayout } from "./layout.js";
 import { estimateModuleFootprint } from "./live-code.js";
 import { ReviewView } from "./ReviewView.js";
 import { SurveySection } from "./SurveyPanel.js";
+import { ROLE_META } from "./systems/role-meta.js";
 import { SystemsView, type OpenCodeFacet } from "./systems/SystemsView.js";
 
 const EMPTY_DRAFTS: never[] = [];
@@ -106,6 +113,7 @@ const EMPTY_REFACTORS: never[] = [];
 const EMPTY_PROJECTS: never[] = [];
 const EMPTY_RUNS: never[] = [];
 const REF_NEED_OVERVIEW = ["overview"] as const;
+const EMPTY_ROLE_SET: ReadonlySet<SystemRole> = new Set();
 const DIFF_LEGEND = [
   { swatchClassName: "border border-ok/70 bg-ok/20", label: "added" },
   { swatchClassName: "border border-dashed border-danger/70 bg-danger/15", label: "removed" },
@@ -516,37 +524,88 @@ function DiagramsView({
       ]),
     [archDiff],
   );
+  /* ---- view filters: role chips + the focus filter (shared vocabulary) ---- */
+
+  const [hiddenRoles, setHiddenRoles] = useState<ReadonlySet<SystemRole>>(EMPTY_ROLE_SET);
+  const focusParam = useNav((l) => l.architect?.focus) ?? null;
+  const focusSolo = useNav((l) => l.architect?.focusSolo) ?? false;
+  const focusIds = useMemo(() => new Set(parseIdList(focusParam)), [focusParam]);
+  const roleOfCanonical = useMemo(() => {
+    const map = new Map<string, SystemRole>();
+    if (!overviewData) return map;
+    const idOfRaw = canonicalSystemIds(overviewData.systems);
+    for (const s of overviewData.systems) map.set(idOfRaw.get(s.id) ?? s.id, s.role);
+    return map;
+  }, [overviewData]);
   /**
-   * What the canvas shows under a review: the rendered graph plus base-only
-   * ghosts, laid out together so removals occupy space. `rendered` itself
-   * stays ghost-free — it is the baseline drafts and overlay extraction
-   * diff against.
+   * Nodes the view hides (never the overlay): systems whose role chip is off,
+   * and — when the focus filter is on — systems outside the focus set and its
+   * neighbor ring. These MUST be re-injected before overlay extraction, or a
+   * view filter would silently persist as hiddenIds.
+   */
+  const viewFilteredIds = useMemo(() => {
+    const out = new Set<string>();
+    if (!rendered) return out;
+    for (const n of rendered.nodes) {
+      const role = roleOfCanonical.get(n.id);
+      if (role && hiddenRoles.has(role)) out.add(n.id);
+    }
+    if (focusIds.size > 0) {
+      const keep = new Set(focusIds);
+      if (!focusSolo) {
+        for (const e of rendered.edges) {
+          if (focusIds.has(e.source)) keep.add(e.target);
+          if (focusIds.has(e.target)) keep.add(e.source);
+        }
+      }
+      for (const n of rendered.nodes) {
+        if (roleOfCanonical.has(n.id) && !keep.has(n.id)) out.add(n.id);
+      }
+    }
+    return out;
+  }, [rendered, roleOfCanonical, hiddenRoles, focusIds, focusSolo]);
+
+  /**
+   * What the canvas shows: the rendered graph plus base-only review ghosts
+   * (laid out together so removals occupy space), minus view-filtered nodes.
+   * `rendered` itself stays untouched — it is the baseline drafts and
+   * overlay extraction diff against.
    */
   const displayGraph = useMemo(() => {
-    if (!rendered || !archDiff || ghostIds.size === 0) return rendered;
-    const nodeIds = new Set(rendered.nodes.map((n) => n.id));
-    const merged: ArchitectureGraph = {
-      ...rendered,
-      nodes: [...rendered.nodes, ...archDiff.ghosts.nodes.filter((g) => !nodeIds.has(g.id))],
-      edges: [
-        ...rendered.edges,
-        ...archDiff.ghosts.edges.filter((g) => !rendered.edges.some((e) => e.id === g.id)),
-      ],
-    };
-    const laid = autoLayout(merged, { mode: "flow" });
-    const renderedById = new Map(rendered.nodes.map((n) => [n.id, n]));
-    return {
-      ...laid,
-      nodes: laid.nodes.map((n) => renderedById.get(n.id) ?? n),
-    };
-  }, [rendered, archDiff, ghostIds]);
+    if (!rendered) return null;
+    let out = rendered;
+    if (archDiff && ghostIds.size > 0) {
+      const nodeIds = new Set(out.nodes.map((n) => n.id));
+      const merged: ArchitectureGraph = {
+        ...out,
+        nodes: [...out.nodes, ...archDiff.ghosts.nodes.filter((g) => !nodeIds.has(g.id))],
+        edges: [
+          ...out.edges,
+          ...archDiff.ghosts.edges.filter((g) => !out.edges.some((e) => e.id === g.id)),
+        ],
+      };
+      const laid = autoLayout(merged, { mode: "flow" });
+      const renderedById = new Map(out.nodes.map((n) => [n.id, n]));
+      out = { ...laid, nodes: laid.nodes.map((n) => renderedById.get(n.id) ?? n) };
+    }
+    if (viewFilteredIds.size > 0) {
+      out = {
+        ...out,
+        nodes: out.nodes.filter((n) => !viewFilteredIds.has(n.id)),
+        edges: out.edges.filter(
+          (e) => !viewFilteredIds.has(e.source) && !viewFilteredIds.has(e.target),
+        ),
+      };
+    }
+    return out;
+  }, [rendered, archDiff, ghostIds, viewFilteredIds]);
 
   /** A canvas edit of the canonical graph → overlay ops, debounce-persisted. */
   const commitCanonical = useCallback(
     (edited: ArchitectureGraph) => {
       if (!derived || !rendered || !reconciled) return;
       // Review ghosts exist only at the base ref — never part of the edit.
-      const clean =
+      let clean =
         ghostIds.size === 0
           ? edited
           : {
@@ -554,9 +613,58 @@ function DiagramsView({
               nodes: edited.nodes.filter((n) => !ghostIds.has(n.id)),
               edges: edited.edges.filter((e) => !ghostIds.has(e.id)),
             };
+      // View-filtered nodes were only hidden from display — put them back so
+      // extraction never records them as user deletions.
+      if (viewFilteredIds.size > 0) {
+        const present = new Set(clean.nodes.map((n) => n.id));
+        const cleanEdgeIds = new Set(clean.edges.map((e) => e.id));
+        clean = {
+          ...clean,
+          nodes: [
+            ...clean.nodes,
+            ...rendered.nodes.filter((n) => viewFilteredIds.has(n.id) && !present.has(n.id)),
+          ],
+          edges: [
+            ...clean.edges,
+            ...rendered.edges.filter(
+              (e) =>
+                !cleanEdgeIds.has(e.id) &&
+                (viewFilteredIds.has(e.source) || viewFilteredIds.has(e.target)),
+            ),
+          ],
+        };
+      }
       updateArchOverlay(extractOverlay({ derived, rendered, edited: clean, prev: reconciled }));
     },
-    [derived, rendered, reconciled, ghostIds, updateArchOverlay],
+    [derived, rendered, reconciled, ghostIds, viewFilteredIds, updateArchOverlay],
+  );
+
+  /** Focus-filter entries prepended to system nodes' context menus. */
+  const extraNodeEntries = useCallback(
+    (node: ArchNode): MenuEntry[] => {
+      if (!roleOfCanonical.has(node.id)) return [];
+      const inFocus = focusIds.has(node.id);
+      const entries: MenuEntry[] = [
+        {
+          type: "item",
+          label:
+            focusIds.size === 0 ? "Focus" : inFocus ? "Remove from focus" : "Add to focus",
+          icon: Crosshair,
+          onSelect: () =>
+            nav({ architect: { focus: toggleIdInList(focusParam, node.id) } }),
+        },
+      ];
+      if (focusIds.size > 0) {
+        entries.push({
+          type: "item",
+          label: "Clear focus filter",
+          icon: X,
+          onSelect: () => nav({ architect: { focus: null, focusSolo: false } }),
+        });
+      }
+      return entries;
+    },
+    [roleOfCanonical, focusIds, focusParam, nav],
   );
 
   // Old `?diagram=` deep links resolve to the facet their diagram migrated to.
@@ -975,6 +1083,83 @@ function DiagramsView({
           </Tooltip>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2">
+          {variant === "architecture" && rendered && overviewData ? (
+            <div className="px-1.5 pb-2">
+              <div className="px-0.5 pb-1 text-[11px] font-semibold uppercase tracking-wider text-ink-faint">
+                Roles
+              </div>
+              <div className="flex flex-wrap gap-1">
+                {(Object.keys(ROLE_META) as SystemRole[]).map((role) => {
+                  const meta = ROLE_META[role];
+                  const count = overviewData.systems.filter((s) => s.role === role).length;
+                  if (count === 0) return null;
+                  const hidden = hiddenRoles.has(role);
+                  return (
+                    <Tooltip
+                      key={role}
+                      content={`${hidden ? "Show" : "Hide"} ${meta.label.toLowerCase()} systems`}
+                    >
+                      <button
+                        type="button"
+                        aria-pressed={!hidden}
+                        onClick={() =>
+                          setHiddenRoles((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(role)) next.delete(role);
+                            else next.add(role);
+                            return next;
+                          })
+                        }
+                        className={cn(
+                          "flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] transition-colors",
+                          hidden
+                            ? "border-edge text-ink-faint opacity-60 hover:text-ink-muted"
+                            : "border-edge-strong text-ink-muted hover:text-ink",
+                        )}
+                      >
+                        <span
+                          className="h-1.5 w-1.5 rounded-full"
+                          style={{ background: meta.accent }}
+                        />
+                        {meta.label}
+                        <span className="text-ink-faint">{count}</span>
+                      </button>
+                    </Tooltip>
+                  );
+                })}
+              </div>
+              {focusIds.size > 0 ? (
+                <div className="mt-1.5 flex items-center gap-1.5 rounded-md bg-crystal-500/15 px-1.5 py-1 text-[10px] text-crystal-300">
+                  <Crosshair className="h-3 w-3 shrink-0" />
+                  <span className="min-w-0 flex-1 truncate">
+                    Focus — {focusIds.size} system{focusIds.size === 1 ? "" : "s"}
+                  </span>
+                  <Tooltip content={focusSolo ? "Show the neighbor ring" : "Hide the neighbor ring"}>
+                    <button
+                      type="button"
+                      aria-pressed={focusSolo}
+                      onClick={() => nav({ architect: { focusSolo: !focusSolo } })}
+                      className={cn(
+                        "rounded px-1 py-0.5",
+                        focusSolo ? "bg-crystal-500/20" : "hover:bg-crystal-500/20",
+                      )}
+                    >
+                      solo
+                    </button>
+                  </Tooltip>
+                  <button
+                    type="button"
+                    onClick={() => nav({ architect: { focus: null, focusSolo: false } })}
+                    aria-label="Clear focus filter"
+                    className="hover:text-crystal-200"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
           {variant === "architecture" && rendered ? (
             <>
               <div className="flex items-center justify-between px-1.5 pb-1">
@@ -1128,6 +1313,7 @@ function DiagramsView({
                   onToggleContracts={setShowContracts}
                   showScreens={screensOn}
                   onToggleScreens={setScreensOn}
+                  extraNodeEntries={extraNodeEntries}
                 />
               )}
               {activeDraft ? (
