@@ -1043,12 +1043,14 @@ function DiagramsView({
             <Spinner />
           </div>
         ) : rendered ? (
-          variant === "infra" ? (
+          <>
+          {variant === "infra" ? (
             <InfraView
               key="canonical"
-              graph={rendered}
+              graph={displayGraph ?? rendered}
               onChange={commitCanonical}
               summary={codeSummary}
+              diffMarks={archDiff?.marks ?? null}
             />
           ) : (
             <>
@@ -1117,41 +1119,42 @@ function DiagramsView({
                 onConfirm={() => void finalizeApply()}
                 busy={applyBusy}
               />
-              {!activeDraft ? (
-                <div className="absolute right-3 top-3 z-10 flex flex-col items-end gap-2">
-                  <RefReviewBar
-                    active={
-                      refReview.active
-                        ? {
-                            ...refReview.active,
-                            commit: refReview.active.commit?.slice(0, 7),
-                            badge: archDiff ? (
-                              <span className="rounded bg-surface-3 px-1 text-[9px] text-ink-muted">
-                                {formatDiffCounts(countMarks(archDiff.marks)) || "no drift"}
-                              </span>
-                            ) : refReview.loading ? (
-                              <Spinner className="h-3 w-3" />
-                            ) : undefined,
-                          }
-                        : null
-                    }
-                    onReview={refReview.start}
-                    onExit={refReview.exit}
-                    loading={refReview.loading}
-                  />
-                  {refReview.error ? (
-                    <span
-                      className="max-w-64 truncate rounded-lg border border-danger/40 bg-surface-1/95 px-2 py-1 text-[10px] text-danger"
-                      title={refReview.error}
-                    >
-                      {refReview.error}
-                    </span>
-                  ) : null}
-                  {refReview.active && archDiff ? <DiagramLegend entries={DIFF_LEGEND} /> : null}
-                </div>
-              ) : null}
             </>
-          )
+          )}
+            {!activeDraft ? (
+              <div className="absolute right-3 top-3 z-10 flex flex-col items-end gap-2">
+                <RefReviewBar
+                  active={
+                    refReview.active
+                      ? {
+                          ...refReview.active,
+                          commit: refReview.active.commit?.slice(0, 7),
+                          badge: archDiff ? (
+                            <span className="rounded bg-surface-3 px-1 text-[9px] text-ink-muted">
+                              {formatDiffCounts(countMarks(archDiff.marks)) || "no drift"}
+                            </span>
+                          ) : refReview.loading ? (
+                            <Spinner className="h-3 w-3" />
+                          ) : undefined,
+                        }
+                      : null
+                  }
+                  onReview={refReview.start}
+                  onExit={refReview.exit}
+                  loading={refReview.loading}
+                />
+                {refReview.error ? (
+                  <span
+                    className="max-w-64 truncate rounded-lg border border-danger/40 bg-surface-1/95 px-2 py-1 text-[10px] text-danger"
+                    title={refReview.error}
+                  >
+                    {refReview.error}
+                  </span>
+                ) : null}
+                {refReview.active && archDiff ? <DiagramLegend entries={DIFF_LEGEND} /> : null}
+              </div>
+            ) : null}
+          </>
         ) : (
           <EmptyState icon={Boxes} title="Deriving the architecture…">
             The diagram derives itself from your code the moment the code map has

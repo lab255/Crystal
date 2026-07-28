@@ -25,6 +25,7 @@ import {
   type ArchNode,
   type ArchitectureGraph,
   type CodeMapSummary,
+  type DiffMarks,
 } from "@crystal/core";
 import { useNav } from "@crystal/client";
 import { Badge, Button, EmptyState, Input, Tooltip, cn } from "@crystal/ui";
@@ -169,6 +170,8 @@ export function InfraView(props: {
   onChange: (graph: ArchitectureGraph) => void;
   /** Live code map — powers the detected-dependency overlay (service map). */
   summary?: CodeMapSummary | null;
+  /** Ref-review marks (vs <ref>) keyed by node/edge id — drift tints. */
+  diffMarks?: DiffMarks | null;
 }) {
   return (
     <ReactFlowProvider>
@@ -181,10 +184,12 @@ function InfraInner({
   graph,
   onChange,
   summary = null,
+  diffMarks = null,
 }: {
   graph: ArchitectureGraph;
   onChange: (graph: ArchitectureGraph) => void;
   summary?: CodeMapSummary | null;
+  diffMarks?: DiffMarks | null;
 }) {
   const [envId, setEnvId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -401,6 +406,7 @@ function InfraInner({
               subtitle: node.placements[activeEnv.id]?.runtime || KIND_META[node.kind].label,
               accent: accentOf(node),
               icon: KIND_META[node.kind].icon,
+              diff: diffMarks?.[node.id],
             },
           });
         });
@@ -466,6 +472,7 @@ function InfraInner({
             icon: meta.icon,
             badge: `×${dep.weight}`,
             boundary: true,
+            diff: diffMarks?.[externalNodeId(dep)],
           },
         });
       });
@@ -473,12 +480,20 @@ function InfraInner({
 
     const edges: RfEdge[] = placedEdges(graph, activeEnv.id).map((e) => {
       const style = EDGE_KIND_STYLE[e.kind];
+      const mark = diffMarks?.[e.id];
+      const stroke = mark
+        ? mark.kind === "added"
+          ? "var(--color-ok)"
+          : mark.kind === "removed"
+            ? "var(--color-danger)"
+            : "var(--color-warn)"
+        : style.stroke;
       return {
         id: e.id,
         source: e.source,
         target: e.target,
-        label: e.label || undefined,
-        style: { stroke: style.stroke, strokeWidth: 1.4, strokeDasharray: style.dash, opacity: 0.9 },
+        label: mark?.detail ?? (e.label || undefined),
+        style: { stroke, strokeWidth: mark ? 2 : 1.4, strokeDasharray: style.dash, opacity: 0.9 },
         labelStyle: { fill: "var(--color-ink-muted)", fontSize: 9 },
         labelBgStyle: { fill: "var(--color-surface-1)", fillOpacity: 0.9 },
         markerEnd: { type: MarkerType.ArrowClosed, color: style.stroke, width: 14, height: 14 },

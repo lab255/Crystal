@@ -1,7 +1,9 @@
 import { Handle, Position, type NodeProps, type Node as RfNode } from "@xyflow/react";
 import { memo, useState, type DragEvent } from "react";
 import { MoveUpRight, PackagePlus, type LucideIcon } from "lucide-react";
+import type { DiffMark } from "@crystal/core";
 import { cn } from "@crystal/ui";
+import { DiffCornerBadge, diffBorderStyle, diffNodeClass } from "../nodes/diff-badge.js";
 import { SimBadges, SimStrip } from "../SimPanel.js";
 import type { SimNodeStats } from "../simulation.js";
 
@@ -33,6 +35,8 @@ export interface CodeNodeData extends Record<string, unknown> {
   sim?: SimNodeStats;
   /** Component crashed via the sim kill switch. */
   simKilled?: boolean;
+  /** Ref-review mark (vs <ref>) — added/removed/changed tint. */
+  diff?: DiffMark;
 }
 
 export type CodeRfNode = RfNode<CodeNodeData>;
@@ -55,11 +59,13 @@ export const CodeNode = memo(function CodeNode({ id, data, selected }: NodeProps
         dragOver && "ring-2 ring-warn",
         data.sim?.overloaded && !killed && "border-danger/60 shadow-lg shadow-danger/20",
         killed && "opacity-40 saturate-0",
+        diffNodeClass(data.diff),
       )}
       style={{
         borderLeftWidth: 3,
         borderLeftColor: data.accent,
         borderStyle: data.boundary ? "dashed" : "solid",
+        ...(selected ? {} : diffBorderStyle(data.diff)),
       }}
       onDragOver={(e) => {
         if (!accepts(e)) return;
@@ -81,6 +87,7 @@ export const CodeNode = memo(function CodeNode({ id, data, selected }: NodeProps
         }
       }}
     >
+      {data.diff ? <DiffCornerBadge mark={data.diff} /> : null}
       {data.intentMark ? (
         <span
           className="absolute -right-2 -top-2 flex h-4 w-4 items-center justify-center rounded-full bg-warn text-surface-0 shadow"
