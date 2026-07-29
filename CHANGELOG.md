@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.13.0 (2026-07-29)
+
+### Features
+
+- surface the new orchestration verbs in the UI ([`c01294c`](https://github.com/eliotlim/crystal/commit/c01294c))
+
 ## v0.12.0 (2026-07-29)
 
 ### Features
