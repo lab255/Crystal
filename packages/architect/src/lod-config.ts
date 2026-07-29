@@ -22,6 +22,14 @@ export const LOD_MIN_TEXT_DEFAULT = 6.5;
 export const LOD_MIN_TEXT_RANGE = { min: 4, max: 12 } as const;
 
 /**
+ * Above this many analyzable files nothing bulk-loads eagerly — module/file
+ * details are fetched on demand only. A FormSG-scale repo materialized whole
+ * OOMs the desktop webview (its heap ceiling is far below a desktop
+ * browser's), so both canvases consult the same line.
+ */
+export const HUGE_TREE_FILE_LIMIT = 2000;
+
+/**
  * The explicit detail-ladder stops offered on the unified canvas. "repos"
  * doesn't apply — an architecture diagram is already scoped to one workspace.
  */

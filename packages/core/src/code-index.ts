@@ -664,6 +664,27 @@ function nodeFileSets(graph: ArchitectureGraph, index: CodeIndex): NodeFiles[] {
   return out;
 }
 
+/**
+ * The slice of the index facet suggestion actually reads — file identity and
+ * tag strings, with symbol names, tag evidence and untagged symbols dropped.
+ * `codeindex.get` serves this under `projection: "facets"` so the
+ * architecture sidebar can offer suggestions without materializing the full
+ * per-symbol index in a memory-constrained webview.
+ */
+export function facetIndexProjection(index: CodeIndex): CodeIndex {
+  const leanTag = (t: SymbolTag): SymbolTag => ({ ...t, evidence: [] });
+  return {
+    ...index,
+    files: index.files.map((f) => ({
+      ...f,
+      tags: f.tags.map(leanTag),
+      symbols: f.symbols
+        .filter((s) => s.tags.length > 0)
+        .map((s) => ({ ...s, name: "", tags: s.tags.map(leanTag) })),
+    })),
+  };
+}
+
 /** All tags on a file (file-level + every symbol), as a set of tag strings. */
 function fileTagSet(file: IndexedFile): Set<string> {
   const set = new Set(file.tags.map((t) => t.tag));

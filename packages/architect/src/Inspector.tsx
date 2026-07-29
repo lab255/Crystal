@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowDownLeft, ArrowUpRight, FileCode2, Trash2, X } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, FileCode2, FileText, Trash2, X } from "lucide-react";
 import {
   ARCH_EDGE_KINDS,
   ARCH_LAYERS,
@@ -55,6 +55,7 @@ export function Inspector({
   insight,
   onFocusNode,
   onGraphChange,
+  onOpenContract,
   onClearSelection,
 }: {
   graph: ArchitectureGraph;
@@ -67,6 +68,8 @@ export function Inspector({
   /** Jump the canvas to a related node. */
   onFocusNode?: (id: string) => void;
   onGraphChange: (graph: ArchitectureGraph) => void;
+  /** Open a derived edge's boundary contract; false = no contract known. */
+  onOpenContract?: (edgeId: string) => boolean;
   onClearSelection: () => void;
 }) {
   return (
@@ -93,7 +96,13 @@ export function Inspector({
             {insight ? <NodeInsightSections insight={insight} onFocusNode={onFocusNode} /> : null}
           </>
         ) : edge ? (
-          <EdgeEditor edge={edge} graph={graph} onGraphChange={onGraphChange} onDeleted={onClearSelection} />
+          <EdgeEditor
+            edge={edge}
+            graph={graph}
+            onGraphChange={onGraphChange}
+            onOpenContract={onOpenContract}
+            onDeleted={onClearSelection}
+          />
         ) : null}
       </div>
     </div>
@@ -491,17 +500,20 @@ function EdgeEditor({
   edge,
   graph,
   onGraphChange,
+  onOpenContract,
   onDeleted,
 }: {
   edge: ArchEdge;
   graph: ArchitectureGraph;
   onGraphChange: (graph: ArchitectureGraph) => void;
+  onOpenContract?: (edgeId: string) => boolean;
   onDeleted: () => void;
 }) {
   const [label, setLabel] = useState(edge.label);
   useEffect(() => setLabel(edge.label), [edge.id]);
 
   const nodeName = (id: string) => graph.nodes.find((n) => n.id === id)?.label ?? "?";
+  const hasContract = onOpenContract != null && edge.id.startsWith("link:");
 
   return (
     <>
@@ -509,7 +521,26 @@ function EdgeEditor({
         <span className="text-ink">{nodeName(edge.source)}</span>
         {" → "}
         <span className="text-ink">{nodeName(edge.target)}</span>
+        {edge.apiOnly ? (
+          <div className="mt-1 text-[10px] text-ink-faint">
+            API-only boundary — talks over the wire, no imports cross.
+          </div>
+        ) : null}
+        {edge.cycle ? (
+          <div className="mt-1 text-[10px] text-warn">Part of a dependency cycle.</div>
+        ) : null}
       </div>
+      {hasContract ? (
+        <Button
+          variant="ghost"
+          size="sm"
+          className="w-full justify-center"
+          onClick={() => onOpenContract(edge.id)}
+        >
+          <FileText className="h-3.5 w-3.5" />
+          View boundary contract
+        </Button>
+      ) : null}
       <Field label="Kind">
         <Select
           value={edge.kind}

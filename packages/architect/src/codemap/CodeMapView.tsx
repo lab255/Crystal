@@ -113,6 +113,8 @@ import {
 } from "./map-model.js";
 import { FacetsPanel } from "./FacetsPanel.js";
 import { LodSlider } from "./LodSlider.js";
+import { cappedExpansionFiles } from "../live-code.js";
+import { HUGE_TREE_FILE_LIMIT } from "../lod-config.js";
 import { MapActionsContext, SYMBOL_TONES, mapNodeTypes, type MapActions } from "./map-nodes.js";
 
 const crossNodeTypes = { code: CodeNode };
@@ -480,7 +482,14 @@ function CodeMapInner({
         const data = await ensureBulk();
         if (!data) return;
         setExpandedModules(new Set(data.modules.map((d) => d.module.path)));
-        setExpandedFiles(next === "members" ? new Set(data.files.map((f) => f.path)) : new Set());
+        // Members expands only the per-module cap winners — marking every
+        // file expanded pins them all past the cap and mounts the whole
+        // repo's symbol chips at once.
+        setExpandedFiles(
+          next === "members"
+            ? new Set(data.modules.flatMap((d) => cappedExpansionFiles(d)))
+            : new Set(),
+        );
         if (next === "modules") setOpenCode(new Set());
       }
       setModulePositions(new Map());
@@ -501,7 +510,7 @@ function CodeMapInner({
   // badges and the members-level layout are ready before the slider moves.
   useEffect(() => {
     if (!summary || !wsKey || levelKind === "all") return;
-    if (summary.fileTotal > 2000) return; // huge tree — fetch on demand only
+    if (summary.fileTotal > HUGE_TREE_FILE_LIMIT) return; // huge tree — fetch on demand only
     void ensureBulk();
   }, [summary, wsKey, levelKind, ensureBulk]);
 
@@ -1775,6 +1784,9 @@ function WorkspaceMapCanvas({
       panOnScroll
       snapToGrid={snap}
       snapGrid={[16, 16]}
+      // Same webview-heap guard as the architecture canvas: only visible
+      // nodes mount DOM; the scene itself still holds every node.
+      onlyRenderVisibleElements
       proOptions={{ hideAttribution: true }}
       className="bg-surface-0"
     >

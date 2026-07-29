@@ -20,10 +20,17 @@ export const PALETTE_KINDS: ArchNodeKind[] = [
   "note",
 ];
 
-export function Palette({ onAdd }: { onAdd: (kind: ArchNodeKind) => void }) {
+export function Palette({
+  onAdd,
+  kinds = PALETTE_KINDS,
+}: {
+  onAdd: (kind: ArchNodeKind) => void;
+  /** Subset offered — the infra view drops container kinds and notes. */
+  kinds?: readonly ArchNodeKind[];
+}) {
   return (
     <div className="flex flex-col gap-0.5 rounded-xl border border-edge bg-surface-2/95 p-1 shadow-xl shadow-black/30 backdrop-blur">
-      {PALETTE_KINDS.map((kind) => {
+      {kinds.map((kind) => {
         const meta = KIND_META[kind];
         const Icon = meta.icon;
         return (

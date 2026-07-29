@@ -72,6 +72,13 @@ export const ArchPlacementSchema = z.object({
   target: z.string(),
   /** Runtime detail, e.g. "fargate ×3", "k8s deployment", "lambda". */
   runtime: z.string().default(""),
+  /**
+   * Pinned card position inside the target's container on the infra canvas
+   * (parent-relative) — both present or neither; absent = the grid packer
+   * owns the slot. Per environment by construction, since placements are.
+   */
+  x: z.number().optional(),
+  y: z.number().optional(),
 });
 export type ArchPlacement = z.infer<typeof ArchPlacementSchema>;
 
@@ -181,6 +188,14 @@ export const ArchEdgeSchema = z.object({
   target: z.string(),
   kind: ArchEdgeKindSchema.default("sync"),
   label: z.string().default(""),
+  /** Derived link traffic (import statements, or matched API calls for
+   *  api-only links) — scales the stroke. Absent on user-drawn edges. */
+  weight: z.number().optional(),
+  /** True when the systems talk over the wire only — API calls matched, no
+   *  imports crossing. Rendered dashed: a contract, not a compile-time dep. */
+  apiOnly: z.boolean().optional(),
+  /** True when this derived link participates in a dependency cycle. */
+  cycle: z.boolean().optional(),
 });
 export type ArchEdge = z.infer<typeof ArchEdgeSchema>;
 

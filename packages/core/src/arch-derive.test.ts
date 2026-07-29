@@ -113,6 +113,60 @@ describe("deriveArchGraph", () => {
     };
     expect(deriveArchGraph(input)).toEqual(deriveArchGraph(input));
   });
+
+  it("carries the crossing symbol, weight and api-only flag onto link edges", () => {
+    const graph = deriveArchGraph({
+      overview: overview(
+        [AUTH, UI],
+        [
+          { source: "sys:ui", target: "sys:auth", weight: 4, symbols: ["login", "logout"] },
+          {
+            source: "sys:auth",
+            target: "sys:ui",
+            weight: 0,
+            symbols: [],
+            apis: [
+              { method: "GET", path: "/api/session", weight: 3 },
+              { method: "POST", path: "/api/logout", weight: 1 },
+            ],
+          },
+        ],
+      ),
+      externals: [],
+      modules: [],
+    });
+    const imports = graph.edges.find((e) => e.id === "link:sys:ui->sys:auth")!;
+    expect(imports.label).toBe("login ×4");
+    expect(imports.weight).toBe(4);
+    expect(imports.apiOnly).toBeUndefined();
+    const wire = graph.edges.find((e) => e.id === "link:sys:auth->sys:ui")!;
+    expect(wire.label).toBe("GET /api/session +1");
+    expect(wire.apiOnly).toBe(true);
+    expect(wire.weight).toBe(4); // matched API call weight stands in for imports
+    expect(wire.kind).toBe("sync");
+  });
+
+  it("marks edges participating in a dependency cycle", () => {
+    const graph = deriveArchGraph({
+      overview: overview(
+        [AUTH, UI],
+        [
+          { source: "sys:ui", target: "sys:auth", weight: 2, symbols: ["login"] },
+          { source: "sys:auth", target: "sys:ui", weight: 1, symbols: ["Button"] },
+        ],
+      ),
+      externals: [],
+      modules: [],
+    });
+    expect(graph.edges.every((e) => e.cycle === true)).toBe(true);
+    // A one-way link is not a cycle.
+    const acyclic = deriveArchGraph({
+      overview: overview([AUTH, UI], [{ source: "sys:ui", target: "sys:auth", weight: 2, symbols: [] }]),
+      externals: [],
+      modules: [],
+    });
+    expect(acyclic.edges[0]!.cycle).toBeUndefined();
+  });
 });
 
 describe("overview diff projection", () => {

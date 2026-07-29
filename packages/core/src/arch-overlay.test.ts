@@ -226,6 +226,37 @@ describe("extractOverlay", () => {
     expect(out.hiddenEdgeIds).toEqual([]);
   });
 
+  it("round-trips an infra placement pin (x/y on the placement) as an override", () => {
+    const rendered = renderedGraph();
+    const edited: ArchitectureGraph = {
+      ...rendered,
+      nodes: rendered.nodes.map((n) =>
+        n.id === "sys:auth"
+          ? { ...n, placements: { env1: { target: "aws", runtime: "ecs", x: 120, y: 64 } } }
+          : n,
+      ),
+    };
+    const out = extractOverlay({
+      derived: derivedGraph(),
+      rendered,
+      edited,
+      prev: createArchOverlay(),
+    });
+    expect(out.overrides["sys:auth"]).toEqual({
+      placements: { env1: { target: "aws", runtime: "ecs", x: 120, y: 64 } },
+    });
+    const composed = composeArchitecture(derivedGraph(), {
+      ...createArchOverlay(),
+      overrides: out.overrides,
+    });
+    expect(composed.nodes.find((n) => n.id === "sys:auth")!.placements.env1).toEqual({
+      target: "aws",
+      runtime: "ecs",
+      x: 120,
+      y: 64,
+    });
+  });
+
   it("records deliberate edge deletions and edge overrides", () => {
     const rendered = renderedGraph();
     const out = extractOverlay({

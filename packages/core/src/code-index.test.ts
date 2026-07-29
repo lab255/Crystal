@@ -11,6 +11,7 @@ import {
   buildCodeIndex,
   buildEnrichmentPrompt,
   conceptDisplayName,
+  facetIndexProjection,
   heuristicFileTags,
   heuristicSymbolTags,
   identifierWords,
@@ -331,6 +332,20 @@ describe("suggestFacets", () => {
   it("titles unknown intent values from the tag value", () => {
     expect(conceptDisplayName("auth")).toBe("Authentication");
     expect(conceptDisplayName("rate-limiting")).toBe("Rate limiting");
+  });
+
+  it("suggests identically from the facets projection, which strips the heavy fields", () => {
+    const { graph, index } = fixture();
+    const lean = facetIndexProjection(index);
+    expect(suggestFacets(graph, lean)).toEqual(suggestFacets(graph, index));
+    for (const file of lean.files) {
+      for (const t of file.tags) expect(t.evidence).toEqual([]);
+      for (const s of file.symbols) {
+        expect(s.name).toBe("");
+        expect(s.tags.length).toBeGreaterThan(0); // untagged symbols dropped
+        for (const t of s.tags) expect(t.evidence).toEqual([]);
+      }
+    }
   });
 });
 

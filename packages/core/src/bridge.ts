@@ -627,9 +627,12 @@ export interface BridgeMethods {
    * The semantic code index: deterministic heuristic tags rebuilt live from
    * the code map, merged with agent enrichments from `.crystal/index/`.
    * `staleFiles` lists files no fresh enrichment covers (see code-index.ts).
+   * `projection: "facets"` returns the facet-suggestion slice (tag strings
+   * only — no symbol names, no evidence, no untagged symbols); large repos
+   * must request it from webviews instead of the full index.
    */
   "codeindex.get": {
-    params: WsScope;
+    params: WsScope & { projection?: "facets" };
     result: { index: CodeIndex; staleFiles: string[] };
   };
   /**

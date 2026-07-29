@@ -190,10 +190,23 @@ export function toRfEdges(
     return x;
   };
   const lanes = busbar ? assignLanes(graph.edges, absX) : null;
+  // Traffic-proportional strokes (the systems view's reading): sqrt keeps a
+  // 100× edge readable next to a 1× one without drowning the canvas.
+  const maxWeight = Math.max(1, ...graph.edges.map((e) => e.weight ?? 0));
   return graph.edges.map((e) => {
     const style = EDGE_KIND_STYLE[e.kind];
     const mark = marks?.[e.id];
-    const stroke = mark ? DIFF_EDGE_STROKE[mark.kind] : style.stroke;
+    // Priority: diff marks (a review is an explicit question) over the cycle
+    // warning over the kind palette.
+    const stroke = mark
+      ? DIFF_EDGE_STROKE[mark.kind]
+      : e.cycle
+        ? "var(--color-warn)"
+        : style.stroke;
+    const weightWidth =
+      e.weight != null && e.weight > 0
+        ? 1 + 1.6 * Math.sqrt(e.weight / maxWeight)
+        : 1.5;
     return {
       id: e.id,
       source: e.source,
@@ -204,11 +217,15 @@ export function toRfEdges(
       type: busbar ? "busbar" : "default",
       style: {
         stroke,
-        strokeWidth: mark ? 2 : 1.5,
-        strokeDasharray: mark?.ghost ? "6 4" : style.dash,
+        strokeWidth: mark ? 2 : weightWidth,
+        // Api-only boundaries dash: a wire contract, not a compile-time dep.
+        strokeDasharray: mark?.ghost ? "6 4" : e.apiOnly ? "5 4" : style.dash,
         opacity: mark?.ghost ? 0.55 : 0.9,
       },
-      labelStyle: { fill: mark ? stroke : "var(--color-ink-muted)", fontSize: 10 },
+      labelStyle: {
+        fill: mark ? stroke : e.cycle ? stroke : "var(--color-ink-muted)",
+        fontSize: 10,
+      },
       labelBgStyle: { fill: "var(--color-surface-1)", fillOpacity: 0.9 },
       labelBgPadding: [4, 2] as [number, number],
       labelBgBorderRadius: 4,

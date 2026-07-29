@@ -30,6 +30,7 @@ import {
   createTask,
   diffSystemOverviews,
   formatDiffCounts,
+  linkEdgeId,
   overviewDiffGhosts,
   overviewDiffMarks,
   graphsEqual,
@@ -727,6 +728,29 @@ function DiagramsView({
     (key: string | null) => nav({ architect: { edge: key, ...(key ? { contracts: true } : {}) } }),
     [nav],
   );
+  /**
+   * Canonical `link:` edge id → the contract panel's raw "source->target"
+   * key. Clicking a derived edge on the canvas opens its boundary contract —
+   * the systems view's affordance, restored on the unified canvas.
+   */
+  const contractKeyByEdgeId = useMemo(() => {
+    const m = new Map<string, string>();
+    if (!overviewData) return m;
+    const idOfRaw = canonicalSystemIds(overviewData.systems);
+    const idOf = (raw: string) => idOfRaw.get(raw) ?? raw;
+    for (const l of overviewData.links)
+      m.set(linkEdgeId(idOf(l.source), idOf(l.target)), `${l.source}->${l.target}`);
+    return m;
+  }, [overviewData]);
+  const openContractForEdge = useCallback(
+    (edgeId: string): boolean => {
+      const key = contractKeyByEdgeId.get(edgeId);
+      if (key) setActiveEdgeKey(key);
+      return key != null;
+    },
+    [contractKeyByEdgeId, setActiveEdgeKey],
+  );
+
   /** Focus a system on the canvas by its RAW overview id (panels speak raw ids). */
   const focusSystem = useCallback(
     (rawId: string) => {
@@ -1163,6 +1187,7 @@ function DiagramsView({
                   showScreens={screensOn}
                   onToggleScreens={setScreensOn}
                   extraNodeEntries={extraNodeEntries}
+                  onOpenContract={activeDraft ? undefined : openContractForEdge}
                 />
               )}
               {activeDraft ? (
@@ -1399,7 +1424,11 @@ function FacetsSection({
 
   const fetchIndex = useCallback(async () => {
     try {
-      const { index, staleFiles } = await client.request("codeindex.get", {});
+      // The facets projection: tag strings only. The full per-symbol index is
+      // tens of MB on a large repo — fatal in the desktop webview's heap.
+      const { index, staleFiles } = await client.request("codeindex.get", {
+        projection: "facets",
+      });
       setIndex(index);
       setStaleCount(staleFiles.length);
     } catch {

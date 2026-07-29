@@ -9,7 +9,7 @@ import type { DiffMarks } from "./diagram-diff.js";
 import { ARCH_KIND_OF_CATEGORY, type CodeExternalDep } from "./external-services.js";
 import type { ScreenApiCall, ScreenSurface } from "./surfaces.js";
 import type { SystemLink, SystemModule, SystemOverview, SystemRole } from "./system-overview.js";
-import type { SystemChange, SystemOverviewDiff } from "./system-insights.js";
+import { computeSystemInsights, type SystemChange, type SystemOverviewDiff } from "./system-insights.js";
 
 /**
  * The one canonical architecture, derived. Where the old diagrams view
@@ -117,6 +117,28 @@ function systemOfModule(
   return best?.id ?? null;
 }
 
+/** Longest symbol name shown on an edge label before truncation. */
+const LINK_LABEL_SYMBOL_MAX = 18;
+
+/**
+ * What a derived link shows on the wire — the retired systems view's
+ * vocabulary: the top crossing symbol with the import weight
+ * ("createForm ×12"), or the top matched route for api-only boundaries
+ * ("GET /api/forms +2").
+ */
+function linkLabel(l: SystemLink): string {
+  if (l.weight === 0 && l.apis?.length) {
+    const api = l.apis[0]!;
+    const more = l.apis.length - 1;
+    return `${api.method} ${api.path}${more > 0 ? ` +${more}` : ""}`;
+  }
+  const top = l.symbols[0];
+  if (!top) return l.weight > 1 ? String(l.weight) : "";
+  const name =
+    top.length > LINK_LABEL_SYMBOL_MAX ? `${top.slice(0, LINK_LABEL_SYMBOL_MAX - 1)}…` : top;
+  return l.weight > 1 ? `${name} ×${l.weight}` : name;
+}
+
 function edgeKindForCategory(category: CodeExternalDep["category"]): ArchEdge["kind"] {
   if (category === "queue" || category === "realtime") return "async";
   if (
@@ -160,13 +182,27 @@ export function deriveArchGraph(input: DeriveInput): ArchitectureGraph {
     };
   });
 
-  const edges: ArchEdge[] = overview.links.map((l) => ({
-    id: linkEdgeId(idOf(l.source), idOf(l.target)),
-    source: idOf(l.source),
-    target: idOf(l.target),
-    kind: l.apis?.length ? "sync" : "dependency",
-    label: l.weight > 1 ? String(l.weight) : "",
-  }));
+  // Edges carry what the old systems view showed on them: the top crossing
+  // symbol (or route) as the label, the raw weight for stroke scaling, an
+  // api-only flag ("talks over the wire, no imports") and cycle membership.
+  const cyclePairs = new Set(
+    computeSystemInsights(overview).cycles.flatMap((c) =>
+      c.edges.map((e) => `${e.source}->${e.target}`),
+    ),
+  );
+  const edges: ArchEdge[] = overview.links.map((l) => {
+    const apiOnly = l.weight === 0 && (l.apis?.length ?? 0) > 0;
+    return {
+      id: linkEdgeId(idOf(l.source), idOf(l.target)),
+      source: idOf(l.source),
+      target: idOf(l.target),
+      kind: l.apis?.length ? "sync" : "dependency",
+      label: linkLabel(l),
+      weight: apiOnly ? (l.apis?.reduce((n, a) => n + a.weight, 0) ?? 0) : l.weight,
+      ...(apiOnly ? { apiOnly: true } : {}),
+      ...(cyclePairs.has(`${l.source}->${l.target}`) ? { cycle: true } : {}),
+    };
+  });
 
   // Detected external services — each named bucket/queue/topic/table its own
   // node when a literal name was discoverable, the service-level node as the
@@ -207,6 +243,7 @@ export function deriveArchGraph(input: DeriveInput): ArchitectureGraph {
         target: extId,
         kind: edgeKindForCategory(dep.category),
         label: weight > 1 ? String(weight) : "",
+        weight,
       });
     }
   };

@@ -19,10 +19,12 @@ import { Cloud, Gauge, Globe2, GripVertical, Laptop, MapPin, Play, Plus, Server,
 import {
   ARCH_KIND_OF_CATEGORY,
   createLocalEnvironment,
+  isContainerKind,
   uid,
   updateNodePlacement,
   type ArchEnvironment,
   type ArchNode,
+  type ArchNodeKind,
   type ArchitectureGraph,
   type CodeMapSummary,
   type DiffMarks,
@@ -31,7 +33,8 @@ import { useNav } from "@crystal/client";
 import { Badge, Button, EmptyState, Input, Tooltip, cn } from "@crystal/ui";
 import { CodeNode, type CodeNodeData, type CodeRfNode } from "./codemap/CodeNode.js";
 import { InlineRename } from "./ContextMenu.js";
-import { updateNode } from "./graph-ops.js";
+import { addNode as opAddNode, updateNode } from "./graph-ops.js";
+import { DRAG_MIME, PALETTE_KINDS, Palette } from "./Palette.js";
 import { infraGroups, knownTargets, layerBands, placedEdges } from "./infra.js";
 import { detectedExternals, detectedInternalEdges, externalNodeId } from "./infra-deps.js";
 import { ACCENT_CSS, EDGE_KIND_STYLE, KIND_META, accentOf } from "./model.js";
@@ -56,6 +59,11 @@ import {
 
 /** dataTransfer type for dragging an unplaced component from the sidebar. */
 const INFRA_DRAG_MIME = "application/x-crystal-infra-node";
+
+/** Palette kinds that can actually be placed — containers and notes are logical-only. */
+const INFRA_PALETTE_KINDS = PALETTE_KINDS.filter(
+  (k) => !isContainerKind(k) && k !== "note",
+);
 
 interface GroupData extends Record<string, unknown> {
   target: string;
@@ -156,6 +164,14 @@ const GROUP_PAD = 14;
 const GROUP_HEADER = 32;
 const GROUPS_PER_ROW = 3;
 const GROUP_GAP = 56;
+
+/** Keep a pinned card inside its container — clear of the left edge and header. */
+function clampPin(at: { x: number; y: number }): { x: number; y: number } {
+  return {
+    x: Math.round(Math.max(4, at.x)),
+    y: Math.round(Math.max(GROUP_HEADER + 4, at.y)),
+  };
+}
 
 /** Pending "name a new deployment target" prompt from a drop on empty canvas. */
 interface TargetPrompt {
@@ -322,14 +338,19 @@ function InfraInner({
     if (envId === id) setEnvId(null);
   };
 
-  /** Place (or re-place) a component on a target, keeping any runtime detail. */
+  /**
+   * Place (or re-place) a component on a target, keeping any runtime detail.
+   * `at` pins the card at a parent-relative position inside the target's
+   * container; omitted, the grid packer owns the slot.
+   */
   const placeOn = useCallback(
-    (nodeId: string, target: string) => {
+    (nodeId: string, target: string, at?: { x: number; y: number }) => {
       if (!activeEnv) return;
       const node = graph.nodes.find((n) => n.id === nodeId);
       if (!node) return;
       const runtime = node.placements[activeEnv.id]?.runtime ?? "";
-      onChange(updateNodePlacement(graph, nodeId, activeEnv.id, { target, runtime }));
+      const pin = at ? clampPin(at) : {};
+      onChange(updateNodePlacement(graph, nodeId, activeEnv.id, { target, runtime, ...pin }));
       setSelectedId(nodeId);
     },
     [graph, onChange, activeEnv],
@@ -359,10 +380,24 @@ function InfraInner({
       let rowMaxH = 0;
       band.groups.forEach((group, i) => {
         const n = group.nodes.length;
-        const cols = Math.max(1, Math.min(3, Math.ceil(Math.sqrt(n))));
-        const rows = Math.ceil(n / cols);
-        const width = GROUP_PAD * 2 + cols * CELL_W + (cols - 1) * CELL_GAP;
-        const height = GROUP_HEADER + GROUP_PAD + rows * cellH + (rows - 1) * CELL_GAP + GROUP_PAD;
+        // Cards the user dragged carry a pinned position on the placement;
+        // the rest grid-pack. The container stretches to hold the pins.
+        const members = group.nodes.map((node) => {
+          const p = node.placements[activeEnv.id];
+          const pinned = p?.x != null && p?.y != null ? { x: p.x, y: p.y } : null;
+          return { node, pinned };
+        });
+        const packedCount = members.filter((m) => !m.pinned).length;
+        const cols = Math.max(1, Math.min(3, Math.ceil(Math.sqrt(Math.max(packedCount, 1)))));
+        const rows = Math.ceil(packedCount / cols);
+        let width = GROUP_PAD * 2 + cols * CELL_W + (cols - 1) * CELL_GAP;
+        let height =
+          GROUP_HEADER + GROUP_PAD + rows * cellH + Math.max(rows - 1, 0) * CELL_GAP + GROUP_PAD;
+        for (const m of members) {
+          if (!m.pinned) continue;
+          width = Math.max(width, m.pinned.x + CELL_W + GROUP_PAD);
+          height = Math.max(height, m.pinned.y + cellH + GROUP_PAD);
+        }
 
         if (i > 0 && i % GROUPS_PER_ROW === 0) {
           cursorX = 0;
@@ -388,15 +423,17 @@ function InfraInner({
             deadCount: 0,
           },
         });
-        group.nodes.forEach((node, j) => {
-          const col = j % cols;
-          const row = Math.floor(j / cols);
+        let slot = 0;
+        members.forEach(({ node, pinned }) => {
+          const col = slot % cols;
+          const row = Math.floor(slot / cols);
+          if (!pinned) slot++;
           nodes.push({
             id: node.id,
             type: "code",
             parentId: groupId,
             draggable: true,
-            position: {
+            position: pinned ?? {
               x: GROUP_PAD + col * (CELL_W + CELL_GAP),
               y: GROUP_HEADER + GROUP_PAD + row * (cellH + CELL_GAP),
             },
@@ -617,7 +654,7 @@ function InfraInner({
 
   /** Target group whose rect contains the point (flow coordinates). */
   const groupAtPoint = useCallback(
-    (point: { x: number; y: number }): string | null => {
+    (point: { x: number; y: number }): GroupRfNode | null => {
       for (const n of nodes) {
         if (n.type !== "infragroup") continue;
         if ((n.data as GroupData).detected) continue; // not a real deployment target
@@ -629,7 +666,7 @@ function InfraInner({
           point.y >= n.position.y &&
           point.y <= n.position.y + h
         ) {
-          return (n.data as GroupData).target;
+          return n as GroupRfNode;
         }
       }
       return null;
@@ -649,47 +686,106 @@ function InfraInner({
         x: abs.x + (node.measured?.width ?? node.width ?? CELL_W) / 2,
         y: abs.y + (node.measured?.height ?? node.height ?? CELL_H) / 2,
       };
-      const target = groupAtPoint(center);
+      const hit = groupAtPoint(center);
+      const target = hit ? (hit.data as GroupData).target : null;
       const current = parent ? (parent.data as GroupData).target : null;
-      if (target && target !== current) {
-        placeOn(node.id, target);
-      } else if (!target && "clientX" in evt) {
+      if (target && hit && target !== current) {
+        // Crossed into another target — re-place, pinned where it landed.
+        placeOn(node.id, target, { x: abs.x - hit.position.x, y: abs.y - hit.position.y });
+        return;
+      }
+      if (target && target === current) {
+        // Moved within its own target — pin the card where it was left; the
+        // recomputed scene renders it there, so no snap-back.
+        placeOn(node.id, target, node.position);
+        return;
+      }
+      if (!target && "clientX" in evt) {
         // Dropped on empty canvas — name a new deployment target for it.
         setTargetPrompt({ x: evt.clientX, y: evt.clientY, nodeId: node.id });
       }
-      // Always snap back to the derived layout; a real placement change moves
-      // the node via the recomputed scene.
+      // Nothing changed — snap back to the derived layout.
       setNodes(scene.nodes);
     },
     [nodes, scene, setNodes, groupAtPoint, placeOn],
   );
 
-  /* ---- HTML5 drops from the "Unplaced" sidebar ---- */
+  /* ---- HTML5 drops: the "Unplaced" sidebar (existing node id) and the
+     palette (a node kind — created on drop) ---- */
 
-  const acceptsSidebarDrag = (e: DragEvent) => e.dataTransfer.types.includes(INFRA_DRAG_MIME);
+  const acceptsCanvasDrag = (e: DragEvent) =>
+    e.dataTransfer.types.includes(INFRA_DRAG_MIME) || e.dataTransfer.types.includes(DRAG_MIME);
+
+  /** Create a palette component; returns the new node's id (unplaced yet). */
+  const addComponent = useCallback(
+    (kind: ArchNodeKind): string => {
+      const { graph: next, node } = opAddNode(
+        graph,
+        kind,
+        `New ${KIND_META[kind].label.toLowerCase()}`,
+        { x: 0, y: 0 },
+      );
+      onChange(next);
+      setSelectedId(node.id);
+      return node.id;
+    },
+    [graph, onChange],
+  );
 
   const onCanvasDrop = useCallback(
     (evt: DragEvent) => {
-      const nodeId = evt.dataTransfer.getData(INFRA_DRAG_MIME);
-      if (!nodeId) return;
-      evt.preventDefault();
       const point = screenToFlowPosition({ x: evt.clientX, y: evt.clientY });
-      const target = groupAtPoint(point);
-      if (target) placeOn(nodeId, target);
-      else setTargetPrompt({ x: evt.clientX, y: evt.clientY, nodeId });
+      const hit = groupAtPoint(point);
+      const cardAt = hit
+        ? { x: point.x - hit.position.x - CELL_W / 2, y: point.y - hit.position.y - CELL_H / 2 }
+        : undefined;
+      const nodeId = evt.dataTransfer.getData(INFRA_DRAG_MIME);
+      if (nodeId) {
+        evt.preventDefault();
+        if (hit) placeOn(nodeId, (hit.data as GroupData).target, cardAt);
+        else setTargetPrompt({ x: evt.clientX, y: evt.clientY, nodeId });
+        return;
+      }
+      const kind = evt.dataTransfer.getData(DRAG_MIME) as ArchNodeKind;
+      if (!kind || !INFRA_PALETTE_KINDS.includes(kind) || !activeEnv) return;
+      evt.preventDefault();
+      // Create + place in ONE graph change so undo/persistence see a single edit.
+      const { graph: next, node } = opAddNode(
+        graph,
+        kind,
+        `New ${KIND_META[kind].label.toLowerCase()}`,
+        { x: 0, y: 0 },
+      );
+      if (hit) {
+        const pin = cardAt ? clampPin(cardAt) : undefined;
+        onChange(
+          updateNodePlacement(next, node.id, activeEnv.id, {
+            target: (hit.data as GroupData).target,
+            runtime: "",
+            ...pin,
+          }),
+        );
+        setSelectedId(node.id);
+      } else {
+        onChange(next);
+        setSelectedId(node.id);
+        setTargetPrompt({ x: evt.clientX, y: evt.clientY, nodeId: node.id });
+      }
     },
-    [screenToFlowPosition, groupAtPoint, placeOn],
+    [screenToFlowPosition, groupAtPoint, placeOn, graph, onChange, activeEnv],
   );
 
   /** Drop zone used by the empty states (no groups yet → first target). */
   const emptyDropProps = {
     onDragOver: (e: DragEvent) => {
-      if (!acceptsSidebarDrag(e)) return;
+      if (!acceptsCanvasDrag(e)) return;
       e.preventDefault();
       e.dataTransfer.dropEffect = "move";
     },
     onDrop: (e: DragEvent) => {
-      const nodeId = e.dataTransfer.getData(INFRA_DRAG_MIME);
+      const existing = e.dataTransfer.getData(INFRA_DRAG_MIME);
+      const kind = e.dataTransfer.getData(DRAG_MIME) as ArchNodeKind;
+      const nodeId = existing || (kind && INFRA_PALETTE_KINDS.includes(kind) ? addComponent(kind) : "");
       if (!nodeId) return;
       e.preventDefault();
       setTargetPrompt({ x: e.clientX, y: e.clientY, nodeId });
@@ -850,6 +946,12 @@ function InfraInner({
           ) : null}
         </div>
 
+        {/* Palette — new components drag onto a target (or click to add, then
+            place from the sidebar). Outside the flow so the empty state has it too. */}
+        <div className="absolute left-3 top-1/2 z-10 -translate-y-1/2">
+          <Palette kinds={INFRA_PALETTE_KINDS} onAdd={addComponent} />
+        </div>
+
         {groups.length === 0 ? (
           <div className="h-full" {...emptyDropProps}>
             <EmptyState icon={Server} title={`Nothing placed in ${activeEnv?.name ?? "this environment"}`}>
@@ -871,7 +973,7 @@ function InfraInner({
             onPaneClick={() => setSelectedId(null)}
             onDrop={onCanvasDrop}
             onDragOver={(e) => {
-              if (!acceptsSidebarDrag(e)) return;
+              if (!acceptsCanvasDrag(e)) return;
               e.preventDefault();
               e.dataTransfer.dropEffect = "move";
             }}

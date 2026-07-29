@@ -20,6 +20,7 @@ import {
   Copy,
   Expand,
   ExternalLink,
+  FileText,
   FolderGit2,
   GitFork,
   Layers,
@@ -118,6 +119,7 @@ import { MapActionsContext, mapNodeTypes, type MapActions } from "./codemap/map-
 import {
   buildBlockPreview,
   buildCodeContent,
+  cappedExpansionFiles,
   estimateModuleFootprint,
   unifiedDropTargetAt,
   type BlockPreview,
@@ -128,7 +130,13 @@ import { BusbarEdge } from "./BusbarEdge.js";
 import { PeekPanel } from "./snippets.js";
 import { Palette, DRAG_MIME, PALETTE_KINDS } from "./Palette.js";
 import { Toolbar } from "./Toolbar.js";
-import { CANVAS_LOD_LEVELS, fileExpandZoom, moduleExpandZoom, useLodConfig } from "./lod-config.js";
+import {
+  CANVAS_LOD_LEVELS,
+  HUGE_TREE_FILE_LIMIT,
+  fileExpandZoom,
+  moduleExpandZoom,
+  useLodConfig,
+} from "./lod-config.js";
 import { hlClass, useViewHighlight } from "./use-highlight.js";
 
 const nodeTypes = {
@@ -200,6 +208,12 @@ export interface ArchitectCanvasProps {
   onToggleScreens?: (on: boolean) => void;
   /** View-supplied entries prepended to a node's context menu (focus filter…). */
   extraNodeEntries?: (node: ArchNode) => MenuEntry[];
+  /**
+   * Open the boundary contract for a derived `link:` edge (the contracts
+   * panel keyed on the raw overview pair). Returns false when the edge has
+   * no contract (manual edges) so the caller can fall back silently.
+   */
+  onOpenContract?: (edgeId: string) => boolean;
   /**
    * Ref-review marks keyed by node/edge id (vs <ref>) — added/removed/changed
    * tints; ghost-marked nodes render dashed and inert. The caller merges
@@ -372,6 +386,7 @@ function CanvasInner({
   showScreens,
   onToggleScreens,
   extraNodeEntries,
+  onOpenContract,
   diffMarks,
 }: ArchitectCanvasProps) {
   const [selectedNodes, setSelectedNodes] = useState<ReadonlySet<string>>(new Set());
@@ -720,11 +735,15 @@ function CanvasInner({
    * Every slotted block previews its module's files at medium zoom, so module
    * details are fetched for all of them, not only the expanded ones. This also
    * pre-warms the cache LOD expansion reads from — zooming in swaps content
-   * that is usually already there.
+   * that is usually already there. On a huge tree the pre-warm is what OOMs
+   * the desktop webview (every system's file list resident at zoom 0), so
+   * there only *expanded* modules fetch — previews appear as you zoom into
+   * them, not before.
    */
+  const hugeTree = (codeSummary?.fileTotal ?? 0) > HUGE_TREE_FILE_LIMIT;
   const neededModules = useMemo(
-    () => new Set([...expanded.values(), ...slots.modules.values()]),
-    [expanded, slots],
+    () => new Set(hugeTree ? expanded.values() : [...expanded.values(), ...slots.modules.values()]),
+    [expanded, slots, hugeTree],
   );
 
   useEffect(() => {
@@ -1360,7 +1379,11 @@ function CanvasInner({
       setCodeExpanded(adds);
       if (level === "members") {
         try {
-          const res = await client.request("codemap.details", {});
+          // Only the modules actually slotted on this canvas — `{}` means the
+          // whole repo, which a large workspace cannot afford in one payload.
+          const res = await client.request("codemap.details", {
+            modules: [...new Set(adds.values())],
+          });
           setModuleDetails((m) => {
             const next = new Map(m);
             for (const d of res.modules) next.set(d.module.path, { gen: generation, detail: d });
@@ -1371,8 +1394,17 @@ function CanvasInner({
             for (const f of res.files) next.set(f.path, { gen: generation, detail: f });
             return next;
           });
-          setMemberCount(res.files.reduce((n, f) => n + (f.symbols ?? f.exports).length, 0));
-          setExpandedFiles(new Set(res.files.map((f) => f.path)));
+          // Expand only what the per-module cap will show — expanding every
+          // file marks them all `pinned`, defeats the cap and mounts the
+          // whole repo's symbol chips at once.
+          const shown = new Set(res.modules.flatMap((d) => cappedExpansionFiles(d)));
+          setMemberCount(
+            res.files.reduce(
+              (n, f) => n + (shown.has(f.path) ? (f.symbols ?? f.exports).length : 0),
+              0,
+            ),
+          );
+          setExpandedFiles(shown);
         } catch {
           // Analyzer unavailable — stay at module detail.
         }
@@ -1392,11 +1424,15 @@ function CanvasInner({
     [nav, applyLodLevel],
   );
 
-  // A deep-linked ladder stop applies once the code map is in.
+  // A deep-linked ladder stop applies once the code map is in. `lod` is not a
+  // URL field for this view — it bleeds over from the codebase view's nav
+  // state — so on a huge tree it must not auto-apply at mount: a stale
+  // "members" would bulk-load the canvas before the user asked for anything.
   const lodLevelInit = useRef(false);
   useEffect(() => {
     if (lodLevelInit.current || !codeSummary) return;
     lodLevelInit.current = true;
+    if (codeSummary.fileTotal > HUGE_TREE_FILE_LIMIT) return;
     if (lodLevel !== "packages") void applyLodLevel(lodLevel);
   }, [codeSummary, lodLevel, applyLodLevel]);
 
@@ -2144,6 +2180,16 @@ function CanvasInner({
         hint: "target",
         onSelect: () => focusNode(edge.target),
       },
+      ...(onOpenContract && edge.id.startsWith("link:")
+        ? [
+            {
+              type: "item",
+              label: "View boundary contract",
+              icon: FileText,
+              onSelect: () => onOpenContract(edge.id),
+            } satisfies MenuEntry,
+          ]
+        : []),
       { type: "separator" },
       {
         type: "submenu",
@@ -2200,6 +2246,7 @@ function CanvasInner({
     pinned,
     symbolMenu,
     extraNodeEntries,
+    onOpenContract,
   ]);
 
   const mapActions = useMemo<MapActions>(
@@ -2352,6 +2399,11 @@ function CanvasInner({
         selectionOnDrag={false}
         panOnScroll
         zoomOnPinch
+        // Only viewport-visible nodes mount DOM — at members detail the full
+        // scene is thousands of subtrees, fatal in the desktop webview. The
+        // LOD engine reads getNodes() (whole store, virtualization-proof) and
+        // its bounds math falls back to node.width when `measured` is absent.
+        onlyRenderVisibleElements
         proOptions={{ hideAttribution: true }}
         className="bg-surface-0"
       >
@@ -2465,6 +2517,7 @@ function CanvasInner({
           insight={selectedInsight}
           onFocusNode={focusNode}
           onGraphChange={commit}
+          onOpenContract={onOpenContract}
           onClearSelection={() => {
             setSelectedNodes(new Set());
             setSelectedEdges(new Set());

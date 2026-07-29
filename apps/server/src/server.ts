@@ -22,6 +22,7 @@ import {
   applyProfileOverlay,
   buildSystemOverview,
   computeReviewFindings,
+  facetIndexProjection,
   migrateLegacyToOverlay,
   openQuestionsOfWorkflow,
   profileOverlay,
@@ -685,7 +686,11 @@ export async function startCrystalServer(opts: {
       symbols: await registry.get(ws).codemap.searchSymbols(query, limit),
     }),
     "codemap.apiSites": ({ ws, method, path: p }) => registry.get(ws).codemap.apiSites(method, p),
-    "codeindex.get": ({ ws }) => registry.get(ws).codeindex.get(),
+    "codeindex.get": async ({ ws, projection }) => {
+      const res = await registry.get(ws).codeindex.get();
+      if (projection !== "facets") return res;
+      return { index: facetIndexProjection(res.index), staleFiles: res.staleFiles };
+    },
     "codeindex.enrich": async ({ ws, files, full, agentId }) => {
       const rt = registry.get(ws);
       // Indexing defaults to a small, cheap model; a profile overrides it.

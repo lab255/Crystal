@@ -106,6 +106,22 @@ export function buildBlockPreview(detail: CodeModuleDetail): BlockPreview {
   };
 }
 
+/**
+ * The files a module's expansion will actually show — the cap winners by the
+ * same importance ranking the cap uses. Bulk expansion (the members ladder
+ * stop) must expand exactly this set: marking *every* file expanded re-adds
+ * them all past the cap (`pinned` protects user-opened files) and mounts the
+ * whole repo's symbols at once.
+ */
+export function cappedExpansionFiles(detail: CodeModuleDetail, cap = LIVE_FILE_CAP): string[] {
+  if (detail.files.length <= cap) return detail.files.map((f) => f.path);
+  const importance = fileImportanceOf(detail);
+  return [...detail.files]
+    .sort((a, b) => importance(b) - importance(a))
+    .slice(0, cap)
+    .map((f) => f.path);
+}
+
 export function buildCodeContent(input: CodeContentInput): CodeContent {
   const nodes: MapRfNode[] = [];
   const edges: RfEdge[] = [];
