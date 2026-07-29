@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
-import { Copy, Database } from "lucide-react";
+import { Copy, Database, KeyRound, MoveRight, Network, Table2 } from "lucide-react";
 import type { SchemaKind, SchemaSurface } from "@crystal/core";
+import { SchemaDiagram } from "./SchemaDiagram.js";
 import { useNav, useNavUpdate, useSymbolMenu } from "@crystal/client";
 import {
   Badge,
@@ -36,6 +37,9 @@ const KIND_LABEL: Record<SchemaKind, string> = {
   type: "Type aliases",
   mongoose: "Mongoose",
   prisma: "Prisma",
+  drizzle: "Drizzle",
+  typeorm: "TypeORM",
+  sql: "SQL tables",
 };
 
 const KIND_TONE: Record<SchemaKind, BadgeTone> = {
@@ -44,9 +48,21 @@ const KIND_TONE: Record<SchemaKind, BadgeTone> = {
   type: "blue",
   mongoose: "amber",
   prisma: "cyan",
+  drizzle: "emerald",
+  typeorm: "rose",
+  sql: "slate",
 };
 
-const KIND_ORDER: SchemaKind[] = ["zod", "prisma", "mongoose", "interface", "type"];
+const KIND_ORDER: SchemaKind[] = [
+  "prisma",
+  "drizzle",
+  "typeorm",
+  "sql",
+  "mongoose",
+  "zod",
+  "interface",
+  "type",
+];
 
 /** `{ name: string; age?: number }`-style text for the copy menu. */
 function schemaAsText(s: SchemaSurface): string {
@@ -65,6 +81,10 @@ export function SchemasView() {
   const symbolMenu = useSymbolMenu();
   const lens = useSurfacesLens();
   const [collapsed, setCollapsed] = useState<ReadonlySet<SchemaKind>>(new Set());
+  // "diagram" = the ER canvas over every visible schema; "fields" = the
+  // selected schema's table. Diagram-clicks select in place; list-clicks
+  // jump straight to the fields.
+  const [tab, setTab] = useState<"diagram" | "fields">("diagram");
 
   const schemas = report?.schemas ?? [];
   /** Lens members (null when no lens dims) — non-members render dimmed. */
@@ -102,8 +122,9 @@ export function SchemasView() {
   if (schemas.length === 0) {
     return (
       <EmptyState icon={Database} title="No data schemas detected">
-        Zod objects, mongoose schemas, prisma models — plus exported interfaces and type aliases
-        from model/schema/dto-named files — appear here with their fields inline.
+        Prisma models, drizzle tables, TypeORM entities, SQL CREATE TABLEs, mongoose schemas and
+        zod objects — plus exported interfaces and type aliases from model/schema/dto-named
+        files — appear here as an ER diagram with their fields inline.
       </EmptyState>
     );
   }
@@ -149,7 +170,10 @@ export function SchemasView() {
                       <button
                         key={s.id}
                         type="button"
-                        onClick={() => nav({ surfaces: { schema: s.id } })}
+                        onClick={() => {
+                          nav({ surfaces: { schema: s.id } });
+                          setTab("fields");
+                        }}
                         onContextMenu={(e) => menu.open(e, rowMenu(s))}
                         className={cn(
                           "flex w-full items-center gap-1.5 rounded-lg px-2 py-1 text-left",
@@ -182,16 +206,67 @@ export function SchemasView() {
         </aside>
       </SplitPane>
       <SplitPane minSize="40%">
-        {selected ? (
-          <SchemaDetail key={selected.id} schema={selected} />
-        ) : (
-          <EmptyState icon={Database} title="Pick a schema">
-            Its fields, their types, and where the shape is declared.
-          </EmptyState>
-        )}
+        <div className="flex h-full min-h-0 flex-col">
+          <div className="flex shrink-0 items-center gap-1 border-b border-edge bg-surface-1 px-2 py-1">
+            <TabChip
+              icon={Network}
+              label="ER diagram"
+              active={tab === "diagram"}
+              onClick={() => setTab("diagram")}
+            />
+            <TabChip
+              icon={Table2}
+              label="Fields"
+              active={tab === "fields"}
+              onClick={() => setTab("fields")}
+            />
+          </div>
+          <div className="min-h-0 flex-1">
+            {tab === "diagram" ? (
+              <SchemaDiagram
+                schemas={visible}
+                selectedId={selected?.id ?? null}
+                onSelect={(id) => nav({ surfaces: { schema: id } })}
+              />
+            ) : selected ? (
+              <SchemaDetail key={selected.id} schema={selected} />
+            ) : (
+              <EmptyState icon={Database} title="Pick a schema">
+                Its fields, their types, and where the shape is declared.
+              </EmptyState>
+            )}
+          </div>
+        </div>
       </SplitPane>
       {menu.element}
     </Split>
+  );
+}
+
+function TabChip({
+  icon: Icon,
+  label,
+  active,
+  onClick,
+}: {
+  icon: typeof Network;
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={cn(
+        "flex h-6 items-center gap-1.5 rounded-md px-2 text-[11px]",
+        active ? "bg-crystal-500/20 text-crystal-300" : "text-ink-muted hover:bg-surface-2 hover:text-ink",
+      )}
+    >
+      <Icon className="h-3 w-3" />
+      {label}
+    </button>
   );
 }
 
@@ -238,7 +313,22 @@ function SchemaDetail({ schema: s }: { schema: SchemaSurface }) {
                 return (
                   <tr key={f.name} className={cn(hit && "bg-crystal-500/10")}>
                     <td className="border-b border-edge/40 px-1.5 py-1 font-mono text-[10.5px] text-ink">
-                      {f.name}
+                      <span className="flex items-center gap-1">
+                        {f.pk ? (
+                          <Tooltip content="Primary key">
+                            <KeyRound className="h-2.5 w-2.5 shrink-0 text-accent-amber" />
+                          </Tooltip>
+                        ) : null}
+                        {f.name}
+                        {f.references ? (
+                          <Tooltip content={`References ${f.references}`}>
+                            <span className="flex items-center gap-0.5 text-[9px] text-crystal-300">
+                              <MoveRight className="h-2.5 w-2.5" />
+                              {f.references}
+                            </span>
+                          </Tooltip>
+                        ) : null}
+                      </span>
                     </td>
                     <td className="max-w-0 truncate border-b border-edge/40 px-1.5 py-1 font-mono text-[10.5px] text-ink-muted">
                       {f.type ? (

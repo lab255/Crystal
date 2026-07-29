@@ -7,6 +7,7 @@ import {
   demoTargetsFromScripts,
   extractRouterScreens,
   extractSourceSchemas,
+  parseSqlSchemas,
   nextAppRoute,
   nextPagesRoute,
   parsePrismaSchema,
@@ -300,12 +301,147 @@ model Tag {
       usedBy: 0,
     });
     expect(schemas[0]!.fields).toEqual([
-      { name: "id", type: "Int" },
+      { name: "id", type: "Int", pk: true },
       { name: "title", type: "String" },
       { name: "body", type: "String", optional: true },
     ]);
     // Enum members leak into no model.
     expect(schemas[1]!.fields).toEqual([{ name: "name", type: "String" }]);
+  });
+
+  it("marks relation fields whose type names a sibling model", () => {
+    const schemas = parsePrismaSchema(
+      "schema.prisma",
+      `model User {
+  id    Int    @id
+  posts Post[]
+}
+
+model Post {
+  id     Int  @id
+  author User @relation(fields: [authorId], references: [id])
+  authorId Int
+}`,
+    );
+    const user = schemas.find((s) => s.name === "User")!;
+    expect(user.fields.find((f) => f.name === "posts")).toMatchObject({ references: "Post" });
+    const post = schemas.find((s) => s.name === "Post")!;
+    expect(post.fields.find((f) => f.name === "author")).toMatchObject({ references: "User" });
+    expect(post.fields.find((f) => f.name === "authorId")!.references).toBeUndefined();
+  });
+});
+
+describe("parseSqlSchemas", () => {
+  it("parses CREATE TABLE columns, keys and references across dialect quoting", () => {
+    const schemas = parseSqlSchemas(
+      "db/migrations/0001_init.sql",
+      `CREATE TABLE users (
+  id SERIAL PRIMARY KEY,
+  email VARCHAR(255) NOT NULL,
+  bio TEXT
+);
+
+CREATE TABLE IF NOT EXISTS "posts" (
+  id INTEGER NOT NULL,
+  author_id INTEGER REFERENCES users(id),
+  tag_id INTEGER,
+  CONSTRAINT pk_posts PRIMARY KEY (id),
+  FOREIGN KEY (tag_id) REFERENCES tags(id)
+);
+
+ALTER TABLE users ADD COLUMN ignored TEXT;`,
+    );
+    expect(schemas.map((s) => s.name)).toEqual(["users", "posts"]);
+    const users = schemas[0]!;
+    expect(users.kind).toBe("sql");
+    expect(users.fields).toEqual([
+      { name: "id", type: "SERIAL", pk: true },
+      { name: "email", type: "VARCHAR(255)" },
+      { name: "bio", type: "TEXT", optional: true },
+    ]);
+    const posts = schemas[1]!;
+    expect(posts.fields.find((f) => f.name === "id")!.pk).toBe(true);
+    expect(posts.fields.find((f) => f.name === "author_id")).toMatchObject({
+      references: "users",
+    });
+    expect(posts.fields.find((f) => f.name === "tag_id")).toMatchObject({ references: "tags" });
+  });
+
+  it("keeps the first CREATE of a re-stated table", () => {
+    const schemas = parseSqlSchemas(
+      "a.sql",
+      `CREATE TABLE t (a INT);\nCREATE TABLE t (a INT, b INT);`,
+    );
+    expect(schemas).toHaveLength(1);
+    expect(schemas[0]!.fields).toHaveLength(1);
+  });
+});
+
+describe("extractSourceSchemas (orm flavours)", () => {
+  it("extracts drizzle tables with pk, nullability and references", () => {
+    const schemas = extractSourceSchemas(
+      "src/db/schema.ts",
+      `import { pgTable, serial, integer, text } from "drizzle-orm/pg-core";
+export const users = pgTable("users", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull(),
+  bio: text("bio"),
+});
+export const posts = pgTable("posts", {
+  id: serial("id").primaryKey(),
+  authorId: integer("author_id").references(() => users.id).notNull(),
+});`,
+    );
+    expect(schemas.map((s) => [s.name, s.kind])).toEqual([
+      ["users", "drizzle"],
+      ["posts", "drizzle"],
+    ]);
+    const users = schemas[0]!;
+    expect(users.fields.find((f) => f.name === "id")).toMatchObject({ pk: true });
+    expect(users.fields.find((f) => f.name === "bio")).toMatchObject({ optional: true });
+    expect(users.fields.find((f) => f.name === "name")!.optional).toBeUndefined();
+    const posts = schemas[1]!;
+    expect(posts.fields.find((f) => f.name === "authorId")).toMatchObject({
+      references: "users",
+    });
+  });
+
+  it("extracts typeorm entities with relations", () => {
+    const schemas = extractSourceSchemas(
+      "src/entities/post.ts",
+      `import { Entity, PrimaryGeneratedColumn, Column, ManyToOne } from "typeorm";
+@Entity()
+export class Post {
+  @PrimaryGeneratedColumn()
+  id!: number;
+
+  @Column({ nullable: true })
+  title?: string;
+
+  @ManyToOne(() => User, (u) => u.posts)
+  author!: User;
+}`,
+    );
+    expect(schemas).toHaveLength(1);
+    const post = schemas[0]!;
+    expect(post.kind).toBe("typeorm");
+    expect(post.fields.find((f) => f.name === "id")).toMatchObject({ pk: true });
+    expect(post.fields.find((f) => f.name === "title")).toMatchObject({ optional: true });
+    expect(post.fields.find((f) => f.name === "author")).toMatchObject({ references: "User" });
+  });
+
+  it("captures mongoose ref targets", () => {
+    const schemas = extractSourceSchemas(
+      "src/models/post.ts",
+      `import mongoose, { Schema } from "mongoose";
+const PostSchema = new Schema({
+  title: String,
+  author: { type: Schema.Types.ObjectId, ref: "User" },
+});`,
+    );
+    expect(schemas[0]!.fields.find((f) => f.name === "author")).toMatchObject({
+      references: "User",
+    });
   });
 });
 

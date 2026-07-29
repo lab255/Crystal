@@ -14,7 +14,7 @@ import type {
   SurfacesReport,
   SystemEndpoint,
 } from "@crystal/core";
-import { resolveInRoot } from "./paths.js";
+import { isIgnoredDir, resolveInRoot } from "./paths.js";
 
 /**
  * Surfaces analysis: derives the workspace's outward-facing product surface —
@@ -519,10 +519,13 @@ function extractSourceSchemasUnsafe(fileRel: string, text: string): SchemaSurfac
   const schemas: SchemaSurface[] = [];
   const gated = fileRel.split("/").some((seg) => SCHEMA_PATH_RE.test(seg));
 
-  // Bindings for zod (`z`) and mongoose (`mongoose` namespace / named `Schema`).
+  // Bindings for zod (`z`), mongoose (`mongoose` namespace / named `Schema`)
+  // and drizzle's table factories (pgTable/mysqlTable/sqliteTable…).
   const zodBindings = new Set<string>();
   const mongooseNs = new Set<string>();
   const schemaBindings = new Set<string>();
+  const drizzleTableFns = new Set<string>();
+  let hasTypeorm = false;
   for (const st of source.statements) {
     if (!ts.isImportDeclaration(st) || !ts.isStringLiteral(st.moduleSpecifier)) continue;
     const spec = st.moduleSpecifier.text;
@@ -544,8 +547,27 @@ function extractSourceSchemasUnsafe(fileRel: string, text: string): SchemaSurfac
           }
         }
       }
+    } else if (spec === "drizzle-orm" || spec.startsWith("drizzle-orm/")) {
+      if (clause.namedBindings && ts.isNamedImports(clause.namedBindings)) {
+        for (const el of clause.namedBindings.elements) {
+          if (/Table$/.test((el.propertyName ?? el.name).text)) drizzleTableFns.add(el.name.text);
+        }
+      }
+    } else if (spec === "typeorm") {
+      hasTypeorm = true;
     }
   }
+
+  /** The `(tableName, {...})` args of a drizzle `pgTable("users", {...})` call. */
+  const drizzleTableArgs = (
+    expr: ts.Expression,
+  ): { obj: ts.ObjectLiteralExpression } | null => {
+    const e = unwrapExpression(expr);
+    if (!ts.isCallExpression(e) || !ts.isIdentifier(e.expression)) return null;
+    if (!drizzleTableFns.has(e.expression.text)) return null;
+    const obj = e.arguments.find(ts.isObjectLiteralExpression);
+    return obj ? { obj } : null;
+  };
 
   /** The `{...}` argument of a `z.object({...})` call anywhere in a chain. */
   const zodObjectArg = (expr: ts.Expression): ts.ObjectLiteralExpression | null => {
@@ -583,7 +605,7 @@ function extractSourceSchemasUnsafe(fileRel: string, text: string): SchemaSurfac
 
   const objectLiteralFields = (
     obj: ts.ObjectLiteralExpression,
-    zodOptional: boolean,
+    flavor: "zod" | "mongoose" | "drizzle",
   ): { fields: SchemaField[]; truncated: boolean } => {
     const fields: SchemaField[] = [];
     let truncated = false;
@@ -591,11 +613,25 @@ function extractSourceSchemasUnsafe(fileRel: string, text: string): SchemaSurfac
       let name: string | null = null;
       let type: string | undefined;
       let optional = false;
+      let pk = false;
+      let references: string | undefined;
       if (ts.isPropertyAssignment(prop)) {
         name = propName(prop.name);
         const raw = prop.initializer.getText(source);
         type = compactType(raw);
-        optional = zodOptional && /\.optional\s*\(/.test(raw);
+        if (flavor === "zod") {
+          optional = /\.optional\s*\(/.test(raw);
+        } else if (flavor === "mongoose") {
+          // `author: { type: Schema.Types.ObjectId, ref: "User" }`
+          references = /\bref:\s*["'`](\w+)["'`]/.exec(raw)?.[1];
+        } else {
+          // drizzle: nullable unless .notNull()/.primaryKey(); FK via
+          // `.references(() => users.id)` — the identifier is the sibling
+          // table's declared const, which is also the schema's name here.
+          pk = /\.primaryKey\s*\(/.test(raw);
+          optional = !pk && !/\.notNull\s*\(/.test(raw);
+          references = /\.references\s*\(\s*\(\)\s*=>\s*([A-Za-z_$][\w$]*)\s*\./.exec(raw)?.[1];
+        }
       } else if (ts.isShorthandPropertyAssignment(prop)) {
         name = prop.name.text;
       } else {
@@ -606,7 +642,13 @@ function extractSourceSchemasUnsafe(fileRel: string, text: string): SchemaSurfac
         truncated = true;
         break;
       }
-      fields.push({ name, ...(type ? { type } : {}), ...(optional ? { optional: true } : {}) });
+      fields.push({
+        name,
+        ...(type ? { type } : {}),
+        ...(optional ? { optional: true } : {}),
+        ...(pk ? { pk: true } : {}),
+        ...(references ? { references } : {}),
+      });
     }
     return { fields, truncated };
   };
@@ -657,14 +699,23 @@ function extractSourceSchemasUnsafe(fileRel: string, text: string): SchemaSurfac
         if (!ts.isIdentifier(decl.name) || !decl.initializer) continue;
         const zodObj = zodObjectArg(decl.initializer);
         if (zodObj) {
-          push(decl.name.text, lineOf(source, decl), "zod", objectLiteralFields(zodObj, true));
+          push(decl.name.text, lineOf(source, decl), "zod", objectLiteralFields(zodObj, "zod"));
           continue;
         }
         const mgObj = mongooseSchemaArg(decl.initializer);
         if (mgObj) {
-          push(decl.name.text, lineOf(source, decl), "mongoose", objectLiteralFields(mgObj, false));
+          push(decl.name.text, lineOf(source, decl), "mongoose", objectLiteralFields(mgObj, "mongoose"));
+          continue;
+        }
+        const dz = drizzleTableArgs(decl.initializer);
+        if (dz) {
+          // Named by the declared const — that identifier is what sibling
+          // tables' `.references(() => users.id)` point at.
+          push(decl.name.text, lineOf(source, decl), "drizzle", objectLiteralFields(dz.obj, "drizzle"));
         }
       }
+    } else if (ts.isClassDeclaration(st) && st.name && hasTypeorm && isTypeormEntity(st)) {
+      push(st.name.text, lineOf(source, st), "typeorm", typeormEntityFields(st, source));
     } else if (ts.isInterfaceDeclaration(st) && gated && hasExportModifier(st)) {
       push(st.name.text, lineOf(source, st), "interface", memberFields(st.members));
     } else if (
@@ -677,6 +728,70 @@ function extractSourceSchemasUnsafe(fileRel: string, text: string): SchemaSurfac
     }
   }
   return schemas;
+}
+
+/** True when a class carries an `@Entity()` decorator. */
+function isTypeormEntity(cls: ts.ClassDeclaration): boolean {
+  const decorators = ts.canHaveDecorators(cls) ? (ts.getDecorators(cls) ?? []) : [];
+  return decorators.some((d) => {
+    const e = d.expression;
+    const callee = ts.isCallExpression(e) ? e.expression : e;
+    return ts.isIdentifier(callee) && callee.text === "Entity";
+  });
+}
+
+const TYPEORM_RELATION_DECORATORS = new Set([
+  "ManyToOne",
+  "OneToOne",
+  "OneToMany",
+  "ManyToMany",
+]);
+
+/** Decorated properties of a typeorm entity → schema fields with relations. */
+function typeormEntityFields(
+  cls: ts.ClassDeclaration,
+  source: ts.SourceFile,
+): { fields: SchemaField[]; truncated: boolean } {
+  const fields: SchemaField[] = [];
+  let truncated = false;
+  for (const member of cls.members) {
+    if (!ts.isPropertyDeclaration(member)) continue;
+    const name = propName(member.name);
+    if (!name) continue;
+    if (fields.length >= MAX_SCHEMA_FIELDS) {
+      truncated = true;
+      break;
+    }
+    let pk = false;
+    let optional = Boolean(member.questionToken);
+    let references: string | undefined;
+    const decorators = ts.canHaveDecorators(member) ? (ts.getDecorators(member) ?? []) : [];
+    for (const d of decorators) {
+      if (!ts.isCallExpression(d.expression)) continue;
+      const callee = d.expression.expression;
+      if (!ts.isIdentifier(callee)) continue;
+      if (callee.text.startsWith("PrimaryGeneratedColumn") || callee.text === "PrimaryColumn") {
+        pk = true;
+      } else if (TYPEORM_RELATION_DECORATORS.has(callee.text)) {
+        // `@ManyToOne(() => User, …)` — the arrow's body names the target.
+        const arg = d.expression.arguments[0];
+        if (arg && ts.isArrowFunction(arg) && ts.isIdentifier(arg.body)) {
+          references = arg.body.text;
+        }
+      } else if (callee.text === "Column") {
+        const arg = d.expression.arguments.find(ts.isObjectLiteralExpression);
+        if (arg && /\bnullable\s*:\s*true\b/.test(arg.getText(source))) optional = true;
+      }
+    }
+    fields.push({
+      name,
+      ...(member.type ? { type: compactType(member.type.getText(source)) } : {}),
+      ...(optional ? { optional: true } : {}),
+      ...(pk ? { pk: true } : {}),
+      ...(references ? { references } : {}),
+    });
+  }
+  return { fields, truncated };
 }
 
 /** Line-based parse of a prisma schema's `model X { field Type … }` blocks. */
@@ -719,7 +834,105 @@ export function parsePrismaSchema(fileRel: string, text: string): SchemaSurface[
       name: f[1]!,
       type: optional ? rawType.slice(0, -1) : rawType,
       ...(optional ? { optional: true } : {}),
+      ...(/\s@id\b/.test(` ${line}`) ? { pk: true } : {}),
     });
+  }
+  // Relation fields: a field whose (unwrapped) type names a sibling model IS
+  // the relation — prisma declares them that way (`author User @relation(…)`).
+  const modelNames = new Set(out.map((s) => s.name));
+  for (const s of out) {
+    for (const field of s.fields) {
+      const bare = (field.type ?? "").replace(/\[\]$/, "");
+      if (bare !== s.name && modelNames.has(bare)) field.references = bare;
+    }
+  }
+  return out;
+}
+
+/**
+ * CREATE TABLE blocks of a SQL file (migrations, schema dumps) → schemas.
+ * Line-oriented and dialect-lenient: quoted/backticked identifiers, column
+ * `REFERENCES tbl(col)` and table-level `FOREIGN KEY (col) REFERENCES tbl`
+ * both feed the ER edges; `ALTER TABLE` and everything else is ignored.
+ * First CREATE of a table wins (migration chains re-state tables).
+ */
+export function parseSqlSchemas(fileRel: string, text: string): SchemaSurface[] {
+  const out: SchemaSurface[] = [];
+  const seen = new Set<string>();
+  const tableRe =
+    /create\s+table\s+(?:if\s+not\s+exists\s+)?[`"[]?(\w+)[`"\]]?\s*\(([\s\S]*?)\)\s*;/gi;
+  const unquote = (s: string) => s.replace(/[`"[\]]/g, "");
+  for (let m = tableRe.exec(text); m; m = tableRe.exec(text)) {
+    const name = unquote(m[1]!);
+    if (seen.has(name.toLowerCase())) continue;
+    seen.add(name.toLowerCase());
+    const line = text.slice(0, m.index).split(/\r?\n/).length;
+    const schema: SchemaSurface = {
+      id: `${fileRel}#${name}`,
+      name,
+      file: fileRel,
+      line,
+      kind: "sql",
+      fields: [],
+      usedBy: 0,
+    };
+    // Split the body on top-level commas (parens nest in types and checks).
+    const parts: string[] = [];
+    let depth = 0;
+    let start = 0;
+    const body = m[2]!;
+    for (let i = 0; i < body.length; i++) {
+      const ch = body[i];
+      if (ch === "(") depth++;
+      else if (ch === ")") depth--;
+      else if (ch === "," && depth === 0) {
+        parts.push(body.slice(start, i));
+        start = i + 1;
+      }
+    }
+    parts.push(body.slice(start));
+
+    const tableFks = new Map<string, string>(); // column → referenced table
+    const tablePks = new Set<string>();
+    for (const rawPart of parts) {
+      const part = rawPart.trim();
+      if (!part) continue;
+      const fk = /^(?:constraint\s+\S+\s+)?foreign\s+key\s*\(\s*[`"[]?(\w+)[`"\]]?\s*\)\s*references\s+[`"[]?(\w+)[`"\]]?/i.exec(part);
+      if (fk) {
+        tableFks.set(unquote(fk[1]!).toLowerCase(), unquote(fk[2]!));
+        continue;
+      }
+      const pkc = /^(?:constraint\s+\S+\s+)?primary\s+key\s*\(([^)]*)\)/i.exec(part);
+      if (pkc) {
+        for (const col of pkc[1]!.split(","))
+          tablePks.add(unquote(col.trim()).toLowerCase());
+        continue;
+      }
+      if (/^(unique|check|constraint|key|index)\b/i.test(part)) continue;
+      const col = /^[`"[]?(\w+)[`"\]]?\s+(\S+)/.exec(part);
+      if (!col) continue;
+      if (schema.fields.length >= MAX_SCHEMA_FIELDS) {
+        schema.fieldsTruncated = true;
+        break;
+      }
+      const colName = unquote(col[1]!);
+      const pk = /\bprimary\s+key\b/i.test(part);
+      const references = /\breferences\s+[`"[]?(\w+)[`"\]]?/i.exec(part)?.[1];
+      schema.fields.push({
+        name: colName,
+        type: col[2]!.replace(/,$/, ""),
+        ...(!pk && !/\bnot\s+null\b/i.test(part) ? { optional: true } : {}),
+        ...(pk ? { pk: true } : {}),
+        ...(references ? { references: unquote(references) } : {}),
+      });
+    }
+    for (const field of schema.fields) {
+      const lower = field.name.toLowerCase();
+      if (tablePks.has(lower)) field.pk = true;
+      const fk = tableFks.get(lower);
+      if (fk && !field.references) field.references = fk;
+    }
+    out.push(schema);
   }
   return out;
 }
@@ -832,6 +1045,45 @@ function resolveComponentFile(rec: SurfaceSourceRecord, name: string): string | 
     if (imp.resolved && imp.names.includes(name)) return imp.resolved;
   }
   return undefined;
+}
+
+const SCHEMA_WALK_MAX_DEPTH = 5;
+const MAX_PRISMA_FILES = 5;
+const MAX_SQL_FILES = 40;
+
+/**
+ * Workspace-relative `.prisma` and `.sql` files (shallow walk, ignored dirs
+ * skipped, capped) — the schema sources that live outside the analyzer's
+ * code-file corpus. Prisma files first so model names win the id space.
+ */
+async function findSchemaFiles(root: string): Promise<string[]> {
+  const prisma: string[] = [];
+  const sql: string[] = [];
+  const walk = async (rel: string, depth: number): Promise<void> => {
+    if (prisma.length >= MAX_PRISMA_FILES && sql.length >= MAX_SQL_FILES) return;
+    let entries;
+    try {
+      entries = await fs.readdir(rel === "." ? root : resolveInRoot(root, rel), {
+        withFileTypes: true,
+      });
+    } catch {
+      return;
+    }
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      const childRel = rel === "." ? entry.name : `${rel}/${entry.name}`;
+      if (entry.isDirectory()) {
+        if (depth < SCHEMA_WALK_MAX_DEPTH && !isIgnoredDir(entry.name) && !entry.name.startsWith("."))
+          await walk(childRel, depth + 1);
+      } else if (entry.name.endsWith(".prisma")) {
+        if (prisma.length < MAX_PRISMA_FILES) prisma.push(childRel);
+      } else if (entry.name.endsWith(".sql")) {
+        if (sql.length < MAX_SQL_FILES) sql.push(childRel);
+      }
+    }
+  };
+  await walk(".", 0);
+  return [...prisma, ...sql];
 }
 
 /**
@@ -1077,19 +1329,45 @@ export async function buildSurfacesReport(
       (i) => i.specifier === "zod" || i.specifier.startsWith("zod/"),
     );
     const hasMongoose = rec.resolvedImports.some((i) => i.specifier === "mongoose");
+    const hasDrizzle = rec.resolvedImports.some(
+      (i) => i.specifier === "drizzle-orm" || i.specifier.startsWith("drizzle-orm/"),
+    );
+    const hasTypeorm = rec.resolvedImports.some((i) => i.specifier === "typeorm");
     const gated = p.split("/").some((seg) => SCHEMA_PATH_RE.test(seg));
-    if (!hasZod && !hasMongoose && !gated) continue;
+    if (!hasZod && !hasMongoose && !hasDrizzle && !hasTypeorm && !gated) continue;
     const text = await readText(p);
     if (text == null) continue;
     for (const schema of extractSourceSchemas(p, text)) {
       schemas.push({ ...schema, usedBy: usedByOf(p) });
     }
   }
-  for (const rel of ["prisma/schema.prisma", "schema.prisma"]) {
+  // Prisma schemas and SQL DDL live outside the analyzer's code-file corpus —
+  // walk for them (shallow, ignored dirs skipped, capped).
+  for (const rel of await findSchemaFiles(root)) {
     const text = await readText(rel);
-    if (text != null) {
-      schemas.push(...parsePrismaSchema(rel, text));
-      break;
+    if (text == null) continue;
+    if (rel.endsWith(".prisma")) schemas.push(...parsePrismaSchema(rel, text));
+    else schemas.push(...parseSqlSchemas(rel, text));
+  }
+  // ER inference across every flavour: a field whose type text names another
+  // schema references it (interfaces composing models, zod objects nesting
+  // other zod objects). Explicit references (SQL/mongoose/drizzle/typeorm/
+  // prisma) always win; the inferred edge only fills the gap.
+  {
+    const byName = new Map<string, SchemaSurface>();
+    for (const s of schemas) {
+      if (/^[A-Z]/.test(s.name) && s.name.length >= 3 && !byName.has(s.name)) byName.set(s.name, s);
+    }
+    for (const s of schemas) {
+      for (const field of s.fields) {
+        if (field.references || !field.type) continue;
+        for (const token of field.type.match(/[A-Za-z_$][\w$]*/g) ?? []) {
+          if (token !== s.name && byName.has(token)) {
+            field.references = token;
+            break;
+          }
+        }
+      }
     }
   }
   schemas.sort((a, b) => b.usedBy - a.usedBy || a.name.localeCompare(b.name));

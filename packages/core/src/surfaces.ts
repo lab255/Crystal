@@ -61,13 +61,30 @@ export interface StorySurface {
   componentFile?: string;
 }
 
-export type SchemaKind = "zod" | "interface" | "type" | "mongoose" | "prisma";
+export type SchemaKind =
+  | "zod"
+  | "interface"
+  | "type"
+  | "mongoose"
+  | "prisma"
+  | "drizzle"
+  | "typeorm"
+  | "sql";
 
 export interface SchemaField {
   name: string;
   /** Source-level type text, best effort ("string", "z.array(...)", "Int"). */
   type?: string;
   optional?: boolean;
+  /** Primary-key / id field (prisma @id, SQL PRIMARY KEY, drizzle .primaryKey()). */
+  pk?: boolean;
+  /**
+   * Name of the schema this field points at — the ER edge. Explicit where the
+   * flavour declares it (SQL REFERENCES, mongoose ref:, drizzle .references,
+   * typeorm relation decorators); inferred by exact type-name match otherwise
+   * (a prisma `author User` field, an interface field typed as another model).
+   */
+  references?: string;
 }
 
 /** A data schema: the shape of data crossing a boundary or hitting storage. */
