@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.11.0 (2026-07-29)
+
+### Features
+
+- typed turn outcomes + dispatch pre-flight ([`dc42d19`](https://github.com/eliotlim/crystal/commit/dc42d19))
+
 ## v0.10.0 (2026-07-28)
 
 ### Features
