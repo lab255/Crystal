@@ -5,6 +5,7 @@ import {
   projectListText,
   type Program,
   type ProgramDelivery,
+  type SteerReceipt,
 } from "@crystal/core";
 import type { DispatchReport, HubProjectRef, HubRecentProject } from "../hub-engine.js";
 import {
@@ -88,7 +89,19 @@ export interface HubToolHost {
     questionId: string,
     answer: string,
   ): Promise<{ ok: true; resumedRunId: string | null } | { ok: false; reason: string }>;
-  messageDelivery(programId: string, deliveryId: string, text: string): Promise<{ queued: boolean }>;
+  messageDelivery(
+    programId: string,
+    deliveryId: string,
+    text: string,
+    opts?: { wake?: boolean },
+  ): Promise<{ queued: boolean } & SteerReceipt>;
+  closeDelivery(
+    programId: string,
+    deliveryId: string,
+    outcome: "completed" | "failed",
+    note: string,
+  ): Promise<Program>;
+  compactDelivery(programId: string, deliveryId: string): Promise<void>;
   setProgramBudget(programId: string, budgetUsd: number | null): Promise<Program>;
   setDeliveryBudget(programId: string, deliveryId: string, budgetUsd: number | null): Promise<Program>;
   setPaused(programId: string, paused: boolean, reason?: string | null): Promise<Program>;
@@ -276,17 +289,70 @@ const HUB_TOOLS = [
     name: "message_delivery",
     description:
       "Send a note into a running project orchestrator's session — a decision from " +
-      "another project, a changed contract, a correction. It is delivered as owner " +
-      "steering (queued if the orchestrator is mid-turn). Use this rather than " +
-      "starting a second delivery in the same project.",
+      "another project, a changed contract, a correction. Use this rather than " +
+      "starting a second delivery in the same project. By default the note is " +
+      "QUEUED for the orchestrator's next natural wake (a worker settling, a " +
+      "question answered) — free, because that turn was happening anyway. Pass " +
+      "wake: true only when it must be acted on before anything else settles: " +
+      "that forces a resume which re-ingests the whole session and is priced " +
+      "accordingly. The result is a receipt saying exactly what happened — and " +
+      "note a steer can never unblock a stopped delivery; if it is waiting on a " +
+      "question, answer_question is the lever.",
     inputSchema: {
       type: "object",
       properties: {
         deliveryId: { type: "string" },
         text: { type: "string" },
+        wake: {
+          type: "boolean",
+          description: "Force an immediate paid resume instead of queueing (default false).",
+        },
         programId: { type: "string", description: "Optional — inferred from the delivery." },
       },
       required: ["deliveryId", "text"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "close_delivery",
+    description:
+      "Settle a delivery from outside its workflow — for work that finished (or " +
+      "became moot) by other means: you or the owner did it directly, another " +
+      "delivery absorbed it, the premise changed. Records the outcome with your " +
+      "note as the delivery's summary (dependents are dispatched with it), cancels " +
+      "its live workflow if any, auto-dispatches whatever a completion unblocked, " +
+      "and frees the project for the rest of the portfolio. Use retry_delivery to " +
+      "re-run a failure; use this to declare it settled.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        deliveryId: { type: "string" },
+        outcome: { type: "string", enum: ["completed", "failed"] },
+        note: {
+          type: "string",
+          description: "What settled it — becomes the summary its dependents receive.",
+        },
+        programId: { type: "string", description: "Optional — inferred from the delivery." },
+      },
+      required: ["deliveryId", "outcome", "note"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "compact_delivery",
+    description:
+      "Checkpoint a delivery's orchestrator into a fresh session. Every wake of a " +
+      "long-running orchestrator re-ingests its whole transcript; compacting retires " +
+      "the transcript and reseeds a new session from the durable state (workflow " +
+      "record + board), cutting the per-wake cost. Only between waves — refused " +
+      "while any of the delivery's runs are live.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        deliveryId: { type: "string" },
+        programId: { type: "string", description: "Optional — inferred from the delivery." },
+      },
+      required: ["deliveryId"],
       additionalProperties: false,
     },
   },
@@ -429,6 +495,17 @@ const MessageDeliveryArgs = z.object({
   programId: z.string().optional(),
   deliveryId: z.string().min(1),
   text: z.string().min(1),
+  wake: z.boolean().optional(),
+});
+const CloseDeliveryArgs = z.object({
+  programId: z.string().optional(),
+  deliveryId: z.string().min(1),
+  outcome: z.enum(["completed", "failed"]),
+  note: z.string().min(1),
+});
+const CompactDeliveryArgs = z.object({
+  programId: z.string().optional(),
+  deliveryId: z.string().min(1),
 });
 const AnswerQuestionArgs = z.object({
   programId: z.string().optional(),
@@ -663,12 +740,45 @@ export class McpHubServer {
         const a = MessageDeliveryArgs.safeParse(args ?? {});
         if (!a.success) return invalidArgs(id, name, a.error);
         const programId = await this.resolveOwner(a.data.programId, a.data.deliveryId);
-        const { queued } = await this.hub.messageDelivery(programId, a.data.deliveryId, a.data.text);
+        const receipt = await this.hub.messageDelivery(programId, a.data.deliveryId, a.data.text, {
+          wake: a.data.wake ?? false,
+        });
+        // The typed receipt: the caller must never be left guessing whether
+        // a steer landed, is waiting, or would wait forever.
+        const text =
+          receipt.mode === "interactive"
+            ? `Typed into ${a.data.deliveryId}'s live orchestrator terminal.`
+            : receipt.mode === "resumed"
+              ? `Woke ${a.data.deliveryId}'s orchestrator with it (a paid full-context resume).`
+              : receipt.wakeExpected
+                ? `Queued for ${a.data.deliveryId} — a run is live, so it rides the next natural wake at no extra cost.`
+                : `Queued for ${a.data.deliveryId}, but NOTHING IS LIVE in that workflow — no natural wake is coming. ` +
+                  `Re-send with wake: true to deliver now, answer its open question if it has one, or close/retry the delivery.`;
+        return toolText(id, text);
+      }
+      case "close_delivery": {
+        const a = CloseDeliveryArgs.safeParse(args ?? {});
+        if (!a.success) return invalidArgs(id, name, a.error);
+        const programId = await this.resolveOwner(a.data.programId, a.data.deliveryId);
+        await this.hub.closeDelivery(programId, a.data.deliveryId, a.data.outcome, a.data.note);
         return toolText(
           id,
-          queued
-            ? `Queued for ${a.data.deliveryId} — its orchestrator is mid-turn and will get it when the turn ends.`
-            : `Delivered to ${a.data.deliveryId}'s orchestrator.`,
+          `Delivery ${a.data.deliveryId} closed as ${a.data.outcome}; its workflow (if live) was stopped. ` +
+            `Anything a completion unblocked dispatches automatically.`,
+        );
+      }
+      case "compact_delivery": {
+        const a = CompactDeliveryArgs.safeParse(args ?? {});
+        if (!a.success) return invalidArgs(id, name, a.error);
+        const programId = await this.resolveOwner(a.data.programId, a.data.deliveryId);
+        try {
+          await this.hub.compactDelivery(programId, a.data.deliveryId);
+        } catch (err) {
+          return toolError(id, (err as Error).message);
+        }
+        return toolText(
+          id,
+          `Compacted ${a.data.deliveryId}'s orchestrator into a fresh session seeded from its durable state.`,
         );
       }
       case "answer_question": {

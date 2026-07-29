@@ -60,7 +60,13 @@ function fakeHost(over: Partial<HubToolHost> = {}) {
         ? { ok: false as const, reason: "Unknown (or already answered) question: q_gone" }
         : { ok: true as const, resumedRunId: "run_9" },
     ),
-    messageDelivery: vi.fn(async () => ({ queued: true })),
+    messageDelivery: vi.fn(async () => ({
+      queued: true,
+      mode: "queued" as const,
+      wakeExpected: true,
+    })),
+    closeDelivery: vi.fn(async () => prog),
+    compactDelivery: vi.fn(async () => {}),
     setProgramBudget: vi.fn(async () => prog),
     setDeliveryBudget: vi.fn(async () => prog),
     setPaused: vi.fn(async () => ({ ...prog, status: "paused" as const })),
@@ -221,8 +227,11 @@ describe("dispatching work into projects", () => {
       text: "the schema changed",
     });
     expect(host.programIdForDelivery).toHaveBeenCalledWith("dlv_7");
-    expect(host.messageDelivery).toHaveBeenCalledWith(prog.id, "dlv_7", "the schema changed");
-    expect(text).toMatch(/Queued/); // the fake reports the orchestrator mid-turn
+    // Steers queue by default — waking is the explicit, paid opt-in.
+    expect(host.messageDelivery).toHaveBeenCalledWith(prog.id, "dlv_7", "the schema changed", {
+      wake: false,
+    });
+    expect(text).toMatch(/Queued/); // the fake reports it parked for the next wake
   });
 
   it("never answers a notification, but still performs it", async () => {
@@ -236,9 +245,78 @@ describe("dispatching work into projects", () => {
       params: { name: "message_delivery", arguments: { deliveryId: "dlv_7", text: "hi" } },
     });
     expect(reply).toBeNull();
-    expect(host.messageDelivery).toHaveBeenCalledWith(prog.id, "dlv_7", "hi");
+    expect(host.messageDelivery).toHaveBeenCalledWith(prog.id, "dlv_7", "hi", { wake: false });
     // …and an unknown method notification is silence, not an error frame.
     expect(await server.handle({ jsonrpc: "2.0", method: "nonsense" })).toBeNull();
+  });
+
+  it("wake: true forces the paid resume and the receipt says so", async () => {
+    const { host, prog } = fakeHost({
+      messageDelivery: vi.fn(async () => ({
+        queued: false,
+        mode: "resumed" as const,
+        wakeExpected: true,
+      })),
+    });
+    const server = new McpHubServer({ hub: host });
+    const { text } = await call(server, "message_delivery", {
+      deliveryId: "dlv_7",
+      text: "act before the next settle",
+      wake: true,
+    });
+    expect(host.messageDelivery).toHaveBeenCalledWith(
+      prog.id,
+      "dlv_7",
+      "act before the next settle",
+      { wake: true },
+    );
+    expect(text).toMatch(/paid full-context resume/);
+  });
+
+  it("a queued steer with nothing live warns that no natural wake is coming", async () => {
+    const { host } = fakeHost({
+      messageDelivery: vi.fn(async () => ({
+        queued: true,
+        mode: "queued" as const,
+        wakeExpected: false,
+      })),
+    });
+    const server = new McpHubServer({ hub: host });
+    const { text } = await call(server, "message_delivery", { deliveryId: "dlv_7", text: "hi" });
+    expect(text).toMatch(/NOTHING IS LIVE/);
+    expect(text).toMatch(/wake: true/);
+  });
+
+  it("closes a delivery externally and compacts an orchestrator", async () => {
+    const { host, prog } = fakeHost();
+    const server = new McpHubServer({ hub: host });
+    const closed = await call(server, "close_delivery", {
+      deliveryId: "dlv_7",
+      outcome: "completed",
+      note: "Done by hand on main.",
+    });
+    expect(host.closeDelivery).toHaveBeenCalledWith(
+      prog.id,
+      "dlv_7",
+      "completed",
+      "Done by hand on main.",
+    );
+    expect(closed.text).toMatch(/closed as completed/);
+
+    const compacted = await call(server, "compact_delivery", { deliveryId: "dlv_7" });
+    expect(host.compactDelivery).toHaveBeenCalledWith(prog.id, "dlv_7");
+    expect(compacted.text).toMatch(/fresh session/);
+
+    // A refused compact (live runs) is a tool error, not a protocol failure.
+    const busy = fakeHost({
+      compactDelivery: vi.fn(async () => {
+        throw new Error("Workflow has 2 live run(s) — compact between waves, after everything settles.");
+      }),
+    });
+    const busyServer = new McpHubServer({ hub: busy.host });
+    const refused = await call(busyServer, "compact_delivery", { deliveryId: "dlv_7" });
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toMatch(/live run/);
   });
 
   it("retries a delivery, inferring its program too", async () => {

@@ -466,6 +466,80 @@ describe("WorkflowEngine", () => {
     expect((await engine.listTemplates()).map((t) => t.id)).not.toContain("wft_oneoff");
   });
 
+  it("wake: false parks a steer for the next natural wake, with an honest receipt", async () => {
+    const { agents, engine } = makeEngine();
+    const { workflow, run } = await engine.start({ name: "W", goal: "g" });
+    agents.settle(run);
+    await new Promise((r) => setTimeout(r, 30)); // let the settle hook drain — chain is idle now
+
+    const receipt = await engine.message(workflow.id, "later is fine", { wake: false });
+    // Nothing live: the receipt must say a natural wake is NOT coming.
+    expect(receipt).toMatchObject({ queued: true, mode: "queued", wakeExpected: false });
+    expect(agents.started).toHaveLength(1); // no resume was paid for
+
+    // A worker settling is the natural wake that flushes the parked steer.
+    const worker = await agents.start({ prompt: "w", tags: [workflowTag(workflow.id)] });
+    agents.settle(worker);
+    await until(() => agents.started.length === 3);
+    expect(agents.started[2]!.prompt).toContain("USER MESSAGE");
+    expect(agents.started[2]!.prompt).toContain("later is fine");
+
+    // The default path still wakes, and says so.
+    agents.settle(agents.runs.at(-1)!);
+    await new Promise((r) => setTimeout(r, 30));
+    const woke = await engine.message(workflow.id, "act on this now");
+    expect(woke.mode).toBe("resumed");
+    expect(woke.run?.prompt).toContain("act on this now");
+  });
+
+  it("compact refuses while runs are live, then respawns the manager from durable state", async () => {
+    const { agents, engine } = makeEngine();
+    const { workflow, run } = await engine.start({ name: "Long Haul", goal: "g" });
+    await expect(engine.compact(workflow.id)).rejects.toThrow(/live run/);
+
+    agents.settle(run);
+    await new Promise((r) => setTimeout(r, 30));
+    await engine.advanceStage(workflow.id, "refine", "done", "reqs settled");
+
+    const { workflow: after, run: fresh } = await engine.compact(workflow.id);
+    expect(after.managerRunId).toBe(fresh.id);
+    expect(fresh.role).toBe("manager");
+    expect(fresh.tags).toContain(workflowTag(workflow.id));
+    // Not a resume: a fresh session seeded with the standing prompt + status.
+    expect(fresh.resumedFromRunId ?? null).toBeNull();
+    expect(fresh.prompt).toContain("COMPACTED SESSION");
+    expect(fresh.prompt).toContain("refine [done]");
+  });
+
+  it("warns the manager once at 80% of budget, re-armed when the budget changes", async () => {
+    const { agents, engine } = makeEngine();
+    const { workflow, run } = await engine.start({ name: "W", goal: "g", budgetUsd: 10 });
+    const spender = createAgentRun({ prompt: "x", tags: [workflowTag(workflow.id)] });
+    spender.status = "completed";
+    spender.costUsd = 8.5;
+    agents.runs.push(spender);
+
+    agents.settle(run);
+    await until(() => agents.started.length === 2);
+    // The warning is an engine notice, not dressed up as the owner's words.
+    expect(agents.started[1]!.prompt).toContain("BUDGET WARNING");
+    expect(agents.started[1]!.prompt).not.toContain("USER MESSAGE");
+    const warned = await engine.get(workflow.id);
+    expect(warned?.budgetWarnedAt).toBeTruthy();
+    expect(warned?.status).toBe("running"); // warned, not paused — money remains
+
+    // Once: the next settlement past the threshold stays quiet.
+    agents.settle(agents.runs.at(-1)!);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(
+      agents.started.filter((s) => s.prompt.includes("BUDGET WARNING")),
+    ).toHaveLength(1);
+
+    // Raising the budget re-arms the tripwire for the new edge.
+    const raised = await engine.setBudget(workflow.id, 100);
+    expect(raised.budgetWarnedAt).toBeNull();
+  });
+
   it("two manager turns that settle nothing pause the workflow as a stall", async () => {
     const { agents, engine } = makeEngine();
     const { workflow, run } = await engine.start({ name: "W", goal: "g" });

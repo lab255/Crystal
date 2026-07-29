@@ -34,7 +34,13 @@ import type {
 import type { SystemOverview } from "./system-overview.js";
 import type { TerminalChunk, TerminalInfo } from "./terminal.js";
 import type { TodoList } from "./todo.js";
-import type { TemplateScope, Workflow, WorkflowSpend, WorkflowTemplate } from "./workflow.js";
+import type {
+  SteerReceipt,
+  TemplateScope,
+  Workflow,
+  WorkflowSpend,
+  WorkflowTemplate,
+} from "./workflow.js";
 import type {
   HubDispatchReport,
   HubProject,
@@ -723,8 +729,18 @@ export interface BridgeMethods {
    * the resumed manager run when delivery was immediate, null when queued.
    */
   "workflow.message": {
-    params: WsScope & { workflowId: string; text: string };
-    result: { run: AgentRun | null; queued: boolean };
+    params: WsScope & {
+      workflowId: string;
+      text: string;
+      /** false = park for the next natural wake instead of a paid resume. */
+      wake?: boolean;
+    };
+    result: { run: AgentRun | null; queued: boolean } & SteerReceipt;
+  };
+  /** Checkpoint the manager into a fresh session (refused while runs are live). */
+  "workflow.compact": {
+    params: WsScope & { workflowId: string };
+    result: { workflow: Workflow; run: AgentRun };
   };
   /** Pause (hold new dispatches) or resume a workflow. */
   "workflow.setPaused": {
@@ -839,8 +855,23 @@ export interface BridgeMethods {
   };
   /** Steer one delivery's project orchestrator (queued when it is mid-turn). */
   "hub.messageDelivery": {
-    params: { programId: string; deliveryId: string; text: string };
-    result: { queued: boolean };
+    params: { programId: string; deliveryId: string; text: string; wake?: boolean };
+    result: { queued: boolean } & SteerReceipt;
+  };
+  /** Settle a delivery externally: record the outcome, cancel its workflow, unblock dependents. */
+  "hub.closeDelivery": {
+    params: {
+      programId: string;
+      deliveryId: string;
+      outcome: "completed" | "failed";
+      note: string;
+    };
+    result: { program: Program };
+  };
+  /** Checkpoint a delivery's orchestrator into a fresh session. */
+  "hub.compactDelivery": {
+    params: { programId: string; deliveryId: string };
+    result: Record<string, never>;
   };
   /** Hold or release a program — every live delivery workflow follows. */
   "hub.setPaused": {
@@ -963,6 +994,8 @@ export const UNSCOPED_METHODS: readonly BridgeMethodName[] = [
   "hub.dispatch",
   "hub.dispatchEpic",
   "hub.messageDelivery",
+  "hub.closeDelivery",
+  "hub.compactDelivery",
   "hub.setPaused",
   "hub.setBudget",
   "hub.setDeliveryBudget",

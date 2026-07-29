@@ -82,7 +82,19 @@ build/sign (+notarize on macOS) → signed updater `latest.json`).
   manager settles, `STALL_TURN_LIMIT` consecutive unchanged turns pause the workflow with
   `pausedBy: "stall"`, and a user resume forgives the streak. Both exist because of the
   same field failure: an orchestrator resumed six times against an unchanged board, $9
-  gone, the missing-node gap discovered mid-review.
+  gone, the missing-node gap discovered mid-review. Three sibling levers from the same
+  retro: steering returns a typed `SteerReceipt` (`interactive`/`resumed`/`queued` +
+  `wakeExpected`) and the hub's `message_delivery` **queues by default** (`wake: true` is
+  the explicit paid resume — the queue holds *pre-framed* text, so engine notices are
+  never dressed as owner words); `WorkflowEngine.compact` retires a long manager
+  transcript and reseeds a fresh session from the record + status text (refused while
+  runs are live — a settling worker would resume the retired chain and fork
+  coordination); and `HubEngine.closeDelivery` is the "settled externally" verb —
+  outcome + note recorded first, live workflow cancelled after, which only works because
+  `onWorkflowChanged` skips deliveries that are already terminal. A one-shot
+  `BUDGET WARNING` notice lands at `BUDGET_WARN_FRACTION` of a workflow budget
+  (`budgetWarnedAt`, re-armed on budget change) so the wrap-up happens while there is
+  still money to pay for it.
 - A template stage carries three things beyond its dependencies. `handoff` is the
   artifact it owes the stages downstream — dependencies say *when* a stage may start,
   only the handoff says *what its worker is given*, so it goes into both the producing

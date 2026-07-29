@@ -6,6 +6,8 @@ import {
   WorkflowSchema,
   addTrack,
   budgetState,
+  budgetWarningDue,
+  budgetWarningText,
   buildWorkflowManagerPrompt,
   createWorkflow,
   formatUserMessage,
@@ -25,6 +27,7 @@ import {
   type AgentPermissionMode,
   type AgentRoster,
   type AgentRun,
+  type SteerReceipt,
   type TaskItem,
   type Workflow,
   type WorkflowSpend,
@@ -260,11 +263,43 @@ export class WorkflowEngine {
     // judged against the workflow as started, same as every later turn.
     workflow.progressFingerprint = workflowProgressFingerprint(workflow, 0, await this.boardTasks());
 
-    // Resolve the manager's profile from the merged roster: an explicit
-    // init.agentId wins, else the roster names its manager
-    // (managerAgentId ?? defaultAgentId). Only when nothing resolves does
-    // the old hardcoded default apply — the manager runs heavyweight; workers
-    // are where cost routing happens (per-stage agents/models).
+    const { params, roster, preset } = await this.managerParams(workflow, {
+      agentId: init.agentId ?? null,
+      managerModel: init.managerModel ?? null,
+    });
+
+    let run: AgentRun;
+    if (init.interactive && this.interactiveLauncher) {
+      const launched = await this.interactiveLauncher({
+        ...params,
+        prompt: buildWorkflowManagerPrompt(workflow, roster.agents, preset) + WORKFLOW_INTERACTIVE_NOTE,
+        title: `workflow · ${workflow.name}`,
+      });
+      run = launched.run;
+    } else {
+      run = await this.agents.start({
+        ...params,
+        prompt: buildWorkflowManagerPrompt(workflow, roster.agents, preset),
+      });
+    }
+    workflow.managerRunId = run.id;
+    await this.records.put(workflow);
+    return { workflow: { ...workflow }, run };
+  }
+
+  /**
+   * Resolve spawn parameters for a manager session of `workflow` — shared by
+   * `start` and `compact`, which must agree on profile/model/tag resolution
+   * or a compacted manager would come back as a different agent. An explicit
+   * agentId wins, else the roster names its manager (managerAgentId ??
+   * defaultAgentId); only when nothing resolves does the hardcoded default
+   * apply — the manager runs heavyweight; workers are where cost routing
+   * happens (per-stage agents/models).
+   */
+  private async managerParams(
+    workflow: Workflow,
+    init: { agentId?: string | null; managerModel?: string | null },
+  ) {
     const roster = this.agentLibrary ? await this.agentLibrary.roster() : await this.store.loadAgents();
     const managerAgentId =
       init.agentId ?? roster.managerAgentId ?? roster.defaultAgentId ?? null;
@@ -294,32 +329,68 @@ export class WorkflowEngine {
     // The manager coordinates in place — a profile's worktree default is a
     // worker policy, and an isolated manager could not keep the board honest.
     (params as { isolation?: unknown }).isolation = undefined;
+    return { params, roster, preset };
+  }
 
-    let run: AgentRun;
-    if (init.interactive && this.interactiveLauncher) {
-      const launched = await this.interactiveLauncher({
-        ...params,
-        prompt: buildWorkflowManagerPrompt(workflow, roster.agents, preset) + WORKFLOW_INTERACTIVE_NOTE,
-        title: `workflow · ${workflow.name}`,
-      });
-      run = launched.run;
-    } else {
-      run = await this.agents.start({
-        ...params,
-        prompt: buildWorkflowManagerPrompt(workflow, roster.agents, preset),
-      });
+  /**
+   * Checkpoint/compact: retire the manager's transcript and respawn it from
+   * durable state. Every resume of a long chain re-ingests the whole session
+   * — six wakes of a big orchestrator can burn dollars on pure context. The
+   * workflow record and the board are the durable memory *by design* (the
+   * prompt tells the manager so), which is what makes this safe: a fresh
+   * session seeded with the standing prompt + current status text restores
+   * coordination without the transcript. Refused while any run is live —
+   * a settling worker resumes the chain that dispatched it, and a retired
+   * chain being resumed would fork coordination across two sessions. An
+   * interactive manager compacts into a headless one (steering still works
+   * via `message`).
+   */
+  async compact(workflowId: string): Promise<{ workflow: Workflow; run: AgentRun }> {
+    await this.ensureLoaded();
+    const wf = this.records.peek(workflowId);
+    if (!wf) throw new Error(`Unknown workflow: ${workflowId}`);
+    if (wf.status !== "running" && wf.status !== "paused") {
+      throw new Error(`Workflow is ${wf.status} — nothing to compact.`);
     }
-    workflow.managerRunId = run.id;
-    await this.records.put(workflow);
-    return { workflow: { ...workflow }, run };
+    const live = (await this.agents.runsWithTag(workflowTag(workflowId))).filter(
+      (r) => r.status === "running" || r.status === "queued",
+    );
+    if (live.length) {
+      throw new Error(
+        `Workflow has ${live.length} live run(s) — compact between waves, after everything settles.`,
+      );
+    }
+    const { params, roster, preset } = await this.managerParams(wf, { agentId: wf.agentId });
+    const status = workflowStatusText(wf, await this.spend(workflowId));
+    const prompt =
+      buildWorkflowManagerPrompt(wf, roster.agents, preset) +
+      "\n\nCOMPACTED SESSION: you are a fresh manager session taking over this workflow mid-flight — " +
+      "your predecessor's transcript was retired to cut resume cost. The status below and the board " +
+      "are the durable memory; read board_status before acting, and do NOT redo settled stages.\n\n" +
+      status;
+    const run = await this.agents.start({ ...params, prompt });
+    const workflow = await this.mutate(workflowId, (current) => {
+      const next: Workflow = { ...current, managerRunId: run.id };
+      return { workflow: next, result: next };
+    });
+    return { workflow, run };
   }
 
   /**
    * Remote control: deliver a user message into the manager's interactive
-   * session. Queued (and flushed on settlement) while a chain turn is live —
-   * two concurrent resumes of one Claude session would fork it.
+   * session, returning a typed {@link SteerReceipt} — the caller learns
+   * whether it was typed into a live terminal (free), delivered by waking
+   * the session (a paid full-context resume), or queued. Queued while a
+   * chain turn is live — two concurrent resumes of one Claude session would
+   * fork it — and also when `wake: false` asks for the cheap path: parked
+   * for the next natural wake, since every settlement flushes the queue
+   * into a turn that was being paid for anyway.
    */
-  async message(workflowId: string, text: string): Promise<{ run: AgentRun | null; queued: boolean }> {
+  async message(
+    workflowId: string,
+    text: string,
+    opts: { wake?: boolean } = {},
+  ): Promise<{ run: AgentRun | null; queued: boolean } & SteerReceipt> {
     await this.ensureLoaded();
     const workflow = this.records.peek(workflowId);
     if (!workflow) throw new Error(`Unknown workflow: ${workflowId}`);
@@ -329,15 +400,25 @@ export class WorkflowEngine {
     const interactive = await this.agents
       .deliverInteractive(workflow.managerRunId, formatUserMessage(text))
       .catch(() => null);
-    if (interactive) return { run: interactive, queued: false };
+    if (interactive) return { run: interactive, queued: false, mode: "interactive", wakeExpected: true };
+    if (opts.wake === false) {
+      this.pendingMessages.push(workflowId, formatUserMessage(text));
+      return { run: null, queued: true, mode: "queued", wakeExpected: await this.wakeExpected(workflowId) };
+    }
     // resumeChain serializes attempts per chain and re-checks liveness inside
     // its lock — a null (turn live, or no session yet) means queue-and-retry.
     const run = await this.agents.resumeChain(workflow.managerRunId, formatUserMessage(text));
     if (!run) {
-      this.pendingMessages.push(workflowId, text);
-      return { run: null, queued: true };
+      this.pendingMessages.push(workflowId, formatUserMessage(text));
+      return { run: null, queued: true, mode: "queued", wakeExpected: await this.wakeExpected(workflowId) };
     }
-    return { run, queued: false };
+    return { run, queued: false, mode: "resumed", wakeExpected: true };
+  }
+
+  /** Is any run of the workflow live — i.e. will a settlement flush the queue? */
+  private async wakeExpected(workflowId: string): Promise<boolean> {
+    const runs = await this.agents.runsWithTag(workflowTag(workflowId));
+    return runs.some((r) => r.status === "running" || r.status === "queued");
   }
 
   /** Pause (hold new dispatches) or resume. Terminal workflows stay terminal. */
@@ -362,7 +443,9 @@ export class WorkflowEngine {
   /** Raise/lower/clear the budget (clears a budget-exhausted pause when it now fits). */
   setBudget(workflowId: string, budgetUsd: number | null): Promise<Workflow> {
     return this.mutate(workflowId, async (wf) => {
-      const workflow: Workflow = { ...wf, budgetUsd };
+      // A re-armed tripwire: raising (or clearing) the budget makes the old
+      // warning stale, and the manager deserves a fresh one near the new edge.
+      const workflow: Workflow = { ...wf, budgetUsd, budgetWarnedAt: null };
       // Only budget pauses auto-clear — a deliberate user hold stays held.
       if (workflow.status === "paused" && wf.pausedBy === "budget") {
         const budget = budgetState(workflow, await this.spend(workflowId));
@@ -584,6 +667,16 @@ export class WorkflowEngine {
             };
             return { workflow: paused, result: null };
           });
+        } else if (budgetWarningDue(budget) && !workflow.budgetWarnedAt) {
+          // Pre-exhaustion tripwire, once: warn while there is still money to
+          // wrap up with. Rides the pending queue so it lands on this very
+          // settlement's flush (or the next idle moment), pre-framed — it is
+          // an engine notice, not words the owner said.
+          const warned = await this.mutate(id, (wf) => {
+            if (wf.budgetWarnedAt || wf.budgetUsd == null) return { workflow: wf, result: false };
+            return { workflow: { ...wf, budgetWarnedAt: nowIso() }, result: true };
+          });
+          if (warned) this.pendingMessages.push(id, budgetWarningText(budget));
         }
       }
       // Typed turn outcomes: a settled MANAGER turn must have changed
@@ -650,7 +743,13 @@ export class WorkflowEngine {
     }
   }
 
-  /** Deliver queued (raw) user messages once no chain run is live. */
+  /**
+   * Deliver queued messages once no chain run is live. The queue holds
+   * *pre-framed* text (owner steering wears its USER MESSAGE wrapper from
+   * `message`; engine notices like the budget warning carry their own) so
+   * this can join them verbatim — a system tripwire must not be dressed up
+   * as words the owner never said.
+   */
   private async flushMessages(workflowId: string): Promise<void> {
     const workflow = this.records.peek(workflowId);
     if (!workflow?.managerRunId) return;
@@ -658,9 +757,9 @@ export class WorkflowEngine {
     await this.pendingMessages.drain(workflowId, (pending) => {
       const text =
         pending.length === 1
-          ? formatUserMessage(pending[0]!)
-          : `${pending.length} user messages arrived while you were working.\n\n` +
-            pending.map((m) => formatUserMessage(m)).join("\n\n---\n\n");
+          ? pending[0]!
+          : `${pending.length} messages arrived while you were working.\n\n` +
+            pending.join("\n\n---\n\n");
       return this.agents.resumeChain(managerRunId, text);
     });
   }

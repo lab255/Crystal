@@ -247,8 +247,11 @@ export function hubToolHost(hub: HubEngine): HubToolHost {
     status: (programId) => (programId ? hub.statusText(programId) : hub.portfolioText()),
     answerQuestion: (programId, questionId, answer) =>
       hub.answerQuestion(programId, questionId, answer),
-    messageDelivery: (programId, deliveryId, text) =>
-      hub.messageDelivery(programId, deliveryId, text),
+    messageDelivery: (programId, deliveryId, text, opts) =>
+      hub.messageDelivery(programId, deliveryId, text, opts),
+    closeDelivery: (programId, deliveryId, outcome, note) =>
+      hub.closeDelivery(programId, deliveryId, outcome, note),
+    compactDelivery: (programId, deliveryId) => hub.compactDelivery(programId, deliveryId),
     setProgramBudget: (programId, budgetUsd) => hub.setBudget(programId, budgetUsd),
     setDeliveryBudget: (programId, deliveryId, budgetUsd) =>
       hub.setDeliveryBudget(programId, deliveryId, budgetUsd),

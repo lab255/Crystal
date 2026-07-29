@@ -944,6 +944,12 @@ export const WorkflowSchema = z.object({
   summary: z.string().nullish(),
   /** Spend ceiling in USD; dispatches are refused once spend crosses it. */
   budgetUsd: z.number().nullish(),
+  /**
+   * When the pre-exhaustion budget warning was delivered (see
+   * {@link BUDGET_WARN_FRACTION}) — the tripwire fires once, not on every
+   * settlement past the threshold. Cleared when the budget is raised.
+   */
+  budgetWarnedAt: z.string().nullish(),
   stages: z.array(WorkflowStageStateSchema),
   tracks: z.array(WorkflowTrackSchema).default([]),
   createdAt: z.string(),
@@ -1160,6 +1166,30 @@ export function budgetState(workflow: Workflow, spend: WorkflowSpend): BudgetSta
     remainingUsd: remaining,
     exhausted: remaining != null && remaining <= 0,
   };
+}
+
+/**
+ * Fraction of the budget at which the manager gets a one-shot warning —
+ * exhaustion already pauses the workflow, but by then the wrap-up itself has
+ * nothing left to spend. The tripwire fires while there is still money to
+ * land the plane (or to ask the owner for more runway).
+ */
+export const BUDGET_WARN_FRACTION = 0.8;
+
+/** True once spend has crossed the warning threshold of a set budget. */
+export function budgetWarningDue(budget: BudgetState): boolean {
+  return budget.budgetUsd != null && budget.spentUsd >= budget.budgetUsd * BUDGET_WARN_FRACTION;
+}
+
+/** The one-shot pre-exhaustion notice delivered into the manager session. */
+export function budgetWarningText(budget: BudgetState): string {
+  const pct = budget.budgetUsd ? Math.round((budget.spentUsd / budget.budgetUsd) * 100) : 0;
+  return (
+    `BUDGET WARNING: $${budget.spentUsd.toFixed(2)} of $${budget.budgetUsd?.toFixed(2)} spent (${pct}%). ` +
+    `Once the budget is exhausted, dispatches are refused and the workflow pauses. Plan the remainder now: ` +
+    `finish what can land within it, and if the goal cannot, raise ask_question immediately with a ` +
+    `recommendation — raise the budget, cut scope, or stop here.`
+  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -1417,6 +1447,22 @@ function stageProtocolLines(template: WorkflowTemplate): string[] {
 /** Frame a user's interactive message for delivery into the manager session. */
 export function formatUserMessage(text: string): string {
   return `USER MESSAGE:\n${text.trim()}\n\nThis is steering from the workflow's owner. Acknowledge it, adjust the plan/dispatches accordingly, and keep driving the workflow.`;
+}
+
+/**
+ * The typed receipt a steering message gets back — the difference between a
+ * paid dice-roll and knowing what happened. `interactive`: typed into the
+ * manager's live terminal (free — the TUI queues its own input).
+ * `resumed`: delivered by waking the session, which is a full-context resume
+ * and costs accordingly. `queued`: parked for the next natural wake (a worker
+ * settlement flushes the queue into that turn for free). `wakeExpected`
+ * qualifies `queued`: whether any run of the workflow is live — i.e. whether
+ * a natural wake is actually coming, or the message will sit until someone
+ * forces one.
+ */
+export interface SteerReceipt {
+  mode: "interactive" | "resumed" | "queued";
+  wakeExpected: boolean;
 }
 
 /** Purpose for a stage's workers (template lookup with implement fallback). */

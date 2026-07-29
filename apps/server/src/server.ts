@@ -111,9 +111,14 @@ function registryProjects(registry: WorkspaceRegistry): HubProjects {
       const rt = registry.get(ws);
       return (await rt.workflows.get(workflowId)) ? rt.workflows.spend(workflowId) : null;
     },
-    messageWorkflow: async (ws, workflowId, text) => {
-      const { queued } = await registry.get(ws).workflows.message(workflowId, text);
-      return { queued };
+    messageWorkflow: async (ws, workflowId, text, opts) => {
+      const { queued, mode, wakeExpected } = await registry
+        .get(ws)
+        .workflows.message(workflowId, text, opts);
+      return { queued, mode, wakeExpected };
+    },
+    compactWorkflow: async (ws, workflowId) => {
+      await registry.get(ws).workflows.compact(workflowId);
     },
     setWorkflowPaused: async (ws, workflowId, paused, reason) => {
       await registry.get(ws).workflows.setPaused(workflowId, paused, reason);
@@ -738,8 +743,12 @@ export async function startCrystalServer(opts: {
       if (!workflow) throw new Error(`Unknown workflow: ${workflowId}`);
       return { workflow, spend: await rt.workflows.spend(workflowId) };
     },
-    "workflow.message": ({ ws, workflowId, text }) =>
-      registry.get(ws).workflows.message(workflowId, text),
+    "workflow.message": ({ ws, workflowId, text, wake }) =>
+      registry.get(ws).workflows.message(workflowId, text, { wake }),
+    "workflow.compact": async ({ ws, workflowId }) => {
+      const { workflow, run } = await registry.get(ws).workflows.compact(workflowId);
+      return { workflow, run };
+    },
     "workflow.setPaused": async ({ ws, workflowId, paused, reason }) => ({
       workflow: await registry.get(ws).workflows.setPaused(workflowId, paused, reason),
     }),
@@ -791,8 +800,15 @@ export async function startCrystalServer(opts: {
       report: await requireHub().dispatch(programId, deliveryIds),
     }),
     "hub.dispatchEpic": (params) => requireHub().dispatchEpic(params),
-    "hub.messageDelivery": ({ programId, deliveryId, text }) =>
-      requireHub().messageDelivery(programId, deliveryId, text),
+    "hub.messageDelivery": ({ programId, deliveryId, text, wake }) =>
+      requireHub().messageDelivery(programId, deliveryId, text, { wake }),
+    "hub.closeDelivery": async ({ programId, deliveryId, outcome, note }) => ({
+      program: await requireHub().closeDelivery(programId, deliveryId, outcome, note),
+    }),
+    "hub.compactDelivery": async ({ programId, deliveryId }) => {
+      await requireHub().compactDelivery(programId, deliveryId);
+      return {};
+    },
     "hub.setPaused": async ({ programId, paused, reason }) => ({
       program: await requireHub().setPaused(programId, paused, reason),
     }),

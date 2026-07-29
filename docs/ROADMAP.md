@@ -135,6 +135,22 @@ and an external Notion board.*
    from route prefixes (`/api/v1/deployments/*`), schema names, and directory nouns.
    The overview should cluster by product domain first and structure second, so it
    reads like the product, not the filesystem.
+6. **Grants ledger.** From the 2026-07-28 hub retro: permission approvals should be
+   first-class per-workspace data — a visible, editable ledger of what each roster
+   profile/delivery may do, with denials recorded ("delivery X requested tool Y,
+   denied N times") and surfaced in the IDE. The dispatch pre-flight (shipped) covers
+   *binaries*; this covers *permissions* — the retro's PM had its own board write
+   silently blocked, which is a systemic observability gap, not a sandbox quirk.
+   Needs the permission-prompt plumbing to report denials upward, so it is a
+   cross-layer change (CLI event stream → agent-manager → workspace data → UI).
+7. **Brief premise-checking.** Briefs carry verifiable claims ("PRs #204/#205 are
+   green and awaiting merge" — false for four days in the retro) that today are
+   trusted verbatim. A dispatch-time validation pass over checkable assertions (PR
+   states via `gh`, branch SHAs, board row statuses) that flags discrepancies to the
+   program manager before money is spent — possibly as machine-checkable `assert:`
+   blocks in briefs. Deliberately not shipped with the pre-flight pass: it needs
+   external integrations (gh auth, per-host state) and a vocabulary for assertions,
+   both worth designing rather than improvising.
 
 ## Horizon (product bets the dogfood validated)
 

@@ -30,9 +30,10 @@ import {
 class FakeProjects implements HubProjects {
   opened: string[] = [];
   started: { ws: string; init: { name: string; goal: string; budgetUsd?: number | null } }[] = [];
-  messages: { workflowId: string; text: string }[] = [];
+  messages: { workflowId: string; text: string; wake?: boolean }[] = [];
   paused: { workflowId: string; paused: boolean }[] = [];
   cancelled: string[] = [];
+  compacted: string[] = [];
   workflows = new Map<string, Workflow>();
   spend = new Map<string, number>();
   /** Roots that cannot be opened, mapped to the failure message. */
@@ -96,9 +97,20 @@ class FakeProjects implements HubProjects {
     return { costUsd: this.spend.get(workflowId) ?? 0, totalTokens: 1000, runCount: 1, liveRunCount: 0 };
   }
 
-  async messageWorkflow(_ws: string, workflowId: string, text: string) {
-    this.messages.push({ workflowId, text });
-    return { queued: false };
+  async messageWorkflow(
+    _ws: string,
+    workflowId: string,
+    text: string,
+    opts?: { wake?: boolean },
+  ) {
+    this.messages.push({ workflowId, text, wake: opts?.wake });
+    return opts?.wake === false
+      ? { queued: true, mode: "queued" as const, wakeExpected: true }
+      : { queued: false, mode: "resumed" as const, wakeExpected: true };
+  }
+
+  async compactWorkflow(_ws: string, workflowId: string) {
+    this.compacted.push(workflowId);
   }
 
   async setWorkflowPaused(_ws: string, workflowId: string, paused: boolean) {
@@ -468,6 +480,76 @@ describe("HubEngine", () => {
     await hub.dispatch(program.id);
     await hub.messageDelivery(program.id, delivery.id, "the schema changed");
     expect(projects.messages[0]!.text).toBe("the schema changed");
+
+    // Steer options and the receipt pass through the project port untouched.
+    const parked = await hub.messageDelivery(program.id, delivery.id, "later", { wake: false });
+    expect(parked).toMatchObject({ queued: true, mode: "queued" });
+    expect(projects.messages.at(-1)).toMatchObject({ text: "later", wake: false });
+    const woke = await hub.messageDelivery(program.id, delivery.id, "now", { wake: true });
+    expect(woke.mode).toBe("resumed");
+  });
+
+  it("closes a delivery externally: outcome kept, workflow stopped, dependents dispatched", async () => {
+    const { hub, projects } = await fresh("close");
+    const program = await hub.create({ name: "SSO", goal: "g" });
+    const auth = await hub.addDelivery(program.id, {
+      projectRoot: "/repos/auth-service",
+      brief: "Issue tokens.",
+    });
+    await hub.addDelivery(program.id, {
+      projectRoot: "/repos/web-console",
+      brief: "Log in with it.",
+      dependsOn: [auth.id],
+    });
+    const report = await hub.dispatch(program.id);
+    const workflowId = report.dispatched[0]!.workflowId;
+
+    const closed = await hub.closeDelivery(
+      program.id,
+      auth.id,
+      "completed",
+      "Owner shipped tokens by hand on main.",
+    );
+    expect(closed.deliveries[0]!.status).toBe("completed");
+    expect(closed.deliveries[0]!.summary).toBe("Owner shipped tokens by hand on main.");
+    // The retired workflow was stopped…
+    expect(projects.cancelled).toContain(workflowId);
+    // …and its cancellation echoing back must not overwrite the outcome.
+    await hub.onWorkflowChanged("ws-auth", projects.settle(workflowId, "cancelled"));
+    const after = await hub.get(program.id);
+    expect(after!.deliveries[0]!.status).toBe("completed");
+    // The dependent auto-dispatched, receiving the close note as its upstream summary.
+    expect(after!.deliveries[1]!.status).toBe("running");
+    expect(projects.started[1]!.init.goal).toContain("shipped tokens by hand");
+    // A settled delivery cannot be closed again.
+    await expect(hub.closeDelivery(program.id, auth.id, "failed", "x")).rejects.toThrow(/already/);
+  });
+
+  it("closing the last delivery settles the program", async () => {
+    const { hub } = await fresh("close-settles");
+    const program = await hub.create({ name: "One", goal: "g" });
+    const only = await hub.addDelivery(program.id, {
+      projectRoot: "/repos/auth-service",
+      brief: "b",
+    });
+    await hub.dispatch(program.id);
+    const closed = await hub.closeDelivery(program.id, only.id, "completed", "Done elsewhere.");
+    expect(closed.status).toBe("completed");
+  });
+
+  it("compacts a dispatched delivery's orchestrator; an undispatched one is refused", async () => {
+    const { hub, projects } = await fresh("compact");
+    const program = await hub.create({ name: "C", goal: "g" });
+    const delivery = await hub.addDelivery(program.id, {
+      projectRoot: "/repos/auth-service",
+      brief: "b",
+    });
+    await expect(hub.compactDelivery(program.id, delivery.id)).rejects.toThrow(
+      /has not been dispatched/,
+    );
+    const report = await hub.dispatch(program.id);
+    await hub.compactDelivery(program.id, delivery.id);
+    expect(projects.compacted).toEqual([report.dispatched[0]!.workflowId]);
   });
 
   it("wakes the program manager when a delivery settles, queueing while it is mid-turn", async () => {

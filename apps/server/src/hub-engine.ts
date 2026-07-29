@@ -44,6 +44,7 @@ import {
   type ProgramDelivery,
   type ProgramSpend,
   type RunEvent,
+  type SteerReceipt,
   type Workflow,
 } from "@crystal/core";
 import type { AgentManager, InteractiveSpawn } from "./agent-manager.js";
@@ -117,8 +118,19 @@ export interface HubProjects {
   workflow(ws: string, workflowId: string): Promise<Workflow | null>;
   /** A workflow's live spend — the delivery's spend *is* its workflow's. */
   workflowSpend(ws: string, workflowId: string): Promise<DeliverySpend | null>;
-  /** Deliver a steering message into a project orchestrator's session. */
-  messageWorkflow(ws: string, workflowId: string, text: string): Promise<{ queued: boolean }>;
+  /**
+   * Deliver a steering message into a project orchestrator's session.
+   * `wake: false` parks it for the next natural wake instead of forcing a
+   * paid resume; the receipt says which of the three actually happened.
+   */
+  messageWorkflow(
+    ws: string,
+    workflowId: string,
+    text: string,
+    opts?: { wake?: boolean },
+  ): Promise<{ queued: boolean } & SteerReceipt>;
+  /** Checkpoint a workflow's manager into a fresh session (see WorkflowEngine.compact). */
+  compactWorkflow(ws: string, workflowId: string): Promise<void>;
   setWorkflowPaused(ws: string, workflowId: string, paused: boolean, reason?: string | null): Promise<void>;
   setWorkflowBudget(ws: string, workflowId: string, budgetUsd: number | null): Promise<void>;
   cancelWorkflow(ws: string, workflowId: string): Promise<void>;
@@ -757,19 +769,99 @@ export class HubEngine {
     return send(delivery, question.taskId);
   }
 
-  /** Steer one project's orchestrator without leaving the program. */
+  /**
+   * Steer one project's orchestrator without leaving the program. Queues for
+   * the next natural wake unless `wake` demands a paid resume; the typed
+   * receipt is the answer to "did my $2 message even land?".
+   */
   async messageDelivery(
     programId: string,
     deliveryId: string,
     text: string,
-  ): Promise<{ queued: boolean }> {
+    opts: { wake?: boolean } = {},
+  ): Promise<{ queued: boolean } & SteerReceipt> {
     const program = await this.get(programId);
     const delivery = program ? deliveryById(program, deliveryId) : null;
     if (!program || !delivery) throw new Error(`Unknown delivery: ${deliveryId}`);
     if (!delivery.ws || !delivery.workflowId) {
       throw new Error(`Delivery ${deliveryId} has not been dispatched yet.`);
     }
-    return this.projects.messageWorkflow(delivery.ws, delivery.workflowId, text);
+    return this.projects.messageWorkflow(delivery.ws, delivery.workflowId, text, opts);
+  }
+
+  /**
+   * Checkpoint a delivery's orchestrator into a fresh session — the lever
+   * against resume cost creep: a long chain re-ingests its whole transcript
+   * on every wake, so a program manager watching spend can compact between
+   * waves instead of paying for history the board already records.
+   */
+  async compactDelivery(programId: string, deliveryId: string): Promise<void> {
+    const program = await this.get(programId);
+    const delivery = program ? deliveryById(program, deliveryId) : null;
+    if (!program || !delivery) throw new Error(`Unknown delivery: ${deliveryId}`);
+    if (!delivery.ws || !delivery.workflowId) {
+      throw new Error(`Delivery ${deliveryId} has not been dispatched yet.`);
+    }
+    await this.projects.compactWorkflow(delivery.ws, delivery.workflowId);
+  }
+
+  /**
+   * Settle a delivery from outside its workflow — the missing verb for work
+   * that finished (or became moot) by other means: the owner did it by hand,
+   * another delivery absorbed it, the premise died. Without it the only
+   * levers were retry (a fresh $ workflow), message (a dice-roll), or
+   * completing the whole program. The outcome and note are recorded (the
+   * note becomes the summary dependents are dispatched with), a live
+   * workflow is cancelled *after* the delivery settles (onWorkflowChanged
+   * skips terminal deliveries, so the cancellation cannot overwrite the
+   * outcome), and the same settlement tail runs as for a workflow-driven
+   * finish: dependents auto-dispatch, the program settles if this was the
+   * last delivery, and the freed project lock sweeps the portfolio.
+   */
+  async closeDelivery(
+    programId: string,
+    deliveryId: string,
+    outcome: "completed" | "failed",
+    note: string,
+  ): Promise<Program> {
+    const program = await this.mutate(programId, (current) => {
+      const delivery = deliveryById(current, deliveryId);
+      if (!delivery) throw new Error(`Unknown delivery: ${deliveryId}`);
+      if (isDeliveryTerminal(delivery.status)) {
+        throw new Error(
+          `Delivery ${deliveryId} is already ${delivery.status} — nothing to close.`,
+        );
+      }
+      const next = patchDelivery(current, deliveryId, {
+        status: outcome,
+        summary: note,
+        note: `Closed externally (${outcome})`,
+        endedAt: nowIso(),
+      });
+      return { program: next, result: next };
+    });
+    const delivery = deliveryById(program, deliveryId)!;
+    if (delivery.ws && delivery.workflowId) {
+      await this.projects.cancelWorkflow(delivery.ws, delivery.workflowId).catch(() => {
+        // Already gone — nothing to cancel.
+      });
+      // The retired workflow's open questions are no longer answerable.
+      await this.sweepQuestions(programId).catch(() => {});
+    }
+    const fresh = this.store.peek(programId);
+    const portfolio = this.store.all().filter((p) => p.id !== programId);
+    if (
+      outcome === "completed" &&
+      fresh?.status === "running" &&
+      readyDeliveries(fresh, portfolio).length
+    ) {
+      await this.dispatch(programId).catch((err) => {
+        console.warn(`[crystal] auto-dispatch failed for ${programId}:`, (err as Error).message);
+      });
+    }
+    await this.settleProgram(programId);
+    await this.sweepPortfolioDispatch(programId);
+    return this.store.peek(programId) ?? program;
   }
 
   /** Cancel the program: every live delivery workflow, plus the manager session. */
@@ -1074,6 +1166,12 @@ export class HubEngine {
     // assignment, not a mapping — and it stops compiling if they ever diverge.
     const status: DeliveryStatus = workflow.status;
     const before = match.delivery;
+    // A settled delivery no longer follows its workflow: closeDelivery
+    // cancels the retired workflow *after* recording the outcome, and that
+    // cancellation echoing back must not overwrite "completed" with
+    // "cancelled". (Workflow-driven settles are unaffected — their delivery
+    // is still live when the terminal transition arrives.)
+    if (isDeliveryTerminal(before.status)) return;
     if (
       before.status === status &&
       (workflow.summary ?? null) === (before.summary ?? null) &&
