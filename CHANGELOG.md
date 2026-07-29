@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.14.0 (2026-07-29)
+
+### Features
+
+- premise checks, tool-grants ledger, per-run cost caps, turn-value log ([`09c8c8a`](https://github.com/eliotlim/crystal/commit/09c8c8a))
+
 ## v0.13.0 (2026-07-29)
 
 ### Features
