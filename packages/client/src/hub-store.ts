@@ -9,6 +9,7 @@ import type {
   Program,
   ProgramSpend,
   RunEvent,
+  SteerReceipt,
 } from "@crystal/core";
 import type { BridgeClient } from "./bridge-client.js";
 
@@ -81,7 +82,25 @@ export interface HubState {
     templateId?: string | null;
     budgetUsd?: number | null;
   }): Promise<Program>;
-  messageDelivery(programId: string, deliveryId: string, text: string): Promise<{ queued: boolean }>;
+  /**
+   * Steer a delivery's orchestrator. Queues for its next natural wake unless
+   * `wake` forces a paid resume; the receipt says what actually happened.
+   */
+  messageDelivery(
+    programId: string,
+    deliveryId: string,
+    text: string,
+    opts?: { wake?: boolean },
+  ): Promise<{ queued: boolean } & SteerReceipt>;
+  /** Settle a delivery externally: outcome + note, workflow stopped, dependents unblocked. */
+  closeDelivery(
+    programId: string,
+    deliveryId: string,
+    outcome: "completed" | "failed",
+    note: string,
+  ): Promise<void>;
+  /** Checkpoint a delivery's orchestrator into a fresh session (between waves only). */
+  compactDelivery(programId: string, deliveryId: string): Promise<void>;
   /**
    * Answer a project's question: recorded on its board and handed back to the
    * run that stopped for it. The question leaves `questions` on success.
@@ -230,8 +249,22 @@ export function createHubStore(client: BridgeClient): HubStore {
       return program;
     },
 
-    messageDelivery(programId, deliveryId, text) {
-      return client.request("hub.messageDelivery", { programId, deliveryId, text });
+    messageDelivery(programId, deliveryId, text, opts) {
+      return client.request("hub.messageDelivery", { programId, deliveryId, text, wake: opts?.wake });
+    },
+
+    async closeDelivery(programId, deliveryId, outcome, note) {
+      const { program } = await client.request("hub.closeDelivery", {
+        programId,
+        deliveryId,
+        outcome,
+        note,
+      });
+      upsert(program);
+    },
+
+    async compactDelivery(programId, deliveryId) {
+      await client.request("hub.compactDelivery", { programId, deliveryId });
     },
 
     async answerQuestion(programId, questionId, answer) {

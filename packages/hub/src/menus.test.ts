@@ -204,3 +204,25 @@ describe("deliveryHint", () => {
     expect(deliveryHint(program, program.deliveries[0]!)).toBeNull();
   });
 });
+
+describe("close and compact entries", () => {
+  it("offers both on a live dispatched delivery, close alone on a pending one", () => {
+    const { program } = fixture();
+    const actions = { close: () => {}, compact: () => {} };
+    const live = labels(deliveryMenuEntries(program, program.deliveries[0]!, ctx(), actions));
+    expect(live).toContain("Mark settled externally…");
+    expect(live).toContain("Compact its orchestrator");
+
+    // Pending: nothing to compact (no workflow yet), but its work may already
+    // have been absorbed elsewhere — closing must stay possible.
+    const pending = labels(deliveryMenuEntries(program, program.deliveries[1]!, ctx(), actions));
+    expect(pending).toContain("Mark settled externally…");
+    expect(pending).not.toContain("Compact its orchestrator");
+
+    // Terminal: settled is settled.
+    const done = patchDelivery(program, program.deliveries[0]!.id, { status: "completed" });
+    const settled = labels(deliveryMenuEntries(done, done.deliveries[0]!, ctx(), actions));
+    expect(settled).not.toContain("Mark settled externally…");
+    expect(settled).not.toContain("Compact its orchestrator");
+  });
+});

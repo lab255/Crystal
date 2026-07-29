@@ -1,6 +1,8 @@
 import {
+  Archive,
   Ban,
   Boxes,
+  CheckCircle2,
   ClipboardCopy,
   Link2,
   ListTodo,
@@ -49,6 +51,10 @@ export interface DeliveryMenuActions {
   message?: (deliveryId: string) => void;
   remove?: (deliveryId: string) => void;
   retry?: (deliveryId: string) => void;
+  /** Settle it externally (outcome + note); the view collects the note. */
+  close?: (deliveryId: string) => void;
+  /** Checkpoint its orchestrator into a fresh session. */
+  compact?: (deliveryId: string) => void;
   /**
    * The rest of the portfolio. The one-orchestrator-per-project rule spans
    * programs, so without this the menu offers a dispatch the server refuses.
@@ -139,6 +145,27 @@ export function deliveryMenuEntries(
       label: "Message its orchestrator",
       icon: Send,
       onSelect: () => actions.message!(delivery.id),
+    });
+  }
+  if (actions.compact && delivery.workflowId && !isDeliveryTerminal(delivery.status)) {
+    entries.push({
+      type: "item",
+      label: "Compact its orchestrator",
+      icon: Archive,
+      hint: "fresh session, lower resume cost",
+      onSelect: () => actions.compact!(delivery.id),
+    });
+  }
+  // The "settled externally" verb: work that finished (or died) outside the
+  // workflow. Offered for anything not yet terminal — including pending, whose
+  // work may have been absorbed before it ever dispatched.
+  if (actions.close && !isDeliveryTerminal(delivery.status)) {
+    entries.push({
+      type: "item",
+      label: "Mark settled externally…",
+      icon: CheckCircle2,
+      hint: "records outcome + note, stops its workflow",
+      onSelect: () => actions.close!(delivery.id),
     });
   }
   // A failed delivery is otherwise a dead end: its dependents wait on a

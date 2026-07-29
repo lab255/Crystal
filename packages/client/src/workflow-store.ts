@@ -34,6 +34,8 @@ export interface WorkflowState {
   }): Promise<{ workflow: Workflow; run: AgentRun }>;
   /** Remote control: deliver a user message into the manager session. */
   message(workflowId: string, text: string): Promise<{ run: AgentRun | null; queued: boolean }>;
+  /** Checkpoint the manager into a fresh session (refused while runs are live). */
+  compact(workflowId: string): Promise<void>;
   setPaused(workflowId: string, paused: boolean, reason?: string | null): Promise<void>;
   setBudget(workflowId: string, budgetUsd: number | null): Promise<void>;
   cancel(workflowId: string): Promise<void>;
@@ -88,6 +90,11 @@ export function createWorkflowStore(client: BridgeClient): WorkflowStore {
 
     async message(workflowId, text) {
       return client.request("workflow.message", { workflowId, text });
+    },
+
+    async compact(workflowId) {
+      const { workflow } = await client.request("workflow.compact", { workflowId });
+      upsert(workflow);
     },
 
     async setPaused(workflowId, paused, reason) {

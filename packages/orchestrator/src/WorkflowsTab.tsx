@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  Archive,
   Ban,
   ChevronRight,
   CircleDollarSign,
@@ -21,6 +22,7 @@ import {
   TASK_STATUS_LABELS,
   boardColumnStages,
   budgetState,
+  envGaps,
   presetById,
   templateOf,
   validateWorkflowTemplate,
@@ -257,6 +259,8 @@ function WorkflowDetail({
   const setPaused = useWorkflows((s) => s.setPaused);
   const setBudget = useWorkflows((s) => s.setBudget);
   const cancel = useWorkflows((s) => s.cancel);
+  const compact = useWorkflows((s) => s.compact);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const template = templateOf(workflow);
   const [graphOpen, setGraphOpen] = useState(false);
@@ -321,6 +325,7 @@ function WorkflowDetail({
   useEffect(() => {
     setTurnId(null);
     setOpenTrackId(null);
+    setNotice(null);
   }, [workflow.id]);
 
   const [editingBudget, setEditingBudget] = useState(false);
@@ -352,6 +357,19 @@ function WorkflowDetail({
                   </>
                 )}
               </Button>
+              <Tooltip content="Retire the manager's transcript and reseed a fresh session from the workflow record + board — cuts what every wake re-ingests. Only between waves (refused while runs are live).">
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  onClick={() =>
+                    void compact(workflow.id)
+                      .then(() => setNotice("Compacted into a fresh manager session."))
+                      .catch((err: Error) => setNotice(err.message))
+                  }
+                >
+                  <Archive className="h-3 w-3" /> Compact
+                </Button>
+              </Tooltip>
               <Button variant="danger" size="xs" onClick={() => void cancel(workflow.id)}>
                 <Ban className="h-3 w-3" /> Cancel
               </Button>
@@ -364,6 +382,16 @@ function WorkflowDetail({
         {workflow.pausedReason ? (
           <p className="mt-1 text-[11px] text-warn">{workflow.pausedReason}</p>
         ) : null}
+        {workflow.env && !workflow.env.ok ? (
+          <p className="mt-1 text-[11px] text-warn">
+            Environment gaps:{" "}
+            {envGaps(workflow.env)
+              .map((c) => `${c.label} (${c.reason})`)
+              .join(", ")}{" "}
+            — the pre-flight could not resolve these; workers relying on them will fail.
+          </p>
+        ) : null}
+        {notice ? <p className="mt-1 text-[11px] text-ink-faint">{notice}</p> : null}
         {workflow.summary ? (
           <p className="mt-1 text-[11px] text-ink-muted">
             <span className="font-semibold text-ink">Outcome:</span> {workflow.summary}

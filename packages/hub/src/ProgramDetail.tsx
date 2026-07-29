@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  Archive,
   Ban,
   Bot,
+  CheckCircle2,
   CircleDollarSign,
   CircleHelp,
   MessageSquare,
@@ -26,6 +28,7 @@ import {
   type Program,
   type ProgramDelivery,
   type ProgramSpend,
+  type SteerReceipt,
 } from "@crystal/core";
 import {
   EMPTY_HUB_EVENTS,
@@ -89,6 +92,8 @@ export function ProgramDetail({ program }: { program: Program }) {
   const startManager = useHub((s) => s.startManager);
   const removeDelivery = useHub((s) => s.removeDelivery);
   const retryDelivery = useHub((s) => s.retryDelivery);
+  const closeDelivery = useHub((s) => s.closeDelivery);
+  const compactDelivery = useHub((s) => s.compactDelivery);
   const remove = useHub((s) => s.remove);
   const nav = useNavUpdate();
   const menu = useContextMenu();
@@ -122,6 +127,19 @@ export function ProgramDetail({ program }: { program: Program }) {
     } finally {
       setBusy(false);
     }
+  };
+
+  // The "settled externally" verb, shared by the context menu and the detail
+  // pane: collect the note (it becomes the summary dependents dispatch with),
+  // then close. A cancelled prompt is a cancelled close.
+  const runClose = (delivery: ProgramDelivery, outcome: "completed" | "failed") => {
+    const note = window.prompt(
+      outcome === "completed"
+        ? `What settled ${delivery.projectName}'s delivery? Its dependents are dispatched with this note.`
+        : `Why is ${delivery.projectName}'s delivery being closed as failed?`,
+    );
+    if (!note?.trim()) return;
+    void guard("Close", () => closeDelivery(program.id, delivery.id, outcome, note.trim()));
   };
 
   const runDispatch = (deliveryIds?: string[]) =>
@@ -351,6 +369,10 @@ export function ProgramDetail({ program }: { program: Program }) {
                 }
                 onDispatch={() => void runDispatch([delivery.id])}
                 onRetry={() => void guard("Retry", () => retryDelivery(program.id, delivery.id))}
+                onClose={(outcome) => runClose(delivery, outcome)}
+                onCompact={() =>
+                  void guard("Compact", () => compactDelivery(program.id, delivery.id))
+                }
                 onContextMenu={(e) =>
                   menu.open(
                     e,
@@ -361,6 +383,9 @@ export function ProgramDetail({ program }: { program: Program }) {
                       remove: (id) =>
                         void guard("Remove", () => removeDelivery(program.id, id)),
                       retry: (id) => void guard("Retry", () => retryDelivery(program.id, id)),
+                      close: () => runClose(delivery, "completed"),
+                      compact: (id) =>
+                        void guard("Compact", () => compactDelivery(program.id, id)),
                     }),
                   )
                 }
@@ -398,6 +423,8 @@ function DeliveryRow({
   onSelect,
   onDispatch,
   onRetry,
+  onClose,
+  onCompact,
   onContextMenu,
 }: {
   program: Program;
@@ -412,6 +439,8 @@ function DeliveryRow({
   onSelect: () => void;
   onDispatch: () => void;
   onRetry: () => void;
+  onClose: (outcome: "completed" | "failed") => void;
+  onCompact: () => void;
   onContextMenu: (e: React.MouseEvent) => void;
 }) {
   const own = spend.byDelivery[delivery.id] ?? emptyDeliverySpend();
@@ -509,18 +538,56 @@ function DeliveryRow({
           ) : null}
         </span>
       </button>
-      {selected ? <DeliveryDetail program={program} delivery={delivery} /> : null}
+      {selected ? (
+        <DeliveryDetail
+          program={program}
+          delivery={delivery}
+          onClose={onClose}
+          onCompact={onCompact}
+        />
+      ) : null}
     </div>
   );
 }
 
+/** The steer receipt, phrased for the pane. Null while nothing was sent. */
+function receiptText(r: SteerReceipt): string {
+  if (r.mode === "interactive") return "Typed into its live terminal.";
+  if (r.mode === "resumed") return "Woke the orchestrator with it (a paid full-context resume).";
+  return r.wakeExpected
+    ? "Queued — it rides the orchestrator's next wake at no extra cost."
+    : "Queued, but nothing is live — no natural wake is coming.";
+}
+
 /** The expanded delivery: full brief, and a line into its orchestrator. */
-function DeliveryDetail({ program, delivery }: { program: Program; delivery: ProgramDelivery }) {
+function DeliveryDetail({
+  program,
+  delivery,
+  onClose,
+  onCompact,
+}: {
+  program: Program;
+  delivery: ProgramDelivery;
+  onClose: (outcome: "completed" | "failed") => void;
+  onCompact: () => void;
+}) {
   const messageDelivery = useHub((s) => s.messageDelivery);
   const setDeliveryBudget = useHub((s) => s.setDeliveryBudget);
   const goToProject = useCrossWorkspaceNav();
 
+  // The last steer's receipt — and, when it was queued with nothing live to
+  // read it, the text itself so "Wake it now" can re-deliver the same words.
+  const [receipt, setReceipt] = useState<string | null>(null);
+  const [stranded, setStranded] = useState<string | null>(null);
+
   const live = !isDeliveryTerminal(delivery.status) && !!delivery.workflowId;
+  const open = !isDeliveryTerminal(delivery.status);
+
+  const steer = async (text: string, wake: boolean) => {
+    const r = await messageDelivery(program.id, delivery.id, text, { wake });
+    setReceipt(receiptText(r));
+    setStranded(r.mode === "queued" && !r.wakeExpected ? text : null);
+  };
 
   return (
     <div className="border-t border-edge/70 px-2.5 py-2">
@@ -565,14 +632,45 @@ function DeliveryDetail({ program, delivery }: { program: Program; delivery: Pro
         >
           Set delivery budget
         </Button>
+        {live ? (
+          <Tooltip content="Retire the orchestrator's transcript and reseed a fresh session from the workflow record + board — cuts what every wake re-ingests. Only between waves (refused while runs are live).">
+            <Button variant="ghost" size="xs" onClick={onCompact}>
+              <Archive className="h-3 w-3" /> Compact session
+            </Button>
+          </Tooltip>
+        ) : null}
+        {open ? (
+          <>
+            <Tooltip content="The work was settled outside this workflow — record the outcome with a note, stop the workflow, unblock dependents.">
+              <Button variant="ghost" size="xs" onClick={() => onClose("completed")}>
+                <CheckCircle2 className="h-3 w-3" /> Mark settled…
+              </Button>
+            </Tooltip>
+            <Button variant="ghost" size="xs" onClick={() => onClose("failed")}>
+              Close as failed…
+            </Button>
+          </>
+        ) : null}
       </div>
       {live ? (
-        <MessageComposer
-          onSend={(t) => messageDelivery(program.id, delivery.id, t)}
-          placeholder={`Message ${delivery.projectName}'s orchestrator — a decision from another project, a changed contract… (Ctrl+Enter)`}
-          ariaLabel="Message this delivery's orchestrator"
-          className="mt-1 bg-transparent p-0"
-        />
+        <>
+          <MessageComposer
+            onSend={(t) => steer(t, false)}
+            placeholder={`Message ${delivery.projectName}'s orchestrator — queued for its next wake; a decision from another project, a changed contract… (Ctrl+Enter)`}
+            ariaLabel="Message this delivery's orchestrator"
+            className="mt-1 bg-transparent p-0"
+          />
+          {receipt ? (
+            <p className="mt-1 flex items-center gap-2 text-[10px] text-ink-faint">
+              {receipt}
+              {stranded ? (
+                <Button variant="ghost" size="xs" onClick={() => void steer(stranded, true)}>
+                  Wake it now
+                </Button>
+              ) : null}
+            </p>
+          ) : null}
+        </>
       ) : null}
     </div>
   );
