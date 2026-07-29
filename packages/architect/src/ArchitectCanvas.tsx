@@ -77,7 +77,7 @@ import { useCrystal, useNav, useNavUpdate, useSymbolMenu, useWorkspaces } from "
 import { cn } from "@crystal/ui";
 import { ContextMenu, InlineRename, type MenuEntry } from "./ContextMenu.js";
 import { collapseNode, hasGeneratedChildren } from "./expand.js";
-import { autoLayout } from "./layout.js";
+import { autoLayoutFitted } from "./layout.js";
 import {
   ACCENT_CSS,
   EDGE_KIND_STYLE,
@@ -1712,7 +1712,7 @@ function CanvasInner({
       // Nodes are laid out at their reserved LOD footprints (`slotSizes`) —
       // the same boxes they render collapsed at and fill when expanded, so
       // the layout holds unchanged at every level of detail.
-      commit(autoLayout(graphRef.current, { mode, reserve: slotSizes }));
+      commit(autoLayoutFitted(graphRef.current, { mode, reserve: slotSizes }));
       // Let the new positions render, then bring everything into view.
       requestAnimationFrame(() => void fitView({ padding: 0.15, duration: 300 }));
     },

@@ -91,6 +91,32 @@ export function autoLayout(
 }
 
 /**
+ * Auto-layout with derived containers (`mod:` module groups, `screens:`
+ * groups) fitted to their children: layout → fit → layout again so sibling
+ * spacing in the outer scope uses the fitted sizes, not the 420×280 default
+ * (a module owning five reserved-footprint systems overflows it badly).
+ * Child positions are scope-local and deterministic, so the second pass
+ * reproduces them and the fitted sizes stay valid.
+ */
+export function autoLayoutFitted(
+  graph: ArchitectureGraph,
+  opts: AutoLayoutOptions = {},
+): ArchitectureGraph {
+  let laid = autoLayout(graph, opts);
+  const derivedContainers = laid.nodes
+    .filter(
+      (n) =>
+        isContainerKind(n.kind) && (n.id.startsWith("mod:") || n.id.startsWith("screens:")),
+    )
+    .map((n) => n.id);
+  if (derivedContainers.length === 0) return laid;
+  for (const id of derivedContainers) laid = fitContainersToChildren(laid, id, opts.reserve);
+  laid = autoLayout(laid, opts);
+  for (const id of derivedContainers) laid = fitContainersToChildren(laid, id, opts.reserve);
+  return laid;
+}
+
+/**
  * Lay out only the children of one container (parent-relative), leaving every
  * other node untouched — used when a node is expanded in place.
  */

@@ -146,6 +146,63 @@ describe("deriveArchGraph", () => {
     expect(wire.kind).toBe("sync");
   });
 
+  it("nests systems inside module containers when a module owns several", () => {
+    const server1 = system({
+      id: "sys:forms",
+      name: "Forms",
+      parts: [{ path: "packages/server/src/forms", pkg: "packages/server", fileCount: 12 }],
+    });
+    const server2 = system({
+      id: "sys:auth",
+      name: "Auth",
+      parts: [{ path: "packages/server/src/auth", pkg: "packages/server", fileCount: 8 }],
+    });
+    const graph = deriveArchGraph({
+      overview: overview([server1, server2, UI]),
+      externals: [],
+      modules: [
+        { path: "packages/server", name: "@app/server", fileCount: 30 },
+        { path: "packages/ui", name: "@app/ui", fileCount: 20 },
+      ],
+    });
+    const mod = graph.nodes.find((n) => n.id === "mod:packages-server");
+    expect(mod).toBeDefined();
+    expect(mod!.kind).toBe("group");
+    expect(mod!.label).toBe("@app/server");
+    expect(mod!.codeModule).toBe("packages/server");
+    expect(graph.nodes.find((n) => n.id === "sys:forms")!.parentId).toBe("mod:packages-server");
+    expect(graph.nodes.find((n) => n.id === "sys:auth")!.parentId).toBe("mod:packages-server");
+    // A one-system module IS its system — no wrapper for the UI package.
+    expect(graph.nodes.find((n) => n.id === "sys:ui")!.parentId).toBeNull();
+    expect(graph.nodes.some((n) => n.id === "mod:packages-ui")).toBe(false);
+  });
+
+  it("emits no module tier when every system lives in one module (or the root)", () => {
+    const a = system({
+      id: "sys:a",
+      name: "A",
+      parts: [{ path: "src/a", pkg: ".", fileCount: 5 }],
+    });
+    const b = system({
+      id: "sys:b",
+      name: "B",
+      parts: [{ path: "src/b", pkg: ".", fileCount: 5 }],
+    });
+    const rootOnly = deriveArchGraph({ overview: overview([a, b]), externals: [], modules: [] });
+    expect(rootOnly.nodes.every((n) => !n.id.startsWith("mod:"))).toBe(true);
+
+    const oneModule = deriveArchGraph({
+      overview: overview([
+        system({ id: "sys:x", name: "X", parts: [{ path: "pkg/src/x", pkg: "pkg", fileCount: 3 }] }),
+        system({ id: "sys:y", name: "Y", parts: [{ path: "pkg/src/y", pkg: "pkg", fileCount: 3 }] }),
+      ]),
+      externals: [],
+      modules: [{ path: "pkg", name: "pkg", fileCount: 6 }],
+    });
+    // One wrapper box around everything is noise, not structure.
+    expect(oneModule.nodes.every((n) => !n.id.startsWith("mod:"))).toBe(true);
+  });
+
   it("marks edges participating in a dependency cycle", () => {
     const graph = deriveArchGraph({
       overview: overview(

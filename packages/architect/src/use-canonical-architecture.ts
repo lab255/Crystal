@@ -18,7 +18,7 @@ import {
   useWorkspace,
   useWorkspaces,
 } from "@crystal/client";
-import { autoLayout } from "./layout.js";
+import { autoLayoutFitted } from "./layout.js";
 import { estimateModuleFootprint } from "./live-code.js";
 
 /**
@@ -119,7 +119,7 @@ export function useCanonicalArchitecture(options?: {
           reserve.set(idOfRaw.get(s.id) ?? s.id, estimateModuleFootprint(s.fileCount));
       }
     }
-    const laid = autoLayout(composed, { mode: "flow", reserve });
+    const laid = autoLayoutFitted(composed, { mode: "flow", reserve });
     // Auto-layout owns every node without an explicit x/y override — manual
     // nodes included until their first drag records one.
     const pinned = new Set<string>();

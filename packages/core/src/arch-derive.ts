@@ -19,6 +19,7 @@ import { computeSystemInsights, type SystemChange, type SystemOverviewDiff } fro
  * (`arch-overlay.ts`) keys every user customization on them:
  *
  *   `sys:<slug>`        a logical system (the overview's own id, stabilized)
+ *   `mod:<slug>`        a code module grouping the systems it owns (≥2)
  *   `ext:<service-id>`  a detected external service (queue, bucket, SaaS…)
  *   `link:<a>-><b>`     a system→system edge
  *   `extlink:<a>-><b>`  a system→external edge
@@ -93,6 +94,7 @@ export function canonicalSystemIds(systems: readonly SystemModule[]): Map<string
 }
 
 export const externalNodeIdOf = (serviceId: string): string => `ext:${serviceId}`;
+export const moduleNodeIdOf = (modulePath: string): string => `mod:${slug(modulePath)}`;
 export const linkEdgeId = (source: string, target: string): string => `link:${source}->${target}`;
 export const extLinkEdgeId = (source: string, target: string): string =>
   `extlink:${source}->${target}`;
@@ -181,6 +183,64 @@ export function deriveArchGraph(input: DeriveInput): ArchitectureGraph {
       layer: null,
     };
   });
+
+  // Module tier — the axis the retired systems view grouped by ("By module")
+  // and the consolidation dropped: systems nest inside the code module that
+  // owns them, so the canvas reads as modules-of-systems rather than a flat
+  // mesh of directory clusters. A module container is emitted only when it
+  // owns ≥2 systems (a one-system module IS its system) and only when the
+  // workspace has ≥2 owning modules at all (one wrapper box around
+  // everything is noise, not structure).
+  const moduleOfSystem = (s: SystemModule): string | null => {
+    const counts = new Map<string, number>();
+    for (const p of s.parts) {
+      if (!p.pkg || p.pkg === ".") continue;
+      counts.set(p.pkg, (counts.get(p.pkg) ?? 0) + Math.max(1, p.fileCount));
+    }
+    let best: string | null = null;
+    let bestWeight = 0;
+    for (const [pkg, weight] of counts) {
+      if (weight > bestWeight) {
+        best = pkg;
+        bestWeight = weight;
+      }
+    }
+    return best;
+  };
+  const systemsByModule = new Map<string, string[]>();
+  for (const s of overview.systems) {
+    const owner = moduleOfSystem(s);
+    if (!owner) continue;
+    systemsByModule.set(owner, [...(systemsByModule.get(owner) ?? []), idOf(s.id)]);
+  }
+  if (systemsByModule.size >= 2) {
+    const nodeById = new Map(nodes.map((n) => [n.id, n]));
+    for (const [modulePath, members] of systemsByModule) {
+      if (members.length < 2) continue;
+      const moduleName = modules.find((m) => m.path === modulePath)?.name ?? modulePath;
+      const files = members.reduce((n, id) => {
+        const raw = overview.systems.find((s) => idOf(s.id) === id);
+        return n + (raw?.fileCount ?? 0);
+      }, 0);
+      nodes.push({
+        id: moduleNodeIdOf(modulePath),
+        kind: "group",
+        label: moduleName,
+        description: `module · ${members.length} systems · ${files} files`,
+        parentId: null,
+        position: { x: 0, y: 0 },
+        size: null,
+        tech: [],
+        codeModule: modulePath,
+        placements: {},
+        layer: null,
+      });
+      for (const id of members) {
+        const node = nodeById.get(id);
+        if (node) node.parentId = moduleNodeIdOf(modulePath);
+      }
+    }
+  }
 
   // Edges carry what the old systems view showed on them: the top crossing
   // symbol (or route) as the label, the raw weight for stroke scaling, an
