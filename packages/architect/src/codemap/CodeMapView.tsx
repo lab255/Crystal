@@ -1180,7 +1180,7 @@ function CodeMapInner({
       <Split storageKey="architect:codemap" direction="horizontal">
         <Pane minSize="40%">
           <div className="relative h-full w-full min-w-0">
-        <div className="absolute left-3 top-3 z-10 flex items-center gap-1 rounded-xl border border-edge bg-surface-2/95 px-2.5 py-1.5 text-xs shadow-xl shadow-black/30 backdrop-blur">
+        <div className="absolute left-3 top-3 z-10 flex max-w-[calc(100%-1.5rem)] flex-wrap items-center gap-1 gap-y-1 rounded-xl border border-edge bg-surface-2/95 px-2.5 py-1.5 text-xs shadow-xl shadow-black/30 backdrop-blur">
           {origin ? (
             <>
               <button
@@ -1306,7 +1306,7 @@ function CodeMapInner({
         </div>
 
         {level && level.kind !== "all" ? (
-          <div className="absolute left-3 top-13 z-10 flex items-center gap-2 rounded-xl border border-edge bg-surface-2/95 px-2.5 py-1.5 text-xs shadow-xl shadow-black/30 backdrop-blur">
+          <div className="absolute left-3 top-13 z-10 flex max-w-[calc(100%-1.5rem)] flex-wrap items-center gap-2 gap-y-1 rounded-xl border border-edge bg-surface-2/95 px-2.5 py-1.5 text-xs shadow-xl shadow-black/30 backdrop-blur">
             <LodSlider level={lod} onChange={setLod} counts={lodCounts} />
             <span className="h-4 w-px bg-edge" />
             <RefReviewBar

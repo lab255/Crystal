@@ -72,7 +72,7 @@ export function Toolbar({
   useEffect(() => setName(graph.name), [graph.id, graph.name]);
 
   return (
-    <div className="flex items-center gap-2 rounded-xl border border-edge bg-surface-2/95 py-1 pl-2.5 pr-1 shadow-xl shadow-black/30 backdrop-blur">
+    <div className="flex max-w-full flex-wrap items-center gap-x-2 gap-y-1 rounded-xl border border-edge bg-surface-2/95 py-1 pl-2.5 pr-1 shadow-xl shadow-black/30 backdrop-blur">
       <input
         value={name}
         onChange={(e) => setName(e.target.value)}

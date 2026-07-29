@@ -133,7 +133,7 @@ export function OrchestratorMode() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="flex items-center gap-2 border-b border-edge bg-surface-1 px-3 py-1.5">
+      <header className="flex flex-wrap items-center gap-2 gap-y-1 border-b border-edge bg-surface-1 px-3 py-1.5">
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" size="sm" className="font-semibold text-ink">

@@ -127,7 +127,7 @@ export function TestsView() {
   return (
     <div className="flex h-full min-h-0 flex-col">
       {/* run bar */}
-      <div className="flex shrink-0 items-center gap-2 border-b border-edge bg-surface-1 px-3 py-1.5">
+      <div className="flex shrink-0 flex-wrap items-center gap-2 gap-y-1 border-b border-edge bg-surface-1 px-3 py-1.5">
         {running ? (
           <button
             type="button"

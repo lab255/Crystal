@@ -209,7 +209,7 @@ export function ArchitectMode() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="flex items-center gap-2 border-b border-edge bg-surface-1 px-3 py-1.5">
+      <header className="flex flex-wrap items-center gap-2 gap-y-1 border-b border-edge bg-surface-1 px-3 py-1.5">
         <span className="text-[13px] font-semibold text-ink">Architecture</span>
         <div className="ml-3 flex w-60 items-center gap-1.5 rounded-lg border border-edge bg-surface-2 px-2 py-1">
           <Search className="h-3 w-3 shrink-0 text-ink-faint" />
@@ -1655,7 +1655,7 @@ function DraftBar({
   useEffect(() => setName(draft.name), [draft.id, draft.name]);
 
   return (
-    <div className="absolute left-1/2 top-3 z-20 flex -translate-x-1/2 items-center gap-2 rounded-xl border border-warn/40 bg-surface-2/95 py-1 pl-2.5 pr-1 shadow-xl shadow-black/30 backdrop-blur">
+    <div className="absolute left-1/2 top-3 z-20 flex max-w-[90%] -translate-x-1/2 flex-wrap items-center gap-2 gap-y-1 rounded-xl border border-warn/40 bg-surface-2/95 py-1 pl-2.5 pr-1 shadow-xl shadow-black/30 backdrop-blur">
       <GitBranch className="h-3.5 w-3.5 shrink-0 text-warn" />
       <input
         value={name}

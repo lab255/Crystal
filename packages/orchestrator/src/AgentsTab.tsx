@@ -37,7 +37,7 @@ import {
   useWorkspace,
   useWorkspaces,
 } from "@crystal/client";
-import { Badge, Button, EmptyState, Field, Input, Select, Textarea, cn } from "@crystal/ui";
+import { Badge, Button, EmptyState, Field, Input, Select, TagInput, Textarea, cn } from "@crystal/ui";
 import { MANAGER_PREAMBLE } from "./prompt.js";
 import { RunsPane } from "./RunsPane.js";
 
@@ -428,7 +428,6 @@ function ProfileRow({
   );
 }
 
-const splitCommas = (s: string) => s.split(",").map((x) => x.trim()).filter(Boolean);
 const splitLines = (s: string) => s.split("\n").map((x) => x.trim()).filter(Boolean);
 
 /**
@@ -455,8 +454,8 @@ function ProfileEditor({
   const [name, setName] = useState(profile.name);
   const [kind, setKind] = useState(profile.kind);
   const [model, setModel] = useState(profile.model);
-  const [skills, setSkills] = useState(profile.skills.join(", "));
-  const [tags, setTags] = useState(profile.tags.join(", "));
+  const [skills, setSkills] = useState<string[]>(profile.skills);
+  const [tags, setTags] = useState<string[]>(profile.tags);
   const [appendPrompt, setAppendPrompt] = useState(profile.appendPrompt ?? "");
   const [allowedTools, setAllowedTools] = useState((profile.allowedTools ?? []).join("\n"));
   const [disallowedTools, setDisallowedTools] = useState(
@@ -484,8 +483,8 @@ function ProfileEditor({
       name: name.trim() || profile.name,
       kind,
       model: model.trim() || "sonnet",
-      skills: splitCommas(skills),
-      tags: splitCommas(tags),
+      skills,
+      tags,
       appendPrompt: appendPrompt.trim() || undefined,
       allowedTools: allowed.length ? allowed : undefined,
       disallowedTools: disallowed.length ? disallowed : undefined,
@@ -577,22 +576,23 @@ function ProfileEditor({
             ))}
           </datalist>
         </Field>
-        <Field label="Skills" hint="Comma-separated, woven into dispatch prompts">
-          <Input
+        <Field label="Skills" hint="Woven into dispatch prompts">
+          <TagInput
             value={skills}
-            onChange={(e) => setSkills(e.target.value)}
-            placeholder="e.g. security-review, dataviz"
+            onChange={setSkills}
+            placeholder="e.g. security-review"
             aria-label="Agent skills"
-            className="h-7 text-xs"
+            className="min-h-7 text-xs"
           />
         </Field>
         <Field label="Tags" hint="Context tags this specialist owns (auto-assignment)">
-          <Input
+          <TagInput
             value={tags}
-            onChange={(e) => setTags(e.target.value)}
-            placeholder="e.g. intent:auth, sys:forms"
+            onChange={setTags}
+            tone="cyan"
+            placeholder="e.g. intent:auth"
             aria-label="Agent tags"
-            className="h-7 text-xs"
+            className="min-h-7 text-xs"
           />
         </Field>
         <Field

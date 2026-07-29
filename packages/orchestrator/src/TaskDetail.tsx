@@ -30,7 +30,7 @@ import {
   useWorkspace,
   useWorkspaces,
 } from "@crystal/client";
-import { Badge, Button, Field, Select, StatusDot, Textarea, cn } from "@crystal/ui";
+import { Badge, Button, Field, Select, StatusDot, TagInput, Textarea, cn } from "@crystal/ui";
 import { buildTaskPrompt } from "./prompt.js";
 
 // Text inputs styled to sit flush beside the shared <Select> fields.
@@ -66,7 +66,6 @@ export function TaskDetail({
   const [title, setTitle] = useState(task.title);
   const [description, setDescription] = useState(task.description);
   const [human, setHuman] = useState(task.owners.human ?? "");
-  const [tagDraft, setTagDraft] = useState("");
   const [epicDraft, setEpicDraft] = useState<string | null>(null);
   const [prompt, setPrompt] = useState("");
   const [promptDirty, setPromptDirty] = useState(false);
@@ -82,7 +81,6 @@ export function TaskDetail({
     setHuman(task.owners.human ?? "");
     setPromptDirty(false);
     setEpicDraft(null);
-    setTagDraft("");
   }, [task.id]);
 
   const defaultPrompt = useMemo(() => buildTaskPrompt(task, info), [task, info]);
@@ -112,16 +110,6 @@ export function TaskDetail({
   function deleteTask(): void {
     onProjectChange({ ...project, tasks: project.tasks.filter((t) => t.id !== task.id) });
     onClose();
-  }
-
-  function addTag(): void {
-    const tag = tagDraft.trim();
-    if (!tag || task.labels.includes(tag)) {
-      setTagDraft("");
-      return;
-    }
-    patchTask({ labels: [...task.labels, tag] });
-    setTagDraft("");
   }
 
   function createNewEpic(name: string): void {
@@ -392,32 +380,12 @@ export function TaskDetail({
         </Field>
 
         <Field label="Tags">
-          <div className="flex flex-wrap items-center gap-1.5">
-            {task.labels.map((label) => (
-              <button
-                key={label}
-                type="button"
-                title="Remove tag"
-                onClick={() => patchTask({ labels: task.labels.filter((l) => l !== label) })}
-              >
-                <Badge className="cursor-pointer">{label} ×</Badge>
-              </button>
-            ))}
-            <input
-              value={tagDraft}
-              onChange={(e) => setTagDraft(e.target.value)}
-              onBlur={addTag}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  addTag();
-                }
-              }}
-              placeholder="dimension:value"
-              className="h-6 w-28 rounded-md border border-edge bg-surface-1 px-1.5 text-[11px] text-ink outline-none placeholder:text-ink-faint focus:border-crystal-500/60"
-              aria-label="Add tag"
-            />
-          </div>
+          <TagInput
+            value={task.labels}
+            onChange={(labels) => patchTask({ labels })}
+            placeholder="dimension:value"
+            aria-label="Task tags"
+          />
         </Field>
 
         <Field label={`Blocked by${task.blockedBy.length ? ` (${task.blockedBy.length})` : ""}`}>

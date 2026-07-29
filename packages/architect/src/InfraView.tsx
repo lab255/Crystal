@@ -832,7 +832,7 @@ function InfraInner({
     <div className="flex h-full min-h-0">
       <div className="relative min-w-0 flex-1">
         {/* Environment switcher */}
-        <div className="absolute left-3 top-3 z-10 flex items-center gap-1 rounded-xl border border-edge bg-surface-2/95 p-1 text-xs shadow-xl shadow-black/30 backdrop-blur">
+        <div className="absolute left-3 top-3 z-10 flex max-w-[calc(100%-1.5rem)] flex-wrap items-center gap-1 rounded-xl border border-edge bg-surface-2/95 p-1 text-xs shadow-xl shadow-black/30 backdrop-blur">
           {graph.environments.map((env) => (
             <span
               key={env.id}
@@ -853,7 +853,7 @@ function InfraInner({
                 ) : (
                   <Laptop className="h-3 w-3 shrink-0 opacity-70" />
                 )}
-                {env.name}
+                <span className="max-w-32 truncate">{env.name}</span>
               </button>
               <button
                 type="button"

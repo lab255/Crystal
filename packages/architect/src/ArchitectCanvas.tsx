@@ -2424,7 +2424,10 @@ function CanvasInner({
           showInteractive={false}
           className="!rounded-lg !border !border-edge !bg-surface-2 !shadow-lg overflow-hidden"
         />
-        <Panel position="top-left">
+        {/* React Flow panels have no width constraint of their own — cap it
+            here so a fully-loaded toolbar wraps instead of running off the
+            canvas (the right-side review cluster keeps its corner). */}
+        <Panel position="top-left" className="max-w-[calc(100%-11rem)]">
           <Toolbar
             graph={graph}
             facet={

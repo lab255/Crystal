@@ -19,7 +19,7 @@ import {
   type HighlightRef,
 } from "@crystal/core";
 import { useWorkspace } from "@crystal/client";
-import { Button, Field, Input, Select, Textarea, cn } from "@crystal/ui";
+import { Button, Field, Input, Select, TagInput, Textarea, cn } from "@crystal/ui";
 import { deleteEdges, deleteNodes, updateEdge, updateNode } from "./graph-ops.js";
 import { ACCENT_CSS, EDGE_KIND_STYLE, KIND_META, type AccentName } from "./model.js";
 import { highlightAttrs, hlClass, useViewHighlight } from "./use-highlight.js";
@@ -358,12 +358,10 @@ function NodeEditor({
   const repos = useWorkspace((s) => s.info?.manifest.repos ?? EMPTY_REPOS);
   const [label, setLabel] = useState(node.label);
   const [description, setDescription] = useState(node.description);
-  const [tech, setTech] = useState(node.tech.join(", "));
 
   useEffect(() => {
     setLabel(node.label);
     setDescription(node.description);
-    setTech(node.tech.join(", "));
   }, [node.id]);
 
   const patch = (p: Partial<ArchNode>) => onGraphChange(updateNode(graph, node.id, p));
@@ -416,19 +414,14 @@ function NodeEditor({
           </Select>
         </Field>
       ) : null}
-      <Field label="Tech (comma-separated)">
-        <Input
-          value={tech}
-          onChange={(e) => setTech(e.target.value)}
-          onBlur={() =>
-            patch({
-              tech: tech
-                .split(",")
-                .map((t) => t.trim())
-                .filter(Boolean),
-            })
-          }
-          placeholder="rust, postgres, ecs"
+      <Field label="Tech">
+        {/* Pill adds/removes are discrete events, so each one commits straight
+            to the graph — no local string state to resync on node switch. */}
+        <TagInput
+          value={node.tech}
+          onChange={(tech) => patch({ tech })}
+          placeholder="rust, postgres, ecs…"
+          aria-label="Tech tags"
         />
       </Field>
       {codeModules && codeModules.length > 0 && node.kind !== "note" ? (

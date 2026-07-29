@@ -75,7 +75,7 @@ export function DiagramToolbarGroup({
   return (
     <div
       className={cn(
-        "flex items-center gap-1 rounded-xl border border-edge bg-surface-2/95 px-2.5 py-1.5 text-xs shadow-xl shadow-black/30 backdrop-blur",
+        "flex min-w-0 max-w-full flex-wrap items-center gap-1 gap-y-1 rounded-xl border border-edge bg-surface-2/95 px-2.5 py-1.5 text-xs shadow-xl shadow-black/30 backdrop-blur",
         className,
       )}
     >

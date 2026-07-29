@@ -89,7 +89,7 @@ function SurfacesShell() {
     <Split storageKey="surfaces:arch-pane" direction="horizontal">
       <SplitPane minSize="30%">
         <div className="flex h-full min-h-0 flex-col bg-surface-0">
-          <header className="flex h-10 shrink-0 items-center border-b border-edge bg-surface-1 px-3">
+          <header className="flex min-h-10 shrink-0 flex-wrap items-center gap-y-1 border-b border-edge bg-surface-1 px-3 py-1">
             <PanelsTopLeft className="mr-2 h-4 w-4 text-crystal-300" />
             <span className="text-[13px] font-semibold text-ink">Surfaces</span>
             <div className="ml-3 flex w-60 items-center gap-1.5 rounded-lg border border-edge bg-surface-2 px-2 py-1">
