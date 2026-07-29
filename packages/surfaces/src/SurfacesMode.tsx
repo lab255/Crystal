@@ -9,6 +9,7 @@ import {
   PanelsTopLeft,
   RefreshCw,
   Search,
+  Send,
   Waypoints,
   Webhook,
   X,
@@ -18,6 +19,7 @@ import { useNav, useNavUpdate } from "@crystal/client";
 import { Pane as SplitPane, Split, Spinner, Tooltip, cn, useSidePaneLayout } from "@crystal/ui";
 import { ArchPane } from "@crystal/architect";
 import { ApiExplorer } from "./ApiExplorer.js";
+import { ApiClientView } from "./ApiClientView.js";
 import { ComponentsView } from "./ComponentsView.js";
 import { SchemasView } from "./SchemasView.js";
 import { ScreensView } from "./ScreensView.js";
@@ -37,6 +39,7 @@ const VIEW_META: { id: SurfaceViewId; label: string; icon: typeof AppWindow }[] 
   { id: "stories", label: "Stories", icon: BookOpenText },
   { id: "apis", label: "APIs", icon: Webhook },
   { id: "schemas", label: "Schemas", icon: Database },
+  { id: "client", label: "Client", icon: Send },
 ];
 
 export function SurfacesMode() {
@@ -200,6 +203,8 @@ function SurfacesShell() {
               <StoriesView />
             ) : view === "apis" ? (
               <ApiExplorer appUrl={appUrl} />
+            ) : view === "client" ? (
+              <ApiClientView />
             ) : (
               <SchemasView />
             )}

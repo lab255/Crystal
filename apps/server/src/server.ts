@@ -57,6 +57,7 @@ import { HUB_MCP_ID, handleMcpRequest, isMcpRequest } from "./mcp/http.js";
 import { INTERACTIVE_PROMPT_DELAY_MS, launchInteractiveRun } from "./interactive.js";
 import { overviewSourcesAtRef, surfacesSnapshotAtRef } from "./ref-snapshot.js";
 import { pasteInput } from "./terminal-manager.js";
+import { sendApiRequest } from "./api-client-store.js";
 import { WorkspaceRegistry } from "./workspace-registry.js";
 
 type Handlers = {
@@ -737,6 +738,9 @@ export async function startCrystalServer(opts: {
     },
     "surfaces.get": ({ ws }) => registry.get(ws).codemap.surfaces(),
     "surfaces.map": ({ ws }) => registry.get(ws).codemap.surfaceMap(),
+    "apiclient.get": ({ ws }) => registry.get(ws).apiclient.get(),
+    "apiclient.save": ({ ws, state }) => registry.get(ws).apiclient.save(state),
+    "apiclient.send": ({ ws: _ws, ...req }) => sendApiRequest(req),
     "devservers.list": ({ ws }) => registry.get(ws).devservers.list(),
     "devservers.start": ({ ws, id }) => registry.get(ws).devservers.start(id),
     "devservers.stop": ({ ws, id }) => registry.get(ws).devservers.stop(id),

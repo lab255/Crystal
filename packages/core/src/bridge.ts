@@ -27,6 +27,7 @@ import type { Project, TaskItem } from "./project.js";
 import type { ClaimResult, TaskPatch } from "./orchestration.js";
 import type { CoverageReport, QualityRun, TestRunnerInfo } from "./quality.js";
 import type { DevServerInfo } from "./dev-server.js";
+import type { ApiClientState, ApiHeader, ApiHttpResponse } from "./api-client.js";
 import type { RefactorApplyResult, RefactorIntent, RefactorPlan } from "./refactor.js";
 import type {
   ScreenApiCall,
@@ -688,6 +689,25 @@ export interface BridgeMethods {
   "devservers.stop": { params: WsScope & { id: string }; result: { ok: true } };
   /** Stop (when running) and start again — the restart button. */
   "devservers.restart": { params: WsScope & { id: string }; result: { server: DevServerInfo } };
+  /** The workspace's API-client workbench (requests + per-env config) — see api-client.ts. */
+  "apiclient.get": { params: WsScope; result: { state: ApiClientState } };
+  /** Whole-state save (app data, never the repo). Broadcasts `apiclient.changed`. */
+  "apiclient.save": { params: WsScope & { state: ApiClientState }; result: { ok: true } };
+  /**
+   * Execute one HTTP request server-side (the browser can't reach localhost
+   * APIs cross-origin) and return the response. Templates are resolved by
+   * the caller; transport failures come back as status 0 + error, never a
+   * rejection.
+   */
+  "apiclient.send": {
+    params: WsScope & {
+      method: string;
+      url: string;
+      headers?: ApiHeader[];
+      body?: string | null;
+    };
+    result: ApiHttpResponse;
+  };
   /** How (and whether) this workspace can run tests — see quality.ts. */
   "quality.detect": { params: WsScope; result: TestRunnerInfo };
   /**
@@ -1084,6 +1104,8 @@ export interface BridgeEvents {
   "codeindex.changed": { ws: string };
   /** A dev server started, stopped, or learned its URL from process output. */
   "devservers.changed": { ws: string };
+  /** The API-client state was saved (another client, or this one). */
+  "apiclient.changed": { ws: string };
   /** A test run started, streamed new results, or settled (payload = full run). */
   "quality.runChanged": { ws: string; run: QualityRun };
   /** New coverage data landed (a coverage run finished or external output changed). */

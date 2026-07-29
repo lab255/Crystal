@@ -29,6 +29,7 @@ import { OrchestrationService } from "./orchestration.js";
 import { appDataDir, globalAgentsDir, globalTemplatesDir, isIgnoredDir, workspaceIdFor } from "./paths.js";
 import { QualityService } from "./quality-runner.js";
 import { DevServerService } from "./dev-servers.js";
+import { ApiClientStore } from "./api-client-store.js";
 import { RefactorEngine } from "./refactor.js";
 import { SettledRuns } from "./settled-runs.js";
 import { GlobalTemplateStore } from "./template-library.js";
@@ -70,6 +71,7 @@ export class WorkspaceRuntime {
   readonly codeindex: CodeIndexService;
   readonly quality: QualityService;
   readonly devservers: DevServerService;
+  readonly apiclient: ApiClientStore;
   readonly orchestration: OrchestrationService;
   readonly workflows: WorkflowEngine;
   /** Project roster + shared library, merged (see agent-library.ts). */
@@ -137,6 +139,7 @@ export class WorkspaceRuntime {
     this.codeindex = new CodeIndexService(root, this.codemap);
     this.quality = new QualityService(root);
     this.devservers = new DevServerService(root, this.terminals);
+    this.apiclient = new ApiClientStore(appDataDir(root));
     this.orchestration = new OrchestrationService(this.store, this.agents, () =>
       this.notifyWorkspaceChanged?.(),
     );
@@ -257,6 +260,9 @@ export class WorkspaceRuntime {
       ),
       this.devservers.events.on("changed", () =>
         broadcast("devservers.changed", { ws: this.id }),
+      ),
+      this.apiclient.events.on("changed", () =>
+        broadcast("apiclient.changed", { ws: this.id }),
       ),
       this.quality.events.on("coverageChanged", () =>
         broadcast("quality.coverageChanged", { ws: this.id }),

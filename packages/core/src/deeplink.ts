@@ -210,6 +210,8 @@ export interface SurfacesLink {
   system?: string;
   /** Selected schema id (`SchemaSurface.id`). */
   schema?: string;
+  /** Selected saved request id in the API client view. */
+  request?: string;
   /** Live demo pane open (screens + stories views). */
   demo?: boolean;
   /**
@@ -396,6 +398,8 @@ export function formatDeepLink(link: DeepLink): string {
       if (s.api) add("api", s.api);
     } else if (view === "schemas") {
       if (s.schema) add("schema", s.schema);
+    } else if (view === "client") {
+      if (s.request) add("request", s.request);
     }
     if (s.arch) add("arch", "1");
     if (s.find) add("find", s.find);
@@ -607,7 +611,8 @@ export function parseDeepLink(hash: string): DeepLink {
       view === "components" ||
       view === "stories" ||
       view === "apis" ||
-      view === "schemas"
+      view === "schemas" ||
+      view === "client"
     )
       s.view = view;
     const screen = params.get("screen");
@@ -622,6 +627,8 @@ export function parseDeepLink(hash: string): DeepLink {
     if (system) s.system = system;
     const schema = params.get("schema");
     if (schema) s.schema = schema;
+    const request = params.get("request");
+    if (request) s.request = request;
     if (params.get("demo") === "1") s.demo = true;
     if (params.get("arch") === "1") s.arch = true;
     const find = params.get("find");
@@ -694,6 +701,7 @@ const SURFACES_VIEW_FIELDS: Record<SurfaceViewId, readonly (keyof SurfacesLink)[
   stories: ["view", "story", "demo", "arch", "find"],
   apis: ["view", "api", "system", "arch", "find"],
   schemas: ["view", "schema", "arch", "find"],
+  client: ["view", "request", "arch", "find"],
 };
 
 const QUALITY_VIEW_FIELDS: Record<QualityViewId, readonly (keyof QualityLink)[]> = {
