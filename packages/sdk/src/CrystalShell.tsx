@@ -1,12 +1,14 @@
 import { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
-import { Check, Gem, Link2, TerminalSquare } from "lucide-react";
+import { Check, DownloadCloud, FolderGit2, Gem, Link2, TerminalSquare } from "lucide-react";
 import { parseDeepLink, workspaceLight, worstLight, type TrafficLight } from "@crystal/core";
 
 import {
   EMPTY_RUNS,
   EMPTY_TODOS,
+  checkForDesktopUpdateNow,
   useAgents,
   useCrystal,
+  useDesktopUpdate,
   useFleet,
   useFleetConnections,
   useHub,
@@ -30,6 +32,7 @@ import {
   isCrossProjectMode,
   type CrystalMode,
 } from "./modes.js";
+import { GitPanel } from "./GitPanel.js";
 import { TerminalPanel } from "./TerminalPanel.js";
 import { WorkspaceTabs } from "./WorkspaceTabs.js";
 
@@ -107,6 +110,7 @@ export function CrystalShell({
   // interactive agent session can reveal the panel (see focusTerminal).
   const terminalOpen = useTerminals((s) => s.panelOpen);
   const setTerminalOpen = useTerminals((s) => s.setPanelOpen);
+  const [gitOpen, setGitOpen] = useState(false);
 
   const { terminalsStore, navStore, fleet, activeSid, selectWorkspace: focusWorkspace } =
     useCrystal();
@@ -174,6 +178,9 @@ export function CrystalShell({
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "p") {
         e.preventDefault();
         setPaletteOpen(true);
+      } else if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "g") {
+        e.preventDefault();
+        setGitOpen((o) => !o);
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
         setPaletteOpen(true);
@@ -310,7 +317,46 @@ export function CrystalShell({
                 </Tooltip>
               );
             })}
+
+            {/* Bottom rail: panel toggles, kept apart from the mode list —
+                these overlay/augment the current mode rather than replace it. */}
+            <div className="mt-auto flex flex-col items-center gap-1 border-t border-edge pt-1.5">
+              <Tooltip content="Git tree & log" shortcut="Ctrl+Shift+G" side="right">
+                <button
+                  type="button"
+                  onClick={() => setGitOpen((o) => !o)}
+                  aria-label="Toggle git panel"
+                  aria-pressed={gitOpen}
+                  className={cn(
+                    "flex h-9 w-9 items-center justify-center rounded-lg transition-colors",
+                    gitOpen
+                      ? "bg-crystal-500/20 text-crystal-300"
+                      : "text-ink-faint hover:bg-surface-3 hover:text-ink-muted",
+                  )}
+                >
+                  <FolderGit2 className="h-4.5 w-4.5" />
+                </button>
+              </Tooltip>
+              <Tooltip content="Toggle the terminal panel" shortcut="Ctrl+`" side="right">
+                <button
+                  type="button"
+                  onClick={() => setTerminalOpen(!terminalOpen)}
+                  aria-label="Toggle terminal panel"
+                  aria-pressed={terminalOpen}
+                  className={cn(
+                    "flex h-9 w-9 items-center justify-center rounded-lg transition-colors",
+                    terminalOpen
+                      ? "bg-crystal-500/20 text-crystal-300"
+                      : "text-ink-faint hover:bg-surface-3 hover:text-ink-muted",
+                  )}
+                >
+                  <TerminalSquare className="h-4.5 w-4.5" />
+                </button>
+              </Tooltip>
+            </div>
           </nav>
+
+          {gitOpen ? <GitPanel onClose={() => setGitOpen(false)} /> : null}
 
           <div className="min-w-0 flex-1">
             <Suspense
@@ -342,20 +388,6 @@ export function CrystalShell({
         {!hideStatusBar ? (
           <footer className="flex h-6 shrink-0 items-center gap-3 border-t border-edge bg-surface-1 px-3 text-[11px] text-ink-faint">
             <BridgeStatus connections={connections} />
-            <Tooltip content="Toggle the terminal panel" shortcut="Ctrl+`">
-              <button
-                type="button"
-                aria-label="Toggle terminal panel"
-                aria-pressed={terminalOpen}
-                onClick={() => setTerminalOpen(!terminalOpen)}
-                className={cn(
-                  "flex items-center gap-1 rounded px-1 hover:bg-surface-3 hover:text-ink",
-                  terminalOpen ? "text-ink" : "text-ink-muted",
-                )}
-              >
-                <TerminalSquare className="h-3 w-3" /> terminal
-              </button>
-            </Tooltip>
             {saving ? <span className="text-info">saving…</span> : null}
             {wsError ? <span className="max-w-96 truncate text-danger">{wsError}</span> : null}
             {activeWsRoot ? (
@@ -370,7 +402,7 @@ export function CrystalShell({
                 </span>
               ) : null}
               {deepLinking ? <CopyLinkButton /> : null}
-              <span>Crystal 0.1</span>
+              <VersionBadge />
             </span>
           </footer>
         ) : null}
@@ -450,6 +482,57 @@ function BridgeStatus({
         />
         {label}
       </span>
+    </Tooltip>
+  );
+}
+
+/**
+ * The footer version — sourced from the build (`__CRYSTAL_VERSION__`, baked in
+ * by Vite from the root package.json), never a hand-maintained literal. In the
+ * desktop shell it doubles as the "check for updates" action and surfaces the
+ * updater's progress; in the browser it's plain text.
+ */
+function VersionBadge() {
+  const supported = useDesktopUpdate((s) => s.supported);
+  const phase = useDesktopUpdate((s) => s.phase);
+  const pending = useDesktopUpdate((s) => s.version);
+  const updateError = useDesktopUpdate((s) => s.error);
+  const version =
+    typeof __CRYSTAL_VERSION__ === "string" && __CRYSTAL_VERSION__ ? __CRYSTAL_VERSION__ : "dev";
+  if (!supported) return <span>Crystal {version}</span>;
+
+  const label =
+    phase === "checking"
+      ? "checking…"
+      : phase === "downloading"
+        ? `downloading ${pending ?? "update"}…`
+        : phase === "restarting"
+          ? "restarting…"
+          : phase === "uptodate"
+            ? `Crystal ${version} · up to date`
+            : `Crystal ${version}`;
+  const busy = phase === "checking" || phase === "downloading" || phase === "restarting";
+  return (
+    <Tooltip
+      content={
+        phase === "error" && updateError
+          ? `Update check failed: ${updateError} — click to retry`
+          : "Check for updates"
+      }
+    >
+      <button
+        type="button"
+        onClick={() => void checkForDesktopUpdateNow()}
+        disabled={busy}
+        className={cn(
+          "flex items-center gap-1 transition-colors",
+          phase === "error" ? "text-warn" : "text-ink-faint hover:text-ink-muted",
+          busy && "cursor-default",
+        )}
+      >
+        {busy ? <Spinner className="h-3 w-3" /> : <DownloadCloud className="h-3 w-3" />}
+        {label}
+      </button>
     </Tooltip>
   );
 }

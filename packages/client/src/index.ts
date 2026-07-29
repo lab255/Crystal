@@ -22,7 +22,14 @@ export {
   type FleetClientState,
   type ServerConnection,
 } from "./fleet-client.js";
-export { checkForDesktopUpdate } from "./desktop-update.js";
+export {
+  checkForDesktopUpdate,
+  checkForDesktopUpdateNow,
+  desktopUpdateStore,
+  useDesktopUpdate,
+  type DesktopUpdatePhase,
+  type DesktopUpdateState,
+} from "./desktop-update.js";
 export { useWorkerMemo, type WorkerMemoResult } from "./use-worker-memo.js";
 export {
   createWorkspaceStore,
