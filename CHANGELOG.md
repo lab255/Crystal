@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.12.0 (2026-07-29)
+
+### Features
+
+- steer receipts, close_delivery, compact, budget tripwire ([`7fde623`](https://github.com/eliotlim/crystal/commit/7fde623))
+
 ## v0.11.0 (2026-07-29)
 
 ### Features
