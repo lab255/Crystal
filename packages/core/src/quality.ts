@@ -1,14 +1,14 @@
 /**
  * Quality — the workspace's test runner and coverage model. The server
- * detects the workspace's own test setup (vitest / jest / a package.json
- * `test` script), spawns runs with JSON reporters, streams progress as
+ * detects the workspace's own test setup (vitest / jest / playwright / a
+ * package.json `test` script), spawns runs with JSON reporters, streams progress as
  * `quality.runChanged` events, and parses istanbul coverage output into a
  * per-file summary the coverage visualiser renders.
  */
 
 export type QualityViewId = "tests" | "coverage";
 
-export type TestRunnerKind = "vitest" | "jest" | "script";
+export type TestRunnerKind = "vitest" | "jest" | "playwright" | "script";
 
 /** One package's own test setup — monorepos carry several. */
 export interface PackageTestSetup {

@@ -19,6 +19,7 @@ import {
   LensHint,
   ListHeader,
   copyText,
+  useLiveDevUrls,
   useSurfaces,
   useSurfacesLens,
 } from "./common.js";
@@ -45,7 +46,7 @@ export function StoriesView() {
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
 
   const stories = report?.stories ?? [];
-  const storybookUrl = report?.demo.storybookUrl ?? null;
+  const { storybookUrl } = useLiveDevUrls();
 
   /** Lens members (null when no lens dims) — non-members render dimmed. */
   const lensMembers = useMemo(

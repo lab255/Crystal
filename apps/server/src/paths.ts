@@ -72,6 +72,8 @@ const IGNORED_DIRS = new Set([
   ".next",
   ".turbo",
   "coverage",
+  "playwright-report",
+  "test-results",
   "__pycache__",
 ]);
 

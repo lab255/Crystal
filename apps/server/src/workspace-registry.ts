@@ -28,6 +28,7 @@ import { type CrossSurface } from "./code-map.js";
 import { OrchestrationService } from "./orchestration.js";
 import { appDataDir, globalAgentsDir, globalTemplatesDir, isIgnoredDir, workspaceIdFor } from "./paths.js";
 import { QualityService } from "./quality-runner.js";
+import { DevServerService } from "./dev-servers.js";
 import { RefactorEngine } from "./refactor.js";
 import { SettledRuns } from "./settled-runs.js";
 import { GlobalTemplateStore } from "./template-library.js";
@@ -68,6 +69,7 @@ export class WorkspaceRuntime {
   readonly codemap: CodeMapFacade;
   readonly codeindex: CodeIndexService;
   readonly quality: QualityService;
+  readonly devservers: DevServerService;
   readonly orchestration: OrchestrationService;
   readonly workflows: WorkflowEngine;
   /** Project roster + shared library, merged (see agent-library.ts). */
@@ -134,6 +136,7 @@ export class WorkspaceRuntime {
     this.codemap = createCodeMapFacade(this.analysis);
     this.codeindex = new CodeIndexService(root, this.codemap);
     this.quality = new QualityService(root);
+    this.devservers = new DevServerService(root, this.terminals);
     this.orchestration = new OrchestrationService(this.store, this.agents, () =>
       this.notifyWorkspaceChanged?.(),
     );
@@ -252,6 +255,9 @@ export class WorkspaceRuntime {
       this.quality.events.on("runChanged", ({ run }) =>
         broadcast("quality.runChanged", { ws: this.id, run }),
       ),
+      this.devservers.events.on("changed", () =>
+        broadcast("devservers.changed", { ws: this.id }),
+      ),
       this.quality.events.on("coverageChanged", () =>
         broadcast("quality.coverageChanged", { ws: this.id }),
       ),
@@ -327,6 +333,7 @@ export class WorkspaceRuntime {
     // its orchestrator still running is how the hub's one-per-project
     // invariant broke (cancel recorded, orchestrator alive, retry doubled).
     this.agents.disposeAll();
+    this.devservers.dispose();
     this.terminals.disposeAll();
     this.quality.dispose();
     this.refactorEngine?.dispose();

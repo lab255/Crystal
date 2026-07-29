@@ -20,6 +20,7 @@ import {
   LensHint,
   ListHeader,
   copyText,
+  useLiveDevUrls,
   useSurfaces,
   useSurfacesLens,
 } from "./common.js";
@@ -52,7 +53,7 @@ export function ScreensView() {
   const [collapsed, setCollapsed] = useState<ReadonlySet<ScreenSource>>(new Set());
 
   const screens = report?.screens ?? [];
-  const appUrl = report?.demo.appUrl ?? null;
+  const { appUrl } = useLiveDevUrls();
 
   /** Lens members (null when no lens dims) — non-members render dimmed. */
   const lensMembers = useMemo(

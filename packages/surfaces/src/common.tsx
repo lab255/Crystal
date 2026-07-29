@@ -161,6 +161,52 @@ export interface ArchHighlight {
   expand: () => void;
 }
 
+/**
+ * Live dev-server URLs for embedding/curling, by kind. A *running* server's
+ * observed URL always beats the report's static script guess (root-only and
+ * port-blind, historically wrong on every monorepo) — the guess is only the
+ * fallback so the affordances still render before anything is started.
+ */
+export function useLiveDevUrls(): { appUrl: string | null; storybookUrl: string | null } {
+  const { client } = useCrystal();
+  const { report } = useSurfaces();
+  const activeWs = useWorkspaces((s) => s.activeId);
+  const [live, setLive] = useState<{ app: string | null; storybook: string | null }>({
+    app: null,
+    storybook: null,
+  });
+
+  useEffect(() => {
+    if (!activeWs) return;
+    let cancelled = false;
+    const refresh = () => {
+      client
+        .request("devservers.list", {})
+        .then(({ servers }) => {
+          if (cancelled) return;
+          const urlOf = (kinds: string[]) =>
+            servers.find((s) => s.status === "running" && s.url && kinds.includes(s.kind))?.url ??
+            null;
+          setLive({ app: urlOf(["app"]), storybook: urlOf(["storybook"]) });
+        })
+        .catch(() => {});
+    };
+    refresh();
+    const dispose = client.events.on("devservers.changed", ({ ws }) => {
+      if (ws === activeWs) refresh();
+    });
+    return () => {
+      cancelled = true;
+      dispose();
+    };
+  }, [client, activeWs]);
+
+  return {
+    appUrl: live.app ?? report?.demo.appUrl ?? null,
+    storybookUrl: live.storybook ?? report?.demo.storybookUrl ?? null,
+  };
+}
+
 export function useArchHighlight(): ArchHighlight {
   const nav = useNavUpdate();
   const { systemOfFile } = useSurfaces();

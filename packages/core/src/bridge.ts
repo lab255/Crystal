@@ -26,6 +26,7 @@ import type {
 import type { Project, TaskItem } from "./project.js";
 import type { ClaimResult, TaskPatch } from "./orchestration.js";
 import type { CoverageReport, QualityRun, TestRunnerInfo } from "./quality.js";
+import type { DevServerInfo } from "./dev-server.js";
 import type { RefactorApplyResult, RefactorIntent, RefactorPlan } from "./refactor.js";
 import type {
   ScreenApiCall,
@@ -672,6 +673,21 @@ export interface BridgeMethods {
    * surfaces report's screens). Recomputed lazily with the code map.
    */
   "surfaces.map": { params: WsScope; result: SurfaceMapReport };
+  /**
+   * Detected dev-server candidates (every workspace package's scripts) merged
+   * with their live state — see dev-server.ts. Changes broadcast as
+   * `devservers.changed`.
+   */
+  "devservers.list": { params: WsScope; result: { servers: DevServerInfo[] } };
+  /**
+   * Run a candidate on a PTY terminal (visible in the terminal panel; its
+   * real URL is sniffed from the output). Fails when already running.
+   */
+  "devservers.start": { params: WsScope & { id: string }; result: { server: DevServerInfo } };
+  /** Kill a running candidate's terminal (tree-kill, same as closing the tab). */
+  "devservers.stop": { params: WsScope & { id: string }; result: { ok: true } };
+  /** Stop (when running) and start again — the restart button. */
+  "devservers.restart": { params: WsScope & { id: string }; result: { server: DevServerInfo } };
   /** How (and whether) this workspace can run tests — see quality.ts. */
   "quality.detect": { params: WsScope; result: TestRunnerInfo };
   /**
@@ -1066,6 +1082,8 @@ export interface BridgeEvents {
   "codemap.changed": { ws: string };
   /** The code index changed (code re-analyzed or an enrichment file landed). */
   "codeindex.changed": { ws: string };
+  /** A dev server started, stopped, or learned its URL from process output. */
+  "devservers.changed": { ws: string };
   /** A test run started, streamed new results, or settled (payload = full run). */
   "quality.runChanged": { ws: string; run: QualityRun };
   /** New coverage data landed (a coverage run finished or external output changed). */

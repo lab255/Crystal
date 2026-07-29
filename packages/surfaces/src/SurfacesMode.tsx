@@ -22,7 +22,7 @@ import { ComponentsView } from "./ComponentsView.js";
 import { SchemasView } from "./SchemasView.js";
 import { ScreensView } from "./ScreensView.js";
 import { StoriesView } from "./StoriesView.js";
-import { SurfacesProvider, useArchHighlight, useSurfaces } from "./common.js";
+import { SurfacesProvider, useArchHighlight, useLiveDevUrls, useSurfaces } from "./common.js";
 
 /**
  * Surfaces — everything the product presents to the outside world, in one
@@ -57,6 +57,7 @@ function SurfacesShell() {
   const archOpen = useNav((l) => l.surfaces?.arch ?? false);
   const archPane = useSidePaneLayout();
   const { report, loading, error, refresh } = useSurfaces();
+  const { appUrl } = useLiveDevUrls();
   const findRef = useRef<HTMLInputElement>(null);
 
   // Ctrl+F focuses the shared find box (browser find is useless on virtual
@@ -198,7 +199,7 @@ function SurfacesShell() {
             ) : view === "stories" ? (
               <StoriesView />
             ) : view === "apis" ? (
-              <ApiExplorer appUrl={report?.demo.appUrl ?? null} />
+              <ApiExplorer appUrl={appUrl} />
             ) : (
               <SchemasView />
             )}

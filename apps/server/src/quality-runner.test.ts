@@ -5,12 +5,15 @@ import { afterAll, describe, expect, it } from "vitest";
 import {
   QualityService,
   buildJestArgs,
+  buildPlaywrightArgs,
   buildVitestArgs,
   owningPackageDir,
   parseIstanbulCoverage,
   parseJestJson,
   parseJestishJson,
+  parsePlaywrightJson,
   parseVitestJson,
+  pickSetupForFile,
   planRunJobs,
   sanitizeTestName,
 } from "./quality-runner.js";
@@ -582,6 +585,142 @@ describe("planRunJobs", () => {
     const plans = planRunJobs([pkg({ dir: ".", runner: "script", script: "node t.js" })], {});
     expect(plans).toEqual([{ dir: ".", mode: "script", script: "node t.js", coverage: false }]);
     expect(planRunJobs([], {})).toEqual([]);
+  });
+
+  it("fans an unscoped run across playwright setups too, without coverage", () => {
+    const plans = planRunJobs(
+      [pkg({ dir: ".", coverageCapable: true }), pkg({ dir: ".", runner: "playwright" })],
+      { coverage: true },
+    );
+    expect(plans).toEqual([
+      { dir: ".", mode: "vitest", script: null, coverage: true },
+      { dir: ".", mode: "playwright", script: null, coverage: false },
+    ]);
+  });
+
+  it("routes e2e spec files to the coexisting playwright setup", () => {
+    const packages = [pkg({ dir: "." }), pkg({ dir: ".", runner: "playwright" })];
+    expect(planRunJobs(packages, { file: "e2e/login.spec.ts" })[0]!.mode).toBe("playwright");
+    expect(planRunJobs(packages, { file: "src/a.spec.ts" })[0]!.mode).toBe("vitest");
+  });
+});
+
+describe("pickSetupForFile", () => {
+  const pkg = (over: Partial<PackageTestSetup>): PackageTestSetup => ({
+    dir: ".",
+    name: "x",
+    runner: "vitest",
+    configFile: null,
+    script: null,
+    coverageCapable: false,
+    ...over,
+  });
+
+  it("prefers the unit runner outside e2e dirs, playwright inside them", () => {
+    const both = [pkg({}), pkg({ runner: "playwright" })];
+    expect(pickSetupForFile(both, "src/thing.test.ts")?.runner).toBe("vitest");
+    expect(pickSetupForFile(both, "e2e/flow.spec.ts")?.runner).toBe("playwright");
+    expect(pickSetupForFile(both, "tests/playwright/x.spec.ts")?.runner).toBe("playwright");
+  });
+
+  it("uses playwright when it is the only setup", () => {
+    expect(pickSetupForFile([pkg({ runner: "playwright" })], "src/x.spec.ts")?.runner).toBe(
+      "playwright",
+    );
+  });
+});
+
+describe("buildPlaywrightArgs / parsePlaywrightJson", () => {
+  it("builds a scoped run with the json reporter", () => {
+    expect(buildPlaywrightArgs({ file: "e2e/a.spec.ts", testName: "logs in" }, false)).toEqual([
+      "test",
+      "--reporter=json",
+      "e2e/a.spec.ts",
+      "-g",
+      "logs in",
+    ]);
+  });
+
+  it("maps playwright suites/specs to file results, rebased on the package dir", () => {
+    const json = {
+      suites: [
+        {
+          title: "login.spec.ts",
+          file: "login.spec.ts",
+          suites: [
+            {
+              title: "auth",
+              file: "login.spec.ts",
+              specs: [
+                {
+                  title: "logs in",
+                  file: "login.spec.ts",
+                  line: 5,
+                  tests: [
+                    {
+                      projectName: "chromium",
+                      status: "expected",
+                      results: [{ status: "passed", duration: 1200 }],
+                    },
+                  ],
+                },
+                {
+                  title: "rejects bad password",
+                  file: "login.spec.ts",
+                  line: 12,
+                  tests: [
+                    {
+                      projectName: "chromium",
+                      status: "unexpected",
+                      results: [
+                        {
+                          status: "failed",
+                          duration: 900,
+                          error: { message: `Expect ${red("failed")}: locator not found` },
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    const parsed = parsePlaywrightJson(json, ROOT, "apps/web");
+    expect(parsed).not.toBeNull();
+    expect(parsed!.files).toHaveLength(1);
+    const file = parsed!.files[0]!;
+    expect(file.file).toBe("apps/web/login.spec.ts");
+    expect(file.status).toBe("fail");
+    expect(file.tests.map((t) => t.status)).toEqual(["pass", "fail"]);
+    expect(file.tests[0]!.name).toBe("auth > logs in > [chromium]");
+    expect(file.tests[1]!.error?.message).toContain("locator not found");
+    expect(file.tests[1]!.error?.line).toBe(12);
+    expect(parsed!.summary).toMatchObject({ files: 1, passed: 1, failed: 1, skipped: 0 });
+  });
+
+  it("treats flaky as pass and skipped as skip", () => {
+    const json = {
+      suites: [
+        {
+          title: "a.spec.ts",
+          file: "a.spec.ts",
+          specs: [
+            { title: "flaky one", file: "a.spec.ts", tests: [{ status: "flaky", results: [] }] },
+            { title: "skipped one", file: "a.spec.ts", tests: [{ status: "skipped", results: [] }] },
+          ],
+        },
+      ],
+    };
+    const parsed = parsePlaywrightJson(json, ROOT, ".");
+    expect(parsed!.files[0]!.tests.map((t) => t.status)).toEqual(["pass", "skip"]);
+    expect(parsed!.files[0]!.status).toBe("pass");
+  });
+
+  it("returns null on non-playwright JSON", () => {
+    expect(parsePlaywrightJson({ testResults: [] }, ROOT)).toBeNull();
   });
 });
 

@@ -54,6 +54,14 @@ const JEST_CONFIGS = [
   "jest.config.cjs",
   "jest.config.json",
 ];
+const PLAYWRIGHT_CONFIGS = [
+  "playwright.config.ts",
+  "playwright.config.js",
+  "playwright.config.mts",
+  "playwright.config.mjs",
+  "playwright.config.cts",
+  "playwright.config.cjs",
+];
 
 // ---------------------------------------------------------------------------
 // Arg building (pure, exported for tests)
@@ -127,6 +135,25 @@ export function buildJestArgs(
   return args;
 }
 
+/**
+ * CLI args for a scoped playwright run. The JSON reporter writes to the file
+ * named by the PLAYWRIGHT_JSON_OUTPUT_NAME env var (set by spawnJob), not an
+ * arg — playwright has no `--outputFile`. Coverage is not a playwright
+ * concept, so the flag is ignored.
+ */
+export function buildPlaywrightArgs(
+  scope: RunArgScope,
+  windows: boolean = process.platform === "win32",
+): string[] {
+  const args = ["test", "--reporter=json"];
+  if (scope.file) args.push(quoteArg(normalizeRel(scope.file), windows));
+  if (scope.testName) {
+    const name = sanitizeTestName(scope.testName);
+    args.push("-g", windows ? `"${name}"` : name);
+  }
+  return args;
+}
+
 // ---------------------------------------------------------------------------
 // Run planning (pure, exported for tests)
 // ---------------------------------------------------------------------------
@@ -154,11 +181,34 @@ export function owningPackageDir(packages: readonly PackageTestSetup[], file: st
   return best;
 }
 
+/** Path segments that mark a spec as a browser/e2e suite, not a unit test. */
+const E2E_SEGMENT_RE = /(?:^|\/)(?:e2e|e2e-tests|tests-e2e|playwright)(?:\/|$)/i;
+
+/**
+ * The setup that runs a file when its owning dir declares several (vitest +
+ * playwright coexisting is the normal case). Playwright takes the file when
+ * it lives under an e2e-ish directory or is the only setup; otherwise the
+ * unit runner keeps it — handing a vitest file to playwright (or an e2e spec
+ * to vitest, the old behavior) fails collection either way.
+ */
+export function pickSetupForFile(
+  candidates: readonly PackageTestSetup[],
+  file: string,
+): PackageTestSetup | undefined {
+  if (candidates.length <= 1) return candidates[0];
+  const rel = normalizeRel(file);
+  const playwright = candidates.find((p) => p.runner === "playwright");
+  const unit = candidates.find((p) => p.runner !== "playwright");
+  if (playwright && (E2E_SEGMENT_RE.test(rel) || !unit)) return playwright;
+  return unit ?? candidates[0];
+}
+
 /**
  * Which package runs execute, in order. A file scope picks the owning
- * package's runner; an unscoped run executes every vitest/jest package in
- * discovery order, falling back to the root `test` script when nothing else
- * exists. Coverage applies per package, only where a provider resolves.
+ * package's runner (e2e-ish specs route to playwright, see pickSetupForFile);
+ * an unscoped run executes every vitest/jest/playwright package in discovery
+ * order, falling back to the root `test` script when nothing else exists.
+ * Coverage applies per package, only where a provider resolves.
  */
 export function planRunJobs(
   packages: readonly PackageTestSetup[],
@@ -168,7 +218,8 @@ export function planRunJobs(
   if (scope.file) {
     const dir = owningPackageDir(packages, scope.file);
     const pkg =
-      packages.find((p) => p.dir === dir) ?? packages.find((p) => p.dir === ".");
+      pickSetupForFile(packages.filter((p) => p.dir === dir), scope.file) ??
+      pickSetupForFile(packages.filter((p) => p.dir === "."), scope.file);
     if (!pkg) return [];
     return [
       {
@@ -179,7 +230,9 @@ export function planRunJobs(
       },
     ];
   }
-  const runnable = packages.filter((p) => p.runner === "vitest" || p.runner === "jest");
+  const runnable = packages.filter(
+    (p) => p.runner === "vitest" || p.runner === "jest" || p.runner === "playwright",
+  );
   if (runnable.length > 0) {
     return runnable.map((pkg) => ({
       dir: pkg.dir,
@@ -383,6 +436,146 @@ function fileDuration(tr: JestishTestResult, tests: TestCaseResult[]): number | 
 export const parseVitestJson = parseJestishJson;
 /** jest `--json` output. */
 export const parseJestJson = parseJestishJson;
+
+// ---------------------------------------------------------------------------
+// Playwright JSON reporter parsing (pure, exported for tests)
+// ---------------------------------------------------------------------------
+
+interface PwError {
+  message?: string;
+}
+
+interface PwResult {
+  status?: string;
+  duration?: number;
+  error?: PwError;
+  errors?: PwError[];
+}
+
+interface PwTest {
+  projectName?: string;
+  status?: string; // expected | unexpected | skipped | flaky
+  results?: PwResult[];
+}
+
+interface PwSpec {
+  title?: string;
+  file?: string;
+  line?: number;
+  tests?: PwTest[];
+}
+
+interface PwSuite {
+  title?: string;
+  file?: string;
+  specs?: PwSpec[];
+  suites?: PwSuite[];
+}
+
+interface PwJson {
+  suites?: PwSuite[];
+}
+
+function mapPwStatus(status: string | undefined): TestCaseStatus {
+  switch (status) {
+    case "expected":
+    case "flaky": // passed on retry — a pass with a smell, not a failure
+      return "pass";
+    case "unexpected":
+      return "fail";
+    default:
+      return "skip";
+  }
+}
+
+/**
+ * Map playwright `--reporter=json` output to the core result model. Spec
+ * files are relative to the playwright rootDir — `baseDir` (the package dir
+ * that ran the suite) rebases them onto workspace-relative paths.
+ */
+export function parsePlaywrightJson(
+  json: unknown,
+  root: string,
+  baseDir = ".",
+): ParsedRunResults | null {
+  const data = json as PwJson | null;
+  if (!data || typeof data !== "object" || !Array.isArray(data.suites)) return null;
+
+  const byFile = new Map<string, TestCaseResult[]>();
+  const rebase = (file: string): string => {
+    const abs = path.isAbsolute(file) ? file : path.resolve(root, baseDir === "." ? "" : baseDir, file);
+    return relativeTo(root, abs) ?? normalizeRel(file);
+  };
+
+  const visit = (suite: PwSuite, titles: string[]): void => {
+    // The top-level suite per file repeats the filename as its title — skip
+    // it in the breadcrumb, keep describe() titles.
+    const nextTitles = suite.title && suite.title !== suite.file ? [...titles, suite.title] : titles;
+    for (const spec of suite.specs ?? []) {
+      const file = rebase(spec.file ?? suite.file ?? "");
+      const tests = byFile.get(file) ?? [];
+      byFile.set(file, tests);
+      for (const t of spec.tests ?? []) {
+        const status = mapPwStatus(t.status);
+        const name = [...nextTitles, spec.title ?? "(unnamed test)"]
+          .filter(Boolean)
+          .concat(t.projectName && t.projectName !== "" ? [`[${t.projectName}]`] : [])
+          .join(" > ");
+        const test: TestCaseResult = { name, status };
+        const results = t.results ?? [];
+        const duration = results.reduce((n, r) => n + (r.duration ?? 0), 0);
+        if (duration > 0) test.durationMs = duration;
+        if (status === "fail") {
+          const failing = [...results].reverse().find((r) => r.error ?? r.errors?.length);
+          const raw = failing?.error?.message ?? failing?.errors?.[0]?.message;
+          test.error = raw
+            ? extractError(raw, root, file)
+            : { message: "Test failed" };
+          if (test.error.line === undefined && typeof spec.line === "number") {
+            test.error.line = spec.line;
+          }
+        }
+        tests.push(test);
+      }
+    }
+    for (const child of suite.suites ?? []) visit(child, nextTitles);
+  };
+  for (const suite of data.suites) visit(suite, []);
+
+  const files: TestFileResult[] = [];
+  for (const [file, tests] of byFile) {
+    const status: TestCaseStatus = tests.some((t) => t.status === "fail")
+      ? "fail"
+      : tests.some((t) => t.status === "pass")
+        ? "pass"
+        : "skip";
+    const durationMs = tests.reduce((n, t) => n + (t.durationMs ?? 0), 0);
+    const entry: TestFileResult = { file, status, tests };
+    if (durationMs > 0) entry.durationMs = durationMs;
+    files.push(entry);
+  }
+
+  let passed = 0;
+  let failed = 0;
+  let skipped = 0;
+  for (const f of files) {
+    for (const t of f.tests) {
+      if (t.status === "pass") passed++;
+      else if (t.status === "fail") failed++;
+      else skipped++;
+    }
+  }
+  return {
+    files,
+    summary: {
+      files: files.length,
+      passed,
+      failed,
+      skipped,
+      durationMs: Math.round(files.reduce((n, f) => n + (f.durationMs ?? 0), 0)),
+    },
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Istanbul coverage parsing (pure, exported for tests)
@@ -634,7 +827,6 @@ export class QualityService {
     const out: PackageTestSetup[] = [];
     for (const dir of dirs) {
       const core = await this.detectCoreAt(dir);
-      if (!core.runner) continue;
       const pkg = await this.readPackageJson(dir);
       const name =
         typeof (pkg as { name?: unknown }).name === "string" && (pkg as { name?: string }).name
@@ -642,10 +834,26 @@ export class QualityService {
           : dir === "."
             ? path.basename(path.resolve(this.root))
             : path.posix.basename(dir);
-      out.push({ dir, name, ...core, runner: core.runner });
+      if (core.runner) out.push({ dir, name, ...core, runner: core.runner });
+      // Playwright coexists with a unit runner in the same package (the
+      // common shape: vitest for units + an e2e suite). It gets its own
+      // setup entry so unscoped runs execute both and e2e files route to it.
+      if (core.runner !== "playwright") {
+        const pw = await this.detectPlaywrightAt(dir);
+        if (pw) out.push({ dir, name, ...pw, runner: "playwright" });
+      }
     }
     this.watchPackageCoverage(out.map((p) => p.dir));
     return out;
+  }
+
+  /** Playwright setup at `dir`, independent of the primary runner. */
+  private async detectPlaywrightAt(dir: string): Promise<DetectedCore | null> {
+    const pkg = await this.readPackageJson(dir);
+    const deps = { ...pkg.dependencies, ...pkg.devDependencies };
+    const config = await this.firstExisting(PLAYWRIGHT_CONFIGS, dir);
+    if (!config && !deps["@playwright/test"]) return null;
+    return { runner: "playwright", configFile: config, script: null, coverageCapable: false };
   }
 
   private async detectCoreAt(dir: string): Promise<DetectedCore> {
@@ -669,6 +877,13 @@ export class QualityService {
     if (jestConfig || pkg.jest !== undefined || deps["jest"]) {
       // jest bundles its own coverage collection.
       return { runner: "jest", configFile: jestConfig, script, coverageCapable: true };
+    }
+
+    // Playwright-only packages headline playwright; alongside vitest/jest it
+    // is detected separately (detectPlaywrightAt) as a second setup.
+    const playwrightConfig = await this.firstExisting(PLAYWRIGHT_CONFIGS, dir);
+    if (playwrightConfig || deps["@playwright/test"]) {
+      return { runner: "playwright", configFile: playwrightConfig, script, coverageCapable: false };
     }
 
     if (script) return { runner: "script", configFile: null, script, coverageCapable: false };
@@ -851,7 +1066,9 @@ export class QualityService {
       args =
         plan.mode === "vitest"
           ? buildVitestArgs(argScope, live.job.tmpJson!, win)
-          : buildJestArgs(argScope, live.job.tmpJson!, win);
+          : plan.mode === "jest"
+            ? buildJestArgs(argScope, live.job.tmpJson!, win)
+            : buildPlaywrightArgs(argScope, win);
       cmd = win && /\s/.test(bin) ? `"${bin}"` : bin;
     }
 
@@ -864,7 +1081,18 @@ export class QualityService {
         windowsHide: true,
         // Project toolchain on PATH: the runner binaries live in the
         // project's node_modules/.bin, not wherever the server was launched.
-        env: envWithToolchain({ ...process.env, FORCE_COLOR: "0", NO_COLOR: "1" }, [cwd]),
+        env: envWithToolchain(
+          {
+            ...process.env,
+            FORCE_COLOR: "0",
+            NO_COLOR: "1",
+            // Playwright's JSON reporter writes to this file (no --outputFile arg).
+            ...(plan.mode === "playwright"
+              ? { PLAYWRIGHT_JSON_OUTPUT_NAME: live.job.tmpJson! }
+              : {}),
+          },
+          [cwd],
+        ),
         stdio: ["ignore", "pipe", "pipe"],
       });
     } catch (err) {
@@ -951,7 +1179,7 @@ export class QualityService {
     } else {
       // Failing tests exit non-zero but still write valid JSON — always
       // prefer the reporter output over the exit code.
-      const parsed = await this.readRunJson(job.tmpJson);
+      const parsed = await this.readRunJson(job.tmpJson, job.plan.mode, job.plan.dir);
       if (parsed) {
         live.gotResults = true;
         run.files = [...run.files, ...parsed.files];
@@ -1007,11 +1235,18 @@ export class QualityService {
     }
   }
 
-  private async readRunJson(tmpJson: string | null): Promise<ParsedRunResults | null> {
+  private async readRunJson(
+    tmpJson: string | null,
+    mode: TestRunnerKind = "vitest",
+    baseDir = ".",
+  ): Promise<ParsedRunResults | null> {
     if (!tmpJson) return null;
     try {
       const raw = await fs.readFile(tmpJson, "utf8");
-      return parseJestishJson(JSON.parse(raw), this.root);
+      const json = JSON.parse(raw) as unknown;
+      return mode === "playwright"
+        ? parsePlaywrightJson(json, this.root, baseDir)
+        : parseJestishJson(json, this.root);
     } catch {
       return null;
     }

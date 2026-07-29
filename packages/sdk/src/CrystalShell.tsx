@@ -32,6 +32,7 @@ import {
   isCrossProjectMode,
   type CrystalMode,
 } from "./modes.js";
+import { DevServersButton } from "./DevServersButton.js";
 import { GitPanel } from "./GitPanel.js";
 import { TerminalPanel } from "./TerminalPanel.js";
 import { WorkspaceTabs } from "./WorkspaceTabs.js";
@@ -321,6 +322,7 @@ export function CrystalShell({
             {/* Bottom rail: panel toggles, kept apart from the mode list —
                 these overlay/augment the current mode rather than replace it. */}
             <div className="mt-auto flex flex-col items-center gap-1 border-t border-edge pt-1.5">
+              <DevServersButton />
               <Tooltip content="Git tree & log" shortcut="Ctrl+Shift+G" side="right">
                 <button
                   type="button"
