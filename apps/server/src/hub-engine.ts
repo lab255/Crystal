@@ -108,7 +108,13 @@ export interface HubProjects {
   /** Start a workflow in one project — its orchestrator takes over from here. */
   startWorkflow(
     ws: string,
-    init: { name: string; goal: string; templateId?: string; budgetUsd?: number | null },
+    init: {
+      name: string;
+      goal: string;
+      templateId?: string;
+      budgetUsd?: number | null;
+      runCapUsd?: number | null;
+    },
   ): Promise<Workflow>;
   /**
    * A project workflow's record; null when it is gone. Separate from
@@ -566,6 +572,7 @@ export class HubEngine {
             goal: deliveryGoalText(program, delivery),
             templateId: delivery.templateId ?? undefined,
             budgetUsd: delivery.budgetUsd,
+            runCapUsd: delivery.runCapUsd,
           });
           program = patchDelivery(program, delivery.id, {
             ws: project.ws,
@@ -576,12 +583,18 @@ export class HubEngine {
             dispatchedAt: nowIso(),
           });
           const gaps = (workflow.env?.checks ?? []).filter((c) => !c.ok).map((c) => c.label);
+          // The premise check's failed claims ride the report the same way —
+          // the PM learns the brief lied now, not from a stalled delivery.
+          const premiseGaps = (workflow.premise?.checks ?? [])
+            .filter((c) => !c.ok)
+            .map((c) => `${c.raw} — ${c.detail ?? "does not hold"}`);
           report.dispatched.push({
             deliveryId: delivery.id,
             projectName: project.name,
             ws: project.ws,
             workflowId: workflow.id,
             ...(gaps.length ? { envGaps: gaps } : {}),
+            ...(premiseGaps.length ? { premiseGaps } : {}),
           });
         } catch (err) {
           const reason = (err as Error).message;

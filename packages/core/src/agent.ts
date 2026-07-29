@@ -146,6 +146,12 @@ export const AgentRunSchema = z.object({
   model: z.string().nullish(),
   /** Cumulative token/API usage across the run's turns. */
   usage: AgentUsageSchema.nullish(),
+  /**
+   * Per-run spend ceiling in USD. Enforced live by the AgentManager: once the
+   * streamed usage estimates past the cap, the run is killed — the lever
+   * against a single runaway run, where workflow budgets only catch totals.
+   */
+  costCapUsd: z.number().nullish(),
   costUsd: z.number().nullish(),
   turns: z.number().nullish(),
   durationMs: z.number().nullish(),
@@ -173,6 +179,7 @@ export function createAgentRun(init: {
   role?: AgentRole | null;
   purpose?: RunPurpose | null;
   tags?: string[];
+  costCapUsd?: number | null;
 }): AgentRun {
   return AgentRunSchema.parse({
     id: uid("run"),
@@ -191,6 +198,7 @@ export function createAgentRun(init: {
     // unless the caller declares it a manager.
     role: init.role ?? (init.parentRunId ? "worker" : null),
     purpose: init.purpose ?? null,
+    costCapUsd: init.costCapUsd ?? null,
     // Profile attribution is stamped here, not per call site, so every path
     // that creates a run (start, interactive, workers, resumed chain turns)
     // carries the `agent:<id>` tag without each caller remembering to.

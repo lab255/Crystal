@@ -1,4 +1,5 @@
 import type { AgentProfile, AgentProfileScope, AgentRoster } from "./agent-profile.js";
+import type { GrantsLedger } from "./grants.js";
 import type { ArchDraft } from "./arch-draft.js";
 import type { ArchOverlay } from "./arch-overlay.js";
 import type { ArchitectureGraph } from "./architecture.js";
@@ -308,6 +309,17 @@ export interface BridgeMethods {
   };
   /** Delete a profile from whichever scope holds it (the default agent is refused). */
   "agents.removeProfile": { params: WsScope & { id: string }; result: { ok: true } };
+  /**
+   * The workspace's grants ledger: tool patterns granted to every agent run
+   * (applied additively at spawn) plus the permission-denial tally — which
+   * run/workflow requested which tool and was refused, how many times.
+   */
+  "grants.get": { params: WsScope; result: { ledger: GrantsLedger } };
+  /** Replace the granted tool list (denials are recorded, not edited). */
+  "grants.setTools": {
+    params: WsScope & { tools: string[] };
+    result: { ledger: GrantsLedger };
+  };
   "fs.list": { params: WsScope & { path: string }; result: { entries: FileEntry[] } };
   "fs.read": { params: WsScope & { path: string }; result: { content: string; truncated: boolean } };
   "fs.write": { params: WsScope & { path: string; content: string }; result: { ok: true } };
@@ -714,6 +726,8 @@ export interface BridgeMethods {
       managerModel?: string | null;
       /** Spend ceiling in USD; dispatches are refused once crossed. */
       budgetUsd?: number | null;
+      /** Per-run spend ceiling: any single run crossing it is killed live. */
+      runCapUsd?: number | null;
     };
     result: { workflow: Workflow; run: AgentRun };
   };
@@ -750,6 +764,11 @@ export interface BridgeMethods {
   /** Raise/lower/clear the budget (auto-resumes a budget-exhausted pause when it now fits). */
   "workflow.setBudget": {
     params: WsScope & { workflowId: string; budgetUsd: number | null };
+    result: { workflow: Workflow };
+  };
+  /** Set/clear the per-run cost cap (applies to runs spawned from now on). */
+  "workflow.setRunCap": {
+    params: WsScope & { workflowId: string; runCapUsd: number | null };
     result: { workflow: Workflow };
   };
   /** Cancel a workflow: kills its live runs and marks it cancelled. */
@@ -817,6 +836,8 @@ export interface BridgeMethods {
       dependsOn?: string[];
       templateId?: string | null;
       budgetUsd?: number | null;
+      /** Per-run cap handed to the delivery's workflow at dispatch. */
+      runCapUsd?: number | null;
     };
     result: { delivery: ProgramDelivery };
   };
@@ -1032,6 +1053,8 @@ export interface BridgeEvents {
   "todos.changed": { ws: string; todos: TodoList };
   /** A workspace's agent roster was saved (payload carries the new roster). */
   "agents.changed": { ws: string; roster: AgentRoster };
+  /** The grants ledger changed (tools edited, or a denial was recorded). */
+  "grants.changed": { ws: string; ledger: GrantsLedger };
   /** Terminal output/echo chunk (sequenced per terminal). */
   "terminal.data": { ws: string; chunk: TerminalChunk };
   /** A terminal was created, resized, exited or killed. */

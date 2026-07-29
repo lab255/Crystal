@@ -9,9 +9,11 @@ import {
   SIMPLE_WORKFLOW_TEMPLATE,
   STAGE_ARCHETYPES,
   STANDARD_WORKFLOW_TEMPLATE,
+  TURN_LOG_LIMIT,
   WORKFLOW_TEMPLATES,
   activeBoardStatuses,
   addTrack,
+  appendTurnLog,
   boardColumnStages,
   budgetState,
   buildWorkflowManagerPrompt,
@@ -589,5 +591,71 @@ describe("pre-flight report on the workflow", () => {
     const spend = workflowSpend(wf.id, []);
     expect(workflowStatusText(wf, spend)).toContain("Environment gaps: pnpm missing (pnpm-lock.yaml)");
     expect(workflowStatusText(makeWorkflow(), spend)).not.toContain("Environment gaps");
+  });
+});
+
+describe("premise report on the workflow", () => {
+  const failedPremise = {
+    checkedAt: "2026-07-29T00:00:00.000Z",
+    ok: false,
+    checks: [
+      {
+        kind: "branch" as const,
+        arg: "release/2.3",
+        raw: "assert: branch release/2.3",
+        ok: false,
+        detail: "no such local or origin branch",
+      },
+    ],
+  };
+
+  it("failed claims land in the kickoff prompt with the stop-and-ask instruction", () => {
+    const wf = { ...makeWorkflow(), premise: failedPremise };
+    const prompt = buildWorkflowManagerPrompt(wf);
+    expect(prompt).toContain("FAILED PREMISES");
+    expect(prompt).toContain("assert: branch release/2.3");
+    expect(buildWorkflowManagerPrompt(makeWorkflow())).not.toContain("FAILED PREMISES");
+  });
+
+  it("failed claims stay visible in workflow_status", () => {
+    const wf = { ...makeWorkflow(), premise: failedPremise };
+    const spend = workflowSpend(wf.id, []);
+    expect(workflowStatusText(wf, spend)).toContain(
+      "Failed premises: assert: branch release/2.3 (no such local or origin branch)",
+    );
+    expect(workflowStatusText(makeWorkflow(), spend)).not.toContain("Failed premises");
+  });
+});
+
+describe("per-run cost cap", () => {
+  it("createWorkflow carries the cap and the prompt/status render it", () => {
+    const wf = createWorkflow({
+      name: "Capped",
+      goal: "Ship it",
+      budgetUsd: 20,
+      runCapUsd: 1.5,
+    });
+    expect(wf.runCapUsd).toBe(1.5);
+    expect(buildWorkflowManagerPrompt(wf)).toContain("hard-capped at $1.50");
+    expect(workflowStatusText(wf, workflowSpend(wf.id, []))).toContain("per-run cap $1.50");
+    // Uncapped workflows say nothing about caps.
+    expect(buildWorkflowManagerPrompt(makeWorkflow())).not.toContain("hard-capped");
+  });
+});
+
+describe("marginal-value turn log", () => {
+  it("appendTurnLog keeps newest-last and bounds the length", () => {
+    let log: ReturnType<typeof createWorkflow>["turnLog"] = [];
+    for (let i = 0; i < TURN_LOG_LIMIT + 5; i += 1) {
+      log = appendTurnLog(log, {
+        runId: `run_${i}`,
+        at: `t${String(i).padStart(3, "0")}`,
+        costUsd: 0.1,
+        progressed: i % 2 === 0,
+      });
+    }
+    expect(log).toHaveLength(TURN_LOG_LIMIT);
+    expect(log[0]!.runId).toBe("run_5");
+    expect(log[log.length - 1]!.runId).toBe(`run_${TURN_LOG_LIMIT + 4}`);
   });
 });

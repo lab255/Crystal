@@ -5,6 +5,8 @@ import {
   WORKFLOW_TEMPLATES,
   WorkflowSchema,
   addTrack,
+  appendTurnLog,
+  runCostUsd,
   budgetState,
   budgetWarningDue,
   budgetWarningText,
@@ -46,7 +48,7 @@ import {
 } from "./template-library.js";
 import type { WorkspaceStore } from "./workspace-store.js";
 import { PendingQueue } from "./pending-queue.js";
-import { probeEnvironment } from "./preflight.js";
+import { probeAssertions, probeEnvironment } from "./preflight.js";
 import { runGit } from "./git.js";
 
 /**
@@ -141,6 +143,10 @@ export class WorkflowEngine {
       this.events.emit("templatesChanged", {}),
     );
     agents.dispatchGuard = (manager, _spec) => this.guardDispatch(manager);
+    // Workers inherit their workflow's per-run cost cap at dispatch — set
+    // beside the guard so both halves of dispatch policy come from one place.
+    agents.dispatchCostCap = async (manager) =>
+      (await this.workflowForRun(manager))?.runCapUsd ?? null;
     this.disposeListener = agents.events.on("runChanged", ({ run }) => {
       if (!workflowIdOfRun(run) || !this.settledRuns.claim(run)) return;
       void this.onRunSettled(run);
@@ -157,6 +163,7 @@ export class WorkflowEngine {
     this.disposeLibrary();
     this.library.dispose();
     if (this.agents.dispatchGuard != null) this.agents.dispatchGuard = null;
+    if (this.agents.dispatchCostCap != null) this.agents.dispatchCostCap = null;
   }
 
   private async ensureLoaded(): Promise<void> {
@@ -232,6 +239,8 @@ export class WorkflowEngine {
     /** Per-dispatch manager model — beats the profile and the roster preset. */
     managerModel?: string | null;
     budgetUsd?: number | null;
+    /** Per-run spend ceiling stamped onto every run of the workflow. */
+    runCapUsd?: number | null;
     /**
      * Host the manager as a native interactive Claude session in the terminal
      * panel instead of a headless run — the owner answers its questions
@@ -258,6 +267,13 @@ export class WorkflowEngine {
     const root = this.agents.workspaceRoot;
     if (root) {
       workflow.env = await probeEnvironment(path.resolve(root, workflow.cwd)).catch(() => null);
+      // Premise check, same timing and for the same reason: the brief's
+      // `assert:` claims are verified against the real repo before the first
+      // paid run, and failures ride the kickoff prompt + dispatch report.
+      workflow.premise = await probeAssertions(
+        path.resolve(root, workflow.cwd),
+        workflow.goal,
+      ).catch(() => null);
     }
     // Baseline for the typed-turn-outcome contract: the first manager turn is
     // judged against the workflow as started, same as every later turn.
@@ -279,6 +295,9 @@ export class WorkflowEngine {
     } else {
       run = await this.agents.start({
         ...params,
+        // Interactive managers can't be capped live (no usage stream while the
+        // TUI runs) — headless manager turns are, same as their workers.
+        costCapUsd: workflow.runCapUsd ?? null,
         prompt: buildWorkflowManagerPrompt(workflow, roster.agents, preset),
       });
     }
@@ -368,7 +387,11 @@ export class WorkflowEngine {
       "your predecessor's transcript was retired to cut resume cost. The status below and the board " +
       "are the durable memory; read board_status before acting, and do NOT redo settled stages.\n\n" +
       status;
-    const run = await this.agents.start({ ...params, prompt });
+    const run = await this.agents.start({
+      ...params,
+      costCapUsd: wf.runCapUsd ?? null,
+      prompt,
+    });
     const workflow = await this.mutate(workflowId, (current) => {
       const next: Workflow = { ...current, managerRunId: run.id };
       return { workflow: next, result: next };
@@ -455,6 +478,17 @@ export class WorkflowEngine {
           workflow.pausedReason = null;
         }
       }
+      return { workflow, result: workflow };
+    });
+  }
+
+  /**
+   * Set/clear the per-run cost cap. Applies to runs spawned from now on —
+   * live runs keep the cap they were stamped with at start.
+   */
+  setRunCap(workflowId: string, runCapUsd: number | null): Promise<Workflow> {
+    return this.mutate(workflowId, (wf) => {
+      const workflow: Workflow = { ...wf, runCapUsd };
       return { workflow, result: workflow };
     });
   }
@@ -694,9 +728,20 @@ export class WorkflowEngine {
             return { workflow: wf, result: null };
           }
           const fingerprint = workflowProgressFingerprint(wf, workerCount, tasks);
-          if (wf.progressFingerprint == null || fingerprint !== wf.progressFingerprint) {
+          const progressed =
+            wf.progressFingerprint == null || fingerprint !== wf.progressFingerprint;
+          // Marginal value per turn: what this settled turn cost, next to
+          // whether it changed anything — the UI's "a run that changes
+          // nothing should be visually loud" is read straight off this log.
+          const turnLog = appendTurnLog(wf.turnLog, {
+            runId: run.id,
+            at: nowIso(),
+            costUsd: runCostUsd(run),
+            progressed,
+          });
+          if (progressed) {
             return {
-              workflow: { ...wf, progressFingerprint: fingerprint, noProgressTurns: 0 },
+              workflow: { ...wf, turnLog, progressFingerprint: fingerprint, noProgressTurns: 0 },
               result: null,
             };
           }
@@ -704,6 +749,7 @@ export class WorkflowEngine {
           const stall = turns >= STALL_TURN_LIMIT && wf.status === "running";
           const workflow: Workflow = {
             ...wf,
+            turnLog,
             noProgressTurns: turns,
             ...(stall
               ? {

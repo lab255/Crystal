@@ -62,6 +62,13 @@ export interface HubDispatchReport {
      * about the broken sandbox here, not from a burned worker run.
      */
     envGaps?: string[];
+    /**
+     * Brief `assert:` claims the project's premise check found to be FALSE
+     * (verbatim claim + why). Same economics as envGaps: the dispatch went
+     * ahead, but the program manager learns the brief lied *now* — while
+     * rewriting it is still cheaper than the work built on it.
+     */
+    premiseGaps?: string[];
   }[];
   skipped: { deliveryId: string; projectName: string; reason: string }[];
 }
@@ -144,6 +151,12 @@ export const ProgramDeliverySchema = z.object({
   templateId: z.string().nullish(),
   /** Spend ceiling for this delivery's workflow, in USD. */
   budgetUsd: z.number().nullish(),
+  /**
+   * Per-run spend ceiling handed to the delivery's workflow (its manager
+   * turns and workers alike) — the lever against one runaway resume, where
+   * `budgetUsd` only catches the accumulated total.
+   */
+  runCapUsd: z.number().nullish(),
   /**
    * Delivery ids that must complete before this one may be dispatched.
    * De-duplicated on read: a repeated id would make `cyclicDeliveries` count
@@ -238,6 +251,7 @@ export interface DeliveryInit {
   brief: string;
   templateId?: string | null;
   budgetUsd?: number | null;
+  runCapUsd?: number | null;
   dependsOn?: string[];
 }
 
@@ -264,6 +278,7 @@ export function addDelivery(
     brief: init.brief,
     templateId: init.templateId ?? null,
     budgetUsd: init.budgetUsd ?? null,
+    runCapUsd: init.runCapUsd ?? null,
     dependsOn,
     createdAt: at,
   });
@@ -654,6 +669,7 @@ function deliveryLine(program: Program, delivery: ProgramDelivery): string {
     delivery.status === "pending" && blockers.length ? `blocked by ${blockers.join(", ")}` : null,
     delivery.workflowId ? `workflow ${delivery.workflowId}` : null,
     delivery.budgetUsd != null ? `budget $${delivery.budgetUsd.toFixed(2)}` : null,
+    delivery.runCapUsd != null ? `run cap $${delivery.runCapUsd.toFixed(2)}` : null,
   ].filter(Boolean);
   const detail = [
     `    ${headline(delivery.brief)}`,
@@ -826,6 +842,13 @@ export function dispatchReportText(report: HubDispatchReport): string {
             ? ` — ENVIRONMENT GAPS: ${d.envGaps.join(", ")} missing in that workspace; expect its orchestrator to raise a question rather than build`
             : ""),
       );
+      if (d.premiseGaps?.length) {
+        lines.push(
+          `    FAILED PREMISES — the brief asserts things that project says are false:`,
+          ...d.premiseGaps.map((g) => `    · ${g}`),
+          `    Rewrite the brief (or fix the repo) and steer that orchestrator now — it was told to stop and ask rather than build on these.`,
+        );
+      }
     }
   }
   if (report.skipped.length) {
@@ -877,6 +900,7 @@ export function buildProgramManagerPrompt(
     "Operating protocol:",
     "- SURVEY first: list_projects shows every project this Crystal server knows (open and recently opened). open_project brings one under management. project_board reads a project's board when you need to know what is already planned there.",
     "- SPLIT the goal into one delivery per project with add_delivery. A delivery's brief is what THAT project is asked to deliver, written so its own orchestrator can refine and plan against it — outcomes and contracts, not implementation steps. Use dependsOn when one project must land before another can start (shared API first, consumers after).",
+    "- ASSERT the brief's checkable claims. Any factual premise a brief relies on (a branch that should exist, a file, a tool, a command that must pass) goes in as its own `assert:` line — `assert: branch release/2.3`, `assert: file api/openapi.yaml`, `assert: tool gh`, `assert: cmd gh pr view 204 --json state`. They are verified against the real repo at dispatch and failures come back on the dispatch report — a false premise caught there costs nothing; discovered by the orchestrator it costs runs.",
     "- DISPATCH with dispatch_program: every unblocked delivery starts as a workflow inside its own project, driven by that project's orchestrator through its full development flow (refine → plan/design → develop/review tracks → merge → release). You do not manage that flow; the project manager does.",
     "- WAIT. You are resumed automatically whenever a delivery settles, and dependent deliveries are dispatched for you as their dependencies complete. End your turn after dispatching instead of polling program_status in a loop.",
     "- STEER: message_delivery sends a note into a running project orchestrator's session (a changed contract, a decision from another project, a correction). Use it rather than starting a second delivery in the same project — one orchestrator per project at a time, across the whole portfolio. Steers QUEUE for the next natural wake by default (free); wake: true forces a paid resume — spend it only when the note must beat the next settlement. Read the receipt: it tells you whether the note landed, is queued, or would wait forever.",

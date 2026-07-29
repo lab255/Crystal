@@ -244,3 +244,75 @@ describe("agent wake-ups", () => {
     expect(chain.map((r) => r.prompt)).toContain('Answer to your question: "yes".');
   });
 });
+
+describe("per-run cost cap", () => {
+  let tmp: string | null = null;
+
+  afterEach(async () => {
+    if (tmp) await fs.rm(tmp, { recursive: true, force: true }).catch(() => {});
+    tmp = null;
+  });
+
+  /** A CLI stand-in that streams an expensive usage line, then stalls. */
+  async function writeSpendyClaude(dir: string): Promise<string> {
+    const script = path.join(dir, "spendy-claude.mjs");
+    await fs.writeFile(
+      script,
+      `
+process.stdin.resume();
+const emit = (o) => process.stdout.write(JSON.stringify(o) + "\\n");
+emit({ type: "system", subtype: "init", session_id: "sess-spendy", model: "fake", tools: [] });
+emit({
+  type: "assistant",
+  message: {
+    usage: { input_tokens: 10_000_000, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+    content: [{ type: "text", text: "burning tokens" }],
+  },
+});
+// Stall: without the cap kill this process would sit here for 30s.
+await new Promise((r) => setTimeout(r, 30_000));
+emit({ type: "result", subtype: "success", is_error: false, result: "done", session_id: "sess-spendy", total_cost_usd: 30, num_turns: 1, duration_ms: 1 });
+`,
+      "utf8",
+    );
+    if (process.platform === "win32") {
+      const cmd = path.join(dir, "spendy-claude.cmd");
+      await fs.writeFile(cmd, `@echo off\r\nnode "${script}" %*\r\n`, "utf8");
+      return cmd;
+    }
+    const sh = path.join(dir, "spendy-claude.sh");
+    await fs.writeFile(sh, `#!/bin/sh\nexec node "${script}" "$@"\n`, "utf8");
+    await fs.chmod(sh, 0o755);
+    return sh;
+  }
+
+  it("kills a run whose streamed usage crosses its cap, with the reason on the record", async () => {
+    tmp = await fs.mkdtemp(path.join(os.tmpdir(), "crystal-costcap-"));
+    const root = path.join(tmp, "root");
+    await fs.mkdir(root, { recursive: true });
+    const bin = await writeSpendyClaude(tmp);
+    const mgr = new AgentManager(root, path.join(tmp, "data"), bin);
+
+    // 10M input tokens at fallback pricing is dollars; the cap is cents.
+    const run = await mgr.start({ prompt: "spend a lot", costCapUsd: 0.05 });
+    const settled = await mgr.waitForSettled(run.id);
+    expect(settled.status).toBe("cancelled");
+    expect(settled.resultText).toContain("Run cost cap hit");
+    expect(settled.resultText).toContain("$0.05");
+  }, 20_000);
+
+  it("an uncapped run with the same usage is left alone", async () => {
+    tmp = await fs.mkdtemp(path.join(os.tmpdir(), "crystal-costcap-off-"));
+    const root = path.join(tmp, "root");
+    await fs.mkdir(root, { recursive: true });
+    const bin = await writeSpendyClaude(tmp);
+    const mgr = new AgentManager(root, path.join(tmp, "data"), bin);
+
+    const run = await mgr.start({ prompt: "spend a lot" });
+    // Give the usage line time to stream — the run must still be live.
+    await new Promise((r) => setTimeout(r, 1500));
+    expect((await mgr.get(run.id))?.status).toBe("running");
+    await mgr.cancel(run.id);
+    await mgr.waitForSettled(run.id);
+  }, 20_000);
+});

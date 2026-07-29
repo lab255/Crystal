@@ -10,9 +10,11 @@ import {
   claudeProjectDirName,
   createAgentRun,
   emptyUsage,
+  isPermissionDenial,
   isWorkflowTag,
   nowIso,
   parseClaudeStreamLine,
+  runCostUsd,
   touchedFileFromToolUse,
   transcriptUsage,
   applyProfileOverlay,
@@ -74,6 +76,11 @@ export interface AgentStartParams {
    * (resumeChain) has verified the directory still exists.
    */
   adoptWorktreePath?: string | null;
+  /**
+   * Per-run spend ceiling in USD, enforced live: once the run's streamed
+   * usage estimates past the cap, the run is killed (see enforceCostCap).
+   */
+  costCapUsd?: number | null;
 }
 
 /** What an interactive dispatch needs from the caller (no resume, no worktrees). */
@@ -423,6 +430,27 @@ export class AgentManager {
    */
   dispatchGuard: ((manager: AgentRun, spec: WorkerSpec) => Promise<string | null>) | null = null;
   /**
+   * Set by the workflow engine: the per-run cost cap a manager's dispatched
+   * workers inherit (the workflow's `runCapUsd`). Null/absent = uncapped.
+   */
+  dispatchCostCap: ((manager: AgentRun) => Promise<number | null>) | null = null;
+  /**
+   * Set by the workspace runtime: extra `--allowedTools` patterns the
+   * workspace has granted every agent run (the grants ledger). Additive over
+   * whatever the profile/dispatch already allows — read per spawn, so an
+   * edit applies to the next run without a restart.
+   */
+  grantsResolver: (() => Promise<string[]>) | null = null;
+  /**
+   * Set by the workspace runtime: a run's tool call bounced off permissions.
+   * Feeds the grants ledger's denial tally — the difference between "delivery
+   * X requested tool Y, denied 4 times" being readable in the IDE and being
+   * archaeology across run transcripts.
+   */
+  onToolDenied: ((run: AgentRun, tool: string) => void) | null = null;
+  /** toolUseId → tool name per run, so an error result can name its tool. */
+  private toolNamesByRun = new Map<string, Map<string, string>>();
+  /**
    * Set by the host: type `text` into the PTY hosting an interactive run
    * (bracketed paste + Enter). Returns false when the terminal is gone —
    * delivery then falls back to the headless queue/resume path.
@@ -660,12 +688,17 @@ export class AgentManager {
     // The endpoint scopes the toolset by the run's role (see mcp/http.ts).
     const mcpConfig =
       run.role === "manager" || run.taskId ? await this.writeMcpConfig(run.id) : null;
+    // Workspace grants ride every spawn, additively — an approval recorded in
+    // the ledger applies to the next run without touching profiles.
+    const granted = (await this.grantsResolver?.().catch(() => [])) ?? [];
     const args = claudeRunArgs({
       model: params.model,
       resumeSessionId: params.resumeSessionId,
       mcpConfigPath: mcpConfig,
       appendSystemPrompt: params.appendSystemPrompt,
-      allowedTools: params.allowedTools,
+      allowedTools: granted.length
+        ? [...(params.allowedTools ?? []), ...granted]
+        : params.allowedTools,
       disallowedTools: params.disallowedTools,
       permissionMode: await this.gatedPermissionMode(run, params.permissionMode),
     });
@@ -799,12 +832,17 @@ export class AgentManager {
 
     const mcpConfig =
       run.role === "manager" || run.taskId ? await this.writeMcpConfig(run.id) : null;
+    // Same grants injection as headless spawns — the ledger is workspace
+    // policy, and an interactive session is still an agent run.
+    const grantedInteractive = (await this.grantsResolver?.().catch(() => [])) ?? [];
     const args = claudeInteractiveArgs({
       model: params.model,
       sessionId: run.sessionId,
       mcpConfigPath: mcpConfig,
       appendSystemPrompt: params.appendSystemPrompt,
-      allowedTools: params.allowedTools,
+      allowedTools: grantedInteractive.length
+        ? [...(params.allowedTools ?? []), ...grantedInteractive]
+        : params.allowedTools,
       disallowedTools: params.disallowedTools,
       permissionMode: await this.gatedPermissionMode(run, params.permissionMode),
     });
@@ -1160,6 +1198,9 @@ export class AgentManager {
           isolation: adopt ? "worktree" : undefined,
           adoptWorktreePath: adopt,
           branch: adopt ? (wtHolder?.branch ?? null) : null,
+          // A resumed turn is the same conversation under the same policy —
+          // the cap the chain started with binds every later turn too.
+          costCapUsd: latest.costCapUsd ?? root.costCapUsd ?? null,
         });
         if (worktree && !adopt) {
           // Falling back to the repo checkout is visible, never silent — the
@@ -1275,10 +1316,14 @@ export class AgentManager {
       },
       overlay,
     );
+    // The workflow's per-run cap (when one is set) rides every dispatch — a
+    // worker is exactly the kind of run the cap exists to bound.
+    const costCapUsd = (await this.dispatchCostCap?.(manager).catch(() => null)) ?? null;
     const worker = await this.start({
       ...merged,
       isolation: merged.isolation ?? "none",
       purpose: merged.purpose ?? manager.purpose,
+      costCapUsd,
     });
     // Hand the task's lease to the run doing the work (see OrchestrationService).
     this.onWorkerDispatched?.(worker);
@@ -1486,6 +1531,7 @@ export class AgentManager {
         apiCalls: u.apiCalls + 1,
       };
       this.emitRunChanged(run);
+      this.enforceCostCap(run);
     } else if (event.type === "result") {
       run.costUsd = event.costUsd;
       run.turns = event.turns;
@@ -1499,6 +1545,18 @@ export class AgentManager {
       if (file && !run.filesTouched.includes(file)) {
         run.filesTouched.push(file);
         this.emitRunChanged(run);
+      }
+      // Remember the tool behind each call id so a permission denial in its
+      // result can be attributed by name. Bounded per run; cleared at finish.
+      let names = this.toolNamesByRun.get(run.id);
+      if (!names) this.toolNamesByRun.set(run.id, (names = new Map()));
+      if (names.size > 2000) names.clear();
+      names.set(event.toolUseId, event.name);
+    } else if (event.type === "tool_result") {
+      if (event.isError && isPermissionDenial(event.content)) {
+        const tool =
+          this.toolNamesByRun.get(run.id)?.get(event.toolUseId) ?? "(unknown tool)";
+        this.onToolDenied?.({ ...run }, tool);
       }
     } else if (event.type === "dispatch") {
       // A manager delegated a unit of work — spawn it as a tracked worker run
@@ -1528,11 +1586,36 @@ export class AgentManager {
     this.events.emit("event", runEvent);
   }
 
+  /**
+   * Kill a live run whose streamed usage has crossed its cost cap. Runs off
+   * the usage-event path; the settle message is written before the kill so
+   * the run's terminal state says *why* it died, not just that it did.
+   */
+  private enforceCostCap(run: AgentRun): void {
+    if (run.costCapUsd == null || run.endedAt) return;
+    const proc = this.procs.get(run.id);
+    if (!proc || proc.cancelled) return;
+    const cost = runCostUsd(run);
+    if (cost < run.costCapUsd) return;
+    run.resultText =
+      `Run cost cap hit: ~$${cost.toFixed(2)} streamed against a $${run.costCapUsd.toFixed(2)} cap — run killed. ` +
+      `Scope the work smaller, or raise the workflow's per-run cap.`;
+    // Outside record()'s current event: the note and the kill land as their
+    // own events, in order, after the usage line that tripped the cap.
+    queueMicrotask(() => {
+      this.record(run, { type: "stderr", text: run.resultText! });
+      void this.cancel(run.id).catch(() => {
+        // Already settling — the resultText above still tells the story.
+      });
+    });
+  }
+
   private async finish(run: AgentRun, status: AgentRun["status"], message: string): Promise<AgentRun> {
     // A failed spawn fires both 'error' and 'close' — the first settles, the
     // second must not append a duplicate terminal event or move endedAt.
     if (run.endedAt) return run;
     this.procs.delete(run.id);
+    this.toolNamesByRun.delete(run.id);
     if (run.status === "running" || run.status === "queued") {
       run.status = status;
       run.resultText = run.resultText ?? message;

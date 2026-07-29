@@ -232,3 +232,30 @@ describe("agent-facing rendering", () => {
     expect(prompt).toContain("complete_program");
   });
 });
+
+describe("dispatch report premise gaps", () => {
+  it("renders failed brief claims loudly, per dispatched delivery", async () => {
+    const { dispatchReportText } = await import("./hub.js");
+    const text = dispatchReportText({
+      dispatched: [
+        {
+          deliveryId: "dlv_1",
+          projectName: "api",
+          ws: "ws1",
+          workflowId: "wf_1",
+          premiseGaps: ["assert: branch release/2.3 — no such local or origin branch"],
+        },
+      ],
+      skipped: [],
+    });
+    expect(text).toContain("FAILED PREMISES");
+    expect(text).toContain("assert: branch release/2.3 — no such local or origin branch");
+    // A clean dispatch says nothing about premises.
+    expect(
+      dispatchReportText({
+        dispatched: [{ deliveryId: "dlv_2", projectName: "web", ws: "ws2", workflowId: "wf_2" }],
+        skipped: [],
+      }),
+    ).not.toContain("FAILED PREMISES");
+  });
+});

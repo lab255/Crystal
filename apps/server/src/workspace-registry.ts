@@ -12,7 +12,13 @@ import type {
   RecentWorkspace,
   WorkspaceDescriptor,
 } from "@crystal/core";
-import { presetById, profileOverlay, type AgentProfileOverlay, type ModelPreset } from "@crystal/core";
+import {
+  presetById,
+  profileOverlay,
+  workflowIdOfRun,
+  type AgentProfileOverlay,
+  type ModelPreset,
+} from "@crystal/core";
 import { AgentLibrary, GlobalAgentStore } from "./agent-library.js";
 import { AgentManager } from "./agent-manager.js";
 import { AnalysisBackend, createCodeMapFacade, type CodeMapFacade } from "./analysis-host.js";
@@ -25,6 +31,7 @@ import { QualityService } from "./quality-runner.js";
 import { RefactorEngine } from "./refactor.js";
 import { SettledRuns } from "./settled-runs.js";
 import { GlobalTemplateStore } from "./template-library.js";
+import { GrantsStore } from "./grants-store.js";
 import { TerminalManager, pasteInput } from "./terminal-manager.js";
 import { WorkflowEngine } from "./workflow-engine.js";
 import { WorkspaceStore } from "./workspace-store.js";
@@ -65,6 +72,8 @@ export class WorkspaceRuntime {
   readonly workflows: WorkflowEngine;
   /** Project roster + shared library, merged (see agent-library.ts). */
   readonly agentLibrary: AgentLibrary;
+  /** Per-workspace tool grants + permission-denial tally (see grants-store.ts). */
+  readonly grants: GrantsStore;
   /** Manifest name, kept fresh by workspace.get / saveManifest handlers. */
   name: string;
 
@@ -108,6 +117,18 @@ export class WorkspaceRuntime {
     // read per spawn, so flipping the toggle applies to the next run.
     this.agents.bypassResolver = async () =>
       (await this.agentLibrary.roster()).allowBypassPermissions;
+    // Approvals as first-class workspace data: granted tools ride every
+    // spawn, and permission denials land in the ledger with their workflow
+    // attribution — "delivery X requested tool Y, denied N times".
+    this.grants = new GrantsStore(appDataDir(root));
+    this.agents.grantsResolver = () => this.grants.allowedTools();
+    this.agents.onToolDenied = (run, tool) => {
+      void this.grants
+        .noteDenial({ tool, runId: run.id, workflowId: workflowIdOfRun(run) })
+        .catch((err) => {
+          console.warn(`[crystal] could not record tool denial:`, (err as Error).message);
+        });
+    };
     this.terminals = new TerminalManager(root);
     this.analysis = new AnalysisBackend(root);
     this.codemap = createCodeMapFacade(this.analysis);
@@ -239,6 +260,9 @@ export class WorkspaceRuntime {
       ),
       this.workflows.events.on("templatesChanged", () =>
         broadcast("workflow.templatesChanged", { ws: this.id }),
+      ),
+      this.grants.events.on("changed", ({ ledger }) =>
+        broadcast("grants.changed", { ws: this.id, ledger }),
       ),
       // Every roster mutation — project save here, or a library save from
       // *any* workspace — re-announces this workspace's merged roster.

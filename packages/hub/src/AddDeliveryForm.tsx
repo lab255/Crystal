@@ -30,6 +30,7 @@ export function AddDeliveryForm({
   }, [root, projects]);
   const [brief, setBrief] = useState("");
   const [budget, setBudget] = useState("");
+  const [runCap, setRunCap] = useState("");
   const [dependsOn, setDependsOn] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -45,6 +46,7 @@ export function AddDeliveryForm({
         brief: brief.trim(),
         dependsOn,
         budgetUsd: parseBudget(budget),
+        runCapUsd: parseBudget(runCap),
       });
       setBrief("");
       setDependsOn([]);
@@ -117,6 +119,14 @@ export function AddDeliveryForm({
           placeholder="Budget USD (optional)"
           aria-label="Delivery budget in USD"
           className="w-44"
+        />
+        <Input
+          value={runCap}
+          onChange={(e) => setRunCap(e.target.value)}
+          placeholder="$/run cap"
+          aria-label="Per-run cost cap in USD"
+          title="Per-run cost cap for the delivery's workflow — any single run crossing it is killed mid-flight."
+          className="w-24"
         />
         <Button variant="ghost" size="sm" onClick={onDone} type="button">
           Cancel

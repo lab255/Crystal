@@ -94,7 +94,30 @@ build/sign (+notarize on macOS) → signed updater `latest.json`).
   `onWorkflowChanged` skips deliveries that are already terminal. A one-shot
   `BUDGET WARNING` notice lands at `BUDGET_WARN_FRACTION` of a workflow budget
   (`budgetWarnedAt`, re-armed on budget change) so the wrap-up happens while there is
-  still money to pay for it.
+  still money to pay for it. Three more levers from the same retro: **premise check** —
+  a brief/goal may carry machine-checkable `assert:` lines (`branch`/`ref`/`file`/
+  `tool`/`cmd`; rules in `core/premise.ts`, probed by `probeAssertions` in the server's
+  preflight.ts at `workflow.start`); the typed report lands on `workflow.premise`, in
+  the kickoff prompt + status text, and as `premiseGaps` on the hub dispatch report —
+  a false claim in a brief is a $0 fact at dispatch, and unknown assert kinds fail
+  loudly rather than reading as held. **Per-run cost cap** — `runCapUsd` on a workflow
+  (or delivery) stamps `costCapUsd` onto every run (manager turns, resumed turns via
+  `resumeChain`, workers via the `dispatchCostCap` seam beside `dispatchGuard`);
+  `AgentManager.enforceCostCap` kills a run live once its streamed usage estimates past
+  the cap, reason on `resultText` (interactive runs stream no usage, so they are
+  uncapped by construction). **Marginal value per turn** — the engine appends
+  `{runId, costUsd, progressed}` to the bounded `workflow.turnLog` at every manager
+  settle (progressed = the stall fingerprint moved), and the workflow header renders
+  cost-per-turn chips with no-progress turns loud.
+- Tool grants are first-class per-workspace data (`core/grants.ts` rules,
+  `apps/server/src/grants-store.ts` persistence in app-data `grants.json`): the
+  ledger's `allowedTools` patterns ride *every* spawn additively
+  (`AgentManager.grantsResolver`, headless and interactive), and permission denials
+  detected in the stream (`isPermissionDenial` on error tool_results, tool named via
+  the per-run toolUseId→name map) fold per (tool, workflow) through `onToolDenied` —
+  "delivery X requested tool Y, denied N times" is readable in the AgentsTab grants
+  panel instead of being transcript archaeology. Bridge: `grants.get`/`grants.setTools`
+  + the `grants.changed` event.
 - A template stage carries three things beyond its dependencies. `handoff` is the
   artifact it owes the stages downstream — dependencies say *when* a stage may start,
   only the handoff says *what its worker is given*, so it goes into both the producing

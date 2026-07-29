@@ -62,6 +62,11 @@ export {
   type WorkflowStore,
 } from "./workflow-store.js";
 export {
+  createGrantsStore,
+  type GrantsState,
+  type GrantsStore,
+} from "./grants-store.js";
+export {
   EMPTY_HUB_EVENTS,
   EMPTY_HUB_PROJECTS,
   EMPTY_HUB_QUESTIONS,
@@ -148,6 +153,7 @@ export {
   useCrystal,
   useFleet,
   useFleetConnections,
+  useGrants,
   useHighlight,
   useHighlightUpdate,
   useHub,

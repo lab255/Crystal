@@ -29,6 +29,8 @@ export interface WorkflowState {
     /** Manager model override for this dispatch (beats profile + preset). */
     managerModel?: string | null;
     budgetUsd?: number | null;
+    /** Per-run spend ceiling: any single run crossing it is killed live. */
+    runCapUsd?: number | null;
     /** Host the manager as a native interactive Claude session in the terminal panel. */
     interactive?: boolean;
   }): Promise<{ workflow: Workflow; run: AgentRun }>;
@@ -38,6 +40,8 @@ export interface WorkflowState {
   compact(workflowId: string): Promise<void>;
   setPaused(workflowId: string, paused: boolean, reason?: string | null): Promise<void>;
   setBudget(workflowId: string, budgetUsd: number | null): Promise<void>;
+  /** Set/clear the per-run cost cap (applies to runs spawned from now on). */
+  setRunCap(workflowId: string, runCapUsd: number | null): Promise<void>;
   cancel(workflowId: string): Promise<void>;
   /**
    * Create/update a custom template (server validates; returns the saved
@@ -108,6 +112,11 @@ export function createWorkflowStore(client: BridgeClient): WorkflowStore {
 
     async setBudget(workflowId, budgetUsd) {
       const { workflow } = await client.request("workflow.setBudget", { workflowId, budgetUsd });
+      upsert(workflow);
+    },
+
+    async setRunCap(workflowId, runCapUsd) {
+      const { workflow } = await client.request("workflow.setRunCap", { workflowId, runCapUsd });
       upsert(workflow);
     },
 

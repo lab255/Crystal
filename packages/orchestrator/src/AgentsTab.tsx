@@ -4,6 +4,7 @@ import {
   Bot,
   Play,
   Plus,
+  ShieldCheck,
   Sparkles,
   TerminalSquare,
   Trash2,
@@ -30,7 +31,9 @@ import {
   formatRunCost,
   useAgents,
   useCrystal,
+  useGrants,
   useTerminals,
+  useWorkflows,
   useWorkspace,
   useWorkspaces,
 } from "@crystal/client";
@@ -270,8 +273,116 @@ export function AgentsTab({
             />
           ) : null}
           <DispatchPanel profiles={profiles} onDispatched={onSelectRun} />
+          <GrantsPanel />
         </div>
       </main>
+    </div>
+  );
+}
+
+/**
+ * Approvals as first-class workspace data: the granted tool patterns every
+ * agent run gets (editable — applied additively at the next spawn), and the
+ * permission-denial tally beneath them. A denial row is the ledger's whole
+ * point: "this delivery requested this tool and was refused, N times" is
+ * readable here instead of being archaeology across run transcripts.
+ */
+function GrantsPanel() {
+  const ledger = useGrants((s) => s.ledger);
+  const setTools = useGrants((s) => s.setTools);
+  const workflows = useWorkflows((s) => s.workflows);
+  const [draft, setDraft] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const granted = ledger?.allowedTools ?? [];
+  const denials = useMemo(
+    () => [...(ledger?.denials ?? [])].sort((a, b) => (a.lastAt < b.lastAt ? 1 : -1)),
+    [ledger],
+  );
+  const workflowName = (id: string | null | undefined) =>
+    id ? (workflows.find((w) => w.id === id)?.name ?? id) : null;
+
+  async function save(): Promise<void> {
+    if (draft == null || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await setTools(splitLines(draft));
+      setDraft(null);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="rounded-xl border border-edge bg-surface-1 p-3">
+      <div className="mb-2 flex items-center gap-2">
+        <ShieldCheck className="h-4 w-4 text-crystal-300" />
+        <span className="text-[13px] font-semibold text-ink">Tool grants</span>
+        <span className="text-[11px] text-ink-faint">
+          workspace-wide, applied to every run at spawn
+        </span>
+      </div>
+      <Field
+        label="Granted tools"
+        hint="One --allowedTools pattern per line (e.g. WebFetch, Bash(gh:*)) — additive over profile allowlists; applies to the next run"
+      >
+        <Textarea
+          value={draft ?? granted.join("\n")}
+          onChange={(e) => setDraft(e.target.value)}
+          rows={3}
+          placeholder={"WebFetch\nBash(gh:*)"}
+          aria-label="Granted tools"
+          className="font-mono text-xs"
+        />
+      </Field>
+      {draft != null ? (
+        <div className="mt-1.5 flex items-center gap-2">
+          <Button variant="primary" size="xs" disabled={busy} onClick={() => void save()}>
+            Save grants
+          </Button>
+          <Button variant="ghost" size="xs" disabled={busy} onClick={() => setDraft(null)}>
+            Discard
+          </Button>
+        </div>
+      ) : null}
+      {error ? <p className="mt-1.5 text-[11px] text-danger">{error}</p> : null}
+
+      <div className="mt-3 border-t border-edge pt-2">
+        <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-ink-faint">
+          Denied requests
+        </div>
+        {denials.length === 0 ? (
+          <p className="text-[11px] text-ink-faint">
+            No permission denials recorded — runs that bounce off an ungranted tool land here.
+          </p>
+        ) : (
+          <ul className="space-y-1">
+            {denials.map((d) => (
+              <li
+                key={`${d.tool} ${d.workflowId ?? ""}`}
+                className="flex items-center gap-2 text-[11px] text-ink-muted"
+              >
+                <span className="rounded bg-surface-3 px-1.5 py-0.5 font-mono text-[10px] text-ink">
+                  {d.tool}
+                </span>
+                <span className="min-w-0 truncate">
+                  {workflowName(d.workflowId) ?? "outside any workflow"}
+                </span>
+                <span className="ml-auto shrink-0 text-danger">
+                  denied {d.count}×
+                </span>
+                <span className="shrink-0 text-ink-faint">
+                  {new Date(d.lastAt).toLocaleString()}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     </div>
   );
 }

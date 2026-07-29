@@ -69,6 +69,7 @@ export interface HubToolHost {
       brief: string;
       templateId?: string | null;
       budgetUsd?: number | null;
+      runCapUsd?: number | null;
       dependsOn?: string[];
     },
   ): Promise<ProgramDelivery>;
@@ -205,7 +206,10 @@ const HUB_TOOLS = [
       "Add one project's share of a program. The brief is what THAT project must " +
       "deliver, written for its own orchestrator to plan against. Use dependsOn " +
       "for ordering across projects (shared API first, its consumers after) — " +
-      "dependents dispatch automatically when their dependencies complete.",
+      "dependents dispatch automatically when their dependencies complete. Put the " +
+      "brief's checkable factual claims on their own `assert:` lines (assert: branch X / " +
+      "ref X / file X / tool X / cmd X) — they are verified against the real repo at " +
+      "dispatch and failures come back on the dispatch report.",
     inputSchema: {
       type: "object",
       properties: {
@@ -219,6 +223,11 @@ const HUB_TOOLS = [
         },
         templateId: { type: "string", description: "Workflow template id for this project." },
         budgetUsd: { type: "number", description: "Spend ceiling for this delivery, in USD." },
+        runCapUsd: {
+          type: "number",
+          description:
+            "Per-run spend ceiling for the delivery's workflow — any single run crossing it is killed.",
+        },
       },
       required: ["programId", "brief", "project"],
       additionalProperties: false,
@@ -477,6 +486,7 @@ const AddDeliveryArgs = z.object({
   dependsOn: z.array(z.string()).optional(),
   templateId: z.string().nullish(),
   budgetUsd: z.number().positive().nullish(),
+  runCapUsd: z.number().positive().nullish(),
 });
 const RemoveDeliveryArgs = z.object({
   programId: z.string().optional(),
@@ -698,6 +708,7 @@ export class McpHubServer {
           dependsOn: a.data.dependsOn,
           templateId: a.data.templateId,
           budgetUsd: a.data.budgetUsd,
+          runCapUsd: a.data.runCapUsd,
         });
         return toolText(
           id,

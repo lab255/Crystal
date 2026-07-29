@@ -23,6 +23,7 @@ import {
   boardColumnStages,
   budgetState,
   envGaps,
+  premiseGaps,
   presetById,
   templateOf,
   validateWorkflowTemplate,
@@ -258,6 +259,7 @@ function WorkflowDetail({
 }) {
   const setPaused = useWorkflows((s) => s.setPaused);
   const setBudget = useWorkflows((s) => s.setBudget);
+  const setRunCap = useWorkflows((s) => s.setRunCap);
   const cancel = useWorkflows((s) => s.cancel);
   const compact = useWorkflows((s) => s.compact);
   const [notice, setNotice] = useState<string | null>(null);
@@ -330,6 +332,8 @@ function WorkflowDetail({
 
   const [editingBudget, setEditingBudget] = useState(false);
   const [budgetInput, setBudgetInput] = useState("");
+  const [editingRunCap, setEditingRunCap] = useState(false);
+  const [runCapInput, setRunCapInput] = useState("");
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -389,6 +393,16 @@ function WorkflowDetail({
               .map((c) => `${c.label} (${c.reason})`)
               .join(", ")}{" "}
             — the pre-flight could not resolve these; workers relying on them will fail.
+          </p>
+        ) : null}
+        {workflow.premise && !workflow.premise.ok ? (
+          <p className="mt-1 text-[11px] text-danger">
+            Failed premises:{" "}
+            {premiseGaps(workflow.premise)
+              .map((c) => `${c.raw} (${c.detail ?? "does not hold"})`)
+              .join("; ")}{" "}
+            — the brief asserts things this repo says are false; the manager was told to stop
+            and ask rather than build on them.
           </p>
         ) : null}
         {notice ? <p className="mt-1 text-[11px] text-ink-faint">{notice}</p> : null}
@@ -490,6 +504,48 @@ function WorkflowDetail({
               Edit budget
             </Button>
           )}
+          {workflow.runCapUsd != null ? (
+            <Tooltip content="Per-run cost cap: any single run (manager turns included) crossing it is killed mid-flight. Applies to runs spawned from now on.">
+              <span className="text-ink-faint">run cap ${workflow.runCapUsd.toFixed(2)}</span>
+            </Tooltip>
+          ) : null}
+          {editingRunCap ? (
+            <form
+              className="flex items-center gap-1"
+              onSubmit={(e) => {
+                e.preventDefault();
+                const n = Number(runCapInput);
+                void setRunCap(
+                  workflow.id,
+                  runCapInput.trim() === "" || !Number.isFinite(n) ? null : n,
+                );
+                setEditingRunCap(false);
+              }}
+            >
+              <Input
+                autoFocus
+                value={runCapInput}
+                onChange={(e) => setRunCapInput(e.target.value)}
+                placeholder="USD/run (empty = none)"
+                className="h-6 w-32 text-[11px]"
+                aria-label="Per-run cost cap in USD"
+              />
+              <Button type="submit" variant="ghost" size="xs">
+                Set
+              </Button>
+            </form>
+          ) : (
+            <Button
+              variant="ghost"
+              size="xs"
+              onClick={() => {
+                setRunCapInput(workflow.runCapUsd?.toString() ?? "");
+                setEditingRunCap(true);
+              }}
+            >
+              Edit run cap
+            </Button>
+          )}
           {workflow.tracks.map((t) => (
             <Tooltip
               key={t.id}
@@ -511,6 +567,37 @@ function WorkflowDetail({
             </Tooltip>
           ))}
         </div>
+
+        {/* Marginal value per manager turn: cost beside what changed. A turn
+            that spent money and settled nothing is the retro's failure mode —
+            it reads loud here, not as archaeology across board revisions. */}
+        {workflow.turnLog.length > 0 ? (
+          <div className="mt-2 flex flex-wrap items-center gap-1 text-[10px]">
+            <span className="mr-1 uppercase tracking-wider text-ink-faint">Turns</span>
+            {workflow.turnLog.slice(-12).map((t) => (
+              <Tooltip
+                key={t.runId}
+                content={
+                  t.progressed
+                    ? `${new Date(t.at).toLocaleString()} — this manager turn settled something (dispatch, stage/board movement, question, or completion).`
+                    : `${new Date(t.at).toLocaleString()} — this manager turn changed NOTHING: no dispatch, no stage/board movement, no question. Money left; the board did not move.`
+                }
+              >
+                <span
+                  className={cn(
+                    "rounded-full border px-1.5 py-0.5 font-mono",
+                    t.progressed
+                      ? "border-edge text-ink-muted"
+                      : "border-danger/50 bg-danger/15 font-semibold text-danger",
+                  )}
+                >
+                  {formatRunCost(t.costUsd)}
+                  {t.progressed ? "" : " ∅"}
+                </span>
+              </Tooltip>
+            ))}
+          </div>
+        ) : null}
 
         {openTrack?.branch ? (
           <TrackFilesPanel key={openTrack.id} branch={openTrack.branch} />
@@ -661,6 +748,7 @@ function NewWorkflowPanel({
   const [name, setName] = useState("");
   const [goal, setGoal] = useState("");
   const [budget, setBudgetInput] = useState("");
+  const [runCap, setRunCapInput] = useState("");
   const [projectId, setProjectId] = useState<string>("");
   const [templateId, setTemplateId] = useState<string>("");
   /** "" = the roster preset's manager model; anything else overrides this run. */
@@ -695,6 +783,7 @@ function NewWorkflowPanel({
     setError(null);
     try {
       const n = Number(budget);
+      const cap = Number(runCap);
       const { workflow, run } = await start({
         name: name.trim(),
         goal: goal.trim(),
@@ -703,6 +792,7 @@ function NewWorkflowPanel({
         projectId: projectId || null,
         managerModel: managerModel || null,
         budgetUsd: budget.trim() !== "" && Number.isFinite(n) ? n : null,
+        runCapUsd: runCap.trim() !== "" && Number.isFinite(cap) ? cap : null,
         interactive,
       });
       onStarted(workflow.id);
@@ -811,6 +901,15 @@ function NewWorkflowPanel({
             aria-label="Budget in USD"
             className="w-40"
           />
+          <Tooltip content="Per-run cost cap: any single run (manager turns included) crossing it is killed mid-flight — the lever against one runaway resume.">
+            <Input
+              value={runCap}
+              onChange={(e) => setRunCapInput(e.target.value)}
+              placeholder="$/run cap"
+              aria-label="Per-run cost cap in USD"
+              className="w-24"
+            />
+          </Tooltip>
           <Select
             className="flex-1"
             value={projectId}

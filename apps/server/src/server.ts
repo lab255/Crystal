@@ -487,6 +487,10 @@ export async function startCrystalServer(opts: {
       await registry.get(ws).agentLibrary.removeProfile(id);
       return { ok: true };
     },
+    "grants.get": async ({ ws }) => ({ ledger: await registry.get(ws).grants.get() }),
+    "grants.setTools": async ({ ws, tools }) => ({
+      ledger: await registry.get(ws).grants.setTools(tools),
+    }),
     "facets.get": async ({ ws }) => ({ facets: await registry.get(ws).store.loadFacets() }),
     "facets.save": async ({ ws, facets }) => {
       await registry.get(ws).store.saveFacets(facets);
@@ -751,6 +755,9 @@ export async function startCrystalServer(opts: {
     },
     "workflow.setPaused": async ({ ws, workflowId, paused, reason }) => ({
       workflow: await registry.get(ws).workflows.setPaused(workflowId, paused, reason),
+    }),
+    "workflow.setRunCap": async ({ ws, workflowId, runCapUsd }) => ({
+      workflow: await registry.get(ws).workflows.setRunCap(workflowId, runCapUsd),
     }),
     "workflow.setBudget": async ({ ws, workflowId, budgetUsd }) => ({
       workflow: await registry.get(ws).workflows.setBudget(workflowId, budgetUsd),

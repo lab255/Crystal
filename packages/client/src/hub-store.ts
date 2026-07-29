@@ -70,6 +70,7 @@ export interface HubState {
     dependsOn?: string[];
     templateId?: string | null;
     budgetUsd?: number | null;
+    runCapUsd?: number | null;
   }): Promise<void>;
   removeDelivery(programId: string, deliveryId: string): Promise<void>;
   /** Queue a finished delivery again — the way out of a failed one. */

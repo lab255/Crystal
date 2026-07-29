@@ -9,6 +9,7 @@ import {
 import { rosterText, type AgentProfile, type ModelPreset } from "./agent-profile.js";
 import { runCostUsd } from "./orchestration.js";
 import { EnvReportSchema, envGapPromptNote, envGaps } from "./preflight.js";
+import { PremiseReportSchema, premiseGapPromptNote, premiseGaps } from "./premise.js";
 import {
   TASK_STATUSES,
   TaskStatusSchema,
@@ -930,6 +931,15 @@ export const WorkflowSchema = z.object({
    */
   env: EnvReportSchema.nullish(),
   /**
+   * Premise-check report taken at start (null = the goal/brief carried no
+   * `assert:` lines, or the repo could not be probed). A brief's checkable
+   * claims are verified against the real repo before the first paid run —
+   * failures are rendered into the kickoff prompt, the status text, and the
+   * hub's dispatch report, so a false premise is corrected before work is
+   * built on it.
+   */
+  premise: PremiseReportSchema.nullish(),
+  /**
    * Progress fingerprint as of the last settled manager turn (see
    * {@link workflowProgressFingerprint}) plus how many consecutive manager
    * turns ended without changing it. The typed-outcome contract: every
@@ -940,10 +950,33 @@ export const WorkflowSchema = z.object({
    */
   progressFingerprint: z.string().nullish(),
   noProgressTurns: z.number().default(0),
+  /**
+   * Marginal value per manager turn: what each settled turn cost and whether
+   * it changed the progress fingerprint. The spend list already shows money
+   * leaving; this is the other axis — a turn that cost $1.80 and settled
+   * nothing should be visually loud, not derivable only by diffing board
+   * revisions by hand. Bounded (see {@link TURN_LOG_LIMIT}).
+   */
+  turnLog: z.array(
+    z.object({
+      runId: z.string(),
+      at: z.string(),
+      costUsd: z.number(),
+      progressed: z.boolean(),
+    }),
+  ).default([]),
   /** Manager's completion summary (set via complete_workflow). */
   summary: z.string().nullish(),
   /** Spend ceiling in USD; dispatches are refused once spend crosses it. */
   budgetUsd: z.number().nullish(),
+  /**
+   * Per-run spend ceiling in USD. Stamped onto every run of the workflow
+   * (manager turns and dispatched workers); the AgentManager kills a run
+   * live once its streamed usage crosses the cap. The lever against the
+   * single runaway run — a $2.25 manager turn that could not possibly have
+   * helped — where `budgetUsd` only catches the accumulated total.
+   */
+  runCapUsd: z.number().nullish(),
   /**
    * When the pre-exhaustion budget warning was delivered (see
    * {@link BUDGET_WARN_FRACTION}) — the tripwire fires once, not on every
@@ -967,6 +1000,7 @@ export function createWorkflow(init: {
   cwd?: string;
   agentId?: string | null;
   budgetUsd?: number | null;
+  runCapUsd?: number | null;
 }): Workflow {
   const template =
     init.template ?? workflowTemplate(init.templateId ?? STANDARD_WORKFLOW_TEMPLATE.id);
@@ -985,6 +1019,7 @@ export function createWorkflow(init: {
     cwd: init.cwd ?? ".",
     agentId: init.agentId ?? null,
     budgetUsd: init.budgetUsd ?? null,
+    runCapUsd: init.runCapUsd ?? null,
     stages: template.stages.map((s) => ({ id: s.id, status: "pending" as const })),
     createdAt: ts,
     updatedAt: ts,
@@ -1199,6 +1234,18 @@ export function budgetWarningText(budget: BudgetState): string {
 /** Consecutive no-progress manager turns before the workflow auto-pauses. */
 export const STALL_TURN_LIMIT = 2;
 
+/** One settled manager turn in the marginal-value log. */
+export type WorkflowTurn = Workflow["turnLog"][number];
+
+/** Manager turns the marginal-value log keeps (oldest fall off). */
+export const TURN_LOG_LIMIT = 50;
+
+/** Append a settled manager turn to the bounded log (newest last). */
+export function appendTurnLog(log: readonly WorkflowTurn[], turn: WorkflowTurn): WorkflowTurn[] {
+  const next = [...log, turn];
+  return next.length > TURN_LOG_LIMIT ? next.slice(next.length - TURN_LOG_LIMIT) : next;
+}
+
 /**
  * Everything a manager turn can legitimately change, folded into one
  * comparable string: workflow structure (stages, tracks, status, epic,
@@ -1276,7 +1323,8 @@ export function workflowStatusText(workflow: Workflow, spend: WorkflowSpend): st
     `Spend: $${spend.costUsd.toFixed(2)} across ${spend.runCount} runs (${Math.round(spend.totalTokens / 1000)}k tok, ${spend.liveRunCount} live)` +
       (budget.budgetUsd != null
         ? ` — budget $${budget.budgetUsd.toFixed(2)}, remaining $${Math.max(0, budget.remainingUsd ?? 0).toFixed(2)}${budget.exhausted ? " (EXHAUSTED)" : ""}`
-        : " — no budget set"),
+        : " — no budget set") +
+      (workflow.runCapUsd != null ? ` — per-run cap $${workflow.runCapUsd.toFixed(2)}` : ""),
   );
   // The pre-flight gap stays in the status text, not just the kickoff — by
   // the time a stage needs the missing tool, the kickoff is many turns back.
@@ -1285,6 +1333,15 @@ export function workflowStatusText(workflow: Workflow, spend: WorkflowSpend): st
       `Environment gaps: ${envGaps(workflow.env)
         .map((c) => `${c.label} missing (${c.reason})`)
         .join(", ")}`,
+    );
+  }
+  // Same persistence rule for failed premises — the brief's false claims
+  // stay visible for as long as the workflow runs against them.
+  if (workflow.premise && !workflow.premise.ok) {
+    lines.push(
+      `Failed premises: ${premiseGaps(workflow.premise)
+        .map((c) => `${c.raw} (${c.detail ?? "does not hold"})`)
+        .join("; ")}`,
     );
   }
   return lines.join("\n");
@@ -1305,9 +1362,12 @@ export function buildWorkflowManagerPrompt(
 ): string {
   const template = templateOf(workflow);
   const budget =
-    workflow.budgetUsd != null
+    (workflow.budgetUsd != null
       ? `Your budget is $${workflow.budgetUsd.toFixed(2)}. Check workflow_status before each wave of dispatches; once spend crosses the budget, dispatches are refused and the workflow pauses — warn the user via ask_question *before* that happens if the goal looks bigger than the budget.`
-      : "No budget is set, but you still account for cost: check workflow_status between waves and prefer small, well-scoped workers.";
+      : "No budget is set, but you still account for cost: check workflow_status between waves and prefer small, well-scoped workers.") +
+    (workflow.runCapUsd != null
+      ? ` Every run (your own turns included) is hard-capped at $${workflow.runCapUsd.toFixed(2)} — a run crossing the cap is killed mid-flight, so scope each worker to fit under it.`
+      : "");
   const byId = new Map(template.stages.map((s) => [s.id, s]));
   const stageList = template.stages
     .map((s, i) => {
@@ -1334,11 +1394,13 @@ export function buildWorkflowManagerPrompt(
   const boardMapping = boardMappingText(template);
   const agents = rosterText(roster, preset);
   const envNote = envGapPromptNote(workflow.env);
+  const premiseNote = premiseGapPromptNote(workflow.premise);
   return [
     `You are the MANAGER of workflow "${workflow.name}" (${workflow.id}) — a long-lived, interactive coordination session. You coordinate and control; you do not implement anything yourself.`,
     "",
     `Goal:\n${workflow.goal.trim()}`,
     ...(envNote ? ["", envNote] : []),
+    ...(premiseNote ? ["", premiseNote] : []),
     "",
     `Stages (template "${template.name}"; advance them with advance_stage as work moves — done stages unlock their dependents):`,
     stageList,

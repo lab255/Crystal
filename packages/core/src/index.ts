@@ -20,6 +20,8 @@ export * from "./workspace.js";
 export * from "./agent.js";
 export * from "./orchestration.js";
 export * from "./preflight.js";
+export * from "./premise.js";
+export * from "./grants.js";
 export * from "./workflow.js";
 export * from "./hub.js";
 export * from "./serialization.js";
