@@ -8,6 +8,7 @@ import {
 } from "./agent.js";
 import { rosterText, type AgentProfile, type ModelPreset } from "./agent-profile.js";
 import { runCostUsd } from "./orchestration.js";
+import { EnvReportSchema, envGapPromptNote, envGaps } from "./preflight.js";
 import {
   TASK_STATUSES,
   TaskStatusSchema,
@@ -915,11 +916,30 @@ export const WorkflowSchema = z.object({
   /**
    * What paused the workflow — structured so budget pauses are
    * distinguishable from user holds without parsing the display reason
-   * (raising the budget auto-resumes only budget pauses).
+   * (raising the budget auto-resumes only budget pauses; `stall` is the
+   * engine catching consecutive manager turns that settled nothing).
    */
-  pausedBy: z.enum(["user", "budget"]).nullish(),
+  pausedBy: z.enum(["user", "budget", "stall"]).nullish(),
   /** Human-readable pause reason (display only — see pausedBy). */
   pausedReason: z.string().nullish(),
+  /**
+   * Pre-flight environment report taken at start (null = not probed, e.g.
+   * headless embeddings). Gaps are rendered into the manager's prompt and
+   * status text — the difference between "pnpm is missing" being a $0 fact
+   * in the kickoff and a $2 discovery by a failed worker.
+   */
+  env: EnvReportSchema.nullish(),
+  /**
+   * Progress fingerprint as of the last settled manager turn (see
+   * {@link workflowProgressFingerprint}) plus how many consecutive manager
+   * turns ended without changing it. The typed-outcome contract: every
+   * manager turn must settle something (stage/board/track movement, a
+   * dispatch, a question, completion) — turns that don't are stalls, and
+   * {@link STALL_TURN_LIMIT} of them in a row pauses the workflow instead of
+   * letting resumes burn budget against an unchanged board.
+   */
+  progressFingerprint: z.string().nullish(),
+  noProgressTurns: z.number().default(0),
   /** Manager's completion summary (set via complete_workflow). */
   summary: z.string().nullish(),
   /** Spend ceiling in USD; dispatches are refused once spend crosses it. */
@@ -1143,6 +1163,45 @@ export function budgetState(workflow: Workflow, spend: WorkflowSpend): BudgetSta
 }
 
 /* ------------------------------------------------------------------ */
+/* Typed turn outcomes (stall detection)                               */
+/* ------------------------------------------------------------------ */
+
+/** Consecutive no-progress manager turns before the workflow auto-pauses. */
+export const STALL_TURN_LIMIT = 2;
+
+/**
+ * Everything a manager turn can legitimately change, folded into one
+ * comparable string: workflow structure (stages, tracks, status, epic,
+ * summary), the number of workers ever dispatched, and the workflow's board
+ * tasks (statuses and open questions). Two equal fingerprints across a
+ * settled manager turn mean the turn ended *untyped* — it neither settled
+ * work, asked, nor failed — which is the failure mode where six resumes cost
+ * $9 against a board at rev 0. Deliberately excludes timestamps and spend:
+ * money leaving is not progress.
+ */
+export function workflowProgressFingerprint(
+  workflow: Workflow,
+  /** Runs ever dispatched for this workflow, manager chain excluded. */
+  workerRunCount: number,
+  /** The project board(s) — filtered to the workflow's own tasks here. */
+  tasks: readonly TaskItem[] = [],
+): string {
+  const mine = workflowTasks(workflow, tasks);
+  return JSON.stringify({
+    status: workflow.status,
+    epicId: workflow.epicId ?? null,
+    summary: workflow.summary ?? null,
+    stages: workflow.stages.map((s) => `${s.id}:${s.status}:${s.note ?? ""}`),
+    tracks: workflow.tracks.map((t) => `${t.id}:${t.status}`).sort(),
+    workers: workerRunCount,
+    tasks: mine.map((t) => `${t.id}:${t.status}`).sort(),
+    openQuestions: mine
+      .flatMap((t) => t.questions.filter((q) => q.answer == null).map((q) => q.id))
+      .sort(),
+  });
+}
+
+/* ------------------------------------------------------------------ */
 /* Agent-facing rendering                                              */
 /* ------------------------------------------------------------------ */
 
@@ -1189,6 +1248,15 @@ export function workflowStatusText(workflow: Workflow, spend: WorkflowSpend): st
         ? ` — budget $${budget.budgetUsd.toFixed(2)}, remaining $${Math.max(0, budget.remainingUsd ?? 0).toFixed(2)}${budget.exhausted ? " (EXHAUSTED)" : ""}`
         : " — no budget set"),
   );
+  // The pre-flight gap stays in the status text, not just the kickoff — by
+  // the time a stage needs the missing tool, the kickoff is many turns back.
+  if (workflow.env && !workflow.env.ok) {
+    lines.push(
+      `Environment gaps: ${envGaps(workflow.env)
+        .map((c) => `${c.label} missing (${c.reason})`)
+        .join(", ")}`,
+    );
+  }
   return lines.join("\n");
 }
 
@@ -1235,10 +1303,12 @@ export function buildWorkflowManagerPrompt(
     .join("\n");
   const boardMapping = boardMappingText(template);
   const agents = rosterText(roster, preset);
+  const envNote = envGapPromptNote(workflow.env);
   return [
     `You are the MANAGER of workflow "${workflow.name}" (${workflow.id}) — a long-lived, interactive coordination session. You coordinate and control; you do not implement anything yourself.`,
     "",
     `Goal:\n${workflow.goal.trim()}`,
+    ...(envNote ? ["", envNote] : []),
     "",
     `Stages (template "${template.name}"; advance them with advance_stage as work moves — done stages unlock their dependents):`,
     stageList,
@@ -1262,6 +1332,7 @@ export function buildWorkflowManagerPrompt(
     `- Cost accounting is your job. ${budget}`,
     "- Agent routing: a stage naming an agent is dispatched with that `agentId`; otherwise pick from the roster by tags/skills, or fall back to the stage's suggested `model` — heavyweight models only where code gets written; lighter models for planning, review and release chores.",
     "- You are resumed automatically whenever dispatched workers settle — end your turn after dispatching instead of polling worker_status in a loop.",
+    `- Every turn must end TYPED: dispatch a worker, advance/skip a stage, move board tasks, raise ask_question, or complete_workflow. Deliberating without settling anything is a stall — after ${STALL_TURN_LIMIT} consecutive turns that change nothing, the workflow auto-pauses and stops taking dispatches. If you are blocked, SAY SO with ask_question (it is free and it is the only reliable unblock path); never end a turn having silently changed nothing.`,
     "- Record decisions as you go: advance_stage notes, task descriptions, and answers to user questions are the durable memory of this workflow.",
     "- A stage the goal does not need is skipped explicitly (advance_stage status \"skipped\"), never left pending — its dependents cannot start until it settles either way.",
     "- When the goal is met — or genuinely blocked — call complete_workflow with a short summary of what shipped, what it cost, and anything left open.",

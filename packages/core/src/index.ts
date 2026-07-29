@@ -19,6 +19,7 @@ export * from "./terminal.js";
 export * from "./workspace.js";
 export * from "./agent.js";
 export * from "./orchestration.js";
+export * from "./preflight.js";
 export * from "./workflow.js";
 export * from "./hub.js";
 export * from "./serialization.js";

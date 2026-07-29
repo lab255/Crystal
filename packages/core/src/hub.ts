@@ -51,7 +51,18 @@ export interface HubRecentProject {
 
 /** Outcome of one dispatch wave: what started, and what did not (with why). */
 export interface HubDispatchReport {
-  dispatched: { deliveryId: string; projectName: string; ws: string; workflowId: string }[];
+  dispatched: {
+    deliveryId: string;
+    projectName: string;
+    ws: string;
+    workflowId: string;
+    /**
+     * Tools the project's pre-flight could not resolve (from the workflow's
+     * env report) — the dispatch went ahead, but the program manager learns
+     * about the broken sandbox here, not from a burned worker run.
+     */
+    envGaps?: string[];
+  }[];
   skipped: { deliveryId: string; projectName: string; reason: string }[];
 }
 
@@ -809,7 +820,12 @@ export function dispatchReportText(report: HubDispatchReport): string {
   if (report.dispatched.length) {
     lines.push("Dispatched:");
     for (const d of report.dispatched) {
-      lines.push(`- ${d.deliveryId} → ${d.projectName} (workflow ${d.workflowId})`);
+      lines.push(
+        `- ${d.deliveryId} → ${d.projectName} (workflow ${d.workflowId})` +
+          (d.envGaps?.length
+            ? ` — ENVIRONMENT GAPS: ${d.envGaps.join(", ")} missing in that workspace; expect its orchestrator to raise a question rather than build`
+            : ""),
+      );
     }
   }
   if (report.skipped.length) {

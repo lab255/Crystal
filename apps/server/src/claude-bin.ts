@@ -151,6 +151,23 @@ function pathKey(env: NodeJS.ProcessEnv): string {
 }
 
 /**
+ * Resolve a bare binary name against an env's PATH — `which`, but against
+ * the env the child will actually get rather than this process's. Non-bare
+ * names resolve only if they point at an existing executable.
+ */
+export async function findOnPath(
+  bin: string,
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): Promise<string | null> {
+  const win = platform === "win32";
+  if (!isBareName(bin)) {
+    return (await fs.access(bin).then(() => bin, () => null)) ? bin : null;
+  }
+  return scanDirs((env[pathKey(env)] ?? "").split(path.delimiter), bin, win);
+}
+
+/**
  * The spawn env with the resolved binary's directory prepended to PATH — a
  * CLI found outside the inherited PATH must still be able to spawn its own
  * helpers (and re-invoke itself). Mutating the *existing* key, not always

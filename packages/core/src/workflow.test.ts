@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { createAgentRun } from "./agent.js";
 import { AgentProfileSchema } from "./agent-profile.js";
+import { createTask, createTaskQuestion } from "./project.js";
+import type { EnvReport } from "./preflight.js";
 import {
   ADVANCED_WORKFLOW_TEMPLATE,
+  STALL_TURN_LIMIT,
   SIMPLE_WORKFLOW_TEMPLATE,
   STAGE_ARCHETYPES,
   STANDARD_WORKFLOW_TEMPLATE,
@@ -28,6 +31,7 @@ import {
   templateWarnings,
   validateWorkflowTemplate,
   workflowIdOfRun,
+  workflowProgressFingerprint,
   workflowSpend,
   workflowStatusText,
   workflowTag,
@@ -508,3 +512,82 @@ function expectOk(transition: ReturnType<typeof setStageStatus>): Workflow {
   if (!transition.ok) throw new Error(transition.reason);
   return transition.workflow;
 }
+
+describe("typed turn outcomes (progress fingerprint)", () => {
+  it("is stable across turns that settle nothing, and moves with every kind of progress", () => {
+    const wf = makeWorkflow();
+    const base = workflowProgressFingerprint(wf, 0, []);
+    // Timestamps are not progress — only the typed outcomes are.
+    expect(workflowProgressFingerprint({ ...wf, updatedAt: "2099-01-01" }, 0, [])).toBe(base);
+
+    // A dispatch is progress.
+    expect(workflowProgressFingerprint(wf, 1, [])).not.toBe(base);
+    // A stage transition is progress.
+    const advanced = expectOk(setStageStatus(wf, "refine", "done", "settled"));
+    expect(workflowProgressFingerprint(advanced, 0, [])).not.toBe(base);
+    // Completion is progress.
+    expect(workflowProgressFingerprint({ ...wf, status: "completed" as const }, 0, [])).not.toBe(
+      base,
+    );
+  });
+
+  it("sees only the workflow's own board tasks, including their open questions", () => {
+    const wf = { ...makeWorkflow(), epicId: "epic_1" };
+    const mine = { ...createTask("mine"), epicId: "epic_1" };
+    const other = { ...createTask("other"), epicId: "epic_2" };
+    const base = workflowProgressFingerprint(wf, 0, [mine, other]);
+
+    // Someone else's board movement is not this workflow's progress.
+    expect(
+      workflowProgressFingerprint(wf, 0, [mine, { ...other, status: "done" as const }]),
+    ).toBe(base);
+    // Its own task moving is.
+    expect(
+      workflowProgressFingerprint(wf, 0, [{ ...mine, status: "in_progress" as const }, other]),
+    ).not.toBe(base);
+    // Raising (or answering) a question on its task is.
+    const asked = { ...mine, questions: [createTaskQuestion("which auth provider?")] };
+    const withQuestion = workflowProgressFingerprint(wf, 0, [asked, other]);
+    expect(withQuestion).not.toBe(base);
+    const answered = {
+      ...asked,
+      questions: [{ ...asked.questions[0]!, answer: "keycloak" }],
+    };
+    expect(workflowProgressFingerprint(wf, 0, [answered, other])).not.toBe(withQuestion);
+  });
+
+  it("the manager prompt states the typed-outcome contract", () => {
+    const prompt = buildWorkflowManagerPrompt(makeWorkflow());
+    expect(prompt).toContain("Every turn must end TYPED");
+    expect(prompt).toContain(`${STALL_TURN_LIMIT} consecutive turns`);
+  });
+});
+
+describe("pre-flight report on the workflow", () => {
+  const gapReport: EnvReport = {
+    checkedAt: "2026-07-29T00:00:00.000Z",
+    ok: false,
+    checks: [
+      { id: "git", label: "git", bins: ["git"], reason: "always", ok: true, resolved: "/usr/bin/git" },
+      { id: "pnpm", label: "pnpm", bins: ["pnpm"], reason: "pnpm-lock.yaml", ok: false, resolved: null },
+    ],
+  };
+
+  it("gaps land in the kickoff prompt with the ask-first instruction", () => {
+    const wf = { ...makeWorkflow(), env: gapReport };
+    const prompt = buildWorkflowManagerPrompt(wf);
+    expect(prompt).toContain("ENVIRONMENT GAPS");
+    expect(prompt).toContain("pnpm (expected because pnpm-lock.yaml)");
+    // A clean environment injects nothing.
+    expect(buildWorkflowManagerPrompt({ ...wf, env: { ...gapReport, ok: true, checks: [] } })).not.toContain(
+      "ENVIRONMENT GAPS",
+    );
+  });
+
+  it("gaps stay visible in workflow_status, many turns after the kickoff", () => {
+    const wf = { ...makeWorkflow(), env: gapReport };
+    const spend = workflowSpend(wf.id, []);
+    expect(workflowStatusText(wf, spend)).toContain("Environment gaps: pnpm missing (pnpm-lock.yaml)");
+    expect(workflowStatusText(makeWorkflow(), spend)).not.toContain("Environment gaps");
+  });
+});

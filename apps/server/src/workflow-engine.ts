@@ -1,6 +1,7 @@
 import path from "node:path";
 import {
   Emitter,
+  STALL_TURN_LIMIT,
   WORKFLOW_TEMPLATES,
   WorkflowSchema,
   addTrack,
@@ -14,6 +15,7 @@ import {
   uid,
   validateWorkflowTemplate,
   workflowIdOfRun,
+  workflowProgressFingerprint,
   workflowSpend,
   workflowStatusText,
   workflowTag,
@@ -23,6 +25,7 @@ import {
   type AgentPermissionMode,
   type AgentRoster,
   type AgentRun,
+  type TaskItem,
   type Workflow,
   type WorkflowSpend,
   type WorkflowStageStatus,
@@ -40,6 +43,7 @@ import {
 } from "./template-library.js";
 import type { WorkspaceStore } from "./workspace-store.js";
 import { PendingQueue } from "./pending-queue.js";
+import { probeEnvironment } from "./preflight.js";
 import { runGit } from "./git.js";
 
 /**
@@ -243,6 +247,18 @@ export class WorkflowEngine {
       template = WORKFLOW_TEMPLATES[init.templateId] ? null : found;
     }
     const workflow = createWorkflow({ ...init, template });
+    // Pre-flight before the first expensive run: what the repo's markers say
+    // the work needs vs what the agents' spawn PATH can resolve. Set before
+    // the prompt is built — gaps belong in the kickoff, not in a worker's
+    // "command not found" three stages later. Never blocks a start: an
+    // unprobeable environment is itself a fact the report can't improve on.
+    const root = this.agents.workspaceRoot;
+    if (root) {
+      workflow.env = await probeEnvironment(path.resolve(root, workflow.cwd)).catch(() => null);
+    }
+    // Baseline for the typed-turn-outcome contract: the first manager turn is
+    // judged against the workflow as started, same as every later turn.
+    workflow.progressFingerprint = workflowProgressFingerprint(workflow, 0, await this.boardTasks());
 
     // Resolve the manager's profile from the merged roster: an explicit
     // init.agentId wins, else the roster names its manager
@@ -335,6 +351,9 @@ export class WorkflowEngine {
         status: paused ? "paused" : "running",
         pausedBy: paused ? "user" : null,
         pausedReason: paused ? (reason ?? "Paused by the user") : null,
+        // Resuming forgives an accumulated stall streak — without this, one
+        // more quiet turn after a stall-pause resume would re-pause instantly.
+        noProgressTurns: paused ? wf.noProgressTurns : 0,
       };
       return { workflow, result: workflow };
     });
@@ -567,12 +586,67 @@ export class WorkflowEngine {
           });
         }
       }
+      // Typed turn outcomes: a settled MANAGER turn must have changed
+      // something — dispatched, advanced, moved the board, asked, or
+      // completed. Judged by fingerprint so the definition of "something"
+      // lives in one pure function; consecutive unchanged turns past the
+      // limit pause the workflow, because resuming an orchestrator against
+      // an unchanged board only converts money into nothing.
+      if (run.role === "manager") {
+        const runs = await this.agents.runsWithTag(workflowTag(id));
+        const workerCount = runs.filter((r) => r.role !== "manager").length;
+        const tasks = await this.boardTasks();
+        await this.mutate(id, (wf) => {
+          if (wf.status !== "running" && wf.status !== "paused") {
+            return { workflow: wf, result: null };
+          }
+          const fingerprint = workflowProgressFingerprint(wf, workerCount, tasks);
+          if (wf.progressFingerprint == null || fingerprint !== wf.progressFingerprint) {
+            return {
+              workflow: { ...wf, progressFingerprint: fingerprint, noProgressTurns: 0 },
+              result: null,
+            };
+          }
+          const turns = wf.noProgressTurns + 1;
+          const stall = turns >= STALL_TURN_LIMIT && wf.status === "running";
+          const workflow: Workflow = {
+            ...wf,
+            noProgressTurns: turns,
+            ...(stall
+              ? {
+                  status: "paused" as const,
+                  pausedBy: "stall" as const,
+                  pausedReason:
+                    `Stalled: ${turns} consecutive manager turns ended without settling anything ` +
+                    `(no dispatch, stage/board movement, question, or completion). ` +
+                    `Resume it after steering, or cancel it.`,
+                }
+              : {}),
+          };
+          return { workflow, result: null };
+        });
+      }
       await this.flushMessages(id);
       // Spend changed even when nothing above did — let UIs refresh.
       const fresh = this.records.peek(id);
       if (fresh) this.events.emit("changed", { workflow: { ...fresh } });
     } catch (err) {
       console.warn(`[crystal] workflow settle hook failed for ${id}:`, (err as Error).message);
+    }
+  }
+
+  /**
+   * Every board task in the workspace — input to the progress fingerprint
+   * (which filters to the workflow's own). Degrades to empty when the store
+   * can't serve projects (tests, headless embeddings): the fingerprint then
+   * still tracks stages/tracks/dispatches, just not board movement.
+   */
+  private async boardTasks(): Promise<TaskItem[]> {
+    try {
+      const projects = await this.store.loadProjects();
+      return projects.flatMap((p) => p.project.tasks);
+    } catch {
+      return [];
     }
   }
 

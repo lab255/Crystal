@@ -71,6 +71,18 @@ build/sign (+notarize on macOS) → signed updater `latest.json`).
   is derivable from the run list alone (the UI computes it client-side from the agent
   store). A `WorkerSpec.branch` implies worktree isolation on that named branch (parallel
   tracks); two live workers must never share a track branch.
+- Two enforcement seams guard workflow spend. **Pre-flight**: `WorkflowEngine.start` runs
+  `apps/server/src/preflight.ts` (rules in `core/preflight.ts`) — marker files imply tools
+  (pnpm-lock → pnpm, package.json → node…), each probed against the *agents'* spawn PATH
+  (`envWithToolchain`), and the typed report lands on `workflow.env`, in the kickoff
+  prompt + `workflow_status` when it has gaps, and on the hub's dispatch report
+  (`envGaps`). **Typed turn outcomes**: a settled *manager* turn must have changed
+  something — `workflowProgressFingerprint` (stages/tracks/status, worker-run count, the
+  workflow's board tasks + open questions; never timestamps or spend) is compared across
+  manager settles, `STALL_TURN_LIMIT` consecutive unchanged turns pause the workflow with
+  `pausedBy: "stall"`, and a user resume forgives the streak. Both exist because of the
+  same field failure: an orchestrator resumed six times against an unchanged board, $9
+  gone, the missing-node gap discovered mid-review.
 - A template stage carries three things beyond its dependencies. `handoff` is the
   artifact it owes the stages downstream — dependencies say *when* a stage may start,
   only the handoff says *what its worker is given*, so it goes into both the producing

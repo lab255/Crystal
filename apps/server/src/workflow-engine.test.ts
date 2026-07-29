@@ -466,6 +466,55 @@ describe("WorkflowEngine", () => {
     expect((await engine.listTemplates()).map((t) => t.id)).not.toContain("wft_oneoff");
   });
 
+  it("two manager turns that settle nothing pause the workflow as a stall", async () => {
+    const { agents, engine } = makeEngine();
+    const { workflow, run } = await engine.start({ name: "W", goal: "g" });
+
+    // Turn 1 ends untyped: no dispatch, no stage/board movement, no question.
+    agents.settle(run);
+    await until(async () => (await engine.get(workflow.id))?.noProgressTurns === 1);
+    expect((await engine.get(workflow.id))?.status).toBe("running");
+
+    // Turn 2 ends untyped too — that's the stall.
+    const turn2 = await agents.resumeChain(run.id, "worker settled");
+    agents.settle(turn2!);
+    await until(async () => (await engine.get(workflow.id))?.status === "paused");
+    const stalled = (await engine.get(workflow.id))!;
+    expect(stalled.pausedBy).toBe("stall");
+    expect(stalled.pausedReason).toMatch(/without settling/);
+    // A stalled workflow takes no dispatches until someone intervenes.
+    const veto = await agents.dispatchGuard!(turn2!, { prompt: "w" });
+    expect(veto).toMatch(/paused/i);
+
+    // Resuming forgives the streak — one quiet turn won't instantly re-pause.
+    const resumed = await engine.setPaused(workflow.id, false);
+    expect(resumed.noProgressTurns).toBe(0);
+  });
+
+  it("typed outcomes reset the stall streak: stage moves and dispatches count", async () => {
+    const { agents, engine } = makeEngine();
+    const { workflow, run } = await engine.start({ name: "W", goal: "g" });
+    agents.settle(run);
+    await until(async () => (await engine.get(workflow.id))?.noProgressTurns === 1);
+
+    // This turn advanced a stage — progress, streak back to zero.
+    await engine.advanceStage(workflow.id, "refine", "done", "reqs settled");
+    const turn2 = await agents.resumeChain(run.id, "go");
+    agents.settle(turn2!);
+    await until(async () => (await engine.get(workflow.id))?.noProgressTurns === 0);
+    expect((await engine.get(workflow.id))?.status).toBe("running");
+
+    // This turn dispatched a worker — also progress, even with stages untouched.
+    await agents.start({ prompt: "w", tags: [workflowTag(workflow.id)] });
+    const turn3 = await agents.resumeChain(run.id, "go again");
+    agents.settle(turn3!);
+    // The streak must stay clear once the hook lands (fingerprint saw the worker).
+    await new Promise((r) => setTimeout(r, 50));
+    const after = (await engine.get(workflow.id))!;
+    expect(after.noProgressTurns).toBe(0);
+    expect(after.status).toBe("running");
+  });
+
   it("cancel kills live tagged runs and marks the workflow cancelled", async () => {
     const { agents, engine } = makeEngine();
     const { workflow, run } = await engine.start({ name: "W", goal: "g" });

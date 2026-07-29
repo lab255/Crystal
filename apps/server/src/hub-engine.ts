@@ -563,11 +563,13 @@ export class HubEngine {
             note: null,
             dispatchedAt: nowIso(),
           });
+          const gaps = (workflow.env?.checks ?? []).filter((c) => !c.ok).map((c) => c.label);
           report.dispatched.push({
             deliveryId: delivery.id,
             projectName: project.name,
             ws: project.ws,
             workflowId: workflow.id,
+            ...(gaps.length ? { envGaps: gaps } : {}),
           });
         } catch (err) {
           const reason = (err as Error).message;
