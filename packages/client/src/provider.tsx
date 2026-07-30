@@ -271,8 +271,11 @@ function createFleetRuntime(defaultTarget: string | BridgeTransportFactory): Fle
     };
 
     const refreshFleetSlice = () => {
+      // An empty list still reconciles: a server whose last workspace closed
+      // must drop its fleet slice and terminal tabs rather than orphan them
+      // (before workspaces ever load the refreshes are no-ops — there is
+      // nothing keyed to this sid yet).
       const ids = workspacesStore.getState().workspaces.map((w) => w.id);
-      if (ids.length === 0) return;
       void fleetStore.getState().refresh(sid, ids);
       void terminalsStore.getState().refresh(sid, ids);
       // The hub's project list follows the open set; its programs do not, but

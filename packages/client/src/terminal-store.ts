@@ -276,13 +276,15 @@ export function createTerminalsStore(getActiveSid: () => string): TerminalsStore
         const serverIds = new Set(server.map(({ info }) => info.id));
         const infoById = new Map(server.map(({ info }) => [info.id, info]));
         // Shells gone from this server (killed elsewhere, server restart)
-        // drop; agent consoles and *other servers' tabs* always survive.
+        // drop, and so does ANY tab of a workspace no longer open on it —
+        // agent consoles included: a closed workspace's console has no
+        // server to run in (mirrors the fleet store's "closed workspaces
+        // drop out"). Other servers' tabs always survive.
         const kept = s.tabs
           .filter(
             (t) =>
               t.sid !== sid ||
-              t.kind === "agent" ||
-              (serverIds.has(t.id) && wsIds.includes(t.ws)),
+              (wsIds.includes(t.ws) && (t.kind === "agent" || serverIds.has(t.id))),
           )
           .map((t) => {
             if (t.sid !== sid) return t;

@@ -34,7 +34,7 @@ import { RefactorEngine } from "./refactor.js";
 import { SettledRuns } from "./settled-runs.js";
 import { GlobalTemplateStore } from "./template-library.js";
 import { GrantsStore } from "./grants-store.js";
-import { TerminalManager, pasteInput } from "./terminal-manager.js";
+import { TerminalManager, pasteInput, type TerminalSeed } from "./terminal-manager.js";
 import { WorkflowEngine } from "./workflow-engine.js";
 import { WorkspaceStore } from "./workspace-store.js";
 
@@ -49,6 +49,9 @@ function openWorkspacesFile(): string {
 
 /** How many recently-opened workspaces the reopen list keeps. */
 const MAX_RECENTS = 12;
+
+/** How many closed workspaces keep their dead terminal tabs for reopen (LRU). */
+const MAX_TERMINAL_STASHES = 8;
 
 /** realpath expands Windows 8.3 short paths, which crash libuv's recursive fs watcher. */
 export function canonicalRoot(p: string): string {
@@ -173,11 +176,11 @@ export class WorkspaceRuntime {
     };
     this.agents.interactiveKill = (run) => {
       if (!run.terminalId) return;
-      try {
-        this.terminals.kill(run.terminalId);
-      } catch {
+      // The kill confirms asynchronously; the seam is fire-and-forget by
+      // design (cancel returns immediately, the exit lands via broadcast).
+      void this.terminals.kill(run.terminalId).catch(() => {
         // already gone
-      }
+      });
     };
   }
 
@@ -325,7 +328,13 @@ export class WorkspaceRuntime {
     }
   }
 
-  close(): void {
+  /**
+   * Tear the runtime down. Resolves once every terminal tree is confirmed
+   * dead (a closed workspace is inert — no orphaned shells or bound ports),
+   * returning the dead terminal records so the registry can stash them for a
+   * buffer-preserving reopen.
+   */
+  async close(): Promise<TerminalSeed[]> {
     this.watcher?.close();
     if (this.watchTimer) clearTimeout(this.watchTimer);
     for (const dispose of this.disposeAgentListeners) dispose();
@@ -339,12 +348,16 @@ export class WorkspaceRuntime {
     // its orchestrator still running is how the hub's one-per-project
     // invariant broke (cancel recorded, orchestrator alive, retry doubled).
     this.agents.disposeAll();
-    this.devservers.dispose();
-    this.terminals.disposeAll();
+    // Dev servers before the terminal sweep (they release their ledger);
+    // their terminals are killed here or by disposeAll below — double-kill
+    // is harmless.
+    await this.devservers.dispose();
+    const seeds = await this.terminals.disposeAll();
     this.quality.dispose();
     this.refactorEngine?.dispose();
     this.refactorEngine = null;
     this.analysis.dispose();
+    return seeds;
   }
 }
 
@@ -360,6 +373,15 @@ export class WorkspaceRegistry {
   /** Reopen list, most recent last (map insertion order); loaded lazily from the persist file. */
   private recentsByRoot = new Map<string, RecentWorkspace>();
   private recentsLoad: Promise<void> | null = null;
+
+  /**
+   * Buffer-preserving reopen: when a workspace closes, its (by then dead)
+   * terminal records are stashed here — keyed by workspace id, most recent
+   * last — so reopening the same root in this server session brings the tabs
+   * back as exited shells with scrollback intact. In-memory only and
+   * bounded; a server restart starts clean.
+   */
+  private readonly terminalStash = new Map<string, TerminalSeed[]>();
 
   /**
    * One template library for the whole server, shared by every workspace it
@@ -417,6 +439,14 @@ export class WorkspaceRegistry {
       this.globalTemplates,
       this.globalAgents,
     );
+    // A root closed earlier this session reopens with its terminal tabs
+    // restored as exited shells (scrollback intact, no processes) — seeded
+    // before start(), so clients pick them up via their terminal.list refresh.
+    const stashed = this.terminalStash.get(id);
+    if (stashed) {
+      this.terminalStash.delete(id);
+      runtime.terminals.seed(stashed);
+    }
     // Warm the workspace (creates .crystal/ on first run) and pick up its name.
     const info = await runtime.store.load();
     runtime.name = info.manifest.name;
@@ -471,9 +501,22 @@ export class WorkspaceRegistry {
     const runtime = this.runtimes.get(id);
     if (!runtime) throw new Error(`Unknown workspace: ${id}`);
     if (this.runtimes.size === 1) throw new Error("Cannot close the last workspace");
-    runtime.close();
+    // Out of the map BEFORE the awaited teardown — a bridge call landing
+    // mid-close must not resolve a half-closed runtime.
     this.runtimes.delete(id);
     if (this.defaultId === id) this.defaultId = this.runtimes.keys().next().value ?? null;
+    const seeds = await runtime.close();
+    // Stash the dead tabs for a same-session reopen; re-inserting moves the
+    // root to the LRU tail.
+    this.terminalStash.delete(id);
+    if (seeds.length > 0) {
+      this.terminalStash.set(id, seeds);
+      while (this.terminalStash.size > MAX_TERMINAL_STASHES) {
+        const oldest = this.terminalStash.keys().next().value;
+        if (oldest === undefined) break;
+        this.terminalStash.delete(oldest);
+      }
+    }
     await this.persist();
     this.broadcast("workspaces.changed", {});
   }
@@ -494,10 +537,13 @@ export class WorkspaceRegistry {
     return this.defaultId;
   }
 
-  closeAll(): void {
-    for (const runtime of this.runtimes.values()) runtime.close();
+  /** Server shutdown: close every runtime, awaiting the terminal kills. */
+  async closeAll(): Promise<void> {
+    const runtimes = [...this.runtimes.values()];
     this.runtimes.clear();
     this.defaultId = null;
+    // allSettled: one runtime failing to tear down must not strand the rest.
+    await Promise.allSettled(runtimes.map((runtime) => runtime.close()));
   }
 
   /** Reopen workspaces persisted by a previous run (silently skips gone dirs). */

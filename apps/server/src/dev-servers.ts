@@ -62,8 +62,21 @@ export class DevServerService {
     ];
   }
 
-  dispose(): void {
+  /**
+   * Workspace close: stop listening AND stop every running dev server — a
+   * closed workspace must not keep its ports bound. Kills go through the
+   * terminal manager (a started server IS a terminal); the runtime's
+   * `terminals.disposeAll()` runs right after and double-killing the same
+   * tree is harmless (taskkill/SIGTERM on a dead pid fails quietly and
+   * killTree never throws).
+   */
+  async dispose(): Promise<void> {
     for (const d of this.disposers) d();
+    const running = [...this.running.values()];
+    this.running.clear();
+    await Promise.all(
+      running.map(({ terminalId }) => this.terminals.kill(terminalId).catch(() => {})),
+    );
   }
 
   /** Candidates merged with live state (running entries pruned via terminal exits). */
@@ -101,11 +114,9 @@ export class DevServerService {
     const state = this.running.get(id);
     if (state) {
       this.running.delete(id);
-      try {
-        this.terminals.kill(state.terminalId);
-      } catch {
+      await this.terminals.kill(state.terminalId).catch(() => {
         // terminal already gone — the ledger entry was stale
-      }
+      });
       this.events.emit("changed", {});
     }
     return { ok: true };
@@ -113,8 +124,8 @@ export class DevServerService {
 
   async restart(id: string): Promise<{ server: DevServerInfo }> {
     await this.stop(id);
-    // The tree-kill is fire-and-forget (taskkill /T /F); give the old
-    // process a beat to release its port before the successor binds it.
+    // The tree-kill is awaited, but the OS can still take a beat to release
+    // the old process's port before the successor binds it.
     await new Promise((resolve) => setTimeout(resolve, 750));
     return this.start(id);
   }

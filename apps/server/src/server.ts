@@ -343,7 +343,9 @@ export async function startCrystalServer(opts: {
     hubAgents.interactiveKill = (run) => {
       if (!run.terminalId || !run.terminalWs) return;
       try {
-        registry.get(run.terminalWs).terminals.kill(run.terminalId);
+        // Fire-and-forget by design: cancel returns immediately, the exit
+        // lands via the terminal broadcast.
+        void registry.get(run.terminalWs).terminals.kill(run.terminalId).catch(() => {});
       } catch {
         // workspace closed or terminal already gone
       }
@@ -593,7 +595,7 @@ export async function startCrystalServer(opts: {
       return { ok: true };
     },
     "terminal.kill": async ({ ws, terminalId }) => {
-      registry.get(ws).terminals.kill(terminalId);
+      await registry.get(ws).terminals.kill(terminalId);
       return { ok: true };
     },
     "terminal.buffer": async ({ ws, terminalId }) => ({
@@ -1245,7 +1247,7 @@ export async function startCrystalServer(opts: {
         instanceTimer = null;
       }
       hub?.dispose();
-      registry.closeAll();
+      await registry.closeAll();
       await instanceWrites;
       if (instanceFile) await removeInstanceFile(instanceFile);
       // Server .close() waits for open connections — drop live clients first

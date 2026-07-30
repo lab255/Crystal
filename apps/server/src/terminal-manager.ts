@@ -14,6 +14,21 @@ import { resolveInRoot, toRelPath } from "./paths.js";
 /** Replay buffer cap per terminal — enough scrollback without unbounded memory. */
 const MAX_BUFFER_CHUNKS = 2000;
 
+/** Grace a POSIX process group gets after SIGTERM before SIGKILL escalation. */
+const KILL_GRACE_MS = 500;
+/** Liveness poll interval while waiting out the SIGTERM grace. */
+const KILL_POLL_MS = 50;
+
+/** Signal-0 liveness probe; EPERM still means "alive, just not ours". */
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
 const DEFAULT_COLS = 100;
 const DEFAULT_ROWS = 30;
 const MIN_DIM = 2;
@@ -52,6 +67,16 @@ export interface TerminalCommand {
   file: string;
   args: string[];
   env?: Record<string, string | undefined>;
+}
+
+/**
+ * A dead terminal's restorable state: its listing record plus scrollback.
+ * What `disposeAll()` returns after the kills complete and what `seed()`
+ * adopts into a fresh manager (buffer-preserving workspace reopen).
+ */
+export interface TerminalSeed {
+  info: TerminalInfo;
+  chunks: TerminalChunk[];
 }
 
 export interface TerminalCreateOptions {
@@ -196,10 +221,15 @@ export class TerminalManager {
     this.events.emit("changed", { terminal: { ...record.info } });
   }
 
-  /** Kill the process (if still running) and drop the terminal from the list. */
-  kill(terminalId: string): void {
+  /**
+   * Kill the process (if still running) and drop the terminal from the list.
+   * The record stays in the map until the tree is confirmed dead, then the
+   * delete + `changed` broadcast land as before. Killing a seeded (exited,
+   * no-pty) record is just delete + emit.
+   */
+  async kill(terminalId: string): Promise<void> {
     const record = this.get(terminalId);
-    this.killTree(record);
+    await this.killTree(record);
     this.terminals.delete(terminalId);
     record.info.status = "exited";
     record.info.exitCode ??= null;
@@ -210,26 +240,83 @@ export class TerminalManager {
     return [...this.get(terminalId).chunks];
   }
 
-  /** Server shutdown: kill every child without broadcasting. */
-  disposeAll(): void {
-    for (const record of this.terminals.values()) {
-      this.killTree(record);
-    }
+  /**
+   * Workspace close / server shutdown: kill every child without
+   * broadcasting. Resolves once every tree is confirmed dead, returning the
+   * dead records so a reopen of the same root can `seed()` them back
+   * (scrollback intact, zero process leakage).
+   */
+  async disposeAll(): Promise<TerminalSeed[]> {
+    const records = [...this.terminals.values()];
     this.terminals.clear();
+    await Promise.all(records.map((record) => this.killTree(record)));
+    return records.map((record) => ({
+      info: { ...record.info, status: "exited" as const },
+      chunks: [...record.chunks],
+    }));
   }
 
-  private killTree(record: TerminalRecord): void {
+  /**
+   * Adopt terminal records from a previous runtime of this root
+   * (buffer-preserving reopen). Seeded tabs are inert `exited` shells — no
+   * pty behind them — matching the existing contract that exited terminals
+   * stay listed (scrollback intact) until killed. Ids are `uid("term")`, so
+   * a later create() can never collide with a seeded id. No broadcast:
+   * seeding happens before the runtime's listeners attach, and clients pick
+   * the tabs up through their `terminal.list` refresh.
+   */
+  seed(seeds: TerminalSeed[]): void {
+    for (const s of seeds) {
+      if (this.terminals.has(s.info.id)) continue;
+      const last = s.chunks[s.chunks.length - 1];
+      this.terminals.set(s.info.id, {
+        info: { ...s.info, status: "exited" },
+        pty: null,
+        chunks: [...s.chunks],
+        seq: (last?.seq ?? -1) + 1,
+      });
+    }
+  }
+
+  /**
+   * Deterministic tree-kill: resolves once the process tree is actually gone
+   * (taskkill exit on Windows; group SIGTERM → grace → SIGKILL on POSIX), so
+   * callers like workspace close and dev-server stop know the ports and
+   * files are released. Never throws — pty.kill() is the last-resort
+   * fallback either way, and a no-op record (exited/seeded) resolves
+   * immediately.
+   */
+  private async killTree(record: TerminalRecord): Promise<void> {
     const pty = record.pty;
     if (record.info.status !== "running" || !pty) return;
-    // Same tree-kill as agent runs: shells spawn children of their own.
+    const pid = pty.pid;
     if (process.platform === "win32") {
-      const killer = spawnProcess("taskkill", ["/pid", String(pty.pid), "/T", "/F"], {
-        shell: false,
+      // Same tree-kill as agent runs: shells spawn children of their own.
+      await new Promise<void>((resolve) => {
+        const killer = spawnProcess("taskkill", ["/pid", String(pid), "/T", "/F"], {
+          shell: false,
+        });
+        // Attached synchronously, or a missing/blocked taskkill emits an
+        // unhandled `error` next tick and takes the whole server down —
+        // pty.kill() below is the fallback either way.
+        killer.on("error", () => resolve());
+        killer.on("exit", () => resolve());
       });
-      // Attached synchronously, or a missing/blocked taskkill emits an
-      // unhandled `error` next tick and takes the whole server down —
-      // pty.kill() below is the fallback either way.
-      killer.on("error", () => {});
+    } else {
+      // node-pty starts the shell as a session leader, so its pid doubles as
+      // the process-group id: signal the whole group, then escalate if it
+      // ignored SIGTERM.
+      try {
+        process.kill(-pid, "SIGTERM");
+        const deadline = Date.now() + KILL_GRACE_MS;
+        while (isAlive(pid) && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, KILL_POLL_MS));
+        }
+        if (isAlive(pid)) process.kill(-pid, "SIGKILL");
+      } catch {
+        // Group already gone (or the shell never became a leader) —
+        // pty.kill() below covers the remainder.
+      }
     }
     try {
       pty.kill();

@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { browseDirs } from "./browse.js";
 import { packageNameOf, type CrossSurface } from "./code-map.js";
+import type { TerminalSeed } from "./terminal-manager.js";
 import { WorkspaceRegistry, computeCrossEdges } from "./workspace-registry.js";
 
 function surface(partial: Partial<CrossSurface>): CrossSurface {
@@ -126,7 +127,7 @@ describe("WorkspaceRegistry recents", () => {
     expect(persisted.roots).toHaveLength(2);
     // Stored oldest-first (map insertion order); served newest-first.
     expect(persisted.recents.map((r: { name: string }) => r.name)).toEqual(["alpha", "beta"]);
-    registry.closeAll();
+    await registry.closeAll();
 
     // A fresh registry serves the reopen list without opening anything; a gone
     // directory is flagged missing rather than dropped.
@@ -224,7 +225,7 @@ describe("WorkspaceRegistry per-flavor persistence", () => {
     expect(JSON.parse(await fs.readFile(flavorFile, "utf8")).roots).toEqual(
       reg.list().map((w) => w.root),
     );
-    reg.closeAll();
+    await reg.closeAll();
 
     // Once the flavor file exists it wins — a stale legacy `roots` (say from
     // a still-running legacy server) is no longer consulted.
@@ -233,6 +234,71 @@ describe("WorkspaceRegistry per-flavor persistence", () => {
     cleanups.push(() => reg2.closeAll());
     await reg2.restorePersisted();
     expect(reg2.list().map((w) => w.name)).toEqual(["alpha"]);
+  });
+});
+
+describe("WorkspaceRegistry terminal restore", () => {
+  const cleanups: (() => Promise<void> | void)[] = [];
+  afterEach(async () => {
+    for (const cleanup of cleanups.splice(0)) await cleanup();
+  });
+
+  async function tmpDir(): Promise<string> {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "crystal-termrestore-"));
+    cleanups.push(() => fs.rm(dir, { recursive: true, force: true }));
+    return dir;
+  }
+
+  /** A dead terminal record — seeded directly so no real PTY ever spawns. */
+  function seedOf(id: string): TerminalSeed {
+    return {
+      info: {
+        id,
+        cwd: ".",
+        shell: "/bin/fake",
+        title: null,
+        status: "exited",
+        exitCode: 0,
+        createdAt: new Date().toISOString(),
+        cols: 100,
+        rows: 30,
+      },
+      chunks: [{ terminalId: id, seq: 0, stream: "stdout", text: `scrollback of ${id}\r\n` }],
+    };
+  }
+
+  it("close() stashes the workspace's terminal tabs and reopening seeds them back", async () => {
+    const tmp = await tmpDir();
+    const wsA = path.join(tmp, "alpha");
+    const wsB = path.join(tmp, "beta");
+    await fs.mkdir(wsA);
+    await fs.mkdir(wsB);
+
+    const registry = new WorkspaceRegistry(() => {}, path.join(tmp, "open-workspaces.json"));
+    cleanups.push(() => registry.closeAll());
+    const rtA = await registry.open(wsA);
+    await registry.open(wsB); // the last workspace cannot be closed
+
+    // Stand in for terminals the user had open (exited, no pty — close()'s
+    // kill sweep is a no-op on them, which is exactly the post-kill state).
+    rtA.terminals.seed([seedOf("term-alpha-1")]);
+    await registry.close(rtA.id);
+
+    const reopened = await registry.open(wsA);
+    expect(reopened).not.toBe(rtA);
+    const listed = reopened.terminals.list();
+    expect(listed).toHaveLength(1);
+    expect(listed[0]).toMatchObject({ id: "term-alpha-1", status: "exited" });
+    expect(reopened.terminals.buffer("term-alpha-1").map((c) => c.text)).toEqual([
+      "scrollback of term-alpha-1\r\n",
+    ]);
+
+    // The stash is consumed on reopen: kill the restored tab, close again,
+    // and the next open starts clean instead of resurrecting it.
+    await reopened.terminals.kill("term-alpha-1");
+    await registry.close(reopened.id);
+    const third = await registry.open(wsA);
+    expect(third.terminals.list()).toEqual([]);
   });
 });
 
