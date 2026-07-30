@@ -102,6 +102,8 @@ export type ArchRfNode = RfNode<{
   codeExpanded?: boolean;
   /** Expanded, but the module detail is still loading. */
   codeLoading?: boolean;
+  /** Node is opened into its part tier — renders as a container. */
+  partsExpanded?: boolean;
   /**
    * Structured cross-view identity (node id, containment chain, code links)
    * stamped onto the DOM as data attributes — see use-highlight.ts.

@@ -43,13 +43,14 @@ import {
   ARCH_EDGE_KINDS,
   ancestorsOf,
   archKindForCodeModule,
+  canonicalSystemIds,
   createArchFacet,
   descendantsOf,
   enrichHighlight,
   filterGraphToFacet,
   formatHighlightSel,
   isContainerKind,
-  matchHighlight,
+  linkByEdgeId,
   uid,
   type ArchNode,
   type ArchEdgeKind,
@@ -61,6 +62,7 @@ import {
   type DiffMarks,
   type CodeModuleDetail,
   type HighlightRef,
+  type SystemOverview,
 } from "@crystal/core";
 import {
   addEdge as opAddEdge,
@@ -137,12 +139,26 @@ import {
   moduleExpandZoom,
   useLodConfig,
 } from "./lod-config.js";
-import { hlClass, useViewHighlight } from "./use-highlight.js";
+import { useViewHighlight } from "./use-highlight.js";
+import {
+  HOVER_IN_STROKE,
+  HOVER_OUT_STROKE,
+  decorateEdges,
+  decorateNodes,
+} from "./decorate.js";
+import {
+  buildPartsContent,
+  multiPartSystems,
+  splitEdgesByParts,
+  type PartRfNode,
+} from "./part-split.js";
+import { PartNode } from "./nodes/PartNode.js";
 
 const nodeTypes = {
   container: ContainerNode,
   leaf: LeafNode,
   note: NoteNode,
+  part: PartNode,
   codeFile: mapNodeTypes.codeFile,
   codeSymbol: mapNodeTypes.codeSymbol,
   codeOverflow: mapNodeTypes.codeOverflow,
@@ -152,13 +168,14 @@ const edgeTypes = {
   busbar: BusbarEdge,
 };
 
-type CanvasNode = ArchRfNode | MapRfNode;
+type CanvasNode = ArchRfNode | MapRfNode | PartRfNode;
 
-/** Ephemeral live-code children carry map-model ids, never graph node ids. */
+/** Ephemeral children (live code, part tier) carry generated ids, never graph node ids. */
 function isCodeChildId(id: string): boolean {
   return (
     id.startsWith("f:") ||
     id.startsWith("s:") ||
+    id.startsWith("part:") ||
     id.startsWith("plan:") ||
     id.startsWith("planfile:") ||
     id.startsWith("morefiles:")
@@ -170,6 +187,12 @@ export interface ArchitectCanvasProps {
   onChange: (graph: ArchitectureGraph) => void;
   /** Live code map for the overlay + code expansion; null while unavailable. */
   codeSummary?: CodeMapSummary | null;
+  /**
+   * Systems overview — powers the part tier: multi-part systems can expand
+   * into their parts, boundary edges split along `SystemLink.parts`, and the
+   * intra-system `partLinks` wire the inside. Null = the feature is off.
+   */
+  overview?: SystemOverview | null;
   overlayOn?: boolean;
   onToggleOverlay?: (on: boolean) => void;
   /** True while editing a draft plan — canvas gets a visual draft treatment. */
@@ -225,8 +248,6 @@ export interface ArchitectCanvasProps {
 const GHOST_STROKE = "var(--color-crystal-400)";
 const FLOW_STROKE = "var(--color-crystal-400)";
 /** Hover lens: what the hovered node uses (imports) vs what uses it (exports). */
-const HOVER_OUT_STROKE = "var(--color-accent-cyan)";
-const HOVER_IN_STROKE = "var(--color-accent-emerald)";
 
 /**
  * Dynamic level-of-detail. Detail grows continuously with zoom rather than at
@@ -362,6 +383,7 @@ function CanvasInner({
   graph,
   onChange,
   codeSummary,
+  overview,
   overlayOn,
   onToggleOverlay,
   draftMode,
@@ -467,6 +489,8 @@ function CanvasInner({
 
   /** Diagram node id → module path currently expanded into live code. */
   const [codeExpanded, setCodeExpanded] = useState<ReadonlyMap<string, string>>(() => new Map());
+  /** Systems opened into their part tier ("Expand components"). */
+  const [partsOpen, setPartsOpen] = useState<ReadonlySet<string>>(() => new Set());
   const [expandedFiles, setExpandedFiles] = useState<ReadonlySet<string>>(() => new Set());
   const [openCode, setOpenCode] = useState<ReadonlySet<string>>(() => new Set());
   /** Diagram nodes showing every file despite the per-module cap. */
@@ -512,14 +536,42 @@ function CanvasInner({
     [client, activeWs],
   );
 
+  /* ---------------- part tier (multi-part systems open into parts) ---------------- */
+
+  /** Canonical node id → system, for systems that can open into parts. */
+  const partSystems = useMemo(
+    () => (overview ? multiPartSystems(overview) : null),
+    [overview],
+  );
+  /** Canonical `link:` edge id → overview link, for boundary-edge splitting. */
+  const partLinkOf = useMemo(() => {
+    if (!overview) return null;
+    const idOfRaw = canonicalSystemIds(overview.systems);
+    return linkByEdgeId(overview, (raw) => idOfRaw.get(raw) ?? raw);
+  }, [overview]);
+  /** Only systems that still exist (and the facet shows) stay open. */
+  const partsExpanded = useMemo(() => {
+    if (!partSystems || partsOpen.size === 0) return null;
+    const present = new Set(viewGraph.nodes.map((n) => n.id));
+    const ids = new Set<string>();
+    for (const id of partsOpen) if (partSystems.has(id) && present.has(id)) ids.add(id);
+    return ids.size > 0 ? (ids as ReadonlySet<string>) : null;
+  }, [partsOpen, partSystems, viewGraph]);
+  const partsContent = useMemo(
+    () => buildPartsContent(partsExpanded ?? new Set(), partSystems),
+    [partsExpanded, partSystems],
+  );
+
   // Only nodes that still exist (and the facet shows) expand; a deleted or
-  // hidden node drops its code children.
+  // hidden node drops its code children. The part tier wins over live code —
+  // they are alternate interiors of the same container.
   const expanded = useMemo(() => {
     const ids = new Set(viewGraph.nodes.map((n) => n.id));
     const m = new Map<string, string>();
-    for (const [id, module] of codeExpanded) if (ids.has(id)) m.set(id, module);
+    for (const [id, module] of codeExpanded)
+      if (ids.has(id) && !partsExpanded?.has(id)) m.set(id, module);
     return m as ReadonlyMap<string, string>;
-  }, [codeExpanded, viewGraph]);
+  }, [codeExpanded, viewGraph, partsExpanded]);
   expandedRef.current = expanded;
 
   useEffect(() => {
@@ -696,12 +748,14 @@ function CanvasInner({
     [codeRefForNode],
   );
 
-  /** Identity of an ephemeral live-code child (file card / symbol chip). */
+  /** Identity of an ephemeral child (file card / symbol chip / part card). */
   const hlRefForChild = useCallback((data: Partial<MapNodeData>): HighlightRef | null => {
     if (data.nodeKind === "file" && data.path)
       return { file: data.path, module: data.module, label: data.name };
     if (data.nodeKind === "symbol" && data.file && data.name)
       return { file: data.file, symbol: data.name, module: data.module, label: data.name };
+    const part = (data as { part?: { path: string; pkg: string } }).part;
+    if (part) return { module: part.pkg, label: part.path.split("/").pop() || part.path };
     return null;
   }, []);
 
@@ -781,25 +835,6 @@ function CanvasInner({
 
   const [dragActive, setDragActive] = useState(false);
 
-  /**
-   * Ids to keep lit while `hovered` is set: the node itself plus everything it
-   * connects to — drawn edges, code-only ghost edges, and live-code import
-   * edges all count. Edge direction is reported separately (outgoing = what it
-   * uses, incoming = what uses it) by the edge decoration.
-   */
-  const hoverNeighborhood = useMemo(() => {
-    if (!hovered) return null;
-    const nodes = new Set<string>([hovered]);
-    const consider = (src: string, tgt: string) => {
-      if (src === hovered) nodes.add(tgt);
-      else if (tgt === hovered) nodes.add(src);
-    };
-    for (const e of viewGraph.edges) consider(e.source, e.target);
-    if (overlay) for (const g of overlay.ghostEdges) consider(g.source, g.target);
-    for (const e of codeContent.edges) consider(e.source, e.target);
-    return nodes;
-  }, [hovered, viewGraph, overlay, codeContent]);
-
   // A short dwell before the spotlight engages — sweeping the cursor across
   // the canvas shouldn't strobe the whole diagram. The same dwell publishes
   // the hover to the cross-view highlight store, so the flamegraph, journey
@@ -841,12 +876,13 @@ function CanvasInner({
   // handler subtracts them so the graph keeps base positions).
   const displacements = useMemo(() => {
     if (dragActive) return displaceRef.current;
-    if (expanded.size === 0) {
+    if (expanded.size === 0 && !partsExpanded) {
       displaceRef.current = new Map();
       return displaceRef.current;
     }
+    const opened = new Set<string>([...expanded.keys(), ...(partsExpanded ?? [])]);
     const scopes = new Set<string | null>();
-    for (const id of expanded.keys()) {
+    for (const id of opened) {
       const n = viewGraph.nodes.find((x) => x.id === id);
       if (n) scopes.add(n.parentId ?? null);
     }
@@ -856,7 +892,11 @@ function CanvasInner({
       const rects: DisplaceRect[] = members.map((n) => {
         // Rendered footprint: expanded content and the reserved slot cover the
         // same box by construction, so expansion usually displaces nothing.
-        const content = expanded.has(n.id) ? codeContent.sizes.get(n.id) : undefined;
+        const content = expanded.has(n.id)
+          ? codeContent.sizes.get(n.id)
+          : partsExpanded?.has(n.id)
+            ? partsContent.sizes.get(n.id)
+            : undefined;
         const slot = slotSizes.get(n.id);
         const width =
           Math.max(content?.width ?? 0, slot?.width ?? 0) ||
@@ -870,14 +910,14 @@ function CanvasInner({
           y: n.position.y,
           width,
           height,
-          fixed: expanded.has(n.id),
+          fixed: opened.has(n.id),
         };
       });
       for (const [id, off] of resolveCollisions(rects)) out.set(id, off);
     }
     displaceRef.current = out;
     return out;
-  }, [expanded, codeContent, viewGraph, slotSizes, dragActive]);
+  }, [expanded, codeContent, partsExpanded, partsContent, viewGraph, slotSizes, dragActive]);
 
   /** Cross-view identity per diagram node, stamped into node data (DOM attrs). */
   const nodeHlRefs = useMemo(() => {
@@ -973,6 +1013,29 @@ function CanvasInner({
       });
       nodes = [...nodes, ...kids];
     }
+    if (partsExpanded) {
+      // Same convention as live code: the opened system renders as a
+      // container that never shrinks below its reserved slot, part cards
+      // appended as children (parents already precede them in the array).
+      nodes = nodes.map((n) => {
+        if (!partsExpanded.has(n.id)) return n;
+        const content = partsContent.sizes.get(n.id);
+        const slot = slotSizes.get(n.id);
+        const width = Math.max(content?.width ?? 0, slot?.width ?? 0);
+        const height = Math.max(content?.height ?? 0, slot?.height ?? 0);
+        return {
+          ...n,
+          type: "container",
+          width: width || undefined,
+          height: height || undefined,
+          zIndex: -1,
+          className: "lod-grow",
+          dragHandle: ".arch-container-header",
+          data: { ...n.data, partsExpanded: true },
+        } as ArchRfNode;
+      });
+      nodes = [...nodes, ...partsContent.nodes];
+    }
     if (displacements.size > 0) {
       nodes = nodes.map((n) => {
         const off = displacements.get(n.id);
@@ -984,78 +1047,59 @@ function CanvasInner({
         } as CanvasNode;
       });
     }
-    if (findMisses && findMisses.size > 0) {
-      // Live-code children ride their module's verdict (they carry generated ids).
-      nodes = nodes.map((n) =>
-        findMisses.has(n.id) || (n.parentId && findMisses.has(n.parentId))
-          ? ({ ...n, className: cn(n.className, "arch-find-miss") } as CanvasNode)
-          : n,
-      );
-    }
-    if (flashId) {
-      nodes = nodes.map((n) =>
-        n.id === flashId ? ({ ...n, className: cn(n.className, "arch-flash") } as CanvasNode) : n,
-      );
-    }
-    if (hoverNeighborhood) {
-      // Spotlight the hovered node's import/export neighborhood by lifting it,
-      // not by receding everything else: the node under the cursor gets the
-      // strongest emphasis, its connected kin a softer one, and the rest of
-      // the diagram stays exactly as it was.
-      const parentOf = new Map(nodes.map((n) => [n.id, n.parentId]));
-      const lit = (id: string): boolean => {
-        let cur: string | undefined = id;
-        while (cur) {
-          if (hoverNeighborhood.has(cur)) return true;
-          cur = parentOf.get(cur) ?? undefined;
-        }
-        return false;
-      };
-      nodes = nodes.map((n) => {
-        if (!lit(n.id)) return n;
-        const cls = n.id === hovered ? "arch-hover-focus" : "arch-hover-near";
-        return { ...n, className: cn(n.className, cls) } as CanvasNode;
-      });
-    }
-    if (externalHover || pinned) {
-      // Cross-view highlight: ring whatever matches the hover published by
-      // another surface (flamegraph frame, journey step, code-map chip) or
-      // the deep-linked pinned selection. Kin = same lineage, softer ring.
-      nodes = nodes.map((n) => {
-        const el =
-          (n.data as { hlRef?: HighlightRef }).hlRef ??
-          hlRefForChild(n.data as Partial<MapNodeData>);
-        if (!el) return n;
-        const cls = hlClass(matchHighlight(externalHover, el), matchHighlight(pinned, el));
-        return cls ? ({ ...n, className: cn(n.className, cls) } as CanvasNode) : n;
-      });
-    }
     return nodes;
-  }, [viewGraph, selectedNodes, slotSizes, diffMarks, overlay, blockPreviews, flow, expanded, codeContent, dragOverrides, displacements, dragActive, hoverNeighborhood, hovered, flashId, findMisses, nodeHlRefs, externalHover, pinned, hlRefForChild]);
+  }, [viewGraph, selectedNodes, slotSizes, diffMarks, overlay, blockPreviews, flow, expanded, codeContent, partsExpanded, partsContent, dragOverrides, displacements, dragActive, nodeHlRefs]);
 
   const rfEdges = useMemo(() => {
     let edges = [...toRfEdges(viewGraph, selectedEdges, diffMarks), ...(codeContent.edges as ArchRfEdge[])];
     if (overlay) edges = applyOverlayToEdges(edges, overlay);
     if (flow) edges = applyFlowToEdges(edges, flow);
-    if (hovered) {
-      // Direction is the information: cyan = the hovered node imports/uses
-      // this, emerald = this imports/uses the hovered node.
-      edges = edges.map((e) => {
-        if (e.source !== hovered && e.target !== hovered) {
-          return e;
-        }
-        const color = e.source === hovered ? HOVER_OUT_STROKE : HOVER_IN_STROKE;
-        return {
-          ...e,
-          style: { ...e.style, stroke: color, strokeDasharray: undefined, strokeWidth: 2.2, opacity: 1 },
-          labelStyle: { fill: color, fontSize: 10, fontWeight: 600 },
-          markerEnd: { type: MarkerType.ArrowClosed, color, width: 16, height: 16 },
-          zIndex: 5,
-        };
+    if (partsExpanded && partLinkOf) {
+      // Boundary edges of an opened system split along their part
+      // attribution (the aggregate is suppressed); the system's internal
+      // part wiring rides along.
+      edges = splitEdgesByParts(edges, {
+        expanded: partsExpanded,
+        linkOf: partLinkOf,
+        maxWeight: Math.max(1, ...viewGraph.edges.map((e) => e.weight ?? 0)),
       });
+      edges = [...edges, ...(partsContent.edges as ArchRfEdge[])];
     }
     return edges;
-  }, [viewGraph, selectedEdges, diffMarks, overlay, flow, codeContent, hovered]);
+  }, [viewGraph, selectedEdges, diffMarks, overlay, flow, codeContent, partsExpanded, partLinkOf, partsContent]);
+
+  /**
+   * Ids to keep lit while `hovered` is set: the node itself plus everything
+   * it connects to. Derived from the rendered edges, so ghost edges,
+   * live-code imports, part wiring and split boundaries all count. Edge
+   * direction is reported separately by the edge decoration.
+   */
+  const hoverNeighborhood = useMemo(() => {
+    if (!hovered) return null;
+    const nodes = new Set<string>([hovered]);
+    for (const e of rfEdges) {
+      if (e.source === hovered) nodes.add(e.target);
+      else if (e.target === hovered) nodes.add(e.source);
+    }
+    return nodes;
+  }, [hovered, rfEdges]);
+
+  // Decorations (hover spotlight, find dimming, flash, cross-view rings) ride
+  // a separate identity-preserving pass: a hover change must never invalidate
+  // the structural memos above — that rebuilt every node's `data`, defeated
+  // React.memo on all card components, and cost ~9 full array passes per
+  // mouse-enter.
+  const displayNodes = useMemo(
+    () =>
+      decorateNodes(
+        rfNodes,
+        { findMisses, flashId, hovered, hoverNeighborhood, externalHover, pinned },
+        hlRefForChild,
+      ),
+    [rfNodes, findMisses, flashId, hovered, hoverNeighborhood, externalHover, pinned, hlRefForChild],
+  );
+
+  const displayEdges = useMemo(() => decorateEdges(rfEdges, hovered), [rfEdges, hovered]);
 
   const onNodesChange = useCallback(
     (changes: NodeChange<CanvasNode>[]) => {
@@ -1191,6 +1235,34 @@ function CanvasInner({
       scheduleFocus(id);
     },
     [codeExpanded, moduleForNode, scheduleFocus],
+  );
+
+  /** Open/close a multi-part system's part tier ("Expand components"). */
+  const toggleNodeParts = useCallback(
+    (id: string) => {
+      if (partsOpen.has(id)) {
+        setPartsOpen((prev) => {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
+        return;
+      }
+      // Parts and live code are alternate interiors of the same box — close
+      // the code view and keep the LOD engine from reopening it underneath.
+      if (codeExpanded.has(id)) {
+        autoExpandedNodes.current.delete(id);
+        setCodeExpanded((prev) => {
+          const next = new Map(prev);
+          next.delete(id);
+          return next;
+        });
+      }
+      lodSuppressedNodes.current.add(id);
+      setPartsOpen((prev) => new Set(prev).add(id));
+      scheduleFocus(id);
+    },
+    [partsOpen, codeExpanded, scheduleFocus],
   );
 
   // External drill requests ("zoom into this module/file") expand in place.
@@ -1542,7 +1614,7 @@ function CanvasInner({
       for (const n of live) {
         const data = n.data as Partial<ArchRfNode["data"]>;
         const arch = data.arch;
-        if (!arch || data.codeExpanded) continue;
+        if (!arch || data.codeExpanded || data.partsExpanded) continue;
         if (isContainerKind(arch.kind) || arch.kind === "note" || arch.codeFile) continue;
         if (expandedRef.current.has(n.id) || autoExpandedNodes.current.has(n.id)) continue;
         if (lodSuppressedNodes.current.has(n.id)) continue;
@@ -2000,6 +2072,20 @@ function CanvasInner({
           hint: !isLiveExpanded ? (module ?? undefined) : undefined,
           onSelect: () => toggleNodeCode(node.id),
         },
+        // Only multi-part systems open — a single part is the card itself.
+        ...(partSystems?.has(node.id)
+          ? [
+              {
+                type: "item",
+                label: partsOpen.has(node.id) ? "Collapse components" : "Expand components",
+                icon: partsOpen.has(node.id) ? Shrink : Expand,
+                hint: partsOpen.has(node.id)
+                  ? undefined
+                  : `${partSystems.get(node.id)!.parts.length} parts`,
+                onSelect: () => toggleNodeParts(node.id),
+              } satisfies MenuEntry,
+            ]
+          : []),
         {
           type: "item",
           label: "Peek code",
@@ -2161,6 +2247,24 @@ function CanvasInner({
         },
       ];
     }
+    // Split boundary edges (part attribution) aren't graph edges — offer the
+    // aggregate's contract instead of nothing.
+    const splitBase = /^(link:.*)#\d+$/.exec(menu.id)?.[1];
+    if (splitBase) {
+      return [
+        { type: "heading", label: "Boundary (part attribution)" },
+        ...(onOpenContract
+          ? [
+              {
+                type: "item",
+                label: "View boundary contract",
+                icon: FileText,
+                onSelect: () => onOpenContract(splitBase),
+              } satisfies MenuEntry,
+            ]
+          : []),
+      ];
+    }
     const edge = g.edges.find((e) => e.id === menu.id);
     if (!edge) return [];
     const endpointName = (id: string) => g.nodes.find((n) => n.id === id)?.label ?? "?";
@@ -2247,6 +2351,9 @@ function CanvasInner({
     symbolMenu,
     extraNodeEntries,
     onOpenContract,
+    partSystems,
+    partsOpen,
+    toggleNodeParts,
   ]);
 
   const mapActions = useMemo<MapActions>(
@@ -2363,8 +2470,8 @@ function CanvasInner({
       )}
     >
       <ReactFlow
-        nodes={rfNodes}
-        edges={rfEdges}
+        nodes={displayNodes}
+        edges={displayEdges}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         snapToGrid

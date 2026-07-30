@@ -40,7 +40,7 @@ export const ContainerNode = memo(function ContainerNode({
         </span>
       ) : null}
       <NodeResizer
-        isVisible={selected && !data.codeExpanded}
+        isVisible={selected && !data.codeExpanded && !data.partsExpanded}
         minWidth={220}
         minHeight={140}
         lineClassName="!border-crystal-400/60"
@@ -59,6 +59,14 @@ export const ContainerNode = memo(function ContainerNode({
             title="Expanded into live code — derived from source, updates as code changes"
           >
             live
+          </span>
+        ) : null}
+        {data.partsExpanded ? (
+          <span
+            className="shrink-0 rounded-full bg-crystal-500/15 px-1.5 text-[9px] leading-4 text-crystal-300"
+            title="Opened into its parts — boundary edges split along their part attribution"
+          >
+            parts
           </span>
         ) : null}
         {data.codeLoading ? <Spinner className="h-3 w-3 shrink-0" /> : null}

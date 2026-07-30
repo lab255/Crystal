@@ -10,7 +10,14 @@ import { useCanonicalArchitecture } from "./use-canonical-architecture.js";
  * edits made in the architect mode.
  */
 export function ArchPane() {
-  const { codeSummary, rendered, commitEdited } = useCanonicalArchitecture();
+  const { overviewData, codeSummary, rendered, commitEdited } = useCanonicalArchitecture();
   if (!rendered) return null;
-  return <ArchitectCanvas graph={rendered} onChange={commitEdited} codeSummary={codeSummary} />;
+  return (
+    <ArchitectCanvas
+      graph={rendered}
+      onChange={commitEdited}
+      codeSummary={codeSummary}
+      overview={overviewData}
+    />
+  );
 }

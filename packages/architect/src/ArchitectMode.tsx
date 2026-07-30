@@ -744,7 +744,9 @@ function DiagramsView({
   }, [overviewData]);
   const openContractForEdge = useCallback(
     (edgeId: string): boolean => {
-      const key = contractKeyByEdgeId.get(edgeId);
+      // Part-split edges are `<aggregateId>#<i>` — the contract belongs to
+      // the aggregate boundary.
+      const key = contractKeyByEdgeId.get(edgeId.replace(/#\d+$/, ""));
       if (key) setActiveEdgeKey(key);
       return key != null;
     },
@@ -1163,6 +1165,7 @@ function DiagramsView({
                   diffMarks={activeDraft ? null : (archDiff?.marks ?? null)}
                   onChange={commitGraph}
                   codeSummary={codeSummary}
+                  overview={activeDraft ? null : overviewData}
                   overlayOn={overlayOn}
                   onToggleOverlay={setOverlayOn}
                   draftMode={!!activeDraft}
