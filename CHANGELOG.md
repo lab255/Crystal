@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.16.0 (2026-07-30)
+
+### Features
+
+- part tier on the canvas + decorations off the structural memo ([`25dfc12`](https://github.com/eliotlim/crystal/commit/25dfc12))
+
+### Bug Fixes
+
+- survey imports merge into the overlay; stale systems-view refs ([`799c542`](https://github.com/eliotlim/crystal/commit/799c542))
+
 ## v0.15.0 (2026-07-30)
 
 ### Features
