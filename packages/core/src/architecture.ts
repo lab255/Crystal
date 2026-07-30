@@ -25,6 +25,7 @@ export const ARCH_NODE_KINDS = [
   "loadbalancer",
   "frontend",
   "external",
+  "endpoint",
   "note",
 ] as const;
 
@@ -49,6 +50,7 @@ export const DEFAULT_LAYER_OF_KIND: Partial<Record<ArchNodeKind, ArchLayer>> = {
   loadbalancer: "entry",
   frontend: "entry",
   external: "entry",
+  endpoint: "entry",
   service: "service",
   repo: "service",
   package: "service",

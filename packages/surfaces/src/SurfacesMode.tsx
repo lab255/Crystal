@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import {
   AppWindow,
   BookOpenText,
@@ -231,6 +231,14 @@ function ArchSidePane() {
   const nav = useNavUpdate();
   const arch = useArchHighlight();
   const { compact } = useSidePaneLayout();
+  // The pane is the surfaces mode's window onto the architecture — give it
+  // the screens + calls join so surface→API contracts render as flow edges
+  // onto ep: nodes (the reason this pane exists next to these lists).
+  const { report, map } = useSurfaces();
+  const paneSurfaces = useMemo(
+    () => (report && map ? { screens: report.screens, calls: map.calls } : null),
+    [report, map],
+  );
 
   return (
     <div className="flex h-full min-h-0 flex-col border-l border-edge bg-surface-0">
@@ -271,7 +279,7 @@ function ArchSidePane() {
         </span>
       </div>
       <div className="min-h-0 flex-1">
-        <ArchPane />
+        <ArchPane surfaces={paneSurfaces} />
       </div>
     </div>
   );

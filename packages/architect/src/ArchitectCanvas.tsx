@@ -51,6 +51,7 @@ import {
   formatHighlightSel,
   isContainerKind,
   linkByEdgeId,
+  linkEdgeId,
   uid,
   type ArchNode,
   type ArchEdgeKind,
@@ -153,6 +154,7 @@ import {
   type PartRfNode,
 } from "./part-split.js";
 import { PartNode } from "./nodes/PartNode.js";
+import { buildSystemCardFacts, maxSlot, systemCardSlot } from "./system-card.js";
 
 const nodeTypes = {
   container: ContainerNode,
@@ -229,6 +231,9 @@ export interface ArchitectCanvasProps {
   /** Screens layer toggle (the folded-in surfaces map). */
   showScreens?: boolean;
   onToggleScreens?: (on: boolean) => void;
+  /** Routes tier of the screens layer — called endpoints as their own nodes. */
+  showEndpoints?: boolean;
+  onToggleEndpoints?: (on: boolean) => void;
   /** View-supplied entries prepended to a node's context menu (focus filter…). */
   extraNodeEntries?: (node: ArchNode) => MenuEntry[];
   /**
@@ -407,6 +412,8 @@ function CanvasInner({
   onToggleContracts,
   showScreens,
   onToggleScreens,
+  showEndpoints,
+  onToggleEndpoints,
   extraNodeEntries,
   onOpenContract,
   diffMarks,
@@ -549,6 +556,15 @@ function CanvasInner({
     const idOfRaw = canonicalSystemIds(overview.systems);
     return linkByEdgeId(overview, (raw) => idOfRaw.get(raw) ?? raw);
   }, [overview]);
+  /**
+   * Canonical node id → semantic card facts (exports × consumers, consumes
+   * footer, role) — the retired systems view's card body, joined onto canvas
+   * nodes. Plain records only: node data must stay structured-clonable.
+   */
+  const systemCards = useMemo(
+    () => (overview ? buildSystemCardFacts(overview) : null),
+    [overview],
+  );
   /** Only systems that still exist (and the facet shows) stay open. */
   const partsExpanded = useMemo(() => {
     if (!partSystems || partsOpen.size === 0) return null;
@@ -783,7 +799,21 @@ function CanvasInner({
     }
     return { sizes, modules };
   }, [graph, codeSummary, moduleForNode]);
-  const slotSizes = slots.sizes;
+  /**
+   * Final reserved footprints: the module-expansion estimate, raised to the
+   * semantic card's own height where the exports/consumes body needs more —
+   * same reserved-LOD-footprint convention (`layout.ts`), so the card body
+   * always fits its box and zooming never reflows. Card-only entries also
+   * give systems without a resolvable module a real slot.
+   */
+  const slotSizes = useMemo(() => {
+    if (!systemCards || systemCards.size === 0) return slots.sizes;
+    const merged = new Map(slots.sizes);
+    for (const [id, facts] of systemCards) {
+      merged.set(id, maxSlot(merged.get(id), systemCardSlot(facts)));
+    }
+    return merged;
+  }, [slots, systemCards]);
 
   /**
    * Every slotted block previews its module's files at medium zoom, so module
@@ -966,6 +996,13 @@ function CanvasInner({
         return code ? ({ ...n, data: { ...n.data, code } } as ArchRfNode) : n;
       });
     }
+    if (systemCards && systemCards.size > 0) {
+      // System cards carry their semantic body (exports, consumes, role).
+      nodes = nodes.map((n) => {
+        const system = systemCards.get(n.id);
+        return system ? ({ ...n, data: { ...n.data, system } } as ArchRfNode) : n;
+      });
+    }
     if (blockPreviews.size > 0) {
       nodes = nodes.map((n) => {
         const preview = blockPreviews.get(n.id);
@@ -1048,7 +1085,7 @@ function CanvasInner({
       });
     }
     return nodes;
-  }, [viewGraph, selectedNodes, slotSizes, diffMarks, overlay, blockPreviews, flow, expanded, codeContent, partsExpanded, partsContent, dragOverrides, displacements, dragActive, nodeHlRefs]);
+  }, [viewGraph, selectedNodes, slotSizes, diffMarks, overlay, systemCards, blockPreviews, flow, expanded, codeContent, partsExpanded, partsContent, dragOverrides, displacements, dragActive, nodeHlRefs]);
 
   const rfEdges = useMemo(() => {
     let edges = [...toRfEdges(viewGraph, selectedEdges, diffMarks), ...(codeContent.edges as ArchRfEdge[])];
@@ -2375,6 +2412,28 @@ function CanvasInner({
       ? graph.edges.find((e) => selectedEdges.has(e.id))
       : undefined;
 
+  /**
+   * The selected node resolved against the overview: when it maps to a
+   * system, the inspector renders the restored system detail sections
+   * (parts, exports, routes, boundaries). Panels speak raw overview ids;
+   * `canonicalOf` translates back to canvas node ids.
+   */
+  const selectedSystem = useMemo(() => {
+    if (!overview || !selectedNode) return null;
+    const idOfRaw = canonicalSystemIds(overview.systems);
+    const system = overview.systems.find((s) => (idOfRaw.get(s.id) ?? s.id) === selectedNode.id);
+    if (!system) return null;
+    const names = new Map(overview.systems.map((s) => [s.id, s.name]));
+    return {
+      selection: {
+        system,
+        links: overview.links,
+        nameOf: (raw: string) => names.get(raw) ?? raw,
+      },
+      canonicalOf: (raw: string) => idOfRaw.get(raw) ?? raw,
+    };
+  }, [overview, selectedNode]);
+
   /** First diagram node linked to each module — targets for insight-row jumps. */
   const moduleNodeIds = useMemo(() => {
     const m = new Map<string, string>();
@@ -2572,6 +2631,8 @@ function CanvasInner({
             onToggleContracts={onToggleContracts}
             showScreens={showScreens}
             onToggleScreens={onToggleScreens}
+            showEndpoints={showEndpoints}
+            onToggleEndpoints={onToggleEndpoints}
             onOpenWorkspacesMap={onOpenWorkspacesMap}
           />
         </Panel>
@@ -2625,6 +2686,25 @@ function CanvasInner({
           edge={selectedEdge}
           codeModules={codeSummary?.modules}
           insight={selectedInsight}
+          systemSel={selectedSystem?.selection ?? null}
+          onFocusSystem={
+            selectedSystem
+              ? (raw) => focusNode(selectedSystem.canonicalOf(raw))
+              : undefined
+          }
+          onOpenBoundary={
+            selectedSystem && onOpenContract
+              ? (l) => {
+                  onOpenContract(
+                    linkEdgeId(
+                      selectedSystem.canonicalOf(l.source),
+                      selectedSystem.canonicalOf(l.target),
+                    ),
+                  );
+                }
+              : undefined
+          }
+          onStartJourney={onStartJourney}
           onFocusNode={focusNode}
           onGraphChange={commit}
           onOpenContract={onOpenContract}

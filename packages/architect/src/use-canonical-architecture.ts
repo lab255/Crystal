@@ -20,6 +20,7 @@ import {
 } from "@crystal/client";
 import { autoLayoutFitted } from "./layout.js";
 import { estimateModuleFootprint } from "./live-code.js";
+import { buildSystemCardFacts, maxSlot, systemCardSlot } from "./system-card.js";
 
 /**
  * The one canonical architecture, as a hook: fetches the overview + code map
@@ -30,8 +31,16 @@ import { estimateModuleFootprint } from "./live-code.js";
  * embedded architecture pane, so they can never drift apart on the model.
  */
 export function useCanonicalArchitecture(options?: {
-  /** Screens layer input (the folded-in surfaces map); null/absent = layer off. */
-  surfaces?: { screens: readonly ScreenSurface[]; calls: readonly ScreenApiCall[] } | null;
+  /**
+   * Screens layer input (the folded-in surfaces map); null/absent = layer
+   * off. `endpoints` additionally materializes called routes as `ep:` nodes
+   * and retargets the flow edges at them.
+   */
+  surfaces?: {
+    screens: readonly ScreenSurface[];
+    calls: readonly ScreenApiCall[];
+    endpoints?: boolean;
+  } | null;
 }): {
   overviewData: SystemOverview | null;
   codeSummary: CodeMapSummary | null;
@@ -110,13 +119,19 @@ export function useCanonicalArchitecture(options?: {
     const composed = composeArchitecture(derived, reconciled);
     // Reserved LOD footprints, same convention as the canvas's own
     // auto-layout: each code-linked node is laid out at the size its zoomed
-    // expansion needs, so zooming into code never overlaps neighbors.
+    // expansion needs — raised to its semantic card body's own height where
+    // the exports/consumes sections need more — so neither zooming into code
+    // nor the card content ever overlaps neighbors.
     const reserve = new Map<string, { width: number; height: number }>();
     if (overviewData) {
       const idOfRaw = canonicalSystemIds(overviewData.systems);
+      const cards = buildSystemCardFacts(overviewData);
       for (const s of overviewData.systems) {
-        if (s.fileCount > 0)
-          reserve.set(idOfRaw.get(s.id) ?? s.id, estimateModuleFootprint(s.fileCount));
+        const id = idOfRaw.get(s.id) ?? s.id;
+        const footprint = s.fileCount > 0 ? estimateModuleFootprint(s.fileCount) : undefined;
+        const card = cards.get(id);
+        const slot = card ? maxSlot(footprint, systemCardSlot(card)) : footprint;
+        if (slot) reserve.set(id, slot);
       }
     }
     const laid = autoLayoutFitted(composed, { mode: "flow", reserve });

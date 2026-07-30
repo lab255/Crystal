@@ -8,7 +8,13 @@ import type { CodeModule } from "./codemap.js";
 import type { DiffMarks } from "./diagram-diff.js";
 import { ARCH_KIND_OF_CATEGORY, type CodeExternalDep } from "./external-services.js";
 import type { ScreenApiCall, ScreenSurface } from "./surfaces.js";
-import type { SystemLink, SystemModule, SystemOverview, SystemRole } from "./system-overview.js";
+import {
+  endpointKey,
+  type SystemLink,
+  type SystemModule,
+  type SystemOverview,
+  type SystemRole,
+} from "./system-overview.js";
 import { computeSystemInsights, type SystemChange, type SystemOverviewDiff } from "./system-insights.js";
 
 /**
@@ -37,9 +43,16 @@ export interface DeriveInput {
   /**
    * Screens layer (the surfaces map, folded in): screens render as frontend
    * nodes grouped by owning module, and their API reachability becomes
-   * screen→system flow edges. Null/absent leaves the layer off.
+   * screen→system flow edges. Null/absent leaves the layer off. With
+   * `endpoints` also on, called routes materialize as `ep:` nodes grouped
+   * per serving system and the flow edges target the route, not the system —
+   * the surface→API contract as edges instead of side-pane prose.
    */
-  surfaces?: { screens: readonly ScreenSurface[]; calls: readonly ScreenApiCall[] } | null;
+  surfaces?: {
+    screens: readonly ScreenSurface[];
+    calls: readonly ScreenApiCall[];
+    endpoints?: boolean;
+  } | null;
 }
 
 /** Role → node kind (the systems view's mapping, layer-refined below). */
@@ -385,25 +398,124 @@ export function deriveArchGraph(input: DeriveInput): ArchitectureGraph {
         layer: "entry",
       });
     }
+    // Calls with no serving route are drift worth surfacing, not dropping —
+    // they land as a badge on the screen card (the retired map's rule).
+    const unmatched = new Map<string, number>();
+    for (const call of calls) {
+      if (!call.endpoint)
+        unmatched.set(call.screen, (unmatched.get(call.screen) ?? 0) + 1);
+    }
+    for (const [screenId, count] of unmatched) {
+      const node = nodes.find((n) => n.id === `screen:${screenId}`);
+      if (node) {
+        node.description = [node.description, `${count} unmatched call${count > 1 ? "s" : ""}`]
+          .filter(Boolean)
+          .join(" · ");
+      }
+    }
+
+    // Route ownership comes from the overview itself — a system lists the
+    // endpoints it serves — with path attribution as the fallback for routes
+    // the clustering didn't claim.
+    const ownerOfEndpoint = new Map<string, string>();
+    for (const s of overview.systems) {
+      for (const ep of s.endpoints) {
+        const key = endpointKey(ep);
+        if (!ownerOfEndpoint.has(key)) ownerOfEndpoint.set(key, idOf(s.id));
+      }
+    }
+    const withEndpoints = input.surfaces.endpoints === true;
     const screenIds = new Set(screens.map((s) => `screen:${s.id}`));
-    const flows = new Map<string, { source: string; target: string; weight: number }>();
+    const ownerOfScreen = new Map<string, string | null>();
+    for (const screen of screens) {
+      ownerOfScreen.set(
+        `screen:${screen.id}`,
+        systemOfModule(screen.file, overview.systems, idOf),
+      );
+    }
+    const flows = new Map<
+      string,
+      { source: string; target: string; weight: number; method: string; path: string }
+    >();
+    const routeGroups = new Set<string>();
     for (const call of calls) {
       const source = `screen:${call.screen}`;
       if (!call.endpoint || !screenIds.has(source)) continue;
-      const target = systemOfModule(call.endpoint.file, overview.systems, idOf);
-      if (!target) continue;
-      const key = `${source}\0${target}`;
-      const entry = flows.get(key) ?? { source, target, weight: 0 };
-      entry.weight += 1;
-      flows.set(key, entry);
+      const epKey = endpointKey(call.endpoint);
+      const owner =
+        ownerOfEndpoint.get(epKey) ?? systemOfModule(call.endpoint.file, overview.systems, idOf);
+      if (!owner) continue;
+      // A screen calling a route its own system serves is plumbing, not
+      // architecture — the retired map skipped these loops too.
+      if (owner === ownerOfScreen.get(source)) continue;
+      if (withEndpoints) {
+        const epId = `ep:${epKey}`;
+        const groupId = `routes:${owner}`;
+        if (!routeGroups.has(groupId)) {
+          routeGroups.add(groupId);
+          const ownerNode = nodes.find((n) => n.id === owner);
+          nodes.push({
+            id: groupId,
+            kind: "group",
+            label: `${ownerNode?.label ?? owner} routes`,
+            description: "",
+            parentId: null,
+            position: { x: 0, y: 0 },
+            size: null,
+            tech: [],
+            placements: {},
+            layer: "entry",
+          });
+          // Anchors the routes box beside the system that serves them.
+          edges.push({
+            id: `eplink:${groupId}->${owner}`,
+            source: groupId,
+            target: owner,
+            kind: "dependency",
+            label: "serves",
+          });
+        }
+        if (!nodes.some((n) => n.id === epId)) {
+          nodes.push({
+            id: epId,
+            kind: "endpoint",
+            label: epKey,
+            description: "",
+            parentId: groupId,
+            position: { x: 0, y: 0 },
+            size: null,
+            tech: [],
+            codeFile: call.endpoint.file,
+            placements: {},
+            layer: "entry",
+          });
+        }
+        const key = `${source}\0${epId}`;
+        const entry =
+          flows.get(key) ??
+          { source, target: epId, weight: 0, method: call.method, path: call.path };
+        entry.weight += 1;
+        flows.set(key, entry);
+      } else {
+        const key = `${source}\0${owner}`;
+        const entry =
+          flows.get(key) ??
+          { source, target: owner, weight: 0, method: call.method, path: call.path };
+        entry.weight += 1;
+        flows.set(key, entry);
+      }
     }
-    for (const { source, target, weight } of flows.values()) {
+    for (const { source, target, weight, method, path } of flows.values()) {
+      // The wire label the old map carried: the route for a single call, the
+      // call count otherwise; apiOnly dashes the stroke (contract, no import).
       edges.push({
         id: `flow:${source}->${target}`,
         source,
         target,
         kind: "sync",
-        label: weight > 1 ? String(weight) : "",
+        label: weight === 1 ? `${method} ${path}` : `${weight} calls`,
+        weight,
+        apiOnly: true,
       });
     }
   }

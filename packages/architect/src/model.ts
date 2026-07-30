@@ -30,6 +30,7 @@ import {
 } from "lucide-react";
 import type { OverlayBadge } from "./overlay.js";
 import type { BlockPreview } from "./live-code.js";
+import type { SystemCardFacts } from "./system-card.js";
 import { assignLanes, isBusbarScale } from "./edge-routing.js";
 
 /* ------------------------------------------------------------------ */
@@ -57,6 +58,7 @@ export const KIND_META: Record<ArchNodeKind, KindMeta> = {
   loadbalancer: { label: "Load balancer", icon: Waypoints, defaultAccent: "cyan" },
   frontend: { label: "Frontend", icon: AppWindow, defaultAccent: "cyan" },
   external: { label: "External", icon: Globe, defaultAccent: "slate" },
+  endpoint: { label: "Endpoint", icon: Waypoints, defaultAccent: "blue" },
   note: { label: "Note", icon: StickyNote, defaultAccent: "amber" },
 };
 
@@ -98,6 +100,12 @@ export type ArchRfNode = RfNode<{
    * inside the slot at medium zoom, where a bare title wastes the reserved area.
    */
   preview?: BlockPreview;
+  /**
+   * Semantic system-card body (exports with consumer counts, consumes
+   * footer, role) joined from the overview by canonical id — a plain,
+   * structured-clonable record (see system-card.ts).
+   */
+  system?: SystemCardFacts;
   /** Node is expanded into live code (unified view) — renders as a container. */
   codeExpanded?: boolean;
   /** Expanded, but the module detail is still loading. */

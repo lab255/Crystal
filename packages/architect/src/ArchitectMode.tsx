@@ -339,8 +339,15 @@ function DiagramsView({
   // flows join the derivation when the `layers` param asks for them.
   const layersParam = useNav((l) => l.architect?.layers) ?? null;
   const screensOn = layersParam?.split(",").includes("screens") ?? false;
+  const endpointsOn = screensOn && (layersParam?.split(",").includes("endpoints") ?? false);
   const setScreensOn = useCallback(
+    // Turning screens off retires the routes tier with it — endpoints are
+    // the screens layer's targets, meaningless alone.
     (on: boolean) => nav({ architect: { layers: on ? "screens" : null } }),
+    [nav],
+  );
+  const setEndpointsOn = useCallback(
+    (on: boolean) => nav({ architect: { layers: on ? "screens,endpoints" : "screens" } }),
     [nav],
   );
   const [screensData, setScreensData] = useState<{
@@ -369,8 +376,12 @@ function DiagramsView({
     });
   }, [client, screensOn, fetchScreens, activeWs]);
 
+  const surfacesInput = useMemo(
+    () => (screensOn && screensData ? { ...screensData, endpoints: endpointsOn } : null),
+    [screensOn, screensData, endpointsOn],
+  );
   const { overviewData, codeSummary, reconciled, rendered, commitEdited } =
-    useCanonicalArchitecture({ surfaces: screensOn ? screensData : null });
+    useCanonicalArchitecture({ surfaces: surfacesInput });
 
   /* ---- ref review: "vs <ref>" on the canonical architecture ---- */
 
@@ -1189,6 +1200,8 @@ function DiagramsView({
                   onToggleContracts={setShowContracts}
                   showScreens={screensOn}
                   onToggleScreens={setScreensOn}
+                  showEndpoints={endpointsOn}
+                  onToggleEndpoints={setEndpointsOn}
                   extraNodeEntries={extraNodeEntries}
                   onOpenContract={activeDraft ? undefined : openContractForEdge}
                 />

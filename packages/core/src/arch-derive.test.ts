@@ -226,6 +226,138 @@ describe("deriveArchGraph", () => {
   });
 });
 
+describe("screens and endpoints layers", () => {
+  const FRONTEND = system({
+    id: "sys:web",
+    name: "Web",
+    role: "entry",
+    layer: "frontend",
+    parts: [{ path: "packages/web", pkg: "packages/web", fileCount: 12 }],
+  });
+  const API = system({
+    id: "sys:api",
+    name: "API",
+    parts: [{ path: "packages/server/src/api", pkg: "packages/server", fileCount: 9 }],
+    endpoints: [
+      { method: "GET", path: "/api/forms", file: "packages/server/src/api/forms.ts" },
+      { method: "POST", path: "/api/forms", file: "packages/server/src/api/forms.ts" },
+    ],
+  });
+  const screens = [
+    {
+      id: "react-router:/forms",
+      route: "/forms",
+      file: "packages/web/src/pages/Forms.tsx",
+      source: "react-router" as const,
+    },
+  ];
+  const modules = [
+    { path: "packages/web", name: "web", fileCount: 12 },
+    { path: "packages/server", name: "server", fileCount: 9 },
+  ];
+
+  it("aggregates matched calls into labelled screen→system flow edges", () => {
+    const graph = deriveArchGraph({
+      overview: overview([FRONTEND, API]),
+      externals: [],
+      modules,
+      surfaces: {
+        screens,
+        calls: [
+          {
+            screen: "react-router:/forms",
+            method: "GET",
+            path: "/api/forms",
+            file: "packages/web/src/pages/Forms.tsx",
+            endpoint: { method: "GET", path: "/api/forms", file: "packages/server/src/api/forms.ts" },
+          },
+        ],
+      },
+    });
+    const flow = graph.edges.find((e) => e.id.startsWith("flow:"))!;
+    expect(flow.source).toBe("screen:react-router:/forms");
+    expect(flow.target).toBe("sys:api");
+    expect(flow.label).toBe("GET /api/forms"); // the route itself for a single call
+    expect(flow.weight).toBe(1);
+    expect(flow.apiOnly).toBe(true);
+  });
+
+  it("materializes called routes as ep: nodes grouped per serving system", () => {
+    const graph = deriveArchGraph({
+      overview: overview([FRONTEND, API]),
+      externals: [],
+      modules,
+      surfaces: {
+        endpoints: true,
+        screens,
+        calls: [
+          {
+            screen: "react-router:/forms",
+            method: "GET",
+            path: "/api/forms",
+            file: "packages/web/src/pages/Forms.tsx",
+            endpoint: { method: "GET", path: "/api/forms", file: "packages/server/src/api/forms.ts" },
+          },
+          {
+            screen: "react-router:/forms",
+            method: "GET",
+            path: "/api/forms",
+            file: "packages/web/src/components/FormList.tsx",
+            endpoint: { method: "GET", path: "/api/forms", file: "packages/server/src/api/forms.ts" },
+          },
+        ],
+      },
+    });
+    const ep = graph.nodes.find((n) => n.id === "ep:GET /api/forms")!;
+    expect(ep.kind).toBe("endpoint");
+    expect(ep.parentId).toBe("routes:sys:api");
+    expect(ep.codeFile).toBe("packages/server/src/api/forms.ts");
+    const group = graph.nodes.find((n) => n.id === "routes:sys:api")!;
+    expect(group.kind).toBe("group");
+    expect(group.label).toBe("API routes");
+    // The routes box is anchored beside the system that serves them…
+    expect(graph.edges.some((e) => e.id === "eplink:routes:sys:api->sys:api")).toBe(true);
+    // …and the flow targets the route, aggregated over both call sites.
+    const flow = graph.edges.find((e) => e.id.startsWith("flow:"))!;
+    expect(flow.target).toBe("ep:GET /api/forms");
+    expect(flow.label).toBe("2 calls");
+    expect(flow.weight).toBe(2);
+    // The uncalled POST route stays off the canvas (pane material, not graph).
+    expect(graph.nodes.some((n) => n.id === "ep:POST /api/forms")).toBe(false);
+  });
+
+  it("suppresses same-system loops and badges unmatched calls", () => {
+    const graph = deriveArchGraph({
+      overview: overview([FRONTEND, API]),
+      externals: [],
+      modules,
+      surfaces: {
+        screens,
+        calls: [
+          {
+            // Serving file lives in the screen's own system — plumbing, not architecture.
+            screen: "react-router:/forms",
+            method: "GET",
+            path: "/session",
+            file: "packages/web/src/pages/Forms.tsx",
+            endpoint: { method: "GET", path: "/session", file: "packages/web/src/server.ts" },
+          },
+          {
+            // No serving route matched — drift worth surfacing on the card.
+            screen: "react-router:/forms",
+            method: "POST",
+            path: "/api/missing",
+            file: "packages/web/src/pages/Forms.tsx",
+          },
+        ],
+      },
+    });
+    expect(graph.edges.some((e) => e.id.startsWith("flow:"))).toBe(false);
+    const screen = graph.nodes.find((n) => n.id === "screen:react-router:/forms")!;
+    expect(screen.description).toContain("1 unmatched call");
+  });
+});
+
 describe("overview diff projection", () => {
   const diff: SystemOverviewDiff = {
     addedSystems: [{ id: "sys:new", name: "New", role: "domain", fileCount: 4 }],

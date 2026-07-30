@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { AppWindow, ClipboardCheck, Copy, Handshake, History, Layers, LayoutGrid, Lightbulb, Maximize2, Network, Radar, Rows3, X, ZoomIn } from "lucide-react";
+import { AppWindow, ClipboardCheck, Copy, Handshake, History, Layers, LayoutGrid, Lightbulb, Maximize2, Network, Radar, Rows3, Waypoints, X, ZoomIn } from "lucide-react";
 import type { ArchEdgeKind, ArchitectureGraph, CodeLodLevel } from "@crystal/core";
 import { Button, Tooltip, cn } from "@crystal/ui";
 import { EDGE_KIND_STYLE } from "./model.js";
@@ -34,6 +34,8 @@ export function Toolbar({
   onToggleContracts,
   showScreens,
   onToggleScreens,
+  showEndpoints,
+  onToggleEndpoints,
   onOpenWorkspacesMap,
 }: {
   graph: ArchitectureGraph;
@@ -65,6 +67,9 @@ export function Toolbar({
   onToggleContracts?: (on: boolean) => void;
   showScreens?: boolean;
   onToggleScreens?: (on: boolean) => void;
+  /** Routes tier of the screens layer — called endpoints as their own nodes. */
+  showEndpoints?: boolean;
+  onToggleEndpoints?: (on: boolean) => void;
   /** Open the cross-workspace map (all open workspaces and their imports). */
   onOpenWorkspacesMap?: () => void;
 }) {
@@ -282,6 +287,24 @@ export function Toolbar({
           >
             <AppWindow className="h-3.5 w-3.5" />
             screens
+          </button>
+        </Tooltip>
+      ) : null}
+      {onToggleEndpoints && showScreens ? (
+        <Tooltip content="Routes tier — called endpoints as their own nodes, screen flows landing on the exact route">
+          <button
+            type="button"
+            aria-pressed={showEndpoints}
+            onClick={() => onToggleEndpoints(!showEndpoints)}
+            className={cn(
+              "flex h-6 items-center gap-1.5 rounded-md px-1.5 text-[11px] transition-colors",
+              showEndpoints
+                ? "bg-crystal-500/15 text-crystal-300"
+                : "text-ink-faint hover:text-ink-muted",
+            )}
+          >
+            <Waypoints className="h-3.5 w-3.5" />
+            routes
           </button>
         </Tooltip>
       ) : null}

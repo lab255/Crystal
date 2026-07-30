@@ -1,12 +1,14 @@
 import { Handle, Position, useStore, type NodeProps } from "@xyflow/react";
 import { memo, useMemo } from "react";
-import { FileCode2, Folder, FolderGit2 } from "lucide-react";
+import { Component, FileCode2, Folder, FolderGit2 } from "lucide-react";
 import { Badge, cn } from "@crystal/ui";
-import { KIND_META, accentOf, type ArchRfNode } from "../model.js";
+import { ACCENT_CSS, KIND_META, accentOf, type ArchRfNode } from "../model.js";
 import type { BlockPreview } from "../live-code.js";
 import { STAGE_TEXT_PX, useLodConfig } from "../lod-config.js";
 import { highlightAttrs } from "../use-highlight.js";
 import { DiffCornerBadge, diffBorderStyle, diffNodeClass } from "./diff-badge.js";
+import { ROLE_META } from "../systems/role-meta.js";
+import type { SystemCardFacts } from "../system-card.js";
 
 /** Natural chip metrics at scale 1 (matches the rendered css below). */
 const CHIP_H = 28;
@@ -49,11 +51,102 @@ function topDirs(preview: BlockPreview, max: number): { dir: string; count: numb
     .map(([dir, count]) => ({ dir: dir === "" ? "(root)" : `${dir}/`, count }));
 }
 
+/**
+ * The semantic body of a system card (from the retired systems view): the
+ * consumed export surface with consumer counts, and a Consumes footer naming
+ * the systems · externals · libraries this one leans on. Rendered inside the
+ * reserved slot at slot-scaled type, at the LOD tier where file chips are not
+ * yet legible — once chips take over, the interior belongs to the code.
+ */
+function SystemCardBody({ facts, rowPx }: { facts: SystemCardFacts; rowPx: number }) {
+  const headingPx = Math.max(8, Math.round(rowPx * 0.8));
+  const rowH = Math.round(rowPx * 1.7);
+  const hasConsumes =
+    facts.consumes.length > 0 || facts.externals.length > 0 || facts.libraries.length > 0;
+  return (
+    <>
+      {facts.exports.length > 0 ? (
+        <div className="min-h-0 overflow-hidden border-t border-edge/60 pt-1">
+          <div
+            className="font-medium uppercase tracking-wide text-ink-faint"
+            style={{ fontSize: headingPx }}
+          >
+            Exports
+          </div>
+          {facts.exports.map((e) => (
+            <div key={e.name} className="flex items-baseline gap-1.5" style={{ lineHeight: `${rowH}px` }}>
+              {e.component ? (
+                <Component
+                  className="shrink-0 self-center text-accent-violet"
+                  style={{ width: rowPx, height: rowPx }}
+                />
+              ) : null}
+              <span className="min-w-0 truncate font-mono text-ink-muted" style={{ fontSize: rowPx }}>
+                {e.name}
+              </span>
+              <span className="ml-auto shrink-0 text-ink-faint" style={{ fontSize: headingPx }}>
+                ×{e.consumers}
+              </span>
+            </div>
+          ))}
+          {facts.exportsMore > 0 ? (
+            <div className="text-ink-faint" style={{ fontSize: headingPx, lineHeight: `${rowH}px` }}>
+              +{facts.exportsMore} more
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+      {hasConsumes ? (
+        <div className="mt-auto shrink-0 border-t border-edge/60 pt-1">
+          <div
+            className="font-medium uppercase tracking-wide text-ink-faint"
+            style={{ fontSize: headingPx }}
+          >
+            Consumes
+          </div>
+          <div
+            className="line-clamp-2 text-ink-muted"
+            style={{ fontSize: rowPx, lineHeight: `${rowH}px` }}
+          >
+            {facts.consumes.slice(0, 3).join(", ")}
+            {facts.consumes.length > 3 || facts.consumesMore > 0
+              ? ` +${facts.consumes.length - 3 + facts.consumesMore}`
+              : ""}
+            {facts.externals.length > 0 ? (
+              <span className="text-accent-amber">
+                {facts.consumes.length > 0 ? " · " : ""}
+                {facts.externals.slice(0, 2).join(", ")}
+                {facts.externals.length > 2 || facts.externalsMore > 0
+                  ? ` +${facts.externals.length - 2 + facts.externalsMore}`
+                  : ""}
+              </span>
+            ) : null}
+            {facts.libraries.length > 0 ? (
+              <span className="text-ink-faint">
+                {facts.consumes.length > 0 || facts.externals.length > 0 ? " · " : ""}
+                {facts.libraries.slice(0, 2).join(", ")}
+                {facts.libraries.length > 2 || facts.librariesMore > 0
+                  ? ` +${facts.libraries.length - 2 + facts.librariesMore}`
+                  : ""}
+              </span>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
 export const LeafNode = memo(function LeafNode({ data, selected }: NodeProps<ArchRfNode>) {
   const arch = data.arch;
   const meta = KIND_META[arch.kind];
-  const accent = accentOf(arch);
-  const Icon = meta.icon;
+  const facts = data.system;
+  const roleMeta = facts ? ROLE_META[facts.role] : null;
+  // Role accent/icon from the overview mark system cards; an explicit
+  // user-picked accent still wins (it is overlay data, not a derivation).
+  const accent = arch.accent ? ACCENT_CSS[arch.accent] : (roleMeta?.accent ?? accentOf(arch));
+  const Icon = roleMeta?.icon ?? meta.icon;
+  const kindLabel = roleMeta?.label ?? meta.label;
   const slot = data.slot;
   const preview = data.preview;
   const minTextPx = useLodConfig((s) => s.minTextPx);
@@ -133,7 +226,7 @@ export const LeafNode = memo(function LeafNode({ data, selected }: NodeProps<Arc
                 {arch.label}
               </span>
               <span className="shrink-0 text-[10px] uppercase tracking-wider text-ink-faint">
-                {meta.label}
+                {kindLabel}
               </span>
             </div>
             <div className="text-[10.5px] text-ink-faint">
@@ -191,7 +284,14 @@ export const LeafNode = memo(function LeafNode({ data, selected }: NodeProps<Arc
           // High-level overview: the same reserved area, spent on what the
           // component *is* — identity, size, internal shape — at type sizes
           // that stay legible where individual file chips no longer would.
-          <div className="flex min-h-0 flex-1 flex-col justify-center gap-1.5 px-5 py-3">
+          // System cards spend it on their semantic body instead (exports ×
+          // consumers, consumes footer), top-aligned like the old card.
+          <div
+            className={cn(
+              "flex min-h-0 flex-1 flex-col gap-1.5 px-5 py-3",
+              facts ? "overflow-hidden" : "justify-center",
+            )}
+          >
             <div className="flex min-w-0 items-center gap-2.5">
               <Icon style={{ color: accent, width: labelPx * 0.8, height: labelPx * 0.8 }} className="shrink-0" />
               <span className="min-w-0 truncate font-semibold leading-tight text-ink" style={{ fontSize: labelPx }}>
@@ -199,8 +299,19 @@ export const LeafNode = memo(function LeafNode({ data, selected }: NodeProps<Arc
               </span>
             </div>
             <div className="uppercase tracking-wider text-ink-faint" style={{ fontSize: subPx * 0.85 }}>
-              {meta.label}
-              {preview ? (
+              {kindLabel}
+              {facts ? (
+                <span className="normal-case tracking-normal">
+                  {" "}
+                  · {facts.fileCount} file{facts.fileCount === 1 ? "" : "s"}
+                  {facts.componentCount > 0
+                    ? ` · ${facts.componentCount} component${facts.componentCount === 1 ? "" : "s"}`
+                    : ""}
+                  {facts.endpointCount > 0
+                    ? ` · ${facts.endpointCount} route${facts.endpointCount === 1 ? "" : "s"}`
+                    : ""}
+                </span>
+              ) : preview ? (
                 <span className="normal-case tracking-normal">
                   {" "}
                   · {preview.totalFiles} file{preview.totalFiles === 1 ? "" : "s"} · {preview.totalExports} export
@@ -211,11 +322,13 @@ export const LeafNode = memo(function LeafNode({ data, selected }: NodeProps<Arc
               ) : null}
             </div>
             {arch.description ? (
-              <div className="line-clamp-2 max-w-full leading-snug text-ink-muted" style={{ fontSize: subPx }}>
+              <div className="line-clamp-2 max-w-full shrink-0 leading-snug text-ink-muted" style={{ fontSize: subPx }}>
                 {arch.description}
               </div>
             ) : null}
-            {preview ? (
+            {facts ? (
+              <SystemCardBody facts={facts} rowPx={Math.max(9, Math.round(subPx * 0.95))} />
+            ) : preview ? (
               <div className="flex flex-wrap" style={{ gap: 6 }}>
                 {topDirs(preview, 4).map(({ dir, count }) => (
                   <span
@@ -230,7 +343,7 @@ export const LeafNode = memo(function LeafNode({ data, selected }: NodeProps<Arc
                 ))}
               </div>
             ) : null}
-            {arch.tech.length > 0 ? (
+            {!facts && arch.tech.length > 0 ? (
               <div className="mt-0.5 flex flex-wrap gap-1">
                 {arch.tech.slice(0, 4).map((t) => (
                   <Badge key={t} tone="neutral">
@@ -284,7 +397,7 @@ export const LeafNode = memo(function LeafNode({ data, selected }: NodeProps<Arc
         <Icon className="h-3.5 w-3.5 shrink-0" style={{ color: accent }} />
         <div className="truncate text-xs font-semibold text-ink">{arch.label}</div>
       </div>
-      <div className="mt-0.5 text-[10px] uppercase tracking-wider text-ink-faint">{meta.label}</div>
+      <div className="mt-0.5 text-[10px] uppercase tracking-wider text-ink-faint">{kindLabel}</div>
       {arch.description ? (
         <div className="mt-1 line-clamp-2 text-[11px] leading-snug text-ink-muted">{arch.description}</div>
       ) : null}

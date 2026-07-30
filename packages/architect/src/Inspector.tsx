@@ -17,11 +17,13 @@ import {
   type CodeModule,
   type CodeModuleDetail,
   type HighlightRef,
+  type SystemLink,
 } from "@crystal/core";
 import { useWorkspace } from "@crystal/client";
 import { Button, Field, Input, Select, TagInput, Textarea, cn } from "@crystal/ui";
 import { deleteEdges, deleteNodes, updateEdge, updateNode } from "./graph-ops.js";
 import { ACCENT_CSS, EDGE_KIND_STYLE, KIND_META, type AccentName } from "./model.js";
+import { SystemPanel, type SystemSelection } from "./panels/SystemPanel.js";
 import { highlightAttrs, hlClass, useViewHighlight } from "./use-highlight.js";
 
 /**
@@ -53,6 +55,10 @@ export function Inspector({
   edge,
   codeModules,
   insight,
+  systemSel,
+  onFocusSystem,
+  onOpenBoundary,
+  onStartJourney,
   onFocusNode,
   onGraphChange,
   onOpenContract,
@@ -65,6 +71,17 @@ export function Inspector({
   codeModules?: CodeModule[];
   /** Connections + code imports/exports of the selected node. */
   insight?: NodeInsight | null;
+  /**
+   * Overview facts when the selected node maps to a system — renders the
+   * restored system detail sections in place of the generic code insight.
+   */
+  systemSel?: SystemSelection | null;
+  /** Jump the canvas to another system (raw overview id). */
+  onFocusSystem?: (rawId: string) => void;
+  /** Open the contract inspector on a boundary link. */
+  onOpenBoundary?: (link: SystemLink) => void;
+  /** Seed a dataflow journey at a symbol. */
+  onStartJourney?: (seed: { file: string; symbol: string }) => void;
   /** Jump the canvas to a related node. */
   onFocusNode?: (id: string) => void;
   onGraphChange: (graph: ArchitectureGraph) => void;
@@ -86,6 +103,16 @@ export function Inspector({
         {node ? (
           <>
             <AncestryBreadcrumb graph={graph} node={node} onFocusNode={onFocusNode} />
+            {/* A system node leads with its restored detail sections (parts,
+                exports, routes, boundaries) — the editable fields follow. */}
+            {systemSel ? (
+              <SystemPanel
+                selection={systemSel}
+                onFocusSystem={onFocusSystem}
+                onOpenBoundary={onOpenBoundary}
+                onStartJourney={onStartJourney}
+              />
+            ) : null}
             <NodeEditor
               node={node}
               graph={graph}
@@ -93,7 +120,9 @@ export function Inspector({
               onGraphChange={onGraphChange}
               onDeleted={onClearSelection}
             />
-            {insight ? <NodeInsightSections insight={insight} onFocusNode={onFocusNode} /> : null}
+            {!systemSel && insight ? (
+              <NodeInsightSections insight={insight} onFocusNode={onFocusNode} />
+            ) : null}
           </>
         ) : edge ? (
           <EdgeEditor

@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { ExternalLink, Webhook } from "lucide-react";
-import { formatHighlightSel } from "@crystal/core";
+import { endpointKey, formatHighlightSel } from "@crystal/core";
 import type {
   ApiTrace,
   ApiTraceCall,
@@ -149,6 +149,12 @@ export interface ArchHighlight {
   system: (systemId: string) => void;
   /** Open the pane and select a boundary edge ("source->target"). */
   edge: (edgeId: string) => void;
+  /**
+   * Open the pane focused on a served route's `ep:` node — the surface→API
+   * relation as a real edge on the canvas, not side-pane prose. The key is
+   * `endpointKey` ("METHOD /path"); the pane keeps the endpoints layer on.
+   */
+  endpoint: (epKey: string) => void;
   /** Highlight the system owning a file; falls back to opening the file when unattributed. */
   file: (file: string, line?: number) => void;
   /**
@@ -221,6 +227,11 @@ export function useArchHighlight(): ArchHighlight {
         nav({
           surfaces: { arch: true },
           architect: { view: "architecture", edge: edgeId, system: null },
+        }),
+      endpoint: (epKey) =>
+        nav({
+          surfaces: { arch: true },
+          architect: { view: "architecture", system: `ep:${epKey}`, edge: null },
         }),
       file: (file, line) => {
         const sys = systemOfFile(file);
@@ -469,10 +480,9 @@ export function ApiCallsSection({ file, symbol }: { file: string; symbol?: strin
   if (failed || (trace != null && trace.calls.length === 0)) return null;
 
   const highlight = (call: ApiTraceCall) => {
-    const src = systemOfFile(file);
-    const tgt = call.endpoint ? systemOfFile(call.endpoint.file) : null;
-    if (src && tgt && src.id !== tgt.id) arch.edge(`${src.id}->${tgt.id}`);
-    else if (tgt) arch.system(tgt.id);
+    // A matched route focuses its ep: node — the exact surface→API edge on
+    // the pane's canvas — rather than degrading to the system boundary.
+    if (call.endpoint) arch.endpoint(endpointKey(call.endpoint));
     else arch.file(call.file, call.line);
   };
 
