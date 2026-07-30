@@ -218,10 +218,16 @@ export function CrystalShell({
       const detail = (e as CustomEvent<{ path?: string; line?: number }>).detail;
       if (typeof detail?.path === "string") {
         try {
-          // JSON so an optional target line travels with the path.
+          // JSON so an optional target line travels with the path. The ws stamp
+          // lets a lazily-mounting editor drop a request parked before a
+          // workspace switch instead of reading it against the wrong root.
           sessionStorage.setItem(
             "crystal.pendingOpenFile",
-            JSON.stringify({ path: detail.path, line: detail.line ?? null }),
+            JSON.stringify({
+              path: detail.path,
+              line: detail.line ?? null,
+              ws: fleet.connection(fleet.activeSid)?.activeWs ?? null,
+            }),
           );
         } catch {
           /* storage unavailable — the live listener still works */

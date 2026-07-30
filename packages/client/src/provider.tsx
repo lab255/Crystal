@@ -297,9 +297,17 @@ function createFleetRuntime(defaultTarget: string | BridgeTransportFactory): Fle
           refreshFleetSlice();
         }
         if (s.activeId === prevActive) return;
+        const wasActive = prevActive;
         prevActive = s.activeId;
         void workspaceStore.getState().flush();
         client.setScope(s.activeId);
+        // The editor's open document is workspace-relative: left in the link
+        // across a real switch, the remounted editor would read the old
+        // project's path against the new root. The first activation must keep
+        // it — that's the deep-linked cold start (`#/code?file=…`).
+        if (wasActive !== null && fleet.activeSid === sid && navStore.getState().link.code?.file) {
+          navStore.getState().update({ code: { file: null } });
+        }
         if (s.activeId) {
           refreshScoped();
           if (fleet.activeSid === sid) {
@@ -387,6 +395,9 @@ function createFleetRuntime(defaultTarget: string | BridgeTransportFactory): Fle
     const activeId = next?.workspacesStore.getState().activeId;
     // Focusing another server's workspace acknowledges its finished runs.
     if (activeId) fleetStore.getState().markSeen(wsKey(s.activeSid, activeId));
+    // Same reasoning as the workspace-switch seam above: the open document
+    // belongs to the workspace being left, not the one being focused.
+    if (navStore.getState().link.code?.file) navStore.getState().update({ code: { file: null } });
     ensureLens();
     notify();
   });

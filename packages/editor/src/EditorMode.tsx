@@ -73,7 +73,7 @@ export function EditorMode() {
         setActivePath(path);
         activeRef.current = path;
         tryReveal();
-        return;
+        return true;
       }
       setLoadingFile(true);
       setError(null);
@@ -88,8 +88,10 @@ export function EditorMode() {
             : [...fs, { path, content, savedContent: content, truncated }],
         );
         setActivePath(path);
+        return true;
       } catch (err) {
         setError((err as Error).message);
+        return false;
       } finally {
         setLoadingFile(false);
       }
@@ -115,7 +117,7 @@ export function EditorMode() {
     }
   }, [client]);
 
-  function closeFile(path: string): void {
+  const closeFile = useCallback((path: string): void => {
     setFiles((fs) => {
       const idx = fs.findIndex((f) => f.path === path);
       const next = fs.filter((f) => f.path !== path);
@@ -124,7 +126,7 @@ export function EditorMode() {
       }
       return next;
     });
-  }
+  }, []);
 
   // Deep links: the URL carries the active file. Opening from the URL only
   // reacts to nav changes (not activePath) so a tab click isn't fought by a
@@ -132,8 +134,13 @@ export function EditorMode() {
   const nav = useNavUpdate();
   const navFile = useNav((l) => l.code?.file) ?? null;
   useEffect(() => {
-    if (navFile && navFile !== activeRef.current) void openFile(navFile);
-  }, [navFile, openFile]);
+    if (!navFile || navFile === activeRef.current) return;
+    void openFile(navFile).then((ok) => {
+      // A dead link (deleted file, another workspace's path) must not stay in
+      // the URL — it would re-fire the failing read on every remount.
+      if (!ok && activeRef.current !== navFile) nav({ code: { file: null } });
+    });
+  }, [navFile, openFile, nav]);
   const hadFileRef = useRef(false);
   useEffect(() => {
     if (activePath) {
@@ -154,15 +161,28 @@ export function EditorMode() {
         e.preventDefault();
         setQuickOpen(true);
       }
+      // The desktop menu deliberately leaves Cmd+W unbound (no native Close
+      // Window item), so the webview owns it: close the active editor tab.
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "w" && !e.shiftKey && !e.altKey) {
+        e.preventDefault();
+        if (activeRef.current) closeFile(activeRef.current);
+      }
     };
     const consumePending = () => {
       try {
         const pending = sessionStorage.getItem("crystal.pendingOpenFile");
         if (pending) {
           sessionStorage.removeItem("crystal.pendingOpenFile");
-          // JSON `{path, line}` today; bare paths from older sessions still open.
+          // JSON `{path, line, ws}` today; bare paths from older sessions still open.
           try {
-            const parsed = JSON.parse(pending) as { path?: string; line?: number | null };
+            const parsed = JSON.parse(pending) as {
+              path?: string;
+              line?: number | null;
+              ws?: string;
+            };
+            // A request parked before a workspace switch belongs to the old
+            // root — dropping it beats reading the path against the wrong one.
+            if (parsed?.ws && client.scope && parsed.ws !== client.scope) return false;
             if (typeof parsed?.path === "string") void openFile(parsed.path, parsed.line);
             else void openFile(pending);
           } catch {
@@ -187,7 +207,7 @@ export function EditorMode() {
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("crystal:open-file", onOpenRequest);
     };
-  }, [openFile]);
+  }, [openFile, closeFile, client]);
 
   const applyProfile = useCallback(
     (profile: KeymapProfile) => {
