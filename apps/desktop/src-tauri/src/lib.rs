@@ -558,6 +558,82 @@ pub fn run() {
             .plugin(tauri_plugin_updater::Builder::new().build())
             .plugin(tauri_plugin_process::init());
     }
+    // macOS gets Tauri's default menu unless one is set, and its File/Window
+    // submenus bind Cmd+W to Close Window — Crystal is single-window, so that
+    // quits the whole app (and reaps the bridge sidecar). Rebuild the same menu
+    // without the close items; with no native accelerator the webview receives
+    // Cmd+W and the editor binds it to "close tab". Windows/Linux show no menu
+    // bar today, so the override stays macOS-only.
+    #[cfg(target_os = "macos")]
+    {
+        use tauri::menu::{
+            AboutMetadata, Menu, PredefinedMenuItem, Submenu, HELP_SUBMENU_ID, WINDOW_SUBMENU_ID,
+        };
+        builder = builder.menu(|handle| {
+            let pkg_info = handle.package_info();
+            let config = handle.config();
+            let about_metadata = AboutMetadata {
+                name: Some(pkg_info.name.clone()),
+                version: Some(pkg_info.version.to_string()),
+                copyright: config.bundle.copyright.clone(),
+                authors: config.bundle.publisher.clone().map(|p| vec![p]),
+                ..Default::default()
+            };
+            Menu::with_items(
+                handle,
+                &[
+                    &Submenu::with_items(
+                        handle,
+                        pkg_info.name.clone(),
+                        true,
+                        &[
+                            &PredefinedMenuItem::about(handle, None, Some(about_metadata))?,
+                            &PredefinedMenuItem::separator(handle)?,
+                            &PredefinedMenuItem::services(handle, None)?,
+                            &PredefinedMenuItem::separator(handle)?,
+                            &PredefinedMenuItem::hide(handle, None)?,
+                            &PredefinedMenuItem::hide_others(handle, None)?,
+                            &PredefinedMenuItem::separator(handle)?,
+                            &PredefinedMenuItem::quit(handle, None)?,
+                        ],
+                    )?,
+                    &Submenu::with_items(
+                        handle,
+                        "Edit",
+                        true,
+                        &[
+                            &PredefinedMenuItem::undo(handle, None)?,
+                            &PredefinedMenuItem::redo(handle, None)?,
+                            &PredefinedMenuItem::separator(handle)?,
+                            &PredefinedMenuItem::cut(handle, None)?,
+                            &PredefinedMenuItem::copy(handle, None)?,
+                            &PredefinedMenuItem::paste(handle, None)?,
+                            &PredefinedMenuItem::select_all(handle, None)?,
+                        ],
+                    )?,
+                    &Submenu::with_items(
+                        handle,
+                        "View",
+                        true,
+                        &[&PredefinedMenuItem::fullscreen(handle, None)?],
+                    )?,
+                    // Keeping the well-known ids lets Tauri register these as the
+                    // native NSApp window/help menus (app.rs setup does the lookup).
+                    &Submenu::with_id_and_items(
+                        handle,
+                        WINDOW_SUBMENU_ID,
+                        "Window",
+                        true,
+                        &[
+                            &PredefinedMenuItem::minimize(handle, None)?,
+                            &PredefinedMenuItem::maximize(handle, None)?,
+                        ],
+                    )?,
+                    &Submenu::with_id_and_items(handle, HELP_SUBMENU_ID, "Help", true, &[])?,
+                ],
+            )
+        });
+    }
     builder
         .invoke_handler(tauri::generate_handler![
             bridge_endpoint,
