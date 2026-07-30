@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.15.0 (2026-07-30)
+
+### Features
+
+- Postman-style API client with unified environments ([`45deaba`](https://github.com/eliotlim/crystal/commit/45deaba))
+- DB schema viewer with ER diagrams ([`f2e77a9`](https://github.com/eliotlim/crystal/commit/f2e77a9))
+- module tier in the derived architecture ([`437c6ca`](https://github.com/eliotlim/crystal/commit/437c6ca))
+- playwright runs, real dev-server detection + rail launcher ([`9e5a8fd`](https://github.com/eliotlim/crystal/commit/9e5a8fd))
+- wrap overflowing toolbars, pill all tag fields ([`19ae912`](https://github.com/eliotlim/crystal/commit/19ae912))
+- git sidebar + rail toggles, live version badge, updater UI ([`c161307`](https://github.com/eliotlim/crystal/commit/c161307))
+- contract-open on link edges, facets projection, infra palette ([`afd704c`](https://github.com/eliotlim/crystal/commit/afd704c))
+
 ## v0.14.0 (2026-07-29)
 
 ### Features
