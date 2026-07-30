@@ -3,8 +3,8 @@
  * share exactly what they're looking at and drive back/forward navigation.
  *
  * Shape: `#/<mode>[/<subview>]?<params>`, e.g.
- *   #/architect/diagrams?ws=1a2b3c&diagram=.crystal/architecture/api.crystal
- *   #/architect/codemap?ws=1a2b3c&at=module&path=packages/core&dups=1
+ *   #/architect/architecture?ws=1a2b3c&system=sys%3Aauth&insights=1
+ *   #/architect/codebase?ws=1a2b3c&at=module&path=packages/core&dups=1
  *   #/orchestrate/board?ws=1a2b3c&project=.crystal/projects/q3.crystal&task=t-42
  *   #/code?ws=1a2b3c&file=packages/core/src/bridge.ts
  *
@@ -111,16 +111,16 @@ export interface ArchitectLink {
   findings?: boolean;
   /** Working-set changes panel open (code map). */
   changes?: boolean;
-  /** Facets panel open (systems overview + code map). */
+  /** Facets panel open (architecture + codebase views). */
   facets?: boolean;
-  /** Insights panel open (systems overview). */
+  /** Insights panel open (architecture view). */
   insights?: boolean;
-  /** Contracts panel open (systems overview). */
+  /** Contracts panel open (architecture view). */
   contracts?: boolean;
-  /** Selected boundary edge on the systems overview ("source->target"). */
+  /** Selected boundary edge on the architecture view ("source->target"). */
   edge?: string;
   /**
-   * Systems-overview focus filter: comma-separated system ids. When set, the
+   * Architecture focus filter: comma-separated system ids. When set, the
    * canvas shows only these systems (plus their first-degree neighbors) and
    * animates the traffic between them.
    */
@@ -215,10 +215,10 @@ export interface SurfacesLink {
   /** Live demo pane open (screens + stories views). */
   demo?: boolean;
   /**
-   * Architecture side pane open — an embedded systems overview every surfaces
-   * subview can highlight into (callers, callees, integrations). Selection
-   * inside the pane rides the `architect` section, so expanding to the full
-   * architecture view keeps it.
+   * Architecture side pane open — the canonical architecture canvas embedded
+   * so every surfaces subview can highlight into it (callers, callees,
+   * integrations). Selection inside the pane rides the `architect` section,
+   * so expanding to the full architecture view keeps it.
    */
   arch?: boolean;
   /** Find query shared by every surfaces subview. */
@@ -287,7 +287,7 @@ export interface DeepLink {
 }
 
 // encodeURIComponent, but keep `/` and `,` readable — file/module paths and
-// comma-separated lists (lens tags, expanded ids) dominate these URLs and
+// comma-separated lists (lens tags, focus ids) dominate these URLs and
 // %2F/%2C soup makes links hostile to eyeball and diff.
 function enc(value: string): string {
   return encodeURIComponent(value).replace(/%2F/gi, "/").replace(/%2C/gi, ",");

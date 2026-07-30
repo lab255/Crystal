@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Activity, ArrowUpRight, Bot, Landmark, ScanSearch, Sparkles } from "lucide-react";
 import {
   SURVEYS_DIR,
+  diagramFacetId,
+  mergeDiagramIntoOverlay,
   parseCrystalFile,
   slugify,
   surveyToArchitecture,
@@ -9,7 +11,7 @@ import {
   type AgentRun,
 } from "@crystal/core";
 import { autoLayout, buildSurveyPrompt, type SurveyKind } from "@crystal/architect";
-import { useAgents, useCrystal, useNavUpdate, useWorkspace } from "@crystal/client";
+import { useAgents, useCrystal, useNavUpdate } from "@crystal/client";
 import { RunList } from "@crystal/orchestrator";
 import { Spinner, StatusDot, cn } from "@crystal/ui";
 import { ScopedActionButton, type JobScope } from "./ScopedActionButton.js";
@@ -207,10 +209,8 @@ function IndexSection({
 }
 
 function SurveySection({ scoped, runs }: { scoped: Scoped | null; runs: AgentRun[] }) {
-  const { client } = useCrystal();
+  const { client, workspaceStore } = useCrystal();
   const startRun = useAgents((s) => s.start);
-  const createArchitecture = useWorkspace((s) => s.createArchitecture);
-  const updateArchitecture = useWorkspace((s) => s.updateArchitecture);
   const updateNav = useNavUpdate();
 
   const [kind, setKind] = useState<SurveyKind>("codebase");
@@ -232,11 +232,22 @@ function SurveySection({ scoped, runs }: { scoped: Scoped | null; runs: AgentRun
       const survey = parseCrystalFile("survey", content);
       const { graph } = surveyToArchitecture(survey, archName);
       const laidOut = autoLayout(graph, { mode: "layers" });
-      const created = await createArchitecture(laidOut.name);
-      updateArchitecture(created.path, { ...laidOut, id: created.graph.id });
-      return { name: laidOut.name, path: created.path };
+      // Merge into the canonical overlay — the same path as the architect
+      // mode's survey import: matched components become customizations of
+      // derived systems, the rest lands as manual nodes, and the survey file
+      // itself becomes a facet (`diagramFacetId(path)`).
+      await workspaceStore.getState().loadArchOverlay();
+      const { archOverlay, updateArchOverlay } = workspaceStore.getState();
+      if (!archOverlay) throw new Error("architecture overlay unavailable");
+      const overview = await client
+        .request("codemap.overview", {})
+        // No analyzable code (e.g. a pure-IaC repo) — everything the survey
+        // found is manual; merge against an empty derivation.
+        .catch(() => ({ systems: [], links: [], fileTotal: 0, generatedAt: "" }));
+      updateArchOverlay(mergeDiagramIntoOverlay(archOverlay, { path, graph: laidOut }, overview));
+      return { name: laidOut.name, path };
     },
-    [client, createArchitecture, updateArchitecture],
+    [client, workspaceStore],
   );
 
   // Import each dispatched survey the moment its agent run completes.
@@ -299,7 +310,7 @@ function SurveySection({ scoped, runs }: { scoped: Scoped | null; runs: AgentRun
     <Section
       icon={<Bot className="h-4 w-4" />}
       title="Architecture survey"
-      subtitle="An agent maps the codebase (or its IaC) into a new diagram, imported when it finishes."
+      subtitle="An agent maps the codebase (or its IaC) into a survey, merged into the architecture when it finishes."
     >
       <div className="mb-3 grid grid-cols-2 gap-2" role="radiogroup" aria-label="Survey kind">
         <SurveyChoice
@@ -346,12 +357,12 @@ function SurveySection({ scoped, runs }: { scoped: Scoped | null; runs: AgentRun
           onClick={() =>
             updateNav({
               mode: "architect",
-              architect: { view: "architecture", diagram: imported.path },
+              architect: { view: "architecture", facet: diagramFacetId(imported.path) },
             })
           }
           className="mt-2 flex items-center gap-1 text-[11px] text-crystal-300 hover:text-crystal-200"
         >
-          Imported “{imported.name}” — open in Architecture <ArrowUpRight className="h-3 w-3" />
+          Merged “{imported.name}” into the architecture — open <ArrowUpRight className="h-3 w-3" />
         </button>
       ) : null}
       {notice ? <p className="mt-2 text-[11px] text-warn">{notice}</p> : null}

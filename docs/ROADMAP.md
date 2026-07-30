@@ -84,7 +84,7 @@ of appliance, and it exposed exactly the monorepo/web assumptions you'd expect.*
 | Directory-level code map modules for single-package workspaces: with one package.json the map degenerated to a single "." node (no deps, no crossings, journeys never spanned modules); top-level source dirs (`src/core`, `src/export`, `scripts`…) now become modules, in the live analyzer and git-ref snapshots alike. Monorepos keep exactly their packages. Inventor: 1 module/0 deps → 11 modules/28 weighted edges | `code-map.ts` (`synthesizeDirModules`), `ref-snapshot.ts` |
 | **Recent-changes review without a VCS** (`codemap.changes` + "changes" panel in the architect code views): files touched inside a window from timestamps, added-vs-modified via birthtime (with an importer-age corroboration against atomic-rewrite noise), per-module rollups with tests-touched flags, blast radius (importers outside the changed set), and "unwired" flags on additions nothing imports yet | `code-map.ts` (`changes`), `packages/architect/src/codemap/ChangesPanel.tsx`, deeplink `?changes=1` |
 | Non-git workspaces are a state, not an error: `git.status` reports `isRepo: false` instead of a raw command failure | `apps/server/src/git.ts`, `bridge.ts` |
-| Plain-library visibility: the externals story was services-only (DBs, queues, SaaS), so a client app showed nothing external at all; the heaviest plain npm libraries now surface per workspace (`CodeMapSummary.libraries`) and per system ("Geometry leans on manifold-3d, three") | `packages/core/src/external-services.ts` (`aggregateExternalLibraries`), `system-overview.ts`, `SystemsView.tsx` |
+| Plain-library visibility: the externals story was services-only (DBs, queues, SaaS), so a client app showed nothing external at all; the heaviest plain npm libraries now surface per workspace (`CodeMapSummary.libraries`) and per system ("Geometry leans on manifold-3d, three") | `packages/core/src/external-services.ts` (`aggregateExternalLibraries`), `system-overview.ts` (the per-system card view has since been retired into the unified architecture canvas) |
 | Intent corroboration: a single repeated lexicon stem no longer asserts an intent — inventor's expression *tokenizer* was tagged `intent:auth` ("token"/"tokens"). An intent now needs two distinct word stems, symbolic/agent support, or the unit's own name | `code-index.ts` (evidence per hit, `evidenceStem`), `system-overview.ts` (profile pruning) |
 | Client-only layer inference: a Tauri/browser app with no endpoints, no server-framework imports and no server-ish paths no longer labels its solver/kernel systems "backend" — everything ships in the client bundle and lands in the frontend lane | `system-overview.ts` |
 
@@ -170,10 +170,10 @@ and an external Notion board.*
   Crystal looks for — good — while a "Tests 43" badge sat in the same header —
   contradictory. Every empty state should reconcile with what detection *did* find
   and offer the action that closes the gap ("46 test files in 8 packages — run them").
-- **Canvas density.** The systems view renders one tall stack with most of the
-  viewport empty and a third of the systems below the fold. Auto-fit on load, denser
-  group packing, and a "N systems hidden" affordance would make the first-open moment
-  land.
+- **Canvas density.** The old systems view rendered one tall stack with most of the
+  viewport empty and a third of the systems below the fold — the retirement into the
+  unified architecture canvas (auto-layout at reserved LOD footprints, fit on load)
+  resolved this; kept here as the standard for future canvases.
 
 ## Known limitations (stated, not hidden)
 

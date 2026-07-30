@@ -221,7 +221,7 @@ function SurfacesShell() {
 }
 
 /**
- * The embedded architecture systems view — callers/callees/integrations
+ * The embedded canonical architecture canvas — callers/callees/integrations
  * clicked anywhere in surfaces highlight their node here (single click),
  * while double click / explicit "view in code" affordances navigate away.
  * Expandable to the full architecture view (selection carries over) and

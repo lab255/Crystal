@@ -50,8 +50,8 @@ import { TraceSection, useEndpointTrace } from "./trace.js";
  *                calling systems, plus the boundary contracts it rides.
  *
  * Lives in the surfaces mode (`#/surfaces/apis?api=GET /x&system=…`); the
- * architecture systems view's context menus jump here, and old
- * `#/architect/apis` links redirect.
+ * architecture view's context menus jump here, and old `#/architect/apis`
+ * links redirect.
  */
 
 const METHOD_CLASS: Record<string, string> = {
@@ -212,7 +212,7 @@ export function ApiExplorer({ appUrl }: { appUrl: string | null }) {
       <EmptyState icon={Webhook} title="No served routes detected">
         Routes appear when the analyzer sees registrations (`app.get("/x", h)`, `*Router.post`,
         Next route files…). API calls without a matching server in this workspace show up on the
-        architecture systems view as external traffic instead.
+        architecture view as external traffic instead.
       </EmptyState>
     );
   }

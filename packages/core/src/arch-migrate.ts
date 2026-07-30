@@ -35,6 +35,12 @@ import type { SystemsLayout } from "./systems-layout.js";
  * Only the FIRST diagram contributes overrides for matched systems; later
  * diagrams still contribute their facet, manual nodes and journeys.
  */
+/**
+ * Facet id a diagram/survey file migrates into — deterministic so importers
+ * can deep-link to the facet without re-reading the overlay.
+ */
+export const diagramFacetId = (path: string): string => `facet:diagram:${path}`;
+
 export function migrateLegacyToOverlay(input: {
   diagrams: readonly { path: string; graph: ArchitectureGraph }[];
   layout: SystemsLayout | null;
@@ -180,7 +186,7 @@ export function migrateLegacyToOverlay(input: {
     // facet — pure noise, skip it.
     if (graph.nodes.length > 0) {
       facets.push({
-        id: `facet:diagram:${path}`,
+        id: diagramFacetId(path),
         name: graph.name || path.split("/").pop() || path,
         description: graph.description ?? "",
         nodeIds: graph.nodes.map((n) => idMap.get(n.id)!).filter(Boolean),

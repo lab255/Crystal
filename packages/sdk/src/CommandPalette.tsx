@@ -221,7 +221,9 @@ export function CommandPalette({
           icon: Sparkles,
           run: () => {
             onSwitchMode("architect");
-            nav({ architect: { view: "architecture", diagram: a.path, facet: f.id } });
+            // Facet only — a `diagram` param would resolve to the diagram's
+            // own wrapper facet and clobber this one.
+            nav({ architect: { view: "architecture", facet: f.id } });
           },
         })),
       ),
