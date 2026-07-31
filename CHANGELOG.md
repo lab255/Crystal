@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.17.0 (2026-07-31)
+
+### Features
+
+- restore the systems-view card and pane; surface-to-API flows as real edges ([`e7d9c8b`](https://github.com/eliotlim/crystal/commit/e7d9c8b))
+
+### Bug Fixes
+
+- closed-project terminals die cleanly and reopen with scrollback ([`ba36142`](https://github.com/eliotlim/crystal/commit/ba36142))
+- drop the open file when the workspace switches ([`4b4c0e5`](https://github.com/eliotlim/crystal/commit/4b4c0e5))
+- stop Cmd+W from quitting the app on macOS ([`44f7d43`](https://github.com/eliotlim/crystal/commit/44f7d43))
+
 ## v0.16.0 (2026-07-30)
 
 ### Features
