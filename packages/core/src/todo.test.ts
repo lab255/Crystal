@@ -1,18 +1,14 @@
 import { describe, expect, it } from "vitest";
-import type { AgentRunStatus } from "./agent.js";
 import {
   createTodoItem,
   nextLight,
-  runsLight,
   sortTodos,
   todosLight,
-  workspaceLight,
   worstLight,
   type TodoItem,
 } from "./todo.js";
 
 const todo = (patch: Partial<TodoItem>): TodoItem => ({ ...createTodoItem("x"), ...patch });
-const run = (status: AgentRunStatus, endedAt: string | null = null) => ({ status, endedAt });
 
 describe("worstLight", () => {
   it("picks by severity, gray when empty", () => {
@@ -52,51 +48,5 @@ describe("sortTodos", () => {
     const a = todo({ id: "a", light: "yellow", order: 2 });
     const b = todo({ id: "b", light: "yellow", order: 1 });
     expect(sortTodos([a, b]).map((t) => t.id)).toEqual(["b", "a"]);
-  });
-});
-
-describe("runsLight", () => {
-  it("is gray with no runs and green while agents execute", () => {
-    expect(runsLight([], null)).toBe("gray");
-    expect(runsLight([run("running")], null)).toBe("green");
-    expect(runsLight([run("queued")], null)).toBe("green");
-  });
-
-  it("flags unseen finishes: yellow to review, red on failure", () => {
-    expect(runsLight([run("completed", "2026-01-02T00:00:00Z")], null)).toBe("yellow");
-    expect(runsLight([run("failed", "2026-01-02T00:00:00Z")], null)).toBe("red");
-    expect(
-      runsLight(
-        [run("completed", "2026-01-02T00:00:00Z"), run("failed", "2026-01-02T00:00:00Z")],
-        null,
-      ),
-    ).toBe("red");
-  });
-
-  it("goes quiet once results are seen; cancellations never raise it", () => {
-    const seen = "2026-01-03T00:00:00Z";
-    expect(runsLight([run("failed", "2026-01-02T00:00:00Z")], seen)).toBe("gray");
-    expect(runsLight([run("failed", "2026-01-04T00:00:00Z")], seen)).toBe("red");
-    expect(runsLight([run("cancelled", "2026-01-04T00:00:00Z")], seen)).toBe("gray");
-  });
-});
-
-describe("workspaceLight", () => {
-  it("combines todos and run attention, worst wins", () => {
-    expect(workspaceLight([], [], null)).toBe("gray");
-    expect(workspaceLight([todo({ light: "yellow" })], [run("running")], null)).toBe("yellow");
-    expect(
-      workspaceLight([todo({ light: "yellow" })], [run("failed", "2026-01-02T00:00:00Z")], null),
-    ).toBe("red");
-  });
-
-  it("an agent waiting on the human raises the light to yellow", () => {
-    // An open board question is "needs attention": it clears only by
-    // answering, never by acknowledging like run results do.
-    expect(workspaceLight([], [], null, 1)).toBe("yellow");
-    expect(workspaceLight([], [run("running")], null, 3)).toBe("yellow");
-    expect(workspaceLight([], [], null, 0)).toBe("gray");
-    // Questions never outrank a real failure.
-    expect(workspaceLight([], [run("failed", "2026-01-02T00:00:00Z")], null, 5)).toBe("red");
   });
 });

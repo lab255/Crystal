@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { ArrowRight, Bot, History, KanbanSquare, TerminalSquare } from "lucide-react";
 import {
   buildWorkspaceRecap,
+  deriveRunAttention,
   formatRecapAge,
   formatUsd,
   formatWsRef,
@@ -26,9 +27,11 @@ import { TodoSection } from "./TodoSection.js";
  * summary, and todo list. Fleet-aware: the card belongs to one bridge
  * connection (`sid`), reads its slice of the fleet store via the compound
  * `"<sid>/<wsId>"` key, and entering it switches both the active server and
- * workspace. The rollup light combines open todos with run attention — a run
- * finishing while you work elsewhere turns the card yellow (review) or red
- * (failure) until you focus the workspace again.
+ * workspace. The rollup light combines open todos with run attention (one
+ * policy — attention.ts in core): a run finishing while you work elsewhere
+ * turns the card yellow (review) or red (failure) until you focus the
+ * workspace again; open questions and unrecovered recoverable failures stay
+ * lit until answered/recovered, never acknowledgeable-away.
  */
 export function WorkspaceCard({
   sid,
@@ -56,10 +59,12 @@ export function WorkspaceCard({
   const light = workspaceLight(todos, runs, seenAt, questions);
   // Where you left off — derived from the run list, no model call.
   const recap = useMemo(() => buildWorkspaceRecap(runs), [runs]);
-  const running = runs.filter((r) => r.status === "running" || r.status === "queued").length;
-  const unseen = seenAt === null ? runs.filter((r) => r.endedAt) : runs.filter((r) => r.endedAt && r.endedAt > seenAt);
-  const toReview = unseen.filter((r) => r.status === "completed").length;
-  const failed = unseen.filter((r) => r.status === "failed").length;
+  // Chips come from the same attention policy as the light (attention.ts in
+  // core), so a card can never say something its own dot doesn't.
+  const attn = useMemo(() => deriveRunAttention(runs, seenAt), [runs, seenAt]);
+  const running = attn.running;
+  const toReview = attn.review;
+  const failed = attn.failures + attn.reviewFailed;
   const openTodos = todos.filter((t) => !t.done).length;
 
   const enter = () => selectWorkspace(sid, ws.id);
