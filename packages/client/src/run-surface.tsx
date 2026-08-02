@@ -40,6 +40,7 @@ import { chainOf } from "./chain.js";
 import { ChainTurns } from "./chain-turns.js";
 import { parseUnifiedDiff, type FileDiff } from "./diff.js";
 import { InteractiveRunBanner } from "./interactive-banner.js";
+import { InteractiveRunTerminal } from "./run-terminal.js";
 import { MessageComposer, type ComposerSendResult } from "./message-composer.js";
 import { useAgents, useCrystal } from "./provider.js";
 import {
@@ -167,11 +168,12 @@ export function RunSurface({
         ) : null}
       </header>
 
-      {/* Activity: the terminal owns an interactive run's transcript. */}
+      {/* Activity: an interactive run's transcript is its PTY — embed it,
+          shared live with the bottom panel's tab (same server terminal). */}
       {interactive ? (
         <>
           <InteractiveRunBanner run={run} className="border-b border-edge" />
-          <div className="min-h-0 flex-1" />
+          <InteractiveRunTerminal run={run} />
         </>
       ) : (
         <RunTranscript
