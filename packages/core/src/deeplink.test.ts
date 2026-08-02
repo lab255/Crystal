@@ -375,6 +375,18 @@ describe("round trips", () => {
     expect(roundTrip(runs)).toEqual(runs);
   });
 
+  it("orchestrate insights with its period", () => {
+    const insights: DeepLink = {
+      ws: "abc",
+      mode: "orchestrate",
+      orchestrate: { tab: "insights", period: 90 },
+    };
+    expect(formatDeepLink(insights)).toBe("#/orchestrate/insights?ws=abc&period=90");
+    expect(roundTrip(insights)).toEqual(insights);
+    // An off-menu period is dropped rather than trusted.
+    expect(parseDeepLink("#/orchestrate/insights?period=13").orchestrate?.period).toBeUndefined();
+  });
+
   it("projects overview", () => {
     const link: DeepLink = { ws: "abc", mode: "projects" };
     expect(formatDeepLink(link)).toBe("#/projects?ws=abc");

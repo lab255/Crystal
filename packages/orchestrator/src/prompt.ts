@@ -1,4 +1,4 @@
-import { QUESTION_MARKER, type TaskItem, type WorkspaceInfo } from "@crystal/core";
+import { QUESTION_MARKER, formatUsd, type TaskItem, type WorkspaceInfo } from "@crystal/core";
 
 /**
  * Build the agent prompt for a task: the task text (or the prepared dispatch
@@ -94,6 +94,10 @@ export const MANAGER_PREAMBLE =
   "so keep taskId accurate on every dispatch. If the tools are unavailable, " +
   'dispatch with a single line: CRYSTAL_DISPATCH: {"prompt": "<worker task>", ' +
   '"taskId": "<id>"} and escalate with a CRYSTAL_QUESTION: line.\n\nGoal:\n';
+
+export function formatCost(costUsd: number | null | undefined): string {
+  return costUsd == null ? "—" : formatUsd(costUsd);
+}
 
 /**
  * The goal handed to a manager started from the board's "N ready · no active

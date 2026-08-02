@@ -8,13 +8,16 @@ import {
   LineBuffer,
   chainRootId,
   claudeProjectDirName,
+  classifyRunFailure,
   createAgentRun,
   emptyUsage,
   isPermissionDenial,
   isWorkflowTag,
   nowIso,
   parseClaudeStreamLine,
+  promptHeadline,
   runCostUsd,
+  runFailureHint,
   touchedFileFromToolUse,
   transcriptUsage,
   applyProfileOverlay,
@@ -24,6 +27,7 @@ import {
   type AgentProfileOverlay,
   type AgentRole,
   type AgentRun,
+  type AskOptions,
   type ModelPreset,
   type RunEvent,
   type RunPurpose,
@@ -31,8 +35,18 @@ import {
 } from "@crystal/core";
 import { envWithBinDir, envWithToolchain, resolveClaudeBin } from "./claude-bin.js";
 import { runGit } from "./git.js";
-import { resolveInRoot } from "./paths.js";
+import { exists, resolveInRoot } from "./paths.js";
 import { PendingQueue } from "./pending-queue.js";
+import { killProcessTree } from "./process-tree.js";
+import {
+  abortConflictResolution,
+  buildConflictPrompt,
+  mergePreview,
+  mergeWorktree,
+  prepareConflictResolution,
+  type MergePreview,
+  type MergeResult,
+} from "./worktree-merge.js";
 
 export interface AgentStartParams {
   prompt: string;
@@ -48,6 +62,14 @@ export interface AgentStartParams {
   parentRunId?: string | null;
   /** Earlier run of the same logical session this run resumes (chains manager turns). */
   resumedFromRunId?: string | null;
+  /** Run this one continues in a fresh session (context handoff — see handoff()). */
+  handoffFromRunId?: string | null;
+  /**
+   * Continue in the named (settled) run's existing worktree instead of
+   * acquiring a fresh one — conflict-resolution and follow-up runs work on
+   * the same tree. Refused while any live run shares that worktree.
+   */
+  worktreeOfRunId?: string | null;
   /** Place in the manager/worker hierarchy (unset = standalone run). */
   role?: AgentRole | null;
   purpose?: RunPurpose | null;
@@ -166,6 +188,14 @@ const NOTICE_RESULT_CHARS = 1500;
  */
 export const INTERACTIVE_PROMPT_DELAY_MS = 2500;
 
+/** Model for the handoff summarizer — condensing a transcript is light work. */
+const HANDOFF_SUMMARY_MODEL = "haiku";
+/** Transcript digest cap fed to the summarizer (head + tail split below). */
+const HANDOFF_DIGEST_CHARS = 24_000;
+const HANDOFF_DIGEST_HEAD_CHARS = 4_000;
+/** Raw-tail fallback carried into the continuation when summarization fails. */
+const HANDOFF_FALLBACK_CHARS = 4_000;
+
 /**
  * When an interactive session is considered ready for *deliveries* (answers,
  * notices typed into the PTY): after the opening prompt has gone in, plus a
@@ -187,6 +217,30 @@ export function agentEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const env = { ...base };
   delete env.CLAUDE_CODE_CHILD_SESSION;
   return env;
+}
+
+/**
+ * Billing safety for every agent spawn (headless and interactive): an
+ * inherited `ANTHROPIC_API_KEY` silently switches the CLI from the user's
+ * subscription login to per-token API billing — strip it unless the user
+ * opts in with CRYSTAL_ALLOW_API_KEY=1 (borrowed from operator-oss, their
+ * issue #4).
+ */
+export function stripApiKey(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env = { ...base };
+  if (base.CRYSTAL_ALLOW_API_KEY !== "1") delete env.ANTHROPIC_API_KEY;
+  return env;
+}
+
+/**
+ * Env for a *headless* Claude CLI run: the API-key billing guard
+ * ({@link stripApiKey}) plus color off — stream-json output must stay
+ * escape-free. Interactive TUIs keep color and apply stripApiKey directly.
+ */
+export function claudeSpawnEnv(
+  base: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  return { ...stripApiKey(base), FORCE_COLOR: "0" };
 }
 
 /** How to invoke the Claude CLI: a direct executable, or through cmd.exe. */
@@ -289,7 +343,14 @@ export function claudeRunArgs(opts: {
   ];
   if (opts.model) args.push("--model", opts.model);
   if (opts.resumeSessionId) args.push("--resume", opts.resumeSessionId);
-  if (opts.mcpConfigPath) args.push("--mcp-config", opts.mcpConfigPath);
+  if (opts.mcpConfigPath) {
+    // --strict-mcp-config loads ONLY the crystal server from our config and
+    // ignores the user's global/project MCP servers, so a scoped headless run
+    // can't pick up unrelated (or conflicting) MCP tools. It scopes MCP
+    // servers only — login, hooks and other settings stay active. Interactive
+    // sessions keep the owner's own MCP setup (they are at the terminal).
+    args.push("--mcp-config", opts.mcpConfigPath, "--strict-mcp-config");
+  }
   if (opts.appendSystemPrompt) args.push("--append-system-prompt", opts.appendSystemPrompt);
   const allowed = [
     ...new Set([
@@ -395,6 +456,8 @@ export class AgentManager {
   readonly events = new Emitter<{
     event: RunEvent;
     runChanged: { run: AgentRun };
+    /** The CLI login broke (an auth-classified failure) or healed (any success). */
+    authChanged: { broken: boolean; detail: string | null };
   }>();
 
   private runs = new Map<string, AgentRun>();
@@ -421,8 +484,21 @@ export class AgentManager {
   private resumeLocks = new Map<string, Promise<unknown>>();
   /** Per-branch serialization of track-worktree adopt-or-create (see start). */
   private branchLocks = new Map<string, Promise<unknown>>();
+  /**
+   * Set while the CLI login is broken (an auth-classified failure with no
+   * later success). Every delivery would fail identically, so queued chain
+   * messages park until a successful run proves the login healed — stronger
+   * evidence than any auth-status probe.
+   */
+  private authBrokenDetail: string | null = null;
   /** Set by the workspace runtime: a dispatched worker inherits its task's lease. */
   onWorkerDispatched: ((worker: AgentRun) => void) | null = null;
+  /**
+   * Set by the workflow engine: a context handoff replaced a session with a
+   * fresh one — anything pointing at the old chain (a workflow's manager run)
+   * must repoint at the continuation or lose its remote control.
+   */
+  onHandoff: ((from: AgentRun, to: AgentRun) => void) | null = null;
   /**
    * Set by the workflow engine: veto a manager's dispatch (paused workflow,
    * exhausted budget). Returns a human-readable rejection reason, or null to
@@ -648,9 +724,30 @@ export class AgentManager {
   async start(params: AgentStartParams): Promise<AgentRun> {
     if (this.disposed) throw new Error("Workspace is closed — no new agent runs.");
     await this.ensureLoaded();
+    // Resuming a session that still has a live run would FORK the Claude
+    // session — two concurrent turns on one conversation. Internal paths go
+    // through resumeChain (which serializes and re-checks); this guards the
+    // raw API surface. Synchronous check, no await before the throw.
+    if (params.resumeSessionId) {
+      const live = [...this.runs.values()].find(
+        (r) =>
+          r.sessionId === params.resumeSessionId &&
+          (r.status === "running" || r.status === "queued"),
+      );
+      if (live) {
+        throw new Error(
+          `Session ${params.resumeSessionId} has a live run (${live.id}) — resuming now would fork it. ` +
+            `Deliver via agent.message instead, or wait for the run to settle.`,
+        );
+      }
+    }
     const presetModel = await this.presetModelFor(params);
     if (presetModel) params = { ...params, model: presetModel };
     const run = createAgentRun(params);
+    // A resumed run's session is known up front — stamping it now (instead of
+    // waiting for the init event) makes the fork guard above airtight for
+    // back-to-back resumes.
+    if (params.resumeSessionId) run.sessionId = params.resumeSessionId;
     // The dispatched model, visible while the run is queued (the stream-json
     // init event overwrites it with the resolved model id) — same convention
     // as prepareInteractive.
@@ -661,7 +758,13 @@ export class AgentManager {
     this.indexTags(run);
     this.runEvents.set(run.id, []);
 
-    if (params.adoptWorktreePath) {
+    if (params.worktreeOfRunId) {
+      try {
+        cwdAbs = this.adoptRunWorktree(run, params.worktreeOfRunId);
+      } catch (err) {
+        return this.finish(run, "failed", (err as Error).message);
+      }
+    } else if (params.adoptWorktreePath) {
       // A resumed turn continues in its chain's worktree — the session's
       // earlier edits live there, not in the repo checkout.
       run.worktreePath = params.adoptWorktreePath;
@@ -719,7 +822,7 @@ export class AgentManager {
         // (pnpm/node/node_modules/.bin) must resolve from the run's cwd and
         // the workspace root, wherever the server was launched from.
         env: envWithBinDir(
-          envWithToolchain(agentEnv({ ...process.env, FORCE_COLOR: "0" }), [cwdAbs, this.root]),
+          envWithToolchain(agentEnv(claudeSpawnEnv(process.env)), [cwdAbs, this.root]),
           claudeBin,
         ),
         stdio: ["pipe", "pipe", "pipe"],
@@ -859,7 +962,7 @@ export class AgentManager {
       file: claudeBin,
       args,
       env: envWithBinDir(
-        envWithToolchain(agentEnv({ ...process.env }), [
+        envWithToolchain(agentEnv(stripApiKey(process.env)), [
           resolveInRoot(this.root, run.cwd ?? "."),
           this.root,
         ]),
@@ -1047,7 +1150,7 @@ export class AgentManager {
       return worktree;
     };
     if (!run.branch) return acquire();
-    const key = `${run.cwd} ${run.branch}`;
+    const key = `${run.cwd}\0${run.branch}`;
     const prev = this.branchLocks.get(key) ?? Promise.resolve();
     const task = prev.then(acquire, acquire);
     this.branchLocks.set(key, task.catch(() => {}));
@@ -1079,6 +1182,44 @@ export class AgentManager {
       }
     }
     return null;
+  }
+
+  /**
+   * Continue in another run's existing worktree (conflict resolution,
+   * follow-up work on the same tree). Synchronous on purpose: the check for a
+   * live sharer and the adoption must not be separated by an await, or two
+   * concurrent starts could both adopt the same tree.
+   */
+  private adoptRunWorktree(run: AgentRun, ofRunId: string): string {
+    const owner = this.runs.get(ofRunId);
+    if (!owner?.worktreePath) {
+      throw new Error(`Run ${ofRunId} has no worktree to continue in.`);
+    }
+    const live = this.liveWorktreeSharer(owner.worktreePath, run.id);
+    if (live) {
+      throw new Error(`Worktree is in use by live run ${live.id} — wait for it to settle.`);
+    }
+    run.isolation = "worktree";
+    run.worktreePath = owner.worktreePath;
+    run.branch = owner.branch ?? null;
+    this.record(run, {
+      type: "status",
+      status: "queued",
+      message: `Continuing in worktree of run ${ofRunId}: ${owner.worktreePath}`,
+    });
+    return owner.worktreePath;
+  }
+
+  /** A live run using `worktreePath` (excluding `excludeRunId`), if any. */
+  private liveWorktreeSharer(worktreePath: string, excludeRunId?: string): AgentRun | null {
+    return (
+      [...this.runs.values()].find(
+        (r) =>
+          r.id !== excludeRunId &&
+          r.worktreePath === worktreePath &&
+          (r.status === "running" || r.status === "queued"),
+      ) ?? null
+    );
   }
 
   /** Run ids in one logical manager's resume chain (root + every wake-up turn). */
@@ -1221,7 +1362,7 @@ export class AgentManager {
       // either registers its run, and two live Claude processes end up
       // editing one working copy.
       if (wtHolder?.branch) {
-        const key = `${wtHolder.cwd} ${wtHolder.branch}`;
+        const key = `${wtHolder.cwd}\0${wtHolder.branch}`;
         const prevLock = this.branchLocks.get(key) ?? Promise.resolve();
         const task = prevLock.then(startTurn, startTurn);
         this.branchLocks.set(key, task.catch(() => {}));
@@ -1231,6 +1372,114 @@ export class AgentManager {
     });
     this.resumeLocks.set(rootId, attempt.catch(() => {}));
     return attempt;
+  }
+
+  /* ---------------- context handoff (session lineage) ---------------- */
+
+  /**
+   * Hand a finished (typically context-overflowed) session's work off to a
+   * FRESH session: a cheap summarizer run condenses the transcript into a
+   * handoff note, then a continuation run starts with the original prompt +
+   * the note — in the same worktree when the old run had one, so uncommitted
+   * work carries over. Summaries accumulate across generations because each
+   * continuation's prompt embeds all prior notes.
+   *
+   * Returns the continuation run (the summarizer run is tracked but not
+   * returned — it exists to be billed and inspectable, not followed).
+   */
+  async handoff(runId: string): Promise<AgentRun> {
+    await this.ensureLoaded();
+    const rootId = chainRootId(runId, this.runs);
+    if (this.chainLive(rootId)) {
+      throw new Error("The session is still live — cancel it or wait before handing off.");
+    }
+    const chain = this.orderedChain(rootId);
+    const root = chain[0];
+    const latest = chain[chain.length - 1];
+    if (!root || !latest) throw new Error(`Unknown run: ${runId}`);
+
+    const digest = await this.transcriptDigest(chain);
+    let summary = "";
+    if (digest) {
+      const summarizer = await this.start({
+        prompt:
+          "Condense this agent-session transcript into a handoff note for the fresh session " +
+          "that will continue the work. Cover, as terse bullet lists: WHAT WAS DONE (files " +
+          "changed, commands run), CURRENT STATE (works / broken / untested), DECISIONS MADE " +
+          "(and why), and WHAT REMAINS. No preamble — output only the note.\n\n" +
+          "Transcript:\n\n" + digest,
+        cwd: root.cwd,
+        taskId: root.taskId,
+        projectId: root.projectId,
+        repoId: root.repoId,
+        model: HANDOFF_SUMMARY_MODEL,
+        purpose: "manage",
+        tags: root.tags,
+      });
+      const settled = await this.waitForSettled(summarizer.id);
+      summary = settled.status === "completed" ? (settled.resultText ?? "").trim() : "";
+    }
+    if (!summary) {
+      // A summary that failed must not block recovery — fall back to the tail.
+      summary = `(automatic summary unavailable — transcript tail)\n${digest.slice(-HANDOFF_FALLBACK_CHARS)}`;
+    }
+
+    // The chain was idle when we started, but the summarizer's settlement could
+    // have woken a worker-notice resume of this same chain while we waited.
+    // Starting the continuation now would briefly fork the logical session.
+    if (this.chainLive(rootId)) {
+      throw new Error("The session became active again while preparing the handoff — retry.");
+    }
+
+    // A fresh session is a fresh set of CLI invocations — the chain's profile
+    // policy (standing prompt, tool rules) must ride along or fall off here.
+    const overlay = root.agentId
+      ? await this.profileResolver?.(root.agentId).catch(() => null)
+      : null;
+    const continuation = await this.start({
+      prompt:
+        `${root.prompt}\n\n---\n[Context handoff] A previous session worked on this task until its ` +
+        `context filled up. Its handoff note:\n\n${summary}\n\n` +
+        `Continue from where it left off. Verify the current state (files, git status) before ` +
+        `redoing anything — work may already be complete on disk.`,
+      cwd: root.cwd,
+      taskId: root.taskId,
+      projectId: root.projectId,
+      repoId: root.repoId,
+      agentId: root.agentId,
+      model: latest.model ?? root.model ?? null,
+      appendSystemPrompt: overlay?.appendPrompt ?? null,
+      allowedTools: overlay?.allowedTools,
+      disallowedTools: overlay?.disallowedTools,
+      permissionMode: overlay?.permissionMode ?? null,
+      role: root.role === "manager" ? "manager" : null,
+      purpose: root.purpose,
+      tags: root.tags,
+      costCapUsd: latest.costCapUsd ?? root.costCapUsd ?? null,
+      handoffFromRunId: latest.id,
+      // Same tree: uncommitted work survives the generation boundary.
+      ...(latest.worktreePath ? { worktreeOfRunId: latest.id } : {}),
+    });
+    this.onHandoff?.(latest, continuation);
+    return continuation;
+  }
+
+  /** Flatten a chain's persisted events into a capped transcript digest. */
+  private async transcriptDigest(chain: AgentRun[]): Promise<string> {
+    const parts: string[] = [];
+    for (const run of chain) {
+      for (const { event } of await this.eventsFor(run.id)) {
+        if (event.type === "text") parts.push(event.text);
+        else if (event.type === "tool_use") parts.push(`[tool: ${event.name}]`);
+        else if (event.type === "result" && event.resultText) parts.push(`[result] ${event.resultText}`);
+      }
+    }
+    const full = parts.join("\n");
+    if (full.length <= HANDOFF_DIGEST_CHARS) return full;
+    // Head + tail: the opening context frames the task, the tail is the state.
+    const head = full.slice(0, HANDOFF_DIGEST_HEAD_CHARS);
+    const tail = full.slice(-(HANDOFF_DIGEST_CHARS - HANDOFF_DIGEST_HEAD_CHARS));
+    return `${head}\n… (transcript truncated) …\n${tail}`;
   }
 
   /**
@@ -1245,16 +1494,88 @@ export class AgentManager {
    * block waiting for answers, so busy is the *normal* case.
    */
   async deliver(runId: string, prompt: string): Promise<AgentRun | null> {
+    return (await this.deliverToChain(runId, prompt)).run;
+  }
+
+  /**
+   * {@link deliver}, with the outcome made explicit for callers that surface
+   * it (question answers, run steering). `resumed` covers both a fresh
+   * `--resume` turn and a live interactive TUI taking the text directly;
+   * `queued` means the settle flush will carry it; `recorded` means the text
+   * can never be delivered (cancelled chain, or a settled session that never
+   * materialized) and the caller should treat the durable record (board
+   * answer) as the outcome.
+   */
+  async deliverToChain(
+    fromRunId: string,
+    text: string,
+  ): Promise<{ run: AgentRun | null; status: "resumed" | "queued" | "recorded" }> {
     await this.ensureLoaded();
-    const rootId = chainRootId(runId, this.runs);
+    const rootId = chainRootId(fromRunId, this.runs);
+    const chain = this.orderedChain(rootId);
+    const latest = chain[chain.length - 1];
+    if (
+      !latest ||
+      latest.status === "cancelled" ||
+      (!this.chainLive(rootId) && !chain.some((r) => r.sessionId))
+    ) {
+      return { run: null, status: "recorded" };
+    }
     // A live interactive terminal takes the message directly — typed into the
     // TUI, which handles mid-turn input by queueing it natively.
-    const interactive = await this.deliverInteractive(rootId, prompt);
-    if (interactive) return interactive;
-    const run = await this.resumeChain(rootId, prompt);
-    if (run) return run;
-    this.pendingNotices.push(rootId, { kind: "message", text: prompt });
-    return null;
+    const interactive = await this.deliverInteractive(rootId, text);
+    if (interactive) return { run: interactive, status: "resumed" };
+    // A broken login means the resume attempt would just burn a failed run —
+    // park immediately; the queue flushes when a success clears the flag.
+    if (this.authBrokenDetail == null) {
+      const run = await this.resumeChain(rootId, text);
+      if (run) return { run, status: "resumed" };
+      if (!this.chainLive(rootId)) return { run: null, status: "recorded" };
+    }
+    this.pendingNotices.push(rootId, { kind: "message", text });
+    return { run: null, status: "queued" };
+  }
+
+  /**
+   * User steering for any run — frames the text and delivers it into the
+   * run's session via {@link deliverToChain} (the workflow manager has its
+   * own framing in workflow-engine.ts; this is the generic-run counterpart).
+   */
+  messageRun(
+    runId: string,
+    text: string,
+  ): Promise<{ run: AgentRun | null; status: "resumed" | "queued" | "recorded" }> {
+    return this.deliverToChain(
+      runId,
+      `USER MESSAGE:\n${text.trim()}\n\nThis is steering from the run's owner. Address it and continue the task.`,
+    );
+  }
+
+  /**
+   * Surface an MCP-raised question on the run's live event stream (the board
+   * copy is filed separately by the caller — see mcp/http.ts).
+   */
+  noteQuestion(runId: string, text: string, ask?: AskOptions): void {
+    const run = this.runs.get(runId);
+    if (!run) return;
+    this.record(run, {
+      type: "question",
+      text,
+      ...(ask?.options?.length ? { options: ask.options } : {}),
+      ...(ask?.recommended ? { recommended: ask.recommended } : {}),
+    });
+  }
+
+  /** True while any live run carries `tag` — no copy, no sort, early exit. */
+  async hasLiveRunTagged(tag: string): Promise<boolean> {
+    await this.ensureLoaded();
+    const ids = this.runsByTag.get(tag);
+    if (!ids) return false;
+    for (const id of ids) {
+      const status = this.runs.get(id)?.status;
+      if (status === "running" || status === "queued") return true;
+    }
+    return false;
   }
 
   /** A run record by id (workers hand their results to managers through this). */
@@ -1434,6 +1755,99 @@ export class AgentManager {
     }
   }
 
+  /* ---------------- worktree merge-back ---------------- */
+
+  /** The run's worktree + repo dirs, with existence checks shared by the merge surface. */
+  private async worktreeDirs(runId: string): Promise<{ run: AgentRun; repoAbs: string; worktreeAbs: string }> {
+    await this.ensureLoaded();
+    const run = this.runs.get(runId);
+    if (!run) throw new Error(`Unknown run: ${runId}`);
+    if (!run.worktreePath) throw new Error(`Run ${runId} has no worktree.`);
+    if (!(await exists(run.worktreePath))) {
+      throw new Error(`Worktree ${run.worktreePath} no longer exists.`);
+    }
+    return { run, repoAbs: resolveInRoot(this.root, run.cwd), worktreeAbs: run.worktreePath };
+  }
+
+  /** Non-destructive merge prediction for a run's worktree (see worktree-merge.ts). */
+  async mergePreview(runId: string, target?: string | null): Promise<MergePreview> {
+    const { repoAbs, worktreeAbs } = await this.worktreeDirs(runId);
+    return mergePreview(repoAbs, worktreeAbs, target);
+  }
+
+  /**
+   * Land a run's worktree on the target branch (repo's current branch by
+   * default). Refused while a live run shares the worktree — landing a tree
+   * out from under a working agent invites half-written commits.
+   */
+  async mergeWorktreeOf(
+    runId: string,
+    opts: { target?: string | null; message?: string | null },
+  ): Promise<MergeResult> {
+    const { run, repoAbs, worktreeAbs } = await this.worktreeDirs(runId);
+    const live = this.liveWorktreeSharer(worktreeAbs);
+    if (live) throw new Error(`Worktree is in use by live run ${live.id} — wait or cancel it.`);
+    const headline = promptHeadline(run.prompt, 72) || run.id;
+    const result = await mergeWorktree(repoAbs, worktreeAbs, {
+      message: opts.message?.trim() || `Merge agent run: ${headline}`,
+      commitMessage: `Agent run ${run.id}: ${headline}`,
+      target: opts.target,
+    });
+    this.record(run, {
+      type: "status",
+      status: run.status,
+      message: `Merged into ${result.target} as ${result.mergedCommit.slice(0, 10)}${result.fastForward ? " (fast-forward)" : ""}`,
+    });
+    this.emitRunChanged(run);
+    await this.persist(run);
+    return result;
+  }
+
+  /**
+   * Start AI conflict resolution for a run's worktree: replay the merge the
+   * other direction (target into the worktree, standard conflict markers) and
+   * dispatch an agent run *in that worktree* to resolve and commit it. After
+   * the resolution run settles, the merge lands as a fast-forward.
+   */
+  async resolveConflicts(
+    runId: string,
+    target?: string | null,
+  ): Promise<{ run: AgentRun; conflicts: string[] }> {
+    const { run, repoAbs, worktreeAbs } = await this.worktreeDirs(runId);
+    const live = this.liveWorktreeSharer(worktreeAbs);
+    if (live) throw new Error(`Worktree is in use by live run ${live.id} — wait or cancel it.`);
+    const prep = await prepareConflictResolution(repoAbs, worktreeAbs, {
+      commitMessage: `Agent run ${run.id}: work in progress`,
+      target,
+    });
+    if (prep.conflicts.length === 0) {
+      // The reverse merge applied clean — nothing for an agent to resolve.
+      throw new Error(
+        `No conflicts after merging ${prep.target} into the worktree — merge normally now.`,
+      );
+    }
+    const resolver = await this.start({
+      prompt: buildConflictPrompt(prep.target, prep.conflicts),
+      cwd: run.cwd,
+      taskId: run.taskId,
+      projectId: run.projectId,
+      repoId: run.repoId,
+      agentId: run.agentId,
+      purpose: "merge",
+      tags: run.tags,
+      worktreeOfRunId: runId,
+    });
+    return { run: resolver, conflicts: prep.conflicts };
+  }
+
+  /** Abort an in-progress conflict resolution in the run's worktree. */
+  async abortResolve(runId: string): Promise<void> {
+    const { worktreeAbs } = await this.worktreeDirs(runId);
+    const live = this.liveWorktreeSharer(worktreeAbs);
+    if (live) throw new Error(`Resolution run ${live.id} is live — cancel it first.`);
+    await abortConflictResolution(worktreeAbs);
+  }
+
   async cancel(runId: string): Promise<void> {
     const proc = this.procs.get(runId);
     const run = this.runs.get(runId);
@@ -1447,17 +1861,9 @@ export class AgentManager {
     }
     if (!proc || !run) throw new Error(`No active run ${runId}`);
     proc.cancelled = true;
-    // On Windows kill the whole tree (a shell spawn puts claude under cmd.exe).
-    if (process.platform === "win32" && proc.child.pid) {
-      const killer = spawn("taskkill", ["/pid", String(proc.child.pid), "/T", "/F"], {
-        shell: false,
-        windowsHide: true,
-      });
-      // taskkill unavailable must not crash the server — fall back to a plain kill.
-      killer.on("error", () => proc.child.kill());
-    } else {
-      proc.child.kill("SIGTERM");
-    }
+    // Tree kill: on Windows a shell spawn puts claude under cmd.exe.
+    if (proc.child.pid) void killProcessTree(proc.child.pid, { child: proc.child });
+    else proc.child.kill("SIGTERM");
   }
 
   /**
@@ -1479,15 +1885,8 @@ export class AgentManager {
     for (const [, proc] of this.procs) {
       // Not marked cancelled: the 'close' handler's fallback then reads
       // failed ("claude exited with code …"), keeping the chain resumable.
-      if (process.platform === "win32" && proc.child.pid) {
-        const killer = spawn("taskkill", ["/pid", String(proc.child.pid), "/T", "/F"], {
-          shell: false,
-          windowsHide: true,
-        });
-        killer.on("error", () => proc.child.kill());
-      } else {
-        proc.child.kill("SIGTERM");
-      }
+      if (proc.child.pid) void killProcessTree(proc.child.pid, { child: proc.child });
+      else proc.child.kill("SIGTERM");
     }
     for (const run of this.runs.values()) {
       if (!run.terminalId || run.endedAt) continue;
@@ -1539,6 +1938,7 @@ export class AgentManager {
       run.resultText = event.resultText;
       run.sessionId = event.sessionId ?? run.sessionId;
       run.status = event.ok ? "completed" : "failed";
+      if (!event.ok) run.failure = classifyRunFailure(event.resultText);
       this.emitRunChanged(run);
     } else if (event.type === "tool_use") {
       const file = touchedFileFromToolUse(event.name, event.input);
@@ -1621,7 +2021,24 @@ export class AgentManager {
       run.resultText = run.resultText ?? message;
     }
     run.endedAt = nowIso();
-    this.record(run, { type: "status", status: run.status, message });
+    // Recoverable-failure classification: the result text usually carries the
+    // provider error, but CLI-level failures (dead login, instant exits) only
+    // ever reach stderr — scan the tail of the stream as a fallback.
+    if (run.status === "failed" && !run.failure) {
+      run.failure =
+        classifyRunFailure(run.resultText) ??
+        classifyRunFailure(message) ??
+        classifyRunFailure(this.stderrTail(run.id));
+    }
+    // Before the terminal broadcast: whoever reacts to settlement (tests,
+    // notice flushes, UI banners) must already see the updated auth flag.
+    this.trackAuthHealth(run);
+    const hint = run.failure ? runFailureHint(run.failure) : null;
+    this.record(run, {
+      type: "status",
+      status: run.status,
+      message: hint ? `${message}\n${hint}` : message,
+    });
     this.emitRunChanged(run);
     // finish() is fired-and-forgotten from 'close'/'error' handlers — a
     // persist rejection (disk full, AV lock) must not become an unhandled
@@ -1637,6 +2054,46 @@ export class AgentManager {
     }
     this.notifyOnSettle(run);
     return run;
+  }
+
+  /** Current login-health flag (served with `agent.list`). */
+  authState(): { broken: boolean; detail: string | null } {
+    return { broken: this.authBrokenDetail != null, detail: this.authBrokenDetail };
+  }
+
+  /**
+   * Flip the instance-wide auth flag on settlement evidence: an
+   * auth-classified failure raises it; any successful run clears it and
+   * releases every parked chain message.
+   */
+  private trackAuthHealth(run: AgentRun): void {
+    if (run.status === "failed" && run.failure?.kind === "auth") {
+      const detail = run.failure.detail ?? "The Claude CLI login is broken.";
+      if (this.authBrokenDetail !== detail) {
+        this.authBrokenDetail = detail;
+        this.events.emit("authChanged", { broken: true, detail });
+      }
+      return;
+    }
+    if (run.status === "completed" && this.authBrokenDetail != null) {
+      this.authBrokenDetail = null;
+      this.events.emit("authChanged", { broken: false, detail: null });
+      // The login healed — everything parked can deliver now.
+      for (const rootId of this.pendingNotices.keys()) {
+        void this.flushNotices(rootId);
+      }
+    }
+  }
+
+  /** Recent stderr lines of a run (classification fallback for CLI-level failures). */
+  private stderrTail(runId: string): string {
+    const events = this.runEvents.get(runId) ?? [];
+    return events
+      .slice(-30)
+      .map((e) => e.event)
+      .filter((e): e is Extract<AgentEvent, { type: "stderr" }> => e.type === "stderr")
+      .map((e) => e.text)
+      .join("\n");
   }
 
   /* ---------------- manager wake-ups ---------------- */
@@ -1700,6 +2157,10 @@ export class AgentManager {
    */
   private async flushNotices(rootId: string): Promise<void> {
     if (!this.pendingNotices.size(rootId)) return;
+    // Parked: a broken login would fail this delivery (and every retry)
+    // identically. trackAuthHealth flushes everything when a success proves
+    // the login healed.
+    if (this.authBrokenDetail != null) return;
     // A killed manager must stay dead — drop its notices instead of retrying.
     const latest = this.orderedChain(rootId).at(-1);
     if (latest?.status === "cancelled") {

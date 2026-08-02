@@ -112,6 +112,7 @@ export {
 export { createLensStore, type LensState, type LensStore } from "./lens-store.js";
 export { createNavStore, type NavPatch, type NavState, type NavStore } from "./nav-store.js";
 export { requestOpenFile } from "./open-file.js";
+export { useNeedsYou, type NeedsYou, type NeedsYouQuestion } from "./needs-you.js";
 export {
   RefCombobox,
   RefReviewBar,

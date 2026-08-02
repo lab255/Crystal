@@ -1,6 +1,14 @@
 import { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
 import { Check, DownloadCloud, FolderGit2, Gem, Link2, TerminalSquare } from "lucide-react";
-import { parseDeepLink, workspaceLight, worstLight, type TrafficLight } from "@crystal/core";
+import {
+  countOpenQuestions,
+  countUnrecoveredFailures,
+  parseDeepLink,
+  workspaceLight,
+  worstLight,
+  type ProjectEntry,
+  type TrafficLight,
+} from "@crystal/core";
 
 import {
   EMPTY_RUNS,
@@ -75,6 +83,8 @@ const MODE_COMPONENTS: Record<CrystalMode, React.LazyExoticComponent<() => React
 };
 
 
+const EMPTY_PROJECT_ENTRIES: ProjectEntry[] = [];
+
 export interface CrystalShellProps {
   initialMode?: CrystalMode;
   onModeChange?: (mode: CrystalMode) => void;
@@ -140,6 +150,11 @@ export function CrystalShell({
   const hubWaiting = useHub((s) =>
     Object.values(s.questions).reduce((n, qs) => n + qs.length, 0),
   );
+  // Count-only selectors (primitives): the shell must not re-render on every
+  // stream event that replaces the runs array — only when a count changes.
+  const needsYouCount =
+    useAgents((s) => countUnrecoveredFailures(s.runs)) +
+    useWorkspace((s) => countOpenQuestions(s.info?.projects ?? EMPTY_PROJECT_ENTRIES));
 
   const switchMode = useCallback(
     (next: CrystalMode): void => {
@@ -289,6 +304,8 @@ export function CrystalShell({
                       ? hubWaiting || liveProgramCount
                       : 0;
               const badgeWarns = m === "hub" && hubWaiting > 0;
+              // Agents waiting on the human outrank agents merely working.
+              const needs = m === "orchestrate" ? needsYouCount : 0;
               return (
                 <Tooltip key={m} content={MODE_LABELS[m]} shortcut={`Ctrl+${i + 1}`} side="right">
                   <button
@@ -307,7 +324,11 @@ export function CrystalShell({
                       <span className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-full bg-crystal-400" />
                     ) : null}
                     <Icon className="h-4.5 w-4.5" />
-                    {badge > 0 ? (
+                    {needs > 0 ? (
+                      <span className="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-warn px-0.5 text-[9px] font-bold text-surface-0">
+                        {needs}
+                      </span>
+                    ) : badge > 0 ? (
                       <span
                         className={cn(
                           "absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full px-0.5 text-[9px] font-bold text-surface-0",

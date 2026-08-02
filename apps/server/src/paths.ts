@@ -1,3 +1,4 @@
+import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -79,4 +80,12 @@ const IGNORED_DIRS = new Set([
 
 export function isIgnoredDir(name: string): boolean {
   return IGNORED_DIRS.has(name);
+}
+
+/** True when `p` exists (any kind) — the shared fs.access idiom. */
+export async function exists(p: string): Promise<boolean> {
+  return fsp.access(p).then(
+    () => true,
+    () => false,
+  );
 }

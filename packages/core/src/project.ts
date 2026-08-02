@@ -55,6 +55,10 @@ export const TaskQuestionSchema = z.object({
   /** Run that raised the question (null when asked manually). */
   runId: z.string().nullish(),
   text: z.string(),
+  /** Structured answer choices (one-click answers); free text stays allowed. */
+  options: z.array(z.string()).default([]),
+  /** The option the asking agent recommends (should be one of `options`). */
+  recommended: z.string().nullish(),
   answer: z.string().nullish(),
   createdAt: z.string(),
   answeredAt: z.string().nullish(),
@@ -183,11 +187,26 @@ export function createEpic(name: string): Epic {
   return EpicSchema.parse({ id: uid("epic"), name });
 }
 
-export function createTaskQuestion(text: string, runId?: string | null): TaskQuestion {
+/** Structured-answer extras on an ask: one-click choices + a recommendation. */
+export interface AskOptions {
+  options?: string[];
+  recommended?: string | null;
+}
+
+export function createTaskQuestion(
+  text: string,
+  runId?: string | null,
+  opts?: AskOptions,
+): TaskQuestion {
+  const options = (opts?.options ?? []).map((o) => o.trim()).filter(Boolean);
   return TaskQuestionSchema.parse({
     id: uid("q"),
     runId: runId ?? null,
     text,
+    options,
+    // A recommendation that names no offered option is dropped, not trusted.
+    recommended:
+      opts?.recommended && options.includes(opts.recommended) ? opts.recommended : null,
     createdAt: nowIso(),
   });
 }

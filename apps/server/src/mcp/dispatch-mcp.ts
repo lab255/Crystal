@@ -23,6 +23,7 @@ import {
   type WorkflowStageStatus,
   type WorkflowTrack,
   type WorkflowTrackStatus,
+  type AskOptions,
 } from "@crystal/core";
 
 /**
@@ -121,6 +122,7 @@ export interface BoardTools {
   askQuestion(
     text: string,
     taskId?: string | null,
+    ask?: AskOptions,
   ): Promise<{ ok: true } | { ok: false; reason: string }>;
   /** Close the run's own open question after an out-of-band (interactive) answer. */
   resolveQuestion(
@@ -130,6 +132,8 @@ export interface BoardTools {
   ): Promise<{ ok: true } | { ok: false; reason: string }>;
 }
 
+export type { AskOptions };
+
 /**
  * What a worker (or single task run) may do to the one task it works: read
  * it, move it, and escalate. Run identity is the write capability — no claim
@@ -138,7 +142,7 @@ export interface BoardTools {
 export interface OwnTaskTools {
   detail(): Promise<string>;
   update(patch: TaskPatch): Promise<{ ok: true; task: TaskItem } | { ok: false; reason: string }>;
-  askQuestion(text: string): Promise<{ ok: true } | { ok: false; reason: string }>;
+  askQuestion(text: string, ask?: AskOptions): Promise<{ ok: true } | { ok: false; reason: string }>;
   /** Close the run's own open question after an out-of-band (interactive) answer. */
   resolveQuestion(
     resolution: string,
@@ -171,6 +175,8 @@ const WorkerResultArgs = z.object({ runId: z.string().min(1) });
 const AskQuestionArgs = z.object({
   question: z.string().min(1),
   taskId: z.string().optional(),
+  options: z.array(z.string().min(1)).max(6).optional(),
+  recommended: z.string().optional(),
 });
 const UpdateMyTaskArgs = z.object({ patch: TaskPatchSchema });
 const ResolveQuestionArgs = z.object({
@@ -378,14 +384,25 @@ const GET_TASK_TOOL = {
 const ASK_QUESTION_TOOL = {
   name: "ask_question",
   description:
-    "File an async question for the task's human owner on the board. Include " +
-    "your recommended default. Do not block on the answer — keep working " +
-    "everything not gated by it; the answer arrives as a follow-up turn.",
+    "File an async question for the task's human owner on the board. Offer " +
+    "2-6 concrete answer `options` when the decision has a closed set of " +
+    "choices, and name the one you `recommended` — one-click answers get " +
+    "answered fastest. Do not block on the answer — keep working everything " +
+    "not gated by it; the answer arrives as a follow-up turn in this session.",
   inputSchema: {
     type: "object",
     properties: {
       question: { type: "string" },
       taskId: { type: "string", description: "Task to attach it to (defaults to your task)." },
+      options: {
+        type: "array",
+        items: { type: "string" },
+        description: "Concrete answer choices (max 6) for one-click answering.",
+      },
+      recommended: {
+        type: "string",
+        description: "The option you recommend (must be one of `options`).",
+      },
     },
     required: ["question"],
     additionalProperties: false,
@@ -808,7 +825,10 @@ export class McpDispatchServer {
         case "ask_question": {
           const a = AskQuestionArgs.safeParse(args ?? {});
           if (!a.success) return invalidArgs(id, name, a.error);
-          const result = await own.askQuestion(a.data.question);
+          const result = await own.askQuestion(a.data.question, {
+            options: a.data.options,
+            recommended: a.data.recommended,
+          });
           return result.ok
             ? toolText(id, "Question filed for the human owner. Keep working what you can.")
             : toolError(id, result.reason);
@@ -885,7 +905,10 @@ export class McpDispatchServer {
         case "ask_question": {
           const a = AskQuestionArgs.safeParse(args ?? {});
           if (!a.success) return invalidArgs(id, name, a.error);
-          const result = await board.askQuestion(a.data.question, a.data.taskId ?? null);
+          const result = await board.askQuestion(a.data.question, a.data.taskId ?? null, {
+            options: a.data.options,
+            recommended: a.data.recommended,
+          });
           return result.ok
             ? toolText(id, "Question filed for the human owner. Keep driving unblocked work.")
             : toolError(id, result.reason);

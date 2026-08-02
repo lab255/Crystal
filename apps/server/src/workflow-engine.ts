@@ -147,6 +147,18 @@ export class WorkflowEngine {
     // beside the guard so both halves of dispatch policy come from one place.
     agents.dispatchCostCap = async (manager) =>
       (await this.workflowForRun(manager))?.runCapUsd ?? null;
+    // A context handoff replaces a manager session with a fresh chain — the
+    // workflow's remote control (message/queue delivery) must follow it.
+    agents.onHandoff = (from, to) => {
+      const id = workflowIdOfRun(from);
+      if (!id || from.role !== "manager") return;
+      void this.mutate(id, (workflow) => ({
+        workflow: { ...workflow, managerRunId: to.id },
+        result: undefined,
+      })).catch((err) =>
+        console.warn(`[crystal] could not repoint workflow ${id} after handoff:`, (err as Error).message),
+      );
+    };
     this.disposeListener = agents.events.on("runChanged", ({ run }) => {
       if (!workflowIdOfRun(run) || !this.settledRuns.claim(run)) return;
       void this.onRunSettled(run);
@@ -164,6 +176,7 @@ export class WorkflowEngine {
     this.library.dispose();
     if (this.agents.dispatchGuard != null) this.agents.dispatchGuard = null;
     if (this.agents.dispatchCostCap != null) this.agents.dispatchCostCap = null;
+    if (this.agents.onHandoff != null) this.agents.onHandoff = null;
   }
 
   private async ensureLoaded(): Promise<void> {

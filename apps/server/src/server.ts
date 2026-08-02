@@ -573,7 +573,10 @@ export async function startCrystalServer(opts: {
       await registry.get(ws).agents.cancel(runId);
       return { ok: true };
     },
-    "agent.list": async ({ ws }) => ({ runs: await registry.get(ws).agents.list() }),
+    "agent.list": async ({ ws }) => {
+      const agents = registry.get(ws).agents;
+      return { runs: await agents.list(), auth: agents.authState() };
+    },
     "agent.events": async ({ ws, runId }) => ({
       events: await registry.get(ws).agents.eventsFor(runId),
     }),
@@ -582,6 +585,19 @@ export async function startCrystalServer(opts: {
       await registry.get(ws).agents.cleanupWorktree(runId);
       return { ok: true };
     },
+    "agent.mergePreview": ({ ws, runId, target }) =>
+      registry.get(ws).agents.mergePreview(runId, target),
+    "agent.merge": ({ ws, runId, target, message }) =>
+      registry.get(ws).agents.mergeWorktreeOf(runId, { target, message }),
+    "agent.resolveConflicts": ({ ws, runId, target }) =>
+      registry.get(ws).agents.resolveConflicts(runId, target),
+    "agent.abortResolve": async ({ ws, runId }) => {
+      await registry.get(ws).agents.abortResolve(runId);
+      return { ok: true };
+    },
+    "agent.handoff": async ({ ws, runId }) => ({
+      run: await registry.get(ws).agents.handoff(runId),
+    }),
     "terminal.create": async ({ ws, cwd, cols, rows }) => ({
       terminal: registry.get(ws).terminals.create({ cwd, cols, rows }),
     }),
@@ -601,6 +617,34 @@ export async function startCrystalServer(opts: {
     "terminal.buffer": async ({ ws, terminalId }) => ({
       chunks: registry.get(ws).terminals.buffer(terminalId),
     }),
+    "service.list": async ({ ws }) => {
+      const rt = registry.get(ws);
+      return { services: await rt.services.list(), watches: await rt.services.listWatches() };
+    },
+    "service.save": async ({ ws, services }) => {
+      const rt = registry.get(ws);
+      return {
+        services: await rt.services.saveDefs(services),
+        watches: await rt.services.listWatches(),
+      };
+    },
+    "service.start": async ({ ws, serviceId }) => ({
+      service: await registry.get(ws).services.start(serviceId),
+    }),
+    "service.stop": async ({ ws, serviceId }) => ({
+      service: await registry.get(ws).services.stop(serviceId),
+    }),
+    "service.restart": async ({ ws, serviceId }) => ({
+      service: await registry.get(ws).services.restart(serviceId),
+    }),
+    "service.logs": async ({ ws, serviceId }) => ({
+      chunks: await registry.get(ws).services.logs(serviceId),
+    }),
+    "standing.list": async ({ ws }) => ({ tasks: await registry.get(ws).standing.list() }),
+    "standing.save": async ({ ws, tasks }) => ({
+      tasks: await registry.get(ws).standing.saveDefs(tasks),
+    }),
+    "standing.fire": ({ ws, taskId }) => registry.get(ws).standing.fireNow(taskId),
     "codemap.get": ({ ws }) => registry.get(ws).codemap.summary(),
     "codemap.module": ({ ws, path: p, prefer }) =>
       registry.get(ws).codemap.moduleDetail(p, prefer),
@@ -738,7 +782,13 @@ export async function startCrystalServer(opts: {
       const { index } = await rt.codeindex.get();
       return { suggestions: suggestFacets(arch.graph, index) };
     },
-    "surfaces.get": ({ ws }) => registry.get(ws).codemap.surfaces(),
+    "surfaces.get": async ({ ws }) => {
+      const rt = registry.get(ws);
+      const report = await rt.codemap.surfaces();
+      // Running managed services are ground truth for preview URLs — they
+      // beat the report's package.json script guesses.
+      return { ...report, demo: await rt.services.demoTargets(report.demo) };
+    },
     "surfaces.map": ({ ws }) => registry.get(ws).codemap.surfaceMap(),
     "apiclient.get": ({ ws }) => registry.get(ws).apiclient.get(),
     "apiclient.save": ({ ws, state }) => registry.get(ws).apiclient.save(state),

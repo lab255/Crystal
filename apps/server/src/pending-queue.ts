@@ -26,6 +26,11 @@ export class PendingQueue<T> {
     return this.queues.get(key)?.length ?? 0;
   }
 
+  /** Every key with something queued (a heal event re-attempts them all). */
+  keys(): string[] {
+    return [...this.queues.keys()];
+  }
+
   /** Abandon everything queued for `key` (e.g. a cancelled manager stays dead). */
   clear(key: string): void {
     this.queues.delete(key);

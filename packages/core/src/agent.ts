@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { nowIso, uid } from "./ids.js";
+import { RunFailureSchema } from "./run-failure.js";
 
 /**
  * Agent orchestration model.
@@ -124,6 +125,12 @@ export const AgentRunSchema = z.object({
    * resume share one logical manager via this link (see chain helpers below).
    */
   resumedFromRunId: z.string().nullish(),
+  /**
+   * Run this one continues in a FRESH session (new context, prior work carried
+   * over as a summary — see `agent.handoff`). Distinct from `resumedFromRunId`:
+   * a handoff starts a new resume chain; this link only records the lineage.
+   */
+  handoffFromRunId: z.string().nullish(),
   /** Place in the manager/worker hierarchy (unset = standalone run). */
   role: AgentRoleSchema.nullish(),
   /** Why this run touched the task (see RUN_PURPOSES). */
@@ -157,6 +164,12 @@ export const AgentRunSchema = z.object({
   durationMs: z.number().nullish(),
   /** Final result text (or error message on failure). */
   resultText: z.string().nullish(),
+  /**
+   * Recoverable-failure classification for failed runs (context overflow,
+   * usage limit, broken login — see run-failure.ts). Null for successes and
+   * unclassified failures.
+   */
+  failure: RunFailureSchema.nullish(),
   /** Files the run edited (collected from Edit/Write tool calls), for review. */
   filesTouched: z.array(z.string()).default([]),
   createdAt: z.string(),
@@ -176,6 +189,7 @@ export function createAgentRun(init: {
   agentId?: string | null;
   parentRunId?: string | null;
   resumedFromRunId?: string | null;
+  handoffFromRunId?: string | null;
   role?: AgentRole | null;
   purpose?: RunPurpose | null;
   tags?: string[];
@@ -194,6 +208,7 @@ export function createAgentRun(init: {
     agentId: init.agentId ?? null,
     parentRunId: init.parentRunId ?? null,
     resumedFromRunId: init.resumedFromRunId ?? null,
+    handoffFromRunId: init.handoffFromRunId ?? null,
     // A run with a parent is a worker by default; otherwise leave it unset
     // unless the caller declares it a manager.
     role: init.role ?? (init.parentRunId ? "worker" : null),
@@ -224,6 +239,12 @@ export function chainRootId(runId: string, runsById: Map<string, AgentRun>): str
     id = prev;
   }
   return id;
+}
+
+/** First line of a prompt, ellipsized — the run's display headline. */
+export function promptHeadline(prompt: string, max = 100): string {
+  const first = (prompt.split("\n")[0] ?? "").trim();
+  return first.length > max ? `${first.slice(0, max)}…` : first;
 }
 
 /** Workspace file path from an Edit/Write-style tool call, or null. */
@@ -395,7 +416,14 @@ export type AgentEvent =
       cacheReadTokens: number;
       cacheCreationTokens: number;
     }
-  | { type: "question"; text: string }
+  | {
+      type: "question";
+      text: string;
+      /** Structured answer choices, when the ask supplied them (MCP path). */
+      options?: string[];
+      /** The option the agent recommends (must be one of `options`). */
+      recommended?: string | null;
+    }
   | { type: "dispatch"; spec: WorkerSpec }
   | { type: "stderr"; text: string }
   | { type: "status"; status: AgentRunStatus; message?: string }

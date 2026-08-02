@@ -2,15 +2,16 @@ import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type {
-  BridgeEventName,
-  BridgeEvents,
-  CrossImportUse,
-  CrossPackageUse,
-  CrossWorkspaceEdge,
-  CrossWorkspaceMap,
-  RecentWorkspace,
-  WorkspaceDescriptor,
+import {
+  buildWatchFirePrompt,
+  type BridgeEventName,
+  type BridgeEvents,
+  type CrossImportUse,
+  type CrossPackageUse,
+  type CrossWorkspaceEdge,
+  type CrossWorkspaceMap,
+  type RecentWorkspace,
+  type WorkspaceDescriptor,
 } from "@crystal/core";
 import {
   presetById,
@@ -34,6 +35,8 @@ import { RefactorEngine } from "./refactor.js";
 import { SettledRuns } from "./settled-runs.js";
 import { GlobalTemplateStore } from "./template-library.js";
 import { GrantsStore } from "./grants-store.js";
+import { ServiceManager } from "./service-manager.js";
+import { StandingTaskEngine } from "./standing-tasks.js";
 import { TerminalManager, pasteInput, type TerminalSeed } from "./terminal-manager.js";
 import { WorkflowEngine } from "./workflow-engine.js";
 import { WorkspaceStore } from "./workspace-store.js";
@@ -81,6 +84,8 @@ export class WorkspaceRuntime {
   readonly agentLibrary: AgentLibrary;
   /** Per-workspace tool grants + permission-denial tally (see grants-store.ts). */
   readonly grants: GrantsStore;
+  readonly services: ServiceManager;
+  readonly standing: StandingTaskEngine;
   /** Manifest name, kept fresh by workspace.get / saveManifest handlers. */
   name: string;
 
@@ -158,6 +163,25 @@ export class WorkspaceRuntime {
     // on this workspace's PTYs.
     this.workflows.interactiveLauncher = (params) =>
       launchInteractiveRun(this.agents, this.terminals, params);
+    this.services = new ServiceManager(root, appDataDir(root), this.store);
+    this.standing = new StandingTaskEngine(appDataDir(root), this.agents, this.store);
+    // A fired watch wakes an agent — with one live fix-run per watch, so a
+    // crash-looping service can't fan out an army.
+    this.services.onWatchFire = async ({ watch, service, reason, logTail }) => {
+      if (await this.agents.hasLiveRunTagged(`watch:${watch.id}`)) return;
+      await this.agents.start({
+        prompt: buildWatchFirePrompt({
+          serviceName: service.name,
+          command: service.command,
+          reason,
+          instructions: watch.instructions,
+          logTail,
+        }),
+        cwd: service.cwd,
+        purpose: "fix",
+        tags: [`watch:${watch.id}`, `service:${service.id}`],
+      });
+    };
     // A worker dispatched against a claimed task inherits the lease, so it is
     // released when the work settles rather than when the manager's turn ends.
     this.agents.onWorkerDispatched = (worker) => {
@@ -242,6 +266,9 @@ export class WorkspaceRuntime {
           void this.fileQuestion(payload.runId, payload.event.text);
         }
       }),
+      this.agents.events.on("authChanged", ({ broken, detail }) =>
+        broadcast("agent.authChanged", { ws: this.id, broken, detail }),
+      ),
       this.agents.events.on("runChanged", ({ run }) => {
         broadcast("agent.runChanged", { ws: this.id, run });
         // Terminal states bill the run's task and heal its lease — once.
@@ -289,7 +316,24 @@ export class WorkspaceRuntime {
             console.warn(`[crystal] agents.changed broadcast failed:`, (err as Error).message);
           });
       }),
+      this.services.events.on("changed", ({ service }) =>
+        broadcast("service.changed", { ws: this.id, service }),
+      ),
+      this.services.events.on("log", ({ chunk }) =>
+        broadcast("service.log", { ws: this.id, chunk }),
+      ),
+      this.services.events.on("watchFired", ({ watch }) =>
+        broadcast("service.watchFired", { ws: this.id, watch }),
+      ),
+      this.standing.events.on("changed", () =>
+        broadcast("standing.changed", { ws: this.id }),
+      ),
     ];
+    this.standing.start();
+    // Reap crashed-server orphans and restart what the user left running.
+    void this.services.restoreDesired().catch((err) => {
+      console.warn(`[crystal] service restore failed for ${this.root}:`, (err as Error).message);
+    });
     try {
       this.watcher = fsSync.watch(this.root, { recursive: true }, (_evt, filename) => {
         if (!filename) return;
@@ -344,6 +388,8 @@ export class WorkspaceRuntime {
     this.workflows.dispose();
     // Same story for the shared agent store's subscription.
     this.agentLibrary.dispose();
+    this.standing.dispose();
+    this.services.dispose();
     // Kill live agent runs BEFORE their terminals: a closed workspace with
     // its orchestrator still running is how the hub's one-per-project
     // invariant broke (cancel recorded, orchestrator alive, retry doubled).

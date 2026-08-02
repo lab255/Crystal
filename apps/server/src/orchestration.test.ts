@@ -249,6 +249,22 @@ describe("OrchestrationService", () => {
     expect(missing.ok).toBe(false);
   });
 
+  it("stores structured questions and drops recommendations not in the options", async () => {
+    const task = await svc.createTask(projectPath, { title: "structured" });
+    await svc.addQuestion(projectPath, task.id, "Which store?", "run_s", {
+      options: ["postgres", "sqlite"],
+      recommended: "sqlite",
+    });
+    await svc.addQuestion(projectPath, task.id, "Which cache?", "run_s", {
+      options: ["redis"],
+      recommended: "memcached", // not offered — must be dropped
+    });
+    const saved = (await loadProject()).tasks.find((t) => t.id === task.id)!;
+    expect(saved.questions[0]!.options).toEqual(["postgres", "sqlite"]);
+    expect(saved.questions[0]!.recommended).toBe("sqlite");
+    expect(saved.questions[1]!.recommended).toBeNull();
+  });
+
   it("resolves a run's project by its task, and refuses unknown project ids", async () => {
     const project = await loadProject();
     const task = project.tasks[0]!;

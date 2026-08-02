@@ -16,6 +16,7 @@
 
 import { CODE_LOD_LEVELS, type CodeLodLevel } from "./codemap.js";
 import type { HubViewId } from "./hub.js";
+import { INSIGHT_PERIODS } from "./insights.js";
 import type { QualityViewId } from "./quality.js";
 import type { SurfaceViewId } from "./surfaces.js";
 import { RUN_PURPOSES, type RunPurpose } from "./agent.js";
@@ -68,7 +69,7 @@ export type CrystalModeId =
  * never emitted.
  */
 export type ArchitectViewId = "architecture" | "codebase" | "infra";
-export type OrchestratorTabId = "board" | "runs" | "agents" | "workflows" | "costs";
+export type OrchestratorTabId = "board" | "runs" | "agents" | "workflows" | "costs" | "insights";
 
 /** Mirrors the code map's drill levels (all workspaces → workspace → module → file). */
 export type CodeMapLevelLink =
@@ -189,6 +190,8 @@ export interface OrchestrateLink {
    * Unset = epic.
    */
   costBy?: string;
+  /** Insights window in days: 7, 30 or 90 (insights tab). */
+  period?: number;
 }
 
 export interface CodeLink {
@@ -377,6 +380,7 @@ export function formatDeepLink(link: DeepLink): string {
     if (tab === "workflows" && o.builder) add("builder", "1");
     if (tab === "workflows" && o.builder && o.template) add("template", o.template);
     if (tab === "costs" && o.costBy) add("by", o.costBy);
+    if (tab === "insights" && o.period) add("period", String(o.period));
   } else if (mode === "code") {
     if (link.code?.file) add("file", link.code.file);
   } else if (mode === "surfaces") {
@@ -551,7 +555,8 @@ export function parseDeepLink(hash: string): DeepLink {
       tab === "runs" ||
       tab === "agents" ||
       tab === "workflows" ||
-      tab === "costs"
+      tab === "costs" ||
+      tab === "insights"
     )
       o.tab = tab;
     const project = params.get("project");
@@ -580,6 +585,8 @@ export function parseDeepLink(hash: string): DeepLink {
     if (template) o.template = template;
     const costBy = params.get("by");
     if (costBy) o.costBy = costBy;
+    const period = Number(params.get("period"));
+    if ((INSIGHT_PERIODS as readonly number[]).includes(period)) o.period = period;
     if (Object.keys(o).length) link.orchestrate = o;
   } else if (mode === "code") {
     link.mode = "code";
@@ -693,6 +700,7 @@ const ORCHESTRATE_TAB_FIELDS: Record<OrchestratorTabId, readonly (keyof Orchestr
   agents: ["tab", "project", "run"],
   workflows: ["tab", "project", "workflow", "builder", "template"],
   costs: ["tab", "project", "costBy"],
+  insights: ["tab", "project", "period"],
 };
 
 const SURFACES_VIEW_FIELDS: Record<SurfaceViewId, readonly (keyof SurfacesLink)[]> = {

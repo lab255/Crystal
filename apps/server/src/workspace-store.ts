@@ -9,6 +9,10 @@ import {
   ArchOverlaySchema,
   CRYSTAL_DIR,
   PROJECTS_DIR,
+  SERVICES_FILE,
+  STANDING_TASKS_FILE,
+  ServicesFileSchema,
+  StandingTasksFileSchema,
   SYSTEMS_LAYOUT_FILE,
   TODOS_FILE,
   TodoListSchema,
@@ -18,6 +22,8 @@ import {
   createDefaultRoster,
   createProject,
   createRepoRef,
+  createServicesFile,
+  createStandingTasksFile,
   createTodoList,
   createWorkspaceManifest,
   parseCrystalFile,
@@ -28,6 +34,8 @@ import {
   type ArchOverlay,
   type ArchitectureGraph,
   type Project,
+  type ServicesFile,
+  type StandingTasksFile,
   type SystemsLayout,
   type TodoList,
   type WorkspaceFacet,
@@ -251,6 +259,42 @@ export class WorkspaceStore {
     const file = resolveInRoot(this.root, ARCH_OVERLAY_FILE);
     await fs.mkdir(path.dirname(file), { recursive: true });
     await fs.writeFile(file, serializeCrystalFile("arch-overlay", parsed), "utf8");
+  }
+
+  /** Managed-service definitions (`.crystal/services.json`; empty file when absent). */
+  async loadServices(): Promise<ServicesFile> {
+    const file = resolveInRoot(this.root, SERVICES_FILE);
+    if (!(await exists(file))) return createServicesFile();
+    return parseCrystalFile("services", await fs.readFile(file, "utf8"));
+  }
+
+  /**
+   * Validate-and-write the services file (the one validation layer for this
+   * payload — callers pass raw input). Returns the parsed form, defaults
+   * filled, so callers can trust it without re-parsing.
+   */
+  async saveServices(services: unknown): Promise<ServicesFile> {
+    const parsed = ServicesFileSchema.parse(services);
+    const file = resolveInRoot(this.root, SERVICES_FILE);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, serializeCrystalFile("services", parsed), "utf8");
+    return parsed;
+  }
+
+  /** Standing-task definitions (`.crystal/standing-tasks.json`; empty when absent). */
+  async loadStandingTasks(): Promise<StandingTasksFile> {
+    const file = resolveInRoot(this.root, STANDING_TASKS_FILE);
+    if (!(await exists(file))) return createStandingTasksFile();
+    return parseCrystalFile("standing", await fs.readFile(file, "utf8"));
+  }
+
+  /** Validate-and-write (single validation layer); returns the parsed form. */
+  async saveStandingTasks(tasks: unknown): Promise<StandingTasksFile> {
+    const parsed = StandingTasksFileSchema.parse(tasks);
+    const file = resolveInRoot(this.root, STANDING_TASKS_FILE);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, serializeCrystalFile("standing", parsed), "utf8");
+    return parsed;
   }
 
   /** Load the systems-overview arrangement (null until the user first edits it). */

@@ -15,6 +15,8 @@ import { useAgents, useCrystal, useNavUpdate } from "@crystal/client";
 import { RunList } from "@crystal/orchestrator";
 import { Spinner, StatusDot, cn } from "@crystal/ui";
 import { ScopedActionButton, type JobScope } from "./ScopedActionButton.js";
+import { ServicesSection } from "./ServicesSection.js";
+import { StandingTasksSection } from "./StandingTasksSection.js";
 
 const EMPTY_RUNS: AgentRun[] = [];
 
@@ -76,6 +78,8 @@ export function JobsMode() {
       </header>
 
       <div className="mx-auto flex w-full max-w-2xl flex-col gap-4 p-5">
+        <ServicesSection />
+        <StandingTasksSection />
         <IndexSection scoped={scoped} runs={runs} refresh={refresh} />
         <SurveySection scoped={scoped} runs={runs} />
         <JobRuns runs={runs} />

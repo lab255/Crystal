@@ -35,6 +35,8 @@ import type {
   SurfacesReport,
 } from "./surfaces.js";
 import type { SystemOverview } from "./system-overview.js";
+import type { ServiceInfo, ServiceLogChunk, ServicesFile, WatchInfo } from "./service.js";
+import type { StandingTaskInfo, StandingTasksFile } from "./standing-task.js";
 import type { TerminalChunk, TerminalInfo } from "./terminal.js";
 import type { TodoList } from "./todo.js";
 import type {
@@ -156,6 +158,40 @@ export interface GitRefsResult {
   current: string | null;
   /** Linked worktrees (the main worktree included), with their branch. */
   worktrees: { path: string; branch: string | null }[];
+}
+
+/**
+ * Merge prediction for an isolated run's worktree (`agent.mergePreview`).
+ * The server's git layer produces this; nothing here is destructive.
+ */
+export interface MergePreviewResult {
+  /** Branch the merge would land on (null = no target resolvable). */
+  target: string | null;
+  /** Tip commit of the target branch. */
+  baseTip: string | null;
+  /** The worktree's HEAD commit. */
+  head: string | null;
+  /** Commits on the worktree not on target. */
+  ahead: number;
+  /** Commits on target not on the worktree (a true merge, not a FF). */
+  behind: number;
+  /** Uncommitted changes in the worktree (auto-committed by merge). */
+  dirty: boolean;
+  /** Predicted conflicted paths (committed state only). */
+  conflicts: string[];
+  /** A conflict resolution (reverse merge) is in progress in the worktree. */
+  resolving: boolean;
+  /** git < 2.38 — conflict prediction unavailable. */
+  predictionUnavailable: boolean;
+  canMerge: boolean;
+  reason: string | null;
+}
+
+/** Result of landing a run's worktree (`agent.merge`). */
+export interface MergeResult {
+  target: string;
+  mergedCommit: string;
+  fastForward: boolean;
 }
 
 /** One commit from `git.log` — enough to pick a review point. */
@@ -458,7 +494,11 @@ export interface BridgeMethods {
     result: { queued: boolean; runId: string | null };
   };
   "agent.cancel": { params: WsScope & { runId: string }; result: { ok: true } };
-  "agent.list": { params: WsScope; result: { runs: AgentRun[] } };
+  /** All runs plus the instance-wide login-health flag (see `agent.authChanged`). */
+  "agent.list": {
+    params: WsScope;
+    result: { runs: AgentRun[]; auth: { broken: boolean; detail: string | null } };
+  };
   "agent.events": { params: WsScope & { runId: string }; result: { events: RunEvent[] } };
   "agent.diff": {
     params: WsScope & { runId: string };
@@ -475,6 +515,43 @@ export interface BridgeMethods {
     params: WsScope & { runId: string; branch?: string | null; message?: string | null };
     result: { ok: true; branch: string; commit: string } | { ok: false; reason: string };
   };
+  /**
+   * Non-destructive merge prediction for an isolated run's worktree: target
+   * branch (repo's current branch unless `target` overrides), ahead/behind,
+   * dirty state and — via `git merge-tree` — the conflicts a merge would hit.
+   */
+  "agent.mergePreview": {
+    params: WsScope & { runId: string; target?: string | null };
+    result: MergePreviewResult;
+  };
+  /**
+   * Land the run's worktree on the target branch. Dirty state is auto-
+   * committed first. Fails with the conflict list when the merge would
+   * conflict — resolve via `agent.resolveConflicts` and merge again.
+   */
+  "agent.merge": {
+    params: WsScope & { runId: string; target?: string | null; message?: string | null };
+    result: MergeResult;
+  };
+  /**
+   * Start AI conflict resolution: the target branch is merged INTO the run's
+   * worktree (standard conflict markers) and an agent run is dispatched in
+   * that worktree to resolve and commit. Once it settles, `agent.merge` lands
+   * as a fast-forward.
+   */
+  "agent.resolveConflicts": {
+    params: WsScope & { runId: string; target?: string | null };
+    result: { run: AgentRun; conflicts: string[] };
+  };
+  /** Abort an in-progress conflict resolution (restores the pre-merge tree). */
+  "agent.abortResolve": { params: WsScope & { runId: string }; result: { ok: true } };
+  /**
+   * Context handoff: summarize the (settled) session's transcript and start a
+   * fresh session seeded with the note — same worktree when one exists, so
+   * uncommitted work carries over. The recovery for context-overflow
+   * failures, and a deliberate reset for any long session.
+   */
+  "agent.handoff": { params: WsScope & { runId: string }; result: { run: AgentRun } };
   /** Spawn a PTY shell terminal in the workspace (cwd relative to the root). */
   "terminal.create": {
     params: WsScope & { cwd?: string; cols?: number; rows?: number };
@@ -494,6 +571,42 @@ export interface BridgeMethods {
   "terminal.buffer": {
     params: WsScope & { terminalId: string };
     result: { chunks: TerminalChunk[] };
+  };
+  /** Managed services: definitions (from `.crystal/services.json`) + live state + watches. */
+  "service.list": {
+    params: WsScope;
+    result: { services: ServiceInfo[]; watches: WatchInfo[] };
+  };
+  /** Replace the service definitions (validated; running removals keep their process). */
+  "service.save": {
+    params: WsScope & { services: ServicesFile };
+    result: { services: ServiceInfo[]; watches: WatchInfo[] };
+  };
+  /** Start a service (port pre-probed; desired state persists across restarts). */
+  "service.start": { params: WsScope & { serviceId: string }; result: { service: ServiceInfo } };
+  /** Stop a service (SIGTERM the process group, SIGKILL after a grace window). */
+  "service.stop": { params: WsScope & { serviceId: string }; result: { service: ServiceInfo } };
+  "service.restart": { params: WsScope & { serviceId: string }; result: { service: ServiceInfo } };
+  /** Log ring replay (capped) — catch up before listening to `service.log`. */
+  "service.logs": {
+    params: WsScope & { serviceId: string };
+    result: { chunks: ServiceLogChunk[] };
+  };
+  /** Standing tasks: definitions (`.crystal/standing-tasks.json`) + schedule state. */
+  "standing.list": { params: WsScope; result: { tasks: StandingTaskInfo[] } };
+  /** Replace the standing-task definitions (validated server-side). */
+  "standing.save": {
+    params: WsScope & { tasks: StandingTasksFile };
+    result: { tasks: StandingTaskInfo[] };
+  };
+  /**
+   * Fire a standing task now, schedule notwithstanding. `runId` is null when
+   * the fire was suppressed (`reason`: the previous fire is still running, or
+   * the spawn failed).
+   */
+  "standing.fire": {
+    params: WsScope & { taskId: string };
+    result: { runId: string | null; reason: string | null };
   };
   "codemap.get": { params: WsScope; result: CodeMapSummary };
   /**
@@ -1086,6 +1199,11 @@ export type BridgeResponse<M extends BridgeMethodName = BridgeMethodName> =
 export interface BridgeEvents {
   "agent.event": RunEvent;
   "agent.runChanged": { ws: string; run: AgentRun };
+  /**
+   * The workspace's CLI login broke (auth-classified failure) or healed (any
+   * successful run). While broken, chain deliveries park server-side.
+   */
+  "agent.authChanged": { ws: string; broken: boolean; detail: string | null };
   "fs.changed": { ws: string; paths: string[] };
   "workspace.changed": { ws: string };
   /** A workspace's todo list was saved (payload carries the new list). */
@@ -1098,6 +1216,14 @@ export interface BridgeEvents {
   "terminal.data": { ws: string; chunk: TerminalChunk };
   /** A terminal was created, resized, exited or killed. */
   "terminal.changed": { ws: string; terminal: TerminalInfo };
+  /** A managed service started, stopped, crashed or was redefined. */
+  "service.changed": { ws: string; service: ServiceInfo };
+  /** One log line from a managed service (sequenced per service). */
+  "service.log": { ws: string; chunk: ServiceLogChunk };
+  /** A watch fired (its agent dispatch may still be suppressed by a live run). */
+  "service.watchFired": { ws: string; watch: WatchInfo };
+  /** The standing-task set or schedule state changed (fired, saved). */
+  "standing.changed": { ws: string };
   /** The derived code map was re-analyzed after source changes. */
   "codemap.changed": { ws: string };
   /** The code index changed (code re-analyzed or an enrichment file landed). */

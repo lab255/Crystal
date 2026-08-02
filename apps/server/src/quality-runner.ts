@@ -22,6 +22,7 @@ import {
 } from "@crystal/core";
 import { envWithToolchain } from "./claude-bin.js";
 import { isIgnoredDir, resolveInRoot, toRelPath } from "./paths.js";
+import { killProcessTree } from "./process-tree.js";
 
 /** Cap on test files listed by detect(). */
 const MAX_TEST_FILES = 500;
@@ -1269,17 +1270,7 @@ export class QualityService {
 
   private killTree(child: ChildProcess): void {
     if (!child.pid) return;
-    if (process.platform === "win32") {
-      // Kill the whole tree — the .cmd shim spawns node underneath.
-      const killer = spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
-        shell: false,
-        windowsHide: true,
-      });
-      // taskkill unavailable must not crash the server — fall back to a plain kill.
-      killer.on("error", () => child.kill());
-    } else {
-      child.kill("SIGTERM");
-    }
+    void killProcessTree(child.pid, { child });
   }
 
   async runs(): Promise<{ runs: QualityRun[] }> {

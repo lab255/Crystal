@@ -655,6 +655,7 @@ function WorkflowDetail({
             onRefreshDiff={surface.onRefreshDiff}
             onApplyBranch={surface.onApplyBranch}
             onDiscard={surface.onDiscard}
+            merge={surface.merge}
             onCancel={surface.onCancel}
             onSelectTurn={(id) => setTurnId(id === latestTurn?.id ? null : id)}
             onSend={terminal ? undefined : (text) => message(workflow.id, text)}

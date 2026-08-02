@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { AgentRun } from "@crystal/core";
+import type { AgentRun, AskOptions } from "@crystal/core";
 import type { HubEngine } from "../hub-engine.js";
 import type { WorkspaceRegistry, WorkspaceRuntime } from "../workspace-registry.js";
 import { McpDispatchServer, type JsonRpcMessage } from "./dispatch-mcp.js";
@@ -82,6 +82,23 @@ export async function handleMcpRequest(
     const projectPath = await rt.orchestration.projectPathForRun(run ?? {});
     return { projectPath, holder: run?.agentId ?? runId };
   };
+  /**
+   * File an ask on the board and mirror it onto the run's live stream — the
+   * one MCP-ask policy, shared by the board and own-task tool surfaces. (The
+   * CRYSTAL_QUESTION marker path needs no mirror: its parser already emitted
+   * the stream event.)
+   */
+  const fileAsk = async (taskId: string, text: string, ask?: AskOptions) => {
+    const result = await rt.orchestration.addQuestion(
+      (await boardCtx()).projectPath,
+      taskId,
+      text,
+      runId,
+      ask,
+    );
+    if (result.ok) rt.agents.noteQuestion(runId, text, ask);
+    return result;
+  };
   const isManager = run?.role === "manager";
   // A manager run tagged `workflow:<id>` also drives its workflow record.
   const workflow = isManager && run ? await rt.workflows.workflowForRun(run) : null;
@@ -137,12 +154,12 @@ export async function handleMcpRequest(
             rt.orchestration.updateTask((await boardCtx()).projectPath, taskId, patch, { claimId }),
           releaseTask: async (taskId, claimId) =>
             rt.orchestration.releaseTask((await boardCtx()).projectPath, taskId, { claimId }),
-          askQuestion: async (text, taskId) => {
+          askQuestion: async (text, taskId, ask) => {
             const target = taskId ?? run?.taskId;
             if (!target) {
               return { ok: false as const, reason: "No task to attach the question to — pass taskId." };
             }
-            return rt.orchestration.addQuestion((await boardCtx()).projectPath, target, text, runId);
+            return fileAsk(target, text, ask);
           },
           resolveQuestion: async (resolution, questionId, taskId) => {
             const target = taskId ?? run?.taskId;
@@ -170,8 +187,7 @@ export async function handleMcpRequest(
                 { id: runId, holder: run.agentId ?? runId },
                 patch,
               ),
-            askQuestion: async (text) =>
-              rt.orchestration.addQuestion((await boardCtx()).projectPath, run.taskId!, text, runId),
+            askQuestion: (text, ask) => fileAsk(run.taskId!, text, ask),
             resolveQuestion: async (resolution, questionId) =>
               rt.orchestration.resolveQuestion(
                 (await boardCtx()).projectPath,

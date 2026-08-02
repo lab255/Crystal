@@ -9,6 +9,8 @@ import {
   type CodeEnrichment,
 } from "./code-index.js";
 import { ProjectSchema, type Project } from "./project.js";
+import { ServicesFileSchema, type ServicesFile } from "./service.js";
+import { StandingTasksFileSchema, type StandingTasksFile } from "./standing-task.js";
 import { ArchSurveySchema, migrateSurveyData, type ArchSurvey } from "./survey.js";
 import { SystemsLayoutSchema, type SystemsLayout } from "./systems-layout.js";
 import { TodoListSchema, type TodoList } from "./todo.js";
@@ -43,7 +45,9 @@ export type CrystalFileKind =
   | "todos"
   | "agents"
   | "enrichment"
-  | "syslayout";
+  | "syslayout"
+  | "services"
+  | "standing";
 
 const EnvelopeSchema = z.object({
   crystal: z.number(),
@@ -59,6 +63,8 @@ const EnvelopeSchema = z.object({
     "agents",
     "enrichment",
     "syslayout",
+    "services",
+    "standing",
   ]),
   data: z.unknown(),
 });
@@ -75,6 +81,8 @@ const DATA_SCHEMAS = {
   agents: AgentRosterSchema,
   enrichment: CodeEnrichmentSchema,
   syslayout: SystemsLayoutSchema,
+  services: ServicesFileSchema,
+  standing: StandingTasksFileSchema,
 } as const;
 
 export interface KindDataMap {
@@ -89,6 +97,8 @@ export interface KindDataMap {
   agents: AgentRoster;
   enrichment: CodeEnrichment;
   syslayout: SystemsLayout;
+  services: ServicesFile;
+  standing: StandingTasksFile;
 }
 
 /**

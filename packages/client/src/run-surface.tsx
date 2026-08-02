@@ -6,11 +6,24 @@ import {
   ChevronRight,
   FileDiff as FileDiffIcon,
   GitBranch,
+  GitMerge,
+  KeyRound,
   RefreshCw,
   Rows3,
+  Sparkles,
+  Timer,
   Trash2,
+  Wrench,
 } from "lucide-react";
-import { usageTotalTokens, type AgentRun, type RunEvent } from "@crystal/core";
+import {
+  formatResetsAt,
+  runFailureHint,
+  usageTotalTokens,
+  type AgentRun,
+  type MergePreviewResult,
+  type MergeResult,
+  type RunEvent,
+} from "@crystal/core";
 import {
   Badge,
   Button,
@@ -48,6 +61,20 @@ export type ApplyBranchOutcome =
   | { ok: true; branch: string; commit: string }
   | { ok: false; reason: string };
 
+/**
+ * Merge-back controls for an isolated run's worktree (see worktree-merge.ts
+ * server-side): the non-destructive prediction plus the land / resolve /
+ * abort verbs. Wired by {@link useRunSurface}; absent = the Changes region
+ * offers only apply-as-branch and discard.
+ */
+export interface MergeControls {
+  preview: MergePreviewResult | null;
+  onRefresh: () => Promise<void>;
+  onMerge: () => Promise<MergeResult>;
+  onResolve: () => Promise<{ run: AgentRun; conflicts: string[] }>;
+  onAbort: () => Promise<void>;
+}
+
 export interface RunSurfaceProps {
   run: AgentRun;
   events: readonly RunEvent[];
@@ -58,6 +85,8 @@ export interface RunSurfaceProps {
   onRefreshDiff?: () => void | Promise<void>;
   onApplyBranch?: (branch: string) => Promise<ApplyBranchOutcome>;
   onDiscard?: () => void | Promise<void>;
+  /** Worktree merge-back (prediction + land/resolve/abort). Absent = hidden. */
+  merge?: MergeControls | null;
   /** Routes the message (workflow/hub/plain — the adopter decides). Absent = no composer. */
   onSend?: (text: string) => Promise<ComposerSendResult | void>;
   onCancel?: () => void | Promise<void>;
@@ -82,6 +111,7 @@ export function RunSurface({
   onRefreshDiff,
   onApplyBranch,
   onDiscard,
+  merge,
   onSend,
   onCancel,
   onSelectTurn,
@@ -152,6 +182,8 @@ export function RunSurface({
         />
       )}
 
+      {run.status === "failed" && run.failure ? <FailureBanner run={run} /> : null}
+
       {/* Conversation: pick a turn, steer the session. */}
       {onSelectTurn && chain.length > 1 ? (
         <ChainTurns
@@ -170,8 +202,63 @@ export function RunSurface({
           onRefreshDiff={onRefreshDiff}
           onApplyBranch={onApplyBranch}
           onDiscard={onDiscard}
+          merge={merge}
         />
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * Recoverable-failure banner: the classification (see run-failure.ts) plus
+ * exactly one recovery affordance — handoff for context overflow, the reset
+ * time for usage limits, the login hint for a broken CLI auth.
+ */
+function FailureBanner({ run }: { run: AgentRun }) {
+  const { client } = useCrystal();
+  // A handoff already recovered this run — point at it instead of re-offering.
+  // Selector-level find: returns an existing run object (stable reference),
+  // so unrelated stream events don't re-render the banner.
+  const successor = useAgents((s) => s.runs.find((r) => r.handoffFromRunId === run.id) ?? null);
+  const [busy, setBusy] = useState(false);
+  const failure = run.failure!;
+
+  async function handoff(): Promise<void> {
+    setBusy(true);
+    try {
+      await client.request("agent.handoff", { runId: run.id });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const Icon =
+    failure.kind === "context_overflow" ? Sparkles : failure.kind === "usage_limit" ? Timer : KeyRound;
+  return (
+    <div className="shrink-0 border-t border-warn/30 bg-warn/8 px-3 py-2">
+      <div className="flex items-start gap-2">
+        <Icon className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warn" />
+        <div className="min-w-0 flex-1 text-xs leading-relaxed text-ink">
+          {runFailureHint(failure)}
+          {failure.detail ? (
+            <div className="mt-0.5 truncate font-mono text-[10px] text-ink-faint" title={failure.detail}>
+              {failure.detail}
+            </div>
+          ) : null}
+        </div>
+        {failure.kind === "context_overflow" ? (
+          successor ? (
+            <Badge tone="cyan">handed off → {successor.id.slice(0, 10)}</Badge>
+          ) : (
+            <Button variant="primary" size="xs" disabled={busy} onClick={() => void handoff()}>
+              {busy ? <Spinner className="h-3 w-3" /> : <Sparkles className="h-3 w-3" />}
+              Hand off to fresh session
+            </Button>
+          )
+        ) : failure.kind === "usage_limit" && failure.resetsAt ? (
+          <Badge tone="amber">resets {formatResetsAt(failure.resetsAt)}</Badge>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -208,17 +295,50 @@ function ChangesRegion({
   onRefreshDiff,
   onApplyBranch,
   onDiscard,
+  merge,
 }: {
   run: AgentRun;
   diff: RunSurfaceDiff | null;
   onRefreshDiff?: () => void | Promise<void>;
   onApplyBranch?: (branch: string) => Promise<ApplyBranchOutcome>;
   onDiscard?: () => void | Promise<void>;
+  merge?: MergeControls | null;
 }) {
   const [refreshing, setRefreshing] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [confirmingDiscard, setConfirmingDiscard] = useState(false);
   const [discarding, setDiscarding] = useState(false);
+  const [merging, setMerging] = useState<"merge" | "resolve" | "abort" | null>(null);
+  const live = run.status === "running" || run.status === "queued";
+  const preview = merge?.preview ?? null;
+  const conflicted = (preview?.conflicts.length ?? 0) > 0;
+
+  async function mergeAct(kind: "merge" | "resolve" | "abort"): Promise<void> {
+    if (!merge) return;
+    setMerging(kind);
+    setNote(null);
+    try {
+      if (kind === "merge") {
+        const result = await merge.onMerge();
+        setNote(
+          `Merged into ${result.target} as ${result.mergedCommit.slice(0, 10)}${result.fastForward ? " (fast-forward)" : ""}.`,
+        );
+      } else if (kind === "resolve") {
+        const result = await merge.onResolve();
+        setNote(
+          `Resolution agent ${result.run.id.slice(0, 10)} started on ${result.conflicts.length} conflicted file${result.conflicts.length === 1 ? "" : "s"}.`,
+        );
+      } else {
+        await merge.onAbort();
+        setNote("Conflict resolution aborted — the worktree is back to its own work.");
+      }
+      await Promise.all([merge.onRefresh(), Promise.resolve(onRefreshDiff?.())]);
+    } catch (err) {
+      setNote((err as Error).message);
+    } finally {
+      setMerging(null);
+    }
+  }
 
   const files = useMemo(() => (diff ? parseUnifiedDiff(diff.diff) : null), [diff]);
 
@@ -268,9 +388,62 @@ function ChangesRegion({
             ) : null}
           </span>
         ) : null}
+        {preview?.target ? (
+          <span className="flex shrink-0 items-center gap-1.5 text-[10px] text-ink-faint">
+            <span>
+              → <span className="font-mono text-ink-muted">{preview.target}</span>
+            </span>
+            {preview.ahead > 0 ? <span>{preview.ahead} ahead</span> : null}
+            {preview.behind > 0 ? <span>{preview.behind} behind</span> : null}
+            {preview.dirty ? <span>uncommitted</span> : null}
+            {preview.resolving ? <Badge tone="amber">resolving conflicts</Badge> : null}
+            {conflicted ? (
+              <Tooltip content={preview.conflicts.join("\n")}>
+                <Badge tone="rose">{preview.conflicts.length} conflicts</Badge>
+              </Tooltip>
+            ) : null}
+          </span>
+        ) : null}
         <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-ink-faint">
           {run.worktreePath}
         </span>
+        {merge && !live && preview?.resolving ? (
+          <Button
+            variant="ghost"
+            size="xs"
+            disabled={merging !== null}
+            onClick={() => void mergeAct("abort")}
+          >
+            {merging === "abort" ? <Spinner className="h-3 w-3" /> : <Ban className="h-3 w-3" />}
+            Abort resolution
+          </Button>
+        ) : null}
+        {merge && !live && conflicted && !preview?.resolving ? (
+          <Tooltip content="Merge the target branch into this worktree with markers, and dispatch an agent to resolve and commit">
+            <Button
+              variant="ghost"
+              size="xs"
+              disabled={merging !== null}
+              onClick={() => void mergeAct("resolve")}
+            >
+              {merging === "resolve" ? <Spinner className="h-3 w-3" /> : <Wrench className="h-3 w-3" />}
+              Resolve with agent
+            </Button>
+          </Tooltip>
+        ) : null}
+        {merge && !live && preview?.canMerge ? (
+          <Tooltip content={`Land this worktree on ${preview.target}`}>
+            <Button
+              variant="primary"
+              size="xs"
+              disabled={merging !== null}
+              onClick={() => void mergeAct("merge")}
+            >
+              {merging === "merge" ? <Spinner className="h-3 w-3" /> : <GitMerge className="h-3 w-3" />}
+              Merge
+            </Button>
+          </Tooltip>
+        ) : null}
         {onRefreshDiff ? (
           <Tooltip content="Refresh diff">
             <Button
@@ -554,6 +727,7 @@ export function useRunSurface(runId: string | null): {
   onApplyBranch: (branch: string) => Promise<ApplyBranchOutcome>;
   onDiscard: () => Promise<void>;
   onCancel: () => Promise<void>;
+  merge: MergeControls;
 } {
   const { client } = useCrystal();
   const runs = useAgents((s) => s.runs);
@@ -595,5 +769,45 @@ export function useRunSurface(runId: string | null): {
     if (runId) await cancel(runId);
   }, [cancel, runId]);
 
-  return { run, events, chain, diff, onRefreshDiff, onApplyBranch, onDiscard, onCancel };
+  // Merge-back: the prediction loads eagerly once the run settles with a
+  // worktree (the header controls hang off it); the verbs re-predict after.
+  const [mergePreview, setMergePreview] = useState<MergePreviewResult | null>(null);
+  useEffect(() => setMergePreview(null), [runId]);
+  const refreshMerge = useCallback(async () => {
+    if (!runId) return;
+    await client
+      .request("agent.mergePreview", { runId })
+      .then(setMergePreview)
+      .catch(() => setMergePreview(null));
+  }, [client, runId]);
+  const settledWithWorktree =
+    run != null &&
+    run.worktreePath != null &&
+    run.status !== "running" &&
+    run.status !== "queued";
+  useEffect(() => {
+    if (settledWithWorktree) void refreshMerge();
+  }, [settledWithWorktree, refreshMerge]);
+
+  const merge = useMemo<MergeControls>(
+    () => ({
+      preview: mergePreview,
+      onRefresh: refreshMerge,
+      onMerge: () => {
+        if (!runId) return Promise.reject(new Error("No run selected."));
+        return client.request("agent.merge", { runId });
+      },
+      onResolve: () => {
+        if (!runId) return Promise.reject(new Error("No run selected."));
+        return client.request("agent.resolveConflicts", { runId });
+      },
+      onAbort: async () => {
+        if (!runId) return;
+        await client.request("agent.abortResolve", { runId });
+      },
+    }),
+    [client, runId, mergePreview, refreshMerge],
+  );
+
+  return { run, events, chain, diff, onRefreshDiff, onApplyBranch, onDiscard, onCancel, merge };
 }

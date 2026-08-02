@@ -105,6 +105,7 @@ export function RunsPane({
             onRefreshDiff={surface.onRefreshDiff}
             onApplyBranch={surface.onApplyBranch}
             onDiscard={surface.onDiscard}
+            merge={surface.merge}
             onSend={onSend}
             onCancel={surface.onCancel}
             onSelectTurn={onSelect}

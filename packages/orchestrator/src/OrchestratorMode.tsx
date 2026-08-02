@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Bot,
+  ChartColumn,
   ChevronDown,
+  CircleHelp,
   Coins,
   KanbanSquare,
+  KeyRound,
   ListTodo,
   Network,
   Plus,
@@ -16,7 +19,7 @@ import {
   type Project,
   type RunPurpose,
 } from "@crystal/core";
-import { useAgents, useNav, useNavUpdate, useWorkspace } from "@crystal/client";
+import { useAgents, useNav, useNavUpdate, useNeedsYou, useWorkspace } from "@crystal/client";
 import {
   Button,
   Dialog,
@@ -35,6 +38,7 @@ import {
 import { AgentsTab } from "./AgentsTab.js";
 import { Board } from "./Board.js";
 import { CostsTab } from "./CostsTab.js";
+import { InsightsTab, INSIGHT_PERIODS, type InsightPeriod } from "./InsightsTab.js";
 import { QuestionsStrip } from "./QuestionsStrip.js";
 import { RunsPane } from "./RunsPane.js";
 import { TaskDetail } from "./TaskDetail.js";
@@ -87,6 +91,16 @@ export function OrchestratorMode() {
     (id: string | null) => nav({ orchestrate: { template: id } }),
     [nav],
   );
+  const rawPeriod = useNav((l) => l.orchestrate?.period);
+  const period: InsightPeriod = (INSIGHT_PERIODS as readonly number[]).includes(rawPeriod ?? 0)
+    ? (rawPeriod as InsightPeriod)
+    : 30;
+  const setPeriod = useCallback(
+    (p: InsightPeriod) => nav({ orchestrate: { period: p } }),
+    [nav],
+  );
+  const needsYou = useNeedsYou();
+  const auth = useAgents((s) => s.auth);
   const [createOpen, setCreateOpen] = useState(false);
   const [newName, setNewName] = useState("");
   // The Runs tab's purpose filter (Jobs' run list folded in) rides the URL.
@@ -160,6 +174,36 @@ export function OrchestratorMode() {
           </DropdownMenuContent>
         </DropdownMenu>
 
+        {needsYou.count > 0 ? (
+          <button
+            type="button"
+            title={
+              needsYou.questions
+                .map((q) => `? ${q.question.text}`)
+                .concat(needsYou.failures.map((f) => `! ${f.failure!.kind.replace("_", " ")}`))
+                .slice(0, 6)
+                .join("\n") || undefined
+            }
+            onClick={() => {
+              // Jump to the first thing waiting: a question's task on the
+              // board, else the first recoverable-failed run.
+              const q = needsYou.questions[0];
+              if (q) {
+                setProjectPath(q.projectPath);
+                setTaskId(q.taskId);
+                setTab("board");
+              } else if (needsYou.failures[0]) {
+                setRunId(needsYou.failures[0].id);
+                setTab("runs");
+              }
+            }}
+            className="flex items-center gap-1.5 rounded-full border border-warn/40 bg-warn/10 px-2.5 py-0.5 text-[11px] font-medium text-warn transition-colors hover:bg-warn/20"
+          >
+            <CircleHelp className="h-3 w-3" />
+            {needsYou.count} need{needsYou.count === 1 ? "s" : ""} you
+          </button>
+        ) : null}
+
         <div className="ml-auto flex items-center gap-0.5 rounded-lg bg-surface-2 p-0.5">
           <TabButton active={tab === "board"} onClick={() => setTab("board")}>
             <ListTodo className="h-3.5 w-3.5" /> Board
@@ -186,8 +230,27 @@ export function OrchestratorMode() {
           <TabButton active={tab === "costs"} onClick={() => setTab("costs")}>
             <Coins className="h-3.5 w-3.5" /> Costs
           </TabButton>
+          <TabButton active={tab === "insights"} onClick={() => setTab("insights")}>
+            <ChartColumn className="h-3.5 w-3.5" /> Insights
+          </TabButton>
         </div>
       </header>
+
+      {auth.broken ? (
+        <div className="flex items-center gap-2 border-b border-danger/30 bg-danger/10 px-3 py-1.5 text-[11px] text-ink">
+          <KeyRound className="h-3.5 w-3.5 shrink-0 text-danger" />
+          <span className="min-w-0 flex-1">
+            The Claude CLI login is broken — re-authenticate in a terminal (
+            <code className="text-ink-muted">claude /login</code>). Messages and wake-ups are
+            parked and deliver automatically once a run succeeds.
+          </span>
+          {auth.detail ? (
+            <span className="truncate font-mono text-[10px] text-ink-faint" title={auth.detail}>
+              {auth.detail}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
 
       <div className="min-h-0 flex-1">
         {tab === "board" ? (
@@ -262,6 +325,8 @@ export function OrchestratorMode() {
           <AgentsTab selectedRunId={runId} onSelectRun={setRunId} />
         ) : tab === "costs" ? (
           <CostsTab project={current?.project ?? null} axis={costBy} onAxisChange={setCostBy} />
+        ) : tab === "insights" ? (
+          <InsightsTab period={period} onPeriodChange={setPeriod} />
         ) : (
           <RunsPane
             runs={filteredRuns}

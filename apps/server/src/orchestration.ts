@@ -14,6 +14,7 @@ import {
   transferLease,
   TaskPatchSchema,
   type AgentRun,
+  type AskOptions,
   type ClaimResult,
   type Epic,
   type Project,
@@ -249,12 +250,13 @@ export class OrchestrationService {
     taskId: string,
     text: string,
     runId?: string | null,
+    opts?: AskOptions,
   ): Promise<{ ok: true } | { ok: false; reason: string }> {
     return this.mutate(projectPath, (project) => {
       const task = project.tasks.find((t) => t.id === taskId);
       if (!task) return { ok: false as const, reason: `Unknown task: ${taskId}` };
       if (!task.questions.some((q) => q.runId === runId && q.text === text)) {
-        task.questions.push(createTaskQuestion(text, runId));
+        task.questions.push(createTaskQuestion(text, runId, opts));
         task.updatedAt = nowIso();
       }
       return { ok: true as const };
@@ -505,7 +507,8 @@ export class OrchestrationService {
     if (task.questions.length) {
       lines.push("", "Questions:");
       for (const q of task.questions) {
-        lines.push(`- ${q.answer != null ? `answered: "${q.text}" → ${q.answer}` : `OPEN: "${q.text}"`}`);
+        const opts = q.options.length ? ` (options: ${q.options.join(" | ")})` : "";
+        lines.push(`- ${q.answer != null ? `answered: "${q.text}" → ${q.answer}` : `OPEN: "${q.text}"${opts}`}`);
       }
     }
     if (task.runIds.length) lines.push("", `Runs so far: ${task.runIds.join(", ")}`);

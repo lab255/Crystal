@@ -1,5 +1,9 @@
-import { ArrowRight, Bot, KanbanSquare, TerminalSquare } from "lucide-react";
+import { useMemo } from "react";
+import { ArrowRight, Bot, History, KanbanSquare, TerminalSquare } from "lucide-react";
 import {
+  buildWorkspaceRecap,
+  formatRecapAge,
+  formatUsd,
   formatWsRef,
   workspaceLight,
   TRAFFIC_LIGHT_LABELS,
@@ -50,6 +54,8 @@ export function WorkspaceCard({
 
   const active = sid === activeSid && ws.id === activeWsId;
   const light = workspaceLight(todos, runs, seenAt, questions);
+  // Where you left off — derived from the run list, no model call.
+  const recap = useMemo(() => buildWorkspaceRecap(runs), [runs]);
   const running = runs.filter((r) => r.status === "running" || r.status === "queued").length;
   const unseen = seenAt === null ? runs.filter((r) => r.endedAt) : runs.filter((r) => r.endedAt && r.endedAt > seenAt);
   const toReview = unseen.filter((r) => r.status === "completed").length;
@@ -194,6 +200,25 @@ export function WorkspaceCard({
           </span>
         ) : null}
       </div>
+
+      {recap.lastActivityAt ? (
+        <button
+          type="button"
+          onClick={goToRuns}
+          title="Open the runs list"
+          className="flex min-w-0 items-center gap-1.5 text-left text-[10px] text-ink-faint hover:text-ink-muted"
+        >
+          <History className="h-3 w-3 shrink-0" />
+          <span className="shrink-0">{formatRecapAge(recap.lastActivityAt)}</span>
+          <span className="min-w-0 flex-1 truncate">· {recap.headline}</span>
+          {recap.last24h.runCount > 0 ? (
+            <span className="shrink-0 tabular-nums">
+              24h: {recap.last24h.runCount} runs · {formatUsd(recap.last24h.costUsd)}
+              {recap.last24h.failed > 0 ? ` · ${recap.last24h.failed} failed` : ""}
+            </span>
+          ) : null}
+        </button>
+      ) : null}
 
       <TodoSection sid={sid} ws={ws.id} todos={todos} />
     </section>

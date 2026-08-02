@@ -217,6 +217,36 @@ build/sign (+notarize on macOS) → signed updater `latest.json`).
   the `crystal-mcp` stdio shim (`mcp/stdio-proxy.ts`), which resolves the live
   endpoint from `~/.crystal/instances` per call so one config line survives
   restarts (the desktop sidecar takes a fresh port every launch).
+- `AgentManager.deliverToChain` is `deliver` with the outcome typed ("resumed" /
+  "queued" / "recorded" — recorded means the text can never be delivered and the durable
+  board record is the outcome); question answers and steering surfaces read it. The raw
+  `agent.start {resumeSessionId}` API refuses to resume a session whose chain still has a
+  live run — that would fork the Claude session.
+- Worktree merge-back lives in `apps/server/src/worktree-merge.ts`: predict with
+  `git merge-tree --write-tree` (never destructive), land via a real `git merge` in
+  whichever worktree has the target branch checked out, or object-level
+  (`merge-tree` → `commit-tree` → CAS `update-ref`) when nothing does. Conflict
+  resolution replays the merge INTO the run's worktree (markers, `MERGE_HEAD`) and a
+  `merge`-purpose agent run — started with `worktreeOfRunId` so it works in that same
+  tree — resolves and commits; landing is then a fast-forward.
+- Failed runs are classified (`packages/core/src/run-failure.ts`: context overflow /
+  usage limit / auth — deliberately narrow regexes; unknown failures stay
+  unclassified) and `agent.handoff` recovers overflow: haiku summarizer → fresh
+  session seeded with the note, `handoffFromRunId` lineage, same worktree. The
+  workflow engine repoints `managerRunId` via `AgentManager.onHandoff`. An
+  auth-classified failure parks every queued delivery (`authChanged` event, banner in
+  the orchestrator) until a successful run proves the login healed.
+- Managed services + watches: model in `packages/core/src/service.ts` (defs +
+  watches are repo-durable in `.crystal/services.json`; watch patterns are literal
+  alternatives, NEVER regex), supervision in `apps/server/src/service-manager.ts`
+  (detached process groups, port pre-probe, desired-state restore with ps-guarded
+  orphan reaping, log ring, min-interval-throttled watch fires). The registry wires
+  `onWatchFire` → one live `fix`-purpose run per watch, tagged `watch:<id>`.
+- Standing tasks (`packages/core/src/standing-task.ts` rules,
+  `apps/server/src/standing-tasks.ts` sweeper): scheduled fresh-session fires
+  tagged `standing:<id>` — the run list is the fire log; `nextFireAt` treats a
+  passed daily slot as due, so missed fires catch up on boot. One live fire
+  per task.
 - Deep links: every view is addressable via the URL hash (`#/<mode>/<subview>?…`). The
   codec is `packages/core/src/deeplink.ts`, view/selection state lives in the client nav
   store (`useNav`/`useNavUpdate`), and the SDK's `useDeepLinks` syncs store ↔ URL. New
@@ -280,9 +310,9 @@ build/sign (+notarize on macOS) → signed updater `latest.json`).
 
 ## Gotchas
 
-- `apps/server/src/agent-manager.ts` contains a NUL byte in a string literal, so
-  ripgrep/Grep treats it as binary — search it with `grep -a` (or Read), not the Grep
-  tool.
+- Agent spawns strip `ANTHROPIC_API_KEY` (`claudeSpawnEnv`) so a leaked key can't
+  silently switch a subscription login to per-token billing; `CRYSTAL_ALLOW_API_KEY=1`
+  opts back in. Keep any new spawn path on that helper.
 - Agent prompts are piped to the Claude CLI over **stdin**; never pass user text as a
   shell argument. The CLI binary is resolved by `claude-bin.ts` (own-PATH scan → known
   install dirs → POSIX login shell) because the desktop sidecar inherits a GUI launch

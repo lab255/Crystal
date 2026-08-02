@@ -27,6 +27,8 @@ export interface AgentStartInput {
 export interface AgentState {
   runs: AgentRun[];
   eventsByRun: Record<string, RunEvent[]>;
+  /** Instance-wide login health — while broken, chain deliveries park server-side. */
+  auth: { broken: boolean; detail: string | null };
 
   refresh(): Promise<void>;
   start(input: AgentStartInput): Promise<AgentRun>;
@@ -41,10 +43,11 @@ export function createAgentStore(client: BridgeClient): AgentStore {
   const store = createStore<AgentState>((set, get) => ({
     runs: [],
     eventsByRun: {},
+    auth: { broken: false, detail: null },
 
     async refresh() {
-      const { runs } = await client.request("agent.list", {});
-      set({ runs });
+      const { runs, auth } = await client.request("agent.list", {});
+      set({ runs, auth: auth ?? { broken: false, detail: null } });
     },
 
     async start(input) {
@@ -80,6 +83,11 @@ export function createAgentStore(client: BridgeClient): AgentStore {
         eventsByRun: { ...s.eventsByRun, [event.runId]: [...existing, event] },
       };
     });
+  });
+
+  client.events.on("agent.authChanged", ({ ws, broken, detail }) => {
+    if (client.scope && ws !== client.scope) return;
+    store.setState({ auth: { broken, detail } });
   });
 
   client.events.on("agent.runChanged", ({ ws, run }) => {

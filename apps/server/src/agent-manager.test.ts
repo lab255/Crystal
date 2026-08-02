@@ -6,6 +6,7 @@ import {
   AgentManager,
   claudeInteractiveArgs,
   claudeRunArgs,
+  claudeSpawnEnv,
   composeNoticePrompt,
   planClaudeSpawn,
 } from "./agent-manager.js";
@@ -19,6 +20,9 @@ describe("claudeRunArgs", () => {
     const i = args.indexOf("--mcp-config");
     expect(i).toBeGreaterThan(-1);
     expect(args[i + 1]).toBe("C:\\data\\mcp\\run_1.json");
+    // Only the crystal server loads — the user's global/project MCP servers
+    // are ignored for this scoped run.
+    expect(args).toContain("--strict-mcp-config");
     const allowed = args[args.indexOf("--allowedTools") + 1]!;
     expect(allowed.startsWith("mcp__crystal,")).toBe(true);
     // Dev-loop commands ride every allowlist — a worker that cannot
@@ -33,6 +37,7 @@ describe("claudeRunArgs", () => {
   it("keeps the dev-loop allowlist (without mcp__crystal) when no mcp-config", () => {
     const args = claudeRunArgs({ model: "opus", resumeSessionId: "sess_1" });
     expect(args).not.toContain("--mcp-config");
+    expect(args).not.toContain("--strict-mcp-config"); // no config → no strict flag
     const allowed = args[args.indexOf("--allowedTools") + 1]!;
     expect(allowed).not.toContain("mcp__crystal");
     expect(allowed).toContain("Bash(git commit *)");
@@ -108,6 +113,20 @@ describe("claudeInteractiveArgs", () => {
     expect(args[args.indexOf("--append-system-prompt") + 1]).toBe("Standing orders.");
     expect(args[args.indexOf("--allowedTools") + 1]).toContain("Bash(semgrep *)");
     expect(args[args.indexOf("--disallowedTools") + 1]).toBe("WebSearch");
+  });
+});
+
+describe("claudeSpawnEnv", () => {
+  it("strips ANTHROPIC_API_KEY so subscription logins can't silently bill per-token", () => {
+    const env = claudeSpawnEnv({ PATH: "/bin", ANTHROPIC_API_KEY: "sk-ant-leaked" });
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(env.PATH).toBe("/bin");
+    expect(env.FORCE_COLOR).toBe("0");
+  });
+
+  it("keeps the key when the user opts in", () => {
+    const env = claudeSpawnEnv({ ANTHROPIC_API_KEY: "sk-ant-mine", CRYSTAL_ALLOW_API_KEY: "1" });
+    expect(env.ANTHROPIC_API_KEY).toBe("sk-ant-mine");
   });
 });
 
@@ -500,5 +519,367 @@ describe("composeNoticePrompt", () => {
     expect(prompt).toContain("You were resumed because dispatched work settled");
     // One worker, so no "N workers settled" header.
     expect(prompt).not.toMatch(/^\d+ workers settled/);
+  });
+});
+
+// A stand-in Claude CLI: consumes stdin, prints canned stream-json, exits.
+async function writeFakeClaude(dir: string, lines: string[], exitCode: number): Promise<string> {
+  const bin = path.join(dir, "fake-claude.sh");
+  await fs.writeFile(
+    bin,
+    ["#!/bin/sh", "cat > /dev/null", ...lines.map((l) => `echo '${l}'`), `exit ${exitCode}`].join("\n"),
+    { mode: 0o755 },
+  );
+  return bin;
+}
+
+const INIT_LINE =
+  '{"type":"system","subtype":"init","session_id":"sess_fake","model":"fake-model","cwd":".","tools":[]}';
+
+describe.skipIf(process.platform === "win32")("recoverable failures and handoff", () => {
+  let tmp: string;
+
+  afterEach(async () => {
+    await fs.rm(tmp, { recursive: true, force: true });
+  });
+
+  async function makeManager(lines: string[], exitCode: number): Promise<AgentManager> {
+    tmp = await fs.mkdtemp(path.join(os.tmpdir(), "crystal-agent-fake-"));
+    const root = path.join(tmp, "root");
+    await fs.mkdir(root, { recursive: true });
+    const bin = await writeFakeClaude(tmp, lines, exitCode);
+    return new AgentManager(root, path.join(tmp, "data"), bin);
+  }
+
+  it("classifies a context-overflow failure from the result text", async () => {
+    const mgr = await makeManager(
+      [
+        INIT_LINE,
+        '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"API Error: 400 prompt is too long: 210000 tokens > 200000 maximum","session_id":"sess_fake","num_turns":1,"duration_ms":5}',
+      ],
+      1,
+    );
+    const run = await mgr.start({ prompt: "long task" });
+    const settled = await mgr.waitForSettled(run.id);
+    expect(settled.status).toBe("failed");
+    expect(settled.failure?.kind).toBe("context_overflow");
+    // The terminal status event carries the recovery hint. waitForSettled
+    // resolves on the result event — finish() (and its status event) lands on
+    // process close, a tick later, so poll.
+    await expect
+      .poll(async () =>
+        (await mgr.eventsFor(run.id)).some(
+          (e) => e.event.type === "status" && /hand off/i.test(e.event.message ?? ""),
+        ),
+      )
+      .toBe(true);
+  });
+
+  it("classifies a dead login from stderr when there is no result line", async () => {
+    tmp = await fs.mkdtemp(path.join(os.tmpdir(), "crystal-agent-fake-"));
+    const root = path.join(tmp, "root");
+    await fs.mkdir(root, { recursive: true });
+    const bin = path.join(tmp, "fake-claude.sh");
+    await fs.writeFile(
+      bin,
+      ['#!/bin/sh', "cat > /dev/null", 'echo "OAuth token has expired. Please run /login" >&2', "exit 1"].join(
+        "\n",
+      ),
+      { mode: 0o755 },
+    );
+    const mgr = new AgentManager(root, path.join(tmp, "data"), bin);
+    const run = await mgr.start({ prompt: "anything" });
+    const settled = await mgr.waitForSettled(run.id);
+    expect(settled.status).toBe("failed");
+    expect(settled.failure?.kind).toBe("auth");
+  });
+
+  it("does not classify ordinary failures", async () => {
+    const mgr = await makeManager(
+      [
+        INIT_LINE,
+        '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"TypeError: boom","session_id":"sess_fake","num_turns":1,"duration_ms":5}',
+      ],
+      1,
+    );
+    const run = await mgr.start({ prompt: "task" });
+    const settled = await mgr.waitForSettled(run.id);
+    expect(settled.failure).toBeFalsy();
+  });
+
+  it("messageRun resumes a settled session with the framed user message", async () => {
+    const mgr = await makeManager(
+      [
+        INIT_LINE,
+        '{"type":"result","subtype":"success","is_error":false,"result":"ok","session_id":"sess_fake","total_cost_usd":0.01,"num_turns":1,"duration_ms":5}',
+      ],
+      0,
+    );
+    const run = await mgr.start({ prompt: "Base task" });
+    await mgr.waitForSettled(run.id);
+
+    const delivery = await mgr.messageRun(run.id, "Focus on the edge cases.");
+    expect(delivery.status).toBe("resumed");
+    expect(delivery.run?.resumedFromRunId).toBe(run.id);
+    expect(delivery.run?.prompt).toContain("USER MESSAGE:");
+    expect(delivery.run?.prompt).toContain("Focus on the edge cases.");
+    await mgr.waitForSettled(delivery.run!.id);
+  });
+
+  it("messageRun records-only for a cancelled chain", async () => {
+    const mgr = await makeManager(
+      [
+        INIT_LINE,
+        '{"type":"result","subtype":"success","is_error":false,"result":"ok","session_id":"sess_fake","total_cost_usd":0.01,"num_turns":1,"duration_ms":5}',
+      ],
+      0,
+    );
+    const run = await mgr.start({ prompt: "Doomed task" });
+    await mgr.waitForSettled(run.id);
+    // Simulate a user kill on the latest turn (list() hands back live records).
+    (await mgr.list()).find((r) => r.id === run.id)!.status = "cancelled";
+    const delivery = await mgr.messageRun(run.id, "hello?");
+    expect(delivery.status).toBe("recorded");
+    expect(delivery.run).toBeNull();
+  });
+
+  it("auth failures raise the instance flag, park deliveries, and a success flushes them", async () => {
+    // Fake CLI whose behavior is switched by rewriting the script between runs.
+    tmp = await fs.mkdtemp(path.join(os.tmpdir(), "crystal-agent-fake-"));
+    const root = path.join(tmp, "root");
+    await fs.mkdir(root, { recursive: true });
+    const bin = path.join(tmp, "fake-claude.sh");
+    const okScript = [
+      "#!/bin/sh",
+      "cat > /dev/null",
+      `echo '${INIT_LINE}'`,
+      `echo '{"type":"result","subtype":"success","is_error":false,"result":"ok","session_id":"sess_fake","total_cost_usd":0.01,"num_turns":1,"duration_ms":5}'`,
+      "exit 0",
+    ].join("\n");
+    const authFailScript = [
+      "#!/bin/sh",
+      "cat > /dev/null",
+      'echo "OAuth token has expired. Please run /login" >&2',
+      "exit 1",
+    ].join("\n");
+    await fs.writeFile(bin, okScript, { mode: 0o755 });
+    const mgr = new AgentManager(root, path.join(tmp, "data"), bin);
+
+    // A healthy run establishes a resumable session.
+    const base = await mgr.start({ prompt: "Base task" });
+    await mgr.waitForSettled(base.id);
+    expect(mgr.authState().broken).toBe(false);
+
+    // Break the login: the next run fails with an auth classification.
+    await fs.writeFile(bin, authFailScript, { mode: 0o755 });
+    const broken = await mgr.start({ prompt: "Doomed" });
+    await mgr.waitForSettled(broken.id);
+    expect(mgr.authState().broken).toBe(true);
+
+    // Deliveries park instead of burning failed resume runs.
+    const parked = await mgr.messageRun(base.id, "are you there?");
+    expect(parked.status).toBe("queued");
+    const runCountWhileParked = (await mgr.list()).length;
+
+    // Heal the login: a successful run clears the flag and flushes the queue.
+    await fs.writeFile(bin, okScript, { mode: 0o755 });
+    const healer = await mgr.start({ prompt: "Healthy again" });
+    await mgr.waitForSettled(healer.id);
+    // The clear runs in finish() on process close — a tick after the result
+    // event settles the run — so poll rather than assert immediately.
+    await expect.poll(() => mgr.authState().broken).toBe(false);
+    await expect
+      .poll(async () =>
+        (await mgr.list()).some(
+          (r) => r.resumedFromRunId === base.id && r.prompt.includes("are you there?"),
+        ),
+      )
+      .toBe(true);
+    expect((await mgr.list()).length).toBeGreaterThan(runCountWhileParked);
+  });
+
+  it("refuses to resume a session whose run is still live (fork guard)", { timeout: 15_000 }, async () => {
+    tmp = await fs.mkdtemp(path.join(os.tmpdir(), "crystal-agent-fake-"));
+    const root = path.join(tmp, "root");
+    await fs.mkdir(root, { recursive: true });
+    const bin = path.join(tmp, "fake-claude.sh");
+    // Emits init (so the session id is known), then stays alive for a while.
+    await fs.writeFile(
+      bin,
+      ["#!/bin/sh", "cat > /dev/null", `echo '${INIT_LINE}'`, "sleep 5"].join("\n"),
+      { mode: 0o755 },
+    );
+    const mgr = new AgentManager(root, path.join(tmp, "data"), bin);
+    const live = await mgr.start({ prompt: "long-lived" });
+    await expect.poll(async () => (await mgr.get(live.id))?.sessionId).toBe("sess_fake");
+
+    await expect(
+      mgr.start({ prompt: "fork attempt", resumeSessionId: "sess_fake" }),
+    ).rejects.toThrow(/fork/);
+
+    // Back-to-back resumes are also guarded: a resumed run carries its session
+    // id from creation, before any init event arrives.
+    await mgr.cancel(live.id);
+    await mgr.waitForSettled(live.id);
+    const resumed = await mgr.start({ prompt: "turn 2", resumeSessionId: "sess_fake" });
+    expect(resumed.sessionId).toBe("sess_fake");
+    await expect(
+      mgr.start({ prompt: "another fork attempt", resumeSessionId: "sess_fake" }),
+    ).rejects.toThrow(/fork/);
+    await mgr.cancel(resumed.id);
+    await mgr.waitForSettled(resumed.id);
+  });
+
+  it("hands off to a fresh session: summarizer runs, continuation carries the note", async () => {
+    // Every spawn (the failed run, the summarizer, the continuation) uses the
+    // same fake CLI, which succeeds with a canned result text.
+    const mgr = await makeManager(
+      [
+        INIT_LINE,
+        '{"type":"result","subtype":"success","is_error":false,"result":"SUMMARY NOTE: did X, remains Y","session_id":"sess_fake","total_cost_usd":0.01,"num_turns":1,"duration_ms":5}',
+      ],
+      0,
+    );
+    const original = await mgr.start({ prompt: "Build the parser", tags: ["t:1"] });
+    await mgr.waitForSettled(original.id);
+
+    const continuation = await mgr.handoff(original.id);
+    expect(continuation.handoffFromRunId).toBe(original.id);
+    expect(continuation.prompt).toContain("Build the parser");
+    expect(continuation.prompt).toContain("SUMMARY NOTE");
+    expect(continuation.resumedFromRunId).toBeFalsy(); // fresh chain, not a resume
+    await mgr.waitForSettled(continuation.id);
+
+    // Lineage is visible in the run list: original ← summarizer + continuation.
+    const runs = await mgr.list();
+    expect(runs.some((r) => r.purpose === "manage")).toBe(true); // the summarizer
+  });
+});
+
+// A fake Claude CLI that behaves like a git-aware agent: if the worktree has
+// conflict markers it resolves and completes the merge; otherwise it creates a
+// feature file and commits. Enough to drive the merge-back orchestration.
+async function writeGitAwareClaude(dir: string): Promise<string> {
+  const bin = path.join(dir, "git-claude.sh");
+  const initLine =
+    '{"type":"system","subtype":"init","session_id":"sess_fake","model":"m","cwd":".","tools":[]}';
+  const resultLine =
+    '{"type":"result","subtype":"success","is_error":false,"result":"done","session_id":"sess_fake","total_cost_usd":0.01,"num_turns":1,"duration_ms":5}';
+  await fs.writeFile(
+    bin,
+    [
+      "#!/bin/sh",
+      "cat > /dev/null",
+      'CONFLICTED=$(git diff --name-only --diff-filter=U 2>/dev/null)',
+      'if [ -n "$CONFLICTED" ]; then',
+      "  for f in $CONFLICTED; do",
+      "    printf 'resolved: both sides\\n' > \"$f\"",
+      '    git add "$f"',
+      "  done",
+      "  git -c user.name=Resolver -c user.email=r@local commit --no-edit --no-verify >/dev/null 2>&1",
+      "else",
+      "  printf 'worktree version\\n' > feature.txt",
+      "  git add feature.txt",
+      "  git -c user.name=Worker -c user.email=w@local commit -m 'add feature' --no-verify >/dev/null 2>&1",
+      "fi",
+      `echo '${initLine}'`,
+      `echo '${resultLine}'`,
+      "exit 0",
+    ].join("\n"),
+    { mode: 0o755 },
+  );
+  return bin;
+}
+
+async function gitIn(cwd: string, ...args: string[]): Promise<void> {
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  await promisify(execFile)("git", args, { cwd });
+}
+
+describe.skipIf(process.platform === "win32")("worktree merge orchestration", () => {
+  let tmp: string;
+
+  afterEach(async () => {
+    await fs.rm(tmp, { recursive: true, force: true }).catch(() => {});
+  });
+
+  it("resolves conflicts in the run's worktree and lands the result on main", async () => {
+    tmp = await fs.mkdtemp(path.join(os.tmpdir(), "crystal-merge-orch-"));
+    const root = path.join(tmp, "repo");
+    await fs.mkdir(root, { recursive: true });
+    await gitIn(root, "init", "-b", "main");
+    await fs.writeFile(path.join(root, "base.txt"), "base\n");
+    await gitIn(root, "add", "-A");
+    await gitIn(root, "-c", "user.name=T", "-c", "user.email=t@local", "commit", "-m", "base");
+
+    const bin = await writeGitAwareClaude(tmp);
+    const mgr = new AgentManager(root, path.join(tmp, "data"), bin);
+
+    // 1. Worktree run: the fake creates feature.txt and commits in its worktree.
+    const run = await mgr.start({ prompt: "Add the feature", isolation: "worktree" });
+    const settled = await mgr.waitForSettled(run.id);
+    expect(settled.status).toBe("completed");
+    expect(settled.worktreePath).toBeTruthy();
+
+    // 2. A conflicting change on main: same new file, different content.
+    await fs.writeFile(path.join(root, "feature.txt"), "main version\n");
+    await gitIn(root, "add", "-A");
+    await gitIn(root, "-c", "user.name=T", "-c", "user.email=t@local", "commit", "-m", "main feature");
+
+    // 3. Preview must predict the conflict (git ≥ 2.40 for the file list).
+    const preview = await mgr.mergePreview(run.id);
+    expect(preview.target).toBe("main");
+    if (!preview.predictionUnavailable) {
+      expect(preview.conflicts).toContain("feature.txt");
+      expect(preview.canMerge).toBe(false);
+    }
+
+    // 4. Resolve: spawns a resolver run IN THE SAME worktree (worktreeOfRunId).
+    const { run: resolver, conflicts } = await mgr.resolveConflicts(run.id);
+    expect(conflicts).toContain("feature.txt");
+    expect(resolver.worktreePath).toBe(settled.worktreePath); // adopted, not fresh
+    const resolved = await mgr.waitForSettled(resolver.id);
+    expect(resolved.status).toBe("completed");
+
+    // 5. Land it — now a fast-forward — onto main's checkout.
+    const result = await mgr.mergeWorktreeOf(run.id, {});
+    expect(result.target).toBe("main");
+    const landed = await fs.readFile(path.join(root, "feature.txt"), "utf8");
+    expect(landed).toContain("resolved: both sides");
+  });
+
+  it("refuses merge/resolve while a live run shares the worktree", async () => {
+    tmp = await fs.mkdtemp(path.join(os.tmpdir(), "crystal-merge-orch-"));
+    const root = path.join(tmp, "repo");
+    await fs.mkdir(root, { recursive: true });
+    await gitIn(root, "init", "-b", "main");
+    await fs.writeFile(path.join(root, "base.txt"), "base\n");
+    await gitIn(root, "add", "-A");
+    await gitIn(root, "-c", "user.name=T", "-c", "user.email=t@local", "commit", "-m", "base");
+
+    // A fake that stays alive so the run holds its worktree.
+    const bin = path.join(tmp, "slow.sh");
+    await fs.writeFile(
+      bin,
+      [
+        "#!/bin/sh",
+        "cat > /dev/null",
+        `echo '{"type":"system","subtype":"init","session_id":"s","model":"m","cwd":".","tools":[]}'`,
+        "sleep 5",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+    const mgr = new AgentManager(root, path.join(tmp, "data"), bin);
+    const run = await mgr.start({ prompt: "long", isolation: "worktree" });
+    await expect
+      .poll(async () => (await mgr.get(run.id))?.worktreePath)
+      .toBeTruthy();
+
+    await expect(mgr.mergeWorktreeOf(run.id, {})).rejects.toThrow(/in use by live run/i);
+    await expect(mgr.resolveConflicts(run.id)).rejects.toThrow(/in use by live run/i);
+
+    await mgr.cancel(run.id);
+    await mgr.waitForSettled(run.id);
   });
 });

@@ -50,6 +50,10 @@ export const TODOS_FILE = `${CRYSTAL_DIR}/todos.json`;
 export const AGENTS_FILE = `${CRYSTAL_DIR}/agents.json`;
 /** Hand arrangement of the systems overview — positions + groups (see systems-layout.ts). */
 export const SYSTEMS_LAYOUT_FILE = `${CRYSTAL_DIR}/systems-layout.json`;
+/** Managed-service definitions — supervised dev/setup/test commands (see service.ts). */
+export const SERVICES_FILE = `${CRYSTAL_DIR}/services.json`;
+/** Standing-task definitions — scheduled agent work (see standing-task.ts). */
+export const STANDING_TASKS_FILE = `${CRYSTAL_DIR}/standing-tasks.json`;
 /** Where survey agents drop their findings for import (see survey.ts). */
 export const SURVEYS_DIR = `${CRYSTAL_DIR}/surveys`;
 /** Where runtime trace profiles are dropped for the flamegraph view. */

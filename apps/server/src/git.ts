@@ -286,13 +286,26 @@ export async function gitRefs(root: string, repoRel: string): Promise<GitRefsRes
     else if (full.startsWith("refs/tags/")) tags.push(short);
     else if (full.startsWith("refs/remotes/") && !short.endsWith("/HEAD")) remoteBranches.push(short);
   }
-  const current = (await runGit(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]).catch(() => "")).trim();
+  const current = await gitCurrentBranch(cwd);
+  const worktrees = await gitWorktrees(cwd);
+  return { branches, remoteBranches, tags, current, worktrees };
+}
 
-  // Worktrees (porcelain records: "worktree <path>" / "branch refs/heads/x").
+/** The checked-out branch of a working tree, or null when detached / not a repo. */
+export async function gitCurrentBranch(cwd: string): Promise<string | null> {
+  const name = (await runGit(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]).catch(() => "")).trim();
+  return name && name !== "HEAD" ? name : null;
+}
+
+/**
+ * Linked worktrees of a repo (the main worktree included), with their branch
+ * (porcelain records: "worktree <path>" / "branch refs/heads/x" / "detached").
+ */
+export async function gitWorktrees(cwd: string): Promise<GitRefsResult["worktrees"]> {
   const worktrees: GitRefsResult["worktrees"] = [];
-  const wtOut = await runGit(cwd, ["worktree", "list", "--porcelain"]).catch(() => "");
+  const out = await runGit(cwd, ["worktree", "list", "--porcelain"]).catch(() => "");
   let wtPath: string | null = null;
-  for (const line of `${wtOut}\n`.split("\n")) {
+  for (const line of `${out}\n`.split("\n")) {
     if (line.startsWith("worktree ")) wtPath = line.slice(9).trim();
     else if (line.startsWith("branch ") && wtPath) {
       worktrees.push({ path: wtPath, branch: line.slice(7).trim().replace(/^refs\/heads\//, "") });
@@ -302,14 +315,7 @@ export async function gitRefs(root: string, repoRel: string): Promise<GitRefsRes
       wtPath = null;
     }
   }
-
-  return {
-    branches,
-    remoteBranches,
-    tags,
-    current: current && current !== "HEAD" ? current : null,
-    worktrees,
-  };
+  return worktrees;
 }
 
 /**
