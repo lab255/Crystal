@@ -3,6 +3,7 @@ import {
   DEFAULT_SERVER_SID,
   nowIso,
   type AgentRun,
+  type ProjectEntry,
   type TodoItem,
   type WorkspaceInfo,
 } from "@crystal/core";
@@ -27,6 +28,7 @@ const SEEN_STORAGE_KEY = "crystal.seenRuns";
 /** Stable empty references for selectors (zustand v5: no literals in selectors). */
 export const EMPTY_RUNS: AgentRun[] = [];
 export const EMPTY_TODOS: TodoItem[] = [];
+export const EMPTY_PROJECT_ENTRIES: ProjectEntry[] = [];
 
 /**
  * Fleet view — cross-workspace state for the projects overview, aggregated
@@ -55,6 +57,12 @@ export interface FleetState {
    * the yellow "waiting on you" attention on lights and overview cards.
    */
   questionsByWs: Record<string, number>;
+  /**
+   * Project boards per workspace — what cross-workspace surfaces (the command
+   * palette's Tasks group) search without opening the workspace. Same writer
+   * as `questionsByWs`: the debounced recount's `workspace.get` snapshot.
+   */
+  projectsByWs: Record<string, ProjectEntry[]>;
   seenAtByWs: Record<string, string>;
   /** Workspace keys with an in-flight (debounced) todo save. */
   pendingTodoSaves: Record<string, true>;
@@ -142,10 +150,10 @@ export function createFleetStore(): FleetStore {
     }
   }
 
-  // Questions live on boards, and board writes ride workspace.changed —
-  // debounced per workspace, and the single writer of `questionsByWs`
-  // (refresh delegates here); a failed read keeps the previous count rather
-  // than clearing a genuine signal.
+  // Questions and project boards live on workspaces, and board writes ride
+  // workspace.changed — debounced per workspace, and the single writer of
+  // `questionsByWs` + `projectsByWs` (refresh delegates here); a failed read
+  // keeps the previous snapshot rather than clearing a genuine signal.
   const questionTimers = new Map<string, ReturnType<typeof setTimeout>>();
   function scheduleRecount(sid: string, ws: string): void {
     const key = wsKey(sid, ws);
@@ -158,11 +166,15 @@ export function createFleetStore(): FleetStore {
           ?.request("workspace.get", { ws })
           .then((info) => {
             const questions = countOpenQuestions(info);
-            store.setState((s) =>
-              s.questionsByWs[key] === questions
-                ? s
-                : { questionsByWs: { ...s.questionsByWs, [key]: questions } },
-            );
+            store.setState((s) => ({
+              questionsByWs:
+                s.questionsByWs[key] === questions
+                  ? s.questionsByWs
+                  : { ...s.questionsByWs, [key]: questions },
+              // Boards can change without moving the question count — the
+              // snapshot always lands.
+              projectsByWs: { ...s.projectsByWs, [key]: info.projects },
+            }));
           })
           .catch(() => {
             // workspace closed mid-flight — the next refresh drops it
@@ -175,6 +187,7 @@ export function createFleetStore(): FleetStore {
     runsByWs: {},
     todosByWs: {},
     questionsByWs: {},
+    projectsByWs: {},
     seenAtByWs: typeof localStorage === "undefined" ? {} : loadSeen(),
     pendingTodoSaves: {},
 
@@ -212,6 +225,7 @@ export function createFleetStore(): FleetStore {
           runsByWs: strip(s.runsByWs),
           todosByWs: strip(s.todosByWs),
           questionsByWs: strip(s.questionsByWs),
+          projectsByWs: strip(s.projectsByWs),
         }));
       };
     },
@@ -240,14 +254,18 @@ export function createFleetStore(): FleetStore {
         const questionsByWs: Record<string, number> = Object.fromEntries(
           Object.entries(s.questionsByWs).filter(([k]) => !k.startsWith(prefix)),
         );
+        const projectsByWs: Record<string, ProjectEntry[]> = Object.fromEntries(
+          Object.entries(s.projectsByWs).filter(([k]) => !k.startsWith(prefix)),
+        );
         for (const { key, runs, todos } of results) {
           runsByWs[key] = runs;
-          // Carry the recount path's value; closed workspaces drop out.
+          // Carry the recount path's values; closed workspaces drop out.
           questionsByWs[key] = s.questionsByWs[key] ?? 0;
+          projectsByWs[key] = s.projectsByWs[key] ?? EMPTY_PROJECT_ENTRIES;
           // A pending local edit is newer than what the server just returned.
           todosByWs[key] = s.pendingTodoSaves[key] ? (s.todosByWs[key] ?? todos) : todos;
         }
-        return { runsByWs, todosByWs, questionsByWs };
+        return { runsByWs, todosByWs, questionsByWs, projectsByWs };
       });
       // Question counts have exactly ONE writer — the recount below — so a
       // slow refresh can never overwrite a fresher event-driven count with

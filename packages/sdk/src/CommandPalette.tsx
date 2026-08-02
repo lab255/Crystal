@@ -5,9 +5,13 @@ import {
   Bot,
   Boxes,
   ChartColumn,
+  CircleCheck,
+  CircleDot,
+  CircleHelp,
   Coins,
   Component,
   Database,
+  Eye,
   FlaskConical,
   Folder,
   FolderPlus,
@@ -15,6 +19,7 @@ import {
   History,
   KanbanSquare,
   Layers,
+  ListTodo,
   Network,
   PencilRuler,
   Plus,
@@ -25,8 +30,28 @@ import {
   Webhook,
   type LucideIcon,
 } from "lucide-react";
-import type { OrchestratorTabId } from "@crystal/core";
-import { useNavUpdate, useWorkspace, useWorkspaces } from "@crystal/client";
+import {
+  TASK_ATTENTION_LABELS,
+  compareTaskAttention,
+  formatWsRef,
+  liveRunIds,
+  taskAttention,
+  type AgentRun,
+  type OrchestratorTabId,
+  type TaskAttentionGroup,
+  type TaskItem,
+} from "@crystal/core";
+import {
+  EMPTY_RUNS,
+  useAgents,
+  useCrystal,
+  useFleet,
+  useFleetConnections,
+  useNavUpdate,
+  useWorkspace,
+  useWorkspaces,
+  wsKey,
+} from "@crystal/client";
 import { CommandList, Dialog, DialogContent, Kbd } from "@crystal/ui";
 import { CRYSTAL_MODES, MODE_ICONS, MODE_LABELS, type CrystalMode } from "./modes.js";
 
@@ -40,17 +65,44 @@ const ORCHESTRATE_TAB_ICONS: Record<OrchestratorTabId, LucideIcon> = {
   insights: ChartColumn,
 };
 
+/** Command-palette icon per attention group (see task-attention.ts). */
+const TASK_ATTENTION_ICONS: Record<TaskAttentionGroup, LucideIcon> = {
+  waiting: CircleHelp,
+  running: Bot,
+  review: Eye,
+  in_progress: CircleDot,
+  backlog: ListTodo,
+  done: CircleCheck,
+};
+
 export interface Command {
   id: string;
   title: string;
   icon: LucideIcon;
+  /** Keyboard shortcut, rendered as a keycap. */
   hint?: string;
+  /** Status annotation ("Waiting on you"), rendered as muted text. */
+  tag?: string;
   run: () => void;
+}
+
+/** One palette-searchable task with everything its jump needs. */
+interface TaskJumpEntry {
+  sid: string;
+  wsId: string;
+  /** Workspace name shown as a suffix; only set for non-active workspaces. */
+  wsName: string | null;
+  projectPath: string;
+  projectName: string;
+  task: TaskItem;
+  group: TaskAttentionGroup;
 }
 
 // zustand v5: selectors must return stable references — module-level constants.
 const EMPTY_ARCHITECTURES: never[] = [];
 const EMPTY_PROJECTS: never[] = [];
+const CLOSED_RUNS: AgentRun[] = [];
+const CLOSED_MAP: Record<string, never> = {};
 
 export function CommandPalette({
   open,
@@ -72,11 +124,66 @@ export function CommandPalette({
   const recents = useWorkspaces((s) => s.recents);
   const activeWsId = useWorkspaces((s) => s.activeId);
   const openWorkspace = useWorkspaces((s) => s.openWorkspace);
+  const { activeSid, selectWorkspace } = useCrystal();
+  const connections = useFleetConnections();
+  // Run stores churn on every stream event — gate the subscriptions on `open`
+  // (stable constants while closed) so the mounted-but-hidden palette never
+  // re-renders with the agent firehose.
+  const activeRuns = useAgents((s) => (open ? s.runs : CLOSED_RUNS));
+  const fleetRuns = useFleet((s) => (open ? s.runsByWs : CLOSED_MAP));
+  const fleetProjects = useFleet((s) => (open ? s.projectsByWs : CLOSED_MAP));
   const [query, setQuery] = useState("");
 
   useEffect(() => {
     if (open) setQuery("");
   }, [open]);
+
+  // Every task across every open workspace's boards, attention-ordered
+  // (task-attention.ts) so the ones waiting on you rank first. The active
+  // workspace reads its live stores; the rest come from the fleet store's
+  // board snapshots.
+  const taskEntries: TaskJumpEntry[] = useMemo(() => {
+    const entries: TaskJumpEntry[] = [];
+    if (activeWsId) {
+      const live = liveRunIds(activeRuns);
+      for (const p of projects) {
+        for (const task of p.project.tasks) {
+          entries.push({
+            sid: activeSid,
+            wsId: activeWsId,
+            wsName: null,
+            projectPath: p.path,
+            projectName: p.project.name,
+            task,
+            group: taskAttention(task, live),
+          });
+        }
+      }
+    }
+    for (const conn of connections) {
+      for (const w of conn.workspaces) {
+        if (conn.sid === activeSid && w.id === activeWsId) continue;
+        const key = wsKey(conn.sid, w.id);
+        const boards = fleetProjects[key];
+        if (!boards?.length) continue;
+        const live = liveRunIds(fleetRuns[key] ?? EMPTY_RUNS);
+        for (const p of boards) {
+          for (const task of p.project.tasks) {
+            entries.push({
+              sid: conn.sid,
+              wsId: w.id,
+              wsName: w.name,
+              projectPath: p.path,
+              projectName: p.project.name,
+              task,
+              group: taskAttention(task, live),
+            });
+          }
+        }
+      }
+    }
+    return entries.sort(compareTaskAttention);
+  }, [projects, activeRuns, connections, fleetProjects, fleetRuns, activeSid, activeWsId]);
 
   const commands: Command[] = useMemo(() => {
     const openRoots = new Set(workspaces.map((w) => w.root));
@@ -239,6 +346,27 @@ export function CommandPalette({
           nav({ orchestrate: { tab: "board" as const, project: p.path } });
         },
       })),
+      // Tasks across every open workspace — the board's list+session view
+      // auto-shows the task's session, so a hit jumps straight into it.
+      ...taskEntries.map((e) => ({
+        id: `task.${e.sid}.${e.wsId}.${e.task.id}`,
+        title: `Task: ${e.task.title} — ${e.projectName}${e.wsName ? ` · ${e.wsName}` : ""}`,
+        icon: TASK_ATTENTION_ICONS[e.group],
+        // Only attention-demanding states get the annotation; board columns
+        // would just be noise on every row.
+        tag:
+          e.group === "waiting" || e.group === "running"
+            ? TASK_ATTENTION_LABELS[e.group]
+            : undefined,
+        run: () => {
+          if (e.wsName !== null) selectWorkspace(e.sid, e.wsId);
+          onSwitchMode("orchestrate");
+          nav({
+            ws: formatWsRef(e.sid, e.wsId),
+            orchestrate: { tab: "board" as const, project: e.projectPath, task: e.task.id },
+          });
+        },
+      })),
       {
         id: "terminal.new",
         title: "New terminal (active workspace)",
@@ -280,6 +408,8 @@ export function CommandPalette({
     createProject,
     architectures,
     projects,
+    taskEntries,
+    selectWorkspace,
     nav,
     workspaces,
     recents,
@@ -315,7 +445,10 @@ export function CommandPalette({
             return (
               <>
                 <Icon className="h-4 w-4 shrink-0 text-ink-faint" />
-                <span className="flex-1">{cmd.title}</span>
+                <span className="flex-1 truncate">{cmd.title}</span>
+                {cmd.tag ? (
+                  <span className="shrink-0 text-[10px] text-ink-faint">{cmd.tag}</span>
+                ) : null}
                 {cmd.hint ? <Kbd>{cmd.hint}</Kbd> : null}
               </>
             );

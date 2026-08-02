@@ -48,6 +48,7 @@ export {
   type AgentStore,
 } from "./agent-store.js";
 export {
+  EMPTY_PROJECT_ENTRIES,
   EMPTY_RUNS,
   EMPTY_TODOS,
   createFleetStore,
