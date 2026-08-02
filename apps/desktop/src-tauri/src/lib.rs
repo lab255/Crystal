@@ -558,6 +558,10 @@ pub fn run() {
             .plugin(tauri_plugin_updater::Builder::new().build())
             .plugin(tauri_plugin_process::init());
     }
+    // System notifications for attention transitions (new agent question /
+    // recoverable failure) — driven by useAttentionNotifications in
+    // @crystal/client, which detects the webview and dials this plugin.
+    builder = builder.plugin(tauri_plugin_notification::init());
     // macOS gets Tauri's default menu unless one is set, and its File/Window
     // submenus bind Cmd+W to Close Window — Crystal is single-window, so that
     // quits the whole app (and reaps the bridge sidecar). Rebuild the same menu

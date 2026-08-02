@@ -185,9 +185,18 @@ older git; error message corrected).
   mid-turn, orphaned tool calls get an `INTERRUPTED_TOOL_RESULT` placeholder so
   the persisted transcript stays well-formed for resume. Crystal marks such
   runs failed; healing would make them resumable instead.
-- **Cross-workspace "needs you"**: the new signal is per-workspace (client
-  derives it from the active workspace's stores). Aggregating across open
-  workspaces needs a server-side rollup or fleet-store extension.
+- **Cross-workspace "needs you"** — done 2026-08-02, as a fleet-store
+  extension (no server change): `questionsByWs` stores per-workspace
+  `NeedsYouQuestion[]` (task context included) instead of bare counts,
+  `useFleetNeedsYou` (@crystal/client) rolls questions + unrecovered failures
+  up across every connection, and the shell header shows the global
+  "N need you" pill (`NeedsYouPill`) whose rows jump to the waiting task's
+  board card or failed run. New-attention *transitions* also fire a
+  desktop/browser notification (operator's useOrchestrator seeding pattern):
+  `AttentionTracker` in core needs-you.ts seeds each workspace's question/run
+  slices on first read so reloads don't spam, and the item on screen in a
+  focused window is skipped. Web Notification API in the browser;
+  tauri-plugin-notification in the desktop shell.
 - **boot-id orphan detection** (qm `exec-process-session.ts`): persist
   `/proc/sys/kernel/random/boot_id` (or platform equivalent) with background
   jobs; on restart, a differing boot id means "exited by reboot", not "still

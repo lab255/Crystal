@@ -42,6 +42,7 @@ import {
 } from "./modes.js";
 import { DevServersButton } from "./DevServersButton.js";
 import { GitPanel } from "./GitPanel.js";
+import { NeedsYouPill } from "./NeedsYouPill.js";
 import { TerminalPanel } from "./TerminalPanel.js";
 import { WorkspaceTabs } from "./WorkspaceTabs.js";
 
@@ -286,6 +287,8 @@ export function CrystalShell({
             onSelectWorkspace={selectWorkspace}
           />
           <BranchSwitcher />
+          {/* Fleet-wide "needs you" (also hosts the attention notifier). */}
+          <NeedsYouPill />
           <LensBar onOpenTerminal={() => setTerminalOpen(true)} />
         </header>
 
@@ -469,7 +472,7 @@ function useFleetAttention(activeSid: string, activeWsId: string | null): Traffi
             todosByWs[key] ?? EMPTY_TODOS,
             runsByWs[key] ?? EMPTY_RUNS,
             seenAtByWs[key] ?? null,
-            questionsByWs[key] ?? 0,
+            questionsByWs[key]?.length ?? 0,
           );
         }),
     ),
