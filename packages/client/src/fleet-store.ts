@@ -1,22 +1,14 @@
 import { createStore, type StoreApi } from "zustand/vanilla";
 import {
   DEFAULT_SERVER_SID,
+  needsYouQuestions,
   nowIso,
   type AgentRun,
+  type NeedsYouQuestion,
   type TodoItem,
-  type WorkspaceInfo,
 } from "@crystal/core";
 import type { BridgeClient } from "./bridge-client.js";
 import { wsKey } from "./fleet-client.js";
-
-/** Open (unanswered) board questions across every project of a workspace. */
-function countOpenQuestions(info: WorkspaceInfo): number {
-  return info.projects.reduce(
-    (n, p) =>
-      n + p.project.tasks.reduce((m, t) => m + t.questions.filter((q) => q.answer == null).length, 0),
-    0,
-  );
-}
 
 /** Board writes arrive in bursts (a manager updating five tasks) — one recount each. */
 const QUESTION_RECOUNT_DEBOUNCE_MS = 400;
@@ -27,6 +19,7 @@ const SEEN_STORAGE_KEY = "crystal.seenRuns";
 /** Stable empty references for selectors (zustand v5: no literals in selectors). */
 export const EMPTY_RUNS: AgentRun[] = [];
 export const EMPTY_TODOS: TodoItem[] = [];
+export const EMPTY_QUESTIONS: NeedsYouQuestion[] = [];
 
 /**
  * Fleet view — cross-workspace state for the projects overview, aggregated
@@ -51,10 +44,14 @@ export interface FleetState {
   runsByWs: Record<string, AgentRun[]>;
   todosByWs: Record<string, TodoItem[]>;
   /**
-   * Open board questions per workspace — agents waiting on the human. Drives
-   * the yellow "waiting on you" attention on lights and overview cards.
+   * Open board questions per workspace — agents waiting on the human, with
+   * the task context needed to jump to them. Drives the yellow "waiting on
+   * you" attention on lights and overview cards (via `.length`) and the
+   * shell's cross-workspace needs-you pill. A key absent from this map means
+   * "not read yet", not "no questions" — the attention notifier seeds on
+   * first read (see AttentionTracker in @crystal/core).
    */
-  questionsByWs: Record<string, number>;
+  questionsByWs: Record<string, NeedsYouQuestion[]>;
   seenAtByWs: Record<string, string>;
   /** Workspace keys with an in-flight (debounced) todo save. */
   pendingTodoSaves: Record<string, true>;
@@ -157,12 +154,17 @@ export function createFleetStore(): FleetStore {
         clientOf(sid)
           ?.request("workspace.get", { ws })
           .then((info) => {
-            const questions = countOpenQuestions(info);
-            store.setState((s) =>
-              s.questionsByWs[key] === questions
-                ? s
-                : { questionsByWs: { ...s.questionsByWs, [key]: questions } },
-            );
+            const questions = needsYouQuestions(info.projects);
+            store.setState((s) => {
+              // Same open-question ids → keep the old reference (selectors and
+              // the attention notifier both see recounts as no-ops).
+              const prev = s.questionsByWs[key];
+              const same =
+                prev !== undefined &&
+                prev.length === questions.length &&
+                prev.every((q, i) => q.question.id === questions[i]!.question.id);
+              return same ? s : { questionsByWs: { ...s.questionsByWs, [key]: questions } };
+            });
           })
           .catch(() => {
             // workspace closed mid-flight — the next refresh drops it
@@ -237,13 +239,16 @@ export function createFleetStore(): FleetStore {
         const todosByWs: Record<string, TodoItem[]> = Object.fromEntries(
           Object.entries(s.todosByWs).filter(([k]) => !k.startsWith(prefix)),
         );
-        const questionsByWs: Record<string, number> = Object.fromEntries(
+        const questionsByWs: Record<string, NeedsYouQuestion[]> = Object.fromEntries(
           Object.entries(s.questionsByWs).filter(([k]) => !k.startsWith(prefix)),
         );
         for (const { key, runs, todos } of results) {
           runsByWs[key] = runs;
-          // Carry the recount path's value; closed workspaces drop out.
-          questionsByWs[key] = s.questionsByWs[key] ?? 0;
+          // Carry the recount path's value; closed workspaces drop out. An
+          // unread workspace stays ABSENT (not []) — absence is what tells
+          // the attention notifier to seed rather than announce.
+          const carried = s.questionsByWs[key];
+          if (carried !== undefined) questionsByWs[key] = carried;
           // A pending local edit is newer than what the server just returned.
           todosByWs[key] = s.pendingTodoSaves[key] ? (s.todosByWs[key] ?? todos) : todos;
         }

@@ -87,7 +87,7 @@ export function WorkspaceTabs({
       todosByWs[key] ?? EMPTY_TODOS,
       runsByWs[key] ?? EMPTY_RUNS,
       seenAtByWs[key] ?? null,
-      questionsByWs[key] ?? 0,
+      questionsByWs[key]?.length ?? 0,
     );
   };
   const multiServer = connections.length > 1;
