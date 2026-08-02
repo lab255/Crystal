@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.18.0 (2026-08-02)
+
+### Features
+
+- worktree merge-back, run recovery, managed services, standing tasks, insights ([`bb6092a`](https://github.com/eliotlim/crystal/commit/bb6092a))
+
 ## v0.17.0 (2026-07-31)
 
 ### Features
