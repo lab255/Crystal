@@ -107,11 +107,28 @@ describe("formatDeepLink", () => {
   });
 
   it("scopes task/run params to their tab", () => {
+    // The board owns both: task selection plus the session pane's pinned run.
     expect(
       formatDeepLink({ mode: "orchestrate", orchestrate: { tab: "board", task: "t1", run: "r1" } }),
-    ).toBe("#/orchestrate/board?task=t1");
+    ).toBe("#/orchestrate/board?task=t1&run=r1");
     expect(
       formatDeepLink({ mode: "orchestrate", orchestrate: { tab: "runs", task: "t1", run: "r1" } }),
+    ).toBe("#/orchestrate/runs?run=r1");
+  });
+
+  it("round-trips the board view toggle and rejects unknown views", () => {
+    const url = formatDeepLink({
+      mode: "orchestrate",
+      orchestrate: { tab: "board", view: "board", task: "t1" },
+    });
+    expect(url).toBe("#/orchestrate/board?view=board&task=t1");
+    expect(parseDeepLink(url).orchestrate?.view).toBe("board");
+    // Unset = the list+session default; garbage stays unset.
+    expect(parseDeepLink("#/orchestrate/board?task=t1").orchestrate?.view).toBeUndefined();
+    expect(parseDeepLink("#/orchestrate/board?view=bogus").orchestrate?.view).toBeUndefined();
+    // view is board-tab-owned: it never serializes on other tabs.
+    expect(
+      formatDeepLink({ mode: "orchestrate", orchestrate: { tab: "runs", view: "board", run: "r1" } }),
     ).toBe("#/orchestrate/runs?run=r1");
   });
 

@@ -1,37 +1,27 @@
 import { useEffect, useMemo, useState } from "react";
-import { Bot, CircleHelp, ExternalLink, Lock, Play, Send, TerminalSquare, Trash2, X } from "lucide-react";
+import { ExternalLink, Lock, Trash2, X } from "lucide-react";
 import {
-  RUN_PURPOSES,
   TASK_SIZES,
   TASK_STATUSES,
   TASK_STATUS_LABELS,
   apiRatePerMin,
   createEpic,
   leaseValid,
-  matchAgent,
   nowIso,
   openQuestions,
   rollupRunsUsage,
   taskLiveUsage,
   type Project,
-  type RunPurpose,
   type TaskItem,
   type TaskPriority,
   type TaskQuestion,
   type TaskSize,
   type TaskStatus,
 } from "@crystal/core";
-import {
-  formatRunCost,
-  formatRunTokens,
-  useAgents,
-  useCrystal,
-  useTerminals,
-  useWorkspace,
-  useWorkspaces,
-} from "@crystal/client";
+import { formatRunCost, formatRunTokens, useAgents, useCrystal, useWorkspace } from "@crystal/client";
 import { Badge, Button, Field, Select, StatusDot, TagInput, Textarea, cn } from "@crystal/ui";
-import { buildTaskPrompt } from "./prompt.js";
+import { QuestionRow } from "./QuestionRow.js";
+import { RunAgentCard } from "./RunAgentCard.js";
 
 // Text inputs styled to sit flush beside the shared <Select> fields.
 const inputClasses =
@@ -58,33 +48,19 @@ export function TaskDetail({
   const info = useWorkspace((s) => s.info);
   const roster = useWorkspace((s) => s.roster);
   const runs = useAgents((s) => s.runs);
-  const startRun = useAgents((s) => s.start);
-  const activeWs = useWorkspaces((s) => s.activeId);
-  const focusTerminal = useTerminals((s) => s.focusTerminal);
   const { client } = useCrystal();
 
   const [title, setTitle] = useState(task.title);
   const [description, setDescription] = useState(task.description);
   const [human, setHuman] = useState(task.owners.human ?? "");
   const [epicDraft, setEpicDraft] = useState<string | null>(null);
-  const [prompt, setPrompt] = useState("");
-  const [promptDirty, setPromptDirty] = useState(false);
-  const [purpose, setPurpose] = useState<RunPurpose>("implement");
-  const [cwd, setCwd] = useState(".");
-  const [isolate, setIsolate] = useState(false);
-  const [starting, setStarting] = useState(false);
-  const [dispatchError, setDispatchError] = useState<string | null>(null);
 
   useEffect(() => {
     setTitle(task.title);
     setDescription(task.description);
     setHuman(task.owners.human ?? "");
-    setPromptDirty(false);
     setEpicDraft(null);
   }, [task.id]);
-
-  const defaultPrompt = useMemo(() => buildTaskPrompt(task, info), [task, info]);
-  const effectivePrompt = promptDirty ? prompt : defaultPrompt;
 
   const taskRuns = runs.filter((r) => r.taskId === task.id);
   const rollup = useMemo(() => rollupRunsUsage(taskRuns), [taskRuns]);
@@ -92,11 +68,6 @@ export function TaskDetail({
   // Durable rollup + live runs — run history in app data ages out, the board's
   // rollup doesn't, so the runs list alone undercounts.
   const liveUsage = useMemo(() => taskLiveUsage(task, runs), [task, runs]);
-
-  // The dispatch target: the assigned agent, else the tag-matched one.
-  const dispatchAgent =
-    roster?.agents.find((a) => a.id === task.owners.agentId) ??
-    (roster ? matchAgent(task.labels, roster) : null);
 
   function patchTask(patch: Partial<TaskItem>): void {
     onProjectChange({
@@ -121,65 +92,6 @@ export function TaskDetail({
         t.id === task.id ? { ...t, epicId: epic.id, updatedAt: nowIso() } : t,
       ),
     });
-  }
-
-  async function runAgent(): Promise<void> {
-    setStarting(true);
-    setDispatchError(null);
-    try {
-      const repoId = info?.manifest.repos.find((r) => r.path === cwd)?.id ?? null;
-      const run = await startRun({
-        prompt: effectivePrompt,
-        cwd,
-        taskId: task.id,
-        projectId: project.id,
-        repoId,
-        isolation: isolate ? "worktree" : "none",
-        agentId: dispatchAgent?.id ?? null,
-        purpose,
-        tags: task.labels,
-      });
-      patchTask({
-        runIds: [...task.runIds, run.id],
-        status: task.status === "backlog" ? "in_progress" : task.status,
-      });
-      onOpenRun(run.id);
-    } catch (err) {
-      setDispatchError((err as Error).message);
-    } finally {
-      setStarting(false);
-    }
-  }
-
-  /**
-   * Dispatch into the terminal panel instead: a native interactive Claude
-   * session (AskUserQuestion works, decisions still logged via ask_question).
-   */
-  async function runInteractive(): Promise<void> {
-    setStarting(true);
-    setDispatchError(null);
-    try {
-      const repoId = info?.manifest.repos.find((r) => r.path === cwd)?.id ?? null;
-      const { run, terminal } = await client.request("agent.interactive", {
-        prompt: effectivePrompt,
-        cwd,
-        taskId: task.id,
-        projectId: project.id,
-        repoId,
-        agentId: dispatchAgent?.id ?? null,
-        purpose,
-        tags: task.labels,
-      });
-      patchTask({
-        runIds: [...task.runIds, run.id],
-        status: task.status === "backlog" ? "in_progress" : task.status,
-      });
-      if (activeWs) await focusTerminal(activeWs, terminal.id);
-    } catch (err) {
-      setDispatchError((err as Error).message);
-    } finally {
-      setStarting(false);
-    }
   }
 
   /**
@@ -480,105 +392,12 @@ export function TaskDetail({
           </Field>
         ) : null}
 
-        <div className="rounded-xl border border-crystal-500/25 bg-crystal-500/5 p-2.5">
-          <div className="mb-1.5 flex items-center justify-between">
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-crystal-300">
-              Run agent
-            </span>
-            {promptDirty ? (
-              <button
-                type="button"
-                className="text-[10px] text-ink-faint underline hover:text-ink-muted"
-                onClick={() => setPromptDirty(false)}
-              >
-                reset prompt
-              </button>
-            ) : null}
-          </div>
-          <Textarea
-            value={effectivePrompt}
-            onChange={(e) => {
-              setPrompt(e.target.value);
-              setPromptDirty(true);
-            }}
-            rows={5}
-            className="font-mono text-[11px]"
-            aria-label="Agent prompt"
-          />
-          <div className="mt-2 flex items-center gap-2">
-            <Select
-              size="sm"
-              className="flex-1"
-              value={purpose}
-              onChange={(e) => setPurpose(e.target.value as RunPurpose)}
-              aria-label="Run purpose"
-            >
-              {RUN_PURPOSES.map((p) => (
-                <option key={p} value={p}>
-                  {p}
-                </option>
-              ))}
-            </Select>
-            <Select
-              size="sm"
-              className="flex-1"
-              value={cwd}
-              onChange={(e) => setCwd(e.target.value)}
-              aria-label="Working directory"
-            >
-              <option value=".">workspace root</option>
-              {info?.manifest.repos
-                .filter((r) => r.path !== ".")
-                .map((r) => (
-                  <option key={r.id} value={r.path}>
-                    {r.name}
-                  </option>
-                ))}
-            </Select>
-            {/* Interactive is the default dispatch: the native TUI in the
-                terminal panel, questions answered in place. Headless stays a
-                click away for fire-and-forget runs. */}
-            <Button
-              variant="primary"
-              size="sm"
-              disabled={starting || !effectivePrompt.trim()}
-              onClick={() => void runInteractive()}
-              title="Run as a native interactive Claude session in the terminal panel — answer its questions there (or later from the board, where they are still logged)"
-            >
-              <TerminalSquare className="h-3 w-3" /> Run
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              disabled={starting || !effectivePrompt.trim()}
-              onClick={() => void runAgent()}
-              title="Run headless (stream-json in the background) — watch it from the Runs tab, no terminal"
-            >
-              <Play className="h-3 w-3" /> Headless
-            </Button>
-          </div>
-          {dispatchError ? (
-            <p className="mt-1.5 text-[11px] text-danger">{dispatchError}</p>
-          ) : null}
-          <div className="mt-1.5 flex items-center gap-1 text-[11px] text-ink-muted">
-            <Bot className="h-3 w-3 shrink-0" />
-            {dispatchAgent
-              ? `Dispatches to ${dispatchAgent.name} (${dispatchAgent.model}${
-                  dispatchAgent.skills.length ? ` + ${dispatchAgent.skills.join(", ")}` : ""
-                })`
-              : "No agent profile — CLI default model"}
-          </div>
-          <label className="mt-2 flex cursor-pointer items-center gap-1.5 text-[11px] text-ink-muted">
-            <input
-              type="checkbox"
-              checked={isolate}
-              onChange={(e) => setIsolate(e.target.checked)}
-              className="h-3 w-3 accent-[var(--color-crystal-500)]"
-            />
-            Isolate in a git worktree
-            <span className="text-ink-faint">— parallel-safe, review the diff before applying</span>
-          </label>
-        </div>
+        <RunAgentCard
+          project={project}
+          task={task}
+          onProjectChange={onProjectChange}
+          onOpenRun={onOpenRun}
+        />
 
         {liveUsage || taskRuns.length > 0 ? (
           <Field label="Cost to date">
@@ -629,99 +448,6 @@ export function TaskDetail({
         ) : null}
       </div>
     </aside>
-  );
-}
-
-function QuestionRow({
-  question,
-  onAnswer,
-}: {
-  question: TaskQuestion;
-  onAnswer: (question: TaskQuestion, answer: string) => Promise<void>;
-}) {
-  const [draft, setDraft] = useState("");
-  const [sending, setSending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const answered = question.answer != null;
-
-  return (
-    <div
-      className={cn(
-        "rounded-lg border px-2.5 py-2",
-        answered ? "border-edge bg-surface-2 opacity-70" : "border-warn/30 bg-warn/5",
-      )}
-    >
-      <div className="flex items-start gap-1.5 text-[11px] leading-snug text-ink">
-        <CircleHelp className={cn("mt-0.5 h-3 w-3 shrink-0", answered ? "text-ink-faint" : "text-warn")} />
-        <span className="whitespace-pre-wrap">{question.text}</span>
-      </div>
-      {answered ? (
-        <div className="mt-1 pl-4.5 text-[11px] text-ink-muted">↳ {question.answer}</div>
-      ) : (
-        <>
-          {question.options.length > 0 ? (
-            <div className="mt-1.5 flex flex-wrap gap-1.5 pl-4.5">
-              {question.options.map((option) => (
-                <button
-                  key={option}
-                  type="button"
-                  disabled={sending}
-                  title={
-                    option === question.recommended
-                      ? "Answer with this option (the agent's recommendation)"
-                      : "Answer with this option"
-                  }
-                  onClick={() => {
-                    setSending(true);
-                    setError(null);
-                    void onAnswer(question, option)
-                      .catch((err: Error) => setError(err.message))
-                      .finally(() => setSending(false));
-                  }}
-                  className={cn(
-                    "rounded-md border px-2 py-0.5 text-[11px] transition-colors",
-                    option === question.recommended
-                      ? "border-warn/50 bg-warn/10 font-medium text-ink hover:bg-warn/20"
-                      : "border-edge bg-surface-1 text-ink-muted hover:border-warn/40 hover:text-ink",
-                  )}
-                >
-                  {option}
-                  {option === question.recommended ? (
-                    <span className="ml-1 text-[9px] uppercase tracking-wide text-warn">rec</span>
-                  ) : null}
-                </button>
-              ))}
-            </div>
-          ) : null}
-          <div className="mt-1.5 flex items-end gap-1.5">
-            <Textarea
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              rows={2}
-              placeholder={question.options.length ? "Or answer in your own words…" : "Your answer…"}
-              className="text-[11px]"
-              aria-label="Answer"
-            />
-            <Button
-              variant="primary"
-              size="sm"
-              disabled={sending || !draft.trim()}
-              onClick={() => {
-                setSending(true);
-                setError(null);
-                void onAnswer(question, draft.trim())
-                  .catch((err: Error) => setError(err.message))
-                  .finally(() => setSending(false));
-              }}
-              aria-label="Send answer and resume the agent"
-            >
-              <Send className="h-3 w-3" />
-            </Button>
-          </div>
-        </>
-      )}
-      {error ? <p className="mt-1 pl-4.5 text-[10px] text-danger">{error}</p> : null}
-    </div>
   );
 }
 

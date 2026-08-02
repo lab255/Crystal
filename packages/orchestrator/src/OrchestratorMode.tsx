@@ -10,10 +10,12 @@ import {
   ListTodo,
   Network,
   Plus,
+  Rows3,
   Sparkles,
 } from "lucide-react";
 import {
   RUN_PURPOSES,
+  firstAttentionTask,
   openQuestions,
   type OrchestratorTabId,
   type Project,
@@ -33,6 +35,8 @@ import {
   DropdownMenuTrigger,
   EmptyState,
   Input,
+  Pane,
+  Split,
   cn,
 } from "@crystal/ui";
 import { AgentsTab } from "./AgentsTab.js";
@@ -42,6 +46,8 @@ import { InsightsTab, INSIGHT_PERIODS, type InsightPeriod } from "./InsightsTab.
 import { QuestionsStrip } from "./QuestionsStrip.js";
 import { RunsPane } from "./RunsPane.js";
 import { TaskDetail } from "./TaskDetail.js";
+import { TaskSession } from "./TaskSession.js";
+import { TasksColumn } from "./TasksColumn.js";
 import { WorkflowsTab } from "./WorkflowsTab.js";
 
 type OrchestratorTab = OrchestratorTabId;
@@ -71,6 +77,20 @@ export function OrchestratorMode() {
     (id: string | null) => nav({ orchestrate: { task: id } }),
     [nav],
   );
+  // Board-tab layout: list+session (default) or the kanban. Deep-linkable so
+  // "send me the board" and "send me my working view" are both real URLs.
+  const boardView = useNav((l) => l.orchestrate?.view) ?? "list";
+  const setBoardView = useCallback(
+    (v: "list" | "board") => nav({ orchestrate: { view: v === "list" ? null : v } }),
+    [nav],
+  );
+  // Selecting a task in the list clears any pinned run — a run of the
+  // previous task must not leak into the next task's session pane.
+  const selectListTask = useCallback(
+    (id: string | null) => nav({ orchestrate: { task: id, run: null } }),
+    [nav],
+  );
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const runId = useNav((l) => l.orchestrate?.run) ?? null;
   const setRunId = useCallback(
     (id: string | null) => nav({ orchestrate: { run: id } }),
@@ -121,6 +141,15 @@ export function OrchestratorMode() {
   }, [current?.path]);
 
   const selectedTask = current?.project.tasks.find((t) => t.id === taskId) ?? null;
+
+  // The list view never opens empty: land on the most urgent thing —
+  // longest-waiting attention task, else the first task in grouped order.
+  useEffect(() => {
+    if (tab !== "board" || boardView !== "list" || !current || selectedTask) return;
+    const first = firstAttentionTask(current.project, runs);
+    if (first) selectListTask(first.id);
+  }, [tab, boardView, current, selectedTask, runs, selectListTask]);
+
   const runningCount = runs.filter((r) => r.status === "running").length;
   const waitingCount = current
     ? current.project.tasks.reduce((n, t) => n + openQuestions(t).length, 0)
@@ -185,16 +214,26 @@ export function OrchestratorMode() {
                 .join("\n") || undefined
             }
             onClick={() => {
-              // Jump to the first thing waiting: a question's task on the
-              // board, else the first recoverable-failed run.
+              // Jump to the first thing waiting, session visible: a
+              // question's task lands on the board tab (the list view shows
+              // its live session beside the list); a failed run lands on its
+              // task when it has one, else on the Runs tab.
               const q = needsYou.questions[0];
+              const f = needsYou.failures[0];
               if (q) {
                 setProjectPath(q.projectPath);
-                setTaskId(q.taskId);
+                selectListTask(q.taskId);
                 setTab("board");
-              } else if (needsYou.failures[0]) {
-                setRunId(needsYou.failures[0].id);
-                setTab("runs");
+              } else if (f) {
+                const onBoard =
+                  f.taskId != null && current?.project.tasks.some((t) => t.id === f.taskId);
+                if (onBoard) {
+                  nav({ orchestrate: { task: f.taskId!, run: f.id } });
+                  setTab("board");
+                } else {
+                  setRunId(f.id);
+                  setTab("runs");
+                }
               }
             }}
             className="flex items-center gap-1.5 rounded-full border border-warn/40 bg-warn/10 px-2.5 py-0.5 text-[11px] font-medium text-warn transition-colors hover:bg-warn/20"
@@ -204,9 +243,25 @@ export function OrchestratorMode() {
           </button>
         ) : null}
 
-        <div className="ml-auto flex items-center gap-0.5 rounded-lg bg-surface-2 p-0.5">
+        {tab === "board" ? (
+          <div className="ml-auto flex items-center gap-0.5 rounded-lg bg-surface-2 p-0.5">
+            <TabButton active={boardView === "list"} onClick={() => setBoardView("list")}>
+              <Rows3 className="h-3.5 w-3.5" /> List
+            </TabButton>
+            <TabButton active={boardView === "board"} onClick={() => setBoardView("board")}>
+              <KanbanSquare className="h-3.5 w-3.5" /> Kanban
+            </TabButton>
+          </div>
+        ) : null}
+
+        <div
+          className={cn(
+            "flex items-center gap-0.5 rounded-lg bg-surface-2 p-0.5",
+            tab === "board" ? "" : "ml-auto",
+          )}
+        >
           <TabButton active={tab === "board"} onClick={() => setTab("board")}>
-            <ListTodo className="h-3.5 w-3.5" /> Board
+            <ListTodo className="h-3.5 w-3.5" /> Tasks
             {waitingCount > 0 ? (
               <span className="ml-0.5 rounded-full bg-warn/20 px-1.5 text-[10px] font-semibold text-warn">
                 {waitingCount}
@@ -255,41 +310,89 @@ export function OrchestratorMode() {
       <div className="min-h-0 flex-1">
         {tab === "board" ? (
           current ? (
-            <div className="flex h-full min-h-0 flex-col">
-              <QuestionsStrip
-                project={current.project}
-                projectPath={current.path}
-                onProjectChange={(project: Project) => updateProject(current.path, project)}
-                onOpenTask={setTaskId}
-                onOpenRun={(id) => {
-                  setRunId(id);
-                  setTab("runs");
-                }}
-              />
-              <div className="flex min-h-0 flex-1">
+            boardView === "list" ? (
+              // The working view (operator's list + session): grouped tasks
+              // beside the selected task's live session, details on demand.
+              <div className="flex h-full min-h-0">
                 <div className="min-w-0 flex-1">
-                  <Board
-                    project={current.project}
-                    selectedTaskId={taskId}
-                    onProjectChange={(project: Project) => updateProject(current.path, project)}
-                    onSelectTask={setTaskId}
-                  />
+                  <Split storageKey="orchestrate-tasks" direction="horizontal">
+                    <Pane defaultSize={300} minSize={220} maxSize="45%">
+                      <TasksColumn
+                        project={current.project}
+                        selectedTaskId={taskId}
+                        onSelectTask={selectListTask}
+                        onProjectChange={(project: Project) => updateProject(current.path, project)}
+                      />
+                    </Pane>
+                    <Pane minSize="35%">
+                      {selectedTask ? (
+                        <TaskSession
+                          project={current.project}
+                          projectPath={current.path}
+                          task={selectedTask}
+                          onProjectChange={(project: Project) => updateProject(current.path, project)}
+                          selectedRunId={runId}
+                          onSelectRun={setRunId}
+                          detailsOpen={detailsOpen}
+                          onToggleDetails={() => setDetailsOpen((v) => !v)}
+                        />
+                      ) : (
+                        <EmptyState icon={ListTodo} title="Select a task">
+                          Its live session, questions and diff open here — the list keeps
+                          streaming while you look.
+                        </EmptyState>
+                      )}
+                    </Pane>
+                  </Split>
                 </div>
-                {selectedTask ? (
+                {detailsOpen && selectedTask ? (
                   <TaskDetail
                     project={current.project}
                     projectPath={current.path}
                     task={selectedTask}
                     onProjectChange={(project: Project) => updateProject(current.path, project)}
-                    onClose={() => setTaskId(null)}
-                    onOpenRun={(id) => {
-                      setRunId(id);
-                      setTab("runs");
-                    }}
+                    onClose={() => setDetailsOpen(false)}
+                    onOpenRun={setRunId}
                   />
                 ) : null}
               </div>
-            </div>
+            ) : (
+              <div className="flex h-full min-h-0 flex-col">
+                <QuestionsStrip
+                  project={current.project}
+                  projectPath={current.path}
+                  onProjectChange={(project: Project) => updateProject(current.path, project)}
+                  onOpenTask={setTaskId}
+                  onOpenRun={(id) => {
+                    setRunId(id);
+                    setTab("runs");
+                  }}
+                />
+                <div className="flex min-h-0 flex-1">
+                  <div className="min-w-0 flex-1">
+                    <Board
+                      project={current.project}
+                      selectedTaskId={taskId}
+                      onProjectChange={(project: Project) => updateProject(current.path, project)}
+                      onSelectTask={setTaskId}
+                    />
+                  </div>
+                  {selectedTask ? (
+                    <TaskDetail
+                      project={current.project}
+                      projectPath={current.path}
+                      task={selectedTask}
+                      onProjectChange={(project: Project) => updateProject(current.path, project)}
+                      onClose={() => setTaskId(null)}
+                      onOpenRun={(id) => {
+                        setRunId(id);
+                        setTab("runs");
+                      }}
+                    />
+                  ) : null}
+                </div>
+              </div>
+            )
           ) : (
             <EmptyState
               icon={KanbanSquare}

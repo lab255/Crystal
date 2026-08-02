@@ -193,7 +193,19 @@ export function RunSurface({
           className="border-t border-edge px-3 py-1.5"
         />
       ) : null}
-      {onSend ? <MessageComposer onSend={onSend} className="border-t border-edge" /> : null}
+      {onSend ? (
+        <MessageComposer
+          onSend={onSend}
+          // Mid-turn sends queue server-side; say so up front instead of
+          // surprising the user with the "queued" notice after the fact.
+          placeholder={
+            live
+              ? "Queue a follow-up — it delivers when this turn settles (Ctrl+Enter)"
+              : undefined
+          }
+          className="border-t border-edge"
+        />
+      ) : null}
 
       {run.worktreePath ? (
         <ChangesRegion
@@ -788,6 +800,19 @@ export function useRunSurface(runId: string | null): {
   useEffect(() => {
     if (settledWithWorktree) void refreshMerge();
   }, [settledWithWorktree, refreshMerge]);
+
+  // A run that just settled has just finished writing: refetch the diff on
+  // the live→settled transition (same run only) so the Changes region shows
+  // the final state without a manual refresh.
+  const liveSeen = useRef<{ id: string | null; live: boolean }>({ id: null, live: false });
+  useEffect(() => {
+    const id = run?.id ?? null;
+    const liveNow = run != null && (run.status === "running" || run.status === "queued");
+    if (liveSeen.current.id === id && liveSeen.current.live && !liveNow && run?.worktreePath) {
+      void onRefreshDiff();
+    }
+    liveSeen.current = { id, live: liveNow };
+  }, [run, onRefreshDiff]);
 
   const merge = useMemo<MergeControls>(
     () => ({
