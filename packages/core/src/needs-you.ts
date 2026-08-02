@@ -27,7 +27,7 @@ export interface NeedsYou {
 export type ProjectEntry = { path: string; project: Project };
 
 /** A failure counts as recovered once any run resumes or hands off from it. */
-function recoveredRunIds(runs: readonly AgentRun[]): Set<string> {
+export function recoveredRunIds(runs: readonly AgentRun[]): Set<string> {
   const recovered = new Set<string>();
   for (const run of runs) {
     if (run.resumedFromRunId) recovered.add(run.resumedFromRunId);
