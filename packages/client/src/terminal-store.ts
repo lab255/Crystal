@@ -65,6 +65,12 @@ export interface TerminalsState {
    * per-workspace view, which by the fleet invariant renders the active server.
    */
   focusTerminal(ws: string, terminalId: string, sid?: string): Promise<void>;
+  /**
+   * Hydrate a server terminal's tab + replay buffer WITHOUT touching panel
+   * state — embedded views (the run surface's activity slot) render the same
+   * shared tab the bottom panel would, wherever they live.
+   */
+  ensureTerminal(ws: string, terminalId: string, sid?: string): Promise<void>;
   /** Sync one server's shell tabs with its `terminal.list` for the given workspaces. */
   refresh(sid: string, wsIds: string[]): Promise<void>;
   openShell(ws: string, cwd?: string, cols?: number, rows?: number, sid?: string): Promise<string>;
@@ -229,17 +235,21 @@ export function createTerminalsStore(getActiveSid: () => string): TerminalsStore
     },
 
     async focusTerminal(ws, terminalId, sid = getActiveSid()) {
+      await get().ensureTerminal(ws, terminalId, sid);
+      set({ panelOpen: true });
+      if (get().tabs.some((t) => t.sid === sid && t.id === terminalId)) {
+        set({ activeTabId: terminalId });
+      }
+    },
+
+    async ensureTerminal(ws, terminalId, sid = getActiveSid()) {
       // The terminal.changed broadcast usually lands before the caller gets
       // here; refresh covers the race (and hydrates the replay buffer).
-      const has = () => get().tabs.some((t) => t.sid === sid && t.id === terminalId);
-      if (!has()) {
-        const wsIds = [
-          ...new Set([...get().tabs.filter((t) => t.sid === sid).map((t) => t.ws), ws]),
-        ];
-        await get().refresh(sid, wsIds);
-      }
-      set({ panelOpen: true });
-      if (has()) set({ activeTabId: terminalId });
+      if (get().tabs.some((t) => t.sid === sid && t.id === terminalId)) return;
+      const wsIds = [
+        ...new Set([...get().tabs.filter((t) => t.sid === sid).map((t) => t.ws), ws]),
+      ];
+      await get().refresh(sid, wsIds);
     },
 
     async refresh(sid, wsIds) {

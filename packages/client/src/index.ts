@@ -84,6 +84,8 @@ export {
   type HubStore,
 } from "./hub-store.js";
 export { InteractiveRunBanner } from "./interactive-banner.js";
+export { InteractiveRunTerminal } from "./run-terminal.js";
+export { XtermView } from "./xterm-view.js";
 export {
   RunTranscript,
   formatRunCost,

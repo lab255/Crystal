@@ -161,6 +161,12 @@ importers:
       '@tauri-apps/plugin-updater':
         specifier: ^2.2.0
         version: 2.10.1
+      '@xterm/addon-fit':
+        specifier: ^0.11.0
+        version: 0.11.0
+      '@xterm/xterm':
+        specifier: ^6.0.0
+        version: 6.0.0
       lucide-react:
         specifier: ^0.469.0
         version: 0.469.0(react@19.2.7)
@@ -371,12 +377,6 @@ importers:
       '@crystal/ui':
         specifier: workspace:*
         version: link:../ui
-      '@xterm/addon-fit':
-        specifier: ^0.11.0
-        version: 0.11.0
-      '@xterm/xterm':
-        specifier: ^6.0.0
-        version: 6.0.0
       lucide-react:
         specifier: ^0.469.0
         version: 0.469.0(react@19.2.7)
