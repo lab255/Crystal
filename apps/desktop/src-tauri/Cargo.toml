@@ -27,8 +27,12 @@ tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 # System toasts for "needs you" transitions (new agent question / classified
 # failure) — the WKWebView/WebView2 webview has no web Notification API, so
-# the attention notifier in @crystal/client goes through this plugin instead.
-tauri-plugin-notification = "2"
+# the attention notifier in @crystal/client calls our `notify_attention`
+# command (src/notifier.rs). Driven directly (not via the notification
+# plugin) because click-to-jump needs the activation callback the plugin's
+# fire-and-forget desktop backends drop; 4.18 is the first version with
+# `wait_for_response` on all three desktop backends.
+notify-rust = "4.18"
 
 # Job object with kill-on-close: the OS reaps the whole sidecar tree even if
 # the desktop process crashes without running its shutdown path.

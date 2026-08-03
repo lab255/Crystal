@@ -1,3 +1,5 @@
+mod notifier;
+
 use std::collections::HashMap;
 use std::io::Write;
 use std::process::{ChildStdin, Command, Stdio};
@@ -112,7 +114,7 @@ fn log_file(name: &str) -> Option<std::fs::File> {
 
 /// Supervisor breadcrumbs land in the same log the sidecar writes to, so one
 /// file tells the whole story of a crash + restart.
-fn log_line(msg: &str) {
+pub(crate) fn log_line(msg: &str) {
     if let Some(mut f) = log_file("desktop-sidecar.log") {
         let _ = writeln!(f, "[crystal-desktop] {msg}");
     }
@@ -559,9 +561,9 @@ pub fn run() {
             .plugin(tauri_plugin_process::init());
     }
     // System notifications for attention transitions (new agent question /
-    // recoverable failure) — driven by useAttentionNotifications in
-    // @crystal/client, which detects the webview and dials this plugin.
-    builder = builder.plugin(tauri_plugin_notification::init());
+    // recoverable failure) live in src/notifier.rs (`notify_attention`), not
+    // the notification plugin — click-to-jump needs the activation callback
+    // the plugin's desktop backends drop.
     // macOS gets Tauri's default menu unless one is set, and its File/Window
     // submenus bind Cmd+W to Close Window — Crystal is single-window, so that
     // quits the whole app (and reaps the bridge sidecar). Rebuild the same menu
@@ -644,7 +646,8 @@ pub fn run() {
             bridge_connect,
             bridge_send,
             bridge_close,
-            list_bridge_instances
+            list_bridge_instances,
+            notifier::notify_attention
         ])
         .setup(|app| {
             // The staged node-pty resource lives at `<resource>/sidecar`; the

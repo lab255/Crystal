@@ -24,9 +24,14 @@ import {
  * toast would only echo the UI.
  *
  * Backends: the web Notification API in the browser; in the Tauri webview
- * (which has no web Notification support) the notification plugin, loaded
- * dynamically like the updater so the browser build never fetches it.
- * Permission is requested lazily on the first announcement, never at startup.
+ * (which has no web Notification support) the shell's own `notify_attention`
+ * command, whose Rust side keeps the toast's activation callback — on click it
+ * focuses the window and echoes the target back on the `attention-clicked`
+ * event, which the listener below turns into the same `useAttentionJump`
+ * navigation the web Notification onclick performs. The Tauri modules load
+ * dynamically like the updater so the browser build never fetches them.
+ * Permission is a browser concern only, requested lazily on the first
+ * announcement, never at startup — desktop toasts need no grant.
  */
 
 /** True only inside the Tauri webview (same probe as desktop-update.ts). */
@@ -36,17 +41,20 @@ function inTauriWebview(): boolean {
   return "__TAURI_INTERNALS__" in w || "isTauri" in w || "__TAURI__" in w;
 }
 
-async function deliver(title: string, body: string, onClick: () => void): Promise<void> {
+async function deliver(
+  title: string,
+  body: string,
+  target: AttentionTarget,
+  onClick: () => void,
+): Promise<void> {
   if (inTauriWebview()) {
     try {
-      const plugin = await import("@tauri-apps/plugin-notification");
-      let granted = await plugin.isPermissionGranted();
-      if (!granted) granted = (await plugin.requestPermission()) === "granted";
-      // Click-to-jump isn't wired on desktop — the plugin has no click
-      // callback on desktop platforms; the pill is the navigation surface.
-      if (granted) plugin.sendNotification({ title, body });
+      const { invoke } = await import("@tauri-apps/api/core");
+      // The target rides to Rust untouched and comes back verbatim on the
+      // `attention-clicked` event when the toast is activated.
+      await invoke("notify_attention", { title, body, target });
     } catch {
-      /* plugin missing from this shell build — stay silent */
+      /* older shell without the notifier command — stay silent */
     }
     return;
   }
@@ -118,6 +126,31 @@ export function useAttentionNotifications(): void {
     return selectedTab === "runs" && selectedRun === target.run.id;
   };
 
+  // Desktop click-to-jump: the shell's notifier echoes the clicked toast's
+  // target on this event (after focusing the window Rust-side); replay the
+  // same jump the web Notification onclick performs.
+  useEffect(() => {
+    if (!inTauriWebview()) return;
+    let unlisten: (() => void) | null = null;
+    let disposed = false;
+    void (async () => {
+      try {
+        const { listen } = await import("@tauri-apps/api/event");
+        const off = await listen<AttentionTarget>("attention-clicked", (event) => {
+          jumpRef.current(event.payload);
+        });
+        if (disposed) off();
+        else unlisten = off;
+      } catch {
+        /* event API unavailable in this shell — clicks just focus */
+      }
+    })();
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
   useEffect(() => {
     const fresh: { target: AttentionTarget; wsName: string }[] = [];
     for (const row of rows) {
@@ -161,13 +194,14 @@ export function useAttentionNotifications(): void {
       void deliver(
         "Crystal needs you",
         `${toAnnounce.length} new items are waiting across your workspaces`,
+        first.target,
         () => jumpRef.current(first.target),
       );
       return;
     }
     for (const { target, wsName } of toAnnounce) {
       const { title, body } = describe(target, wsName);
-      void deliver(title, body, () => jumpRef.current(target));
+      void deliver(title, body, target, () => jumpRef.current(target));
     }
   }, [rows, tracker]);
 }
