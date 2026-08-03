@@ -1,15 +1,16 @@
 import { z } from "zod";
 import { nowIso, uid } from "./ids.js";
-import type { AgentRunStatus } from "./agent.js";
 
 /**
- * Per-workspace todo list — `.crystal/todos.json`.
+ * Per-workspace todo list — `.crystal/todos.json` — and the traffic-light
+ * vocabulary every attention surface shares.
  *
  * Todos are the "context notes" of a workspace: short reminders of where work
  * stands so an engineer hopping between codebases (each with agents running)
- * can re-orient at a glance. Every item carries a traffic light, and the
- * workspace itself rolls up to one light combining open todos with agent-run
- * attention (see `workspaceLight`).
+ * can re-orient at a glance. Every item carries a traffic light. Todos are a
+ * manual lane, deliberately separate from agent-run attention — the one
+ * workspace rollup combining both is `workspaceLight` in attention.ts, the
+ * single attention policy.
  *
  * Traffic lights: green = all good, yellow = needs attention, red = needs
  * urgent attention, gray = idle.
@@ -84,47 +85,4 @@ export function sortTodos(items: TodoItem[]): TodoItem[] {
 /** Rollup of a todo list: the most urgent light among open items (gray when none). */
 export function todosLight(items: TodoItem[]): TrafficLight {
   return worstLight(items.filter((t) => !t.done).map((t) => t.light));
-}
-
-/**
- * Attention derived from agent runs: anything still executing keeps the
- * workspace green (work in flight, all good); a run that finished after the
- * user last looked (`seenAt`) demands attention — yellow for a result to
- * review, red for a failure. Cancellations were user-initiated, so they never
- * raise the light.
- */
-export function runsLight(
-  runs: { status: AgentRunStatus; endedAt?: string | null }[],
-  seenAt: string | null,
-): TrafficLight {
-  const lights: TrafficLight[] = [];
-  for (const run of runs) {
-    if (run.status === "running" || run.status === "queued") lights.push("green");
-    else if (run.status === "cancelled") continue;
-    else if (run.endedAt && (!seenAt || run.endedAt > seenAt)) {
-      lights.push(run.status === "failed" ? "red" : "yellow");
-    }
-  }
-  return worstLight(lights);
-}
-
-/**
- * Attention from agents waiting on the human: any open board question is
- * yellow — the agent filed a decision it can't make and someone has to
- * answer, which is exactly "needs attention". Never red on its own (nothing
- * is broken) and never acknowledgeable-away like run results — it clears
- * only by answering.
- */
-export function questionsLight(openQuestions: number): TrafficLight {
-  return openQuestions > 0 ? "yellow" : "gray";
-}
-
-/** Overall workspace light: todos + run attention + open questions, worst wins. */
-export function workspaceLight(
-  todos: TodoItem[],
-  runs: { status: AgentRunStatus; endedAt?: string | null }[],
-  seenAt: string | null,
-  openQuestions = 0,
-): TrafficLight {
-  return worstLight([todosLight(todos), runsLight(runs, seenAt), questionsLight(openQuestions)]);
 }
