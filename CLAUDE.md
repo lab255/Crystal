@@ -8,12 +8,21 @@ PM/agent orchestration, Monaco editor, quality — test runner + coverage, jobs 
 bottom terminal panel that runs shells and agent consoles in any open workspace. Read
 `README.md` for the product shape; this file is the mechanics.
 
+Shell IA (packages/sdk): top navbar = context left (active workspace ▸ branch), global
+constructs right (search/command palette, fleet "needs you" pill, hub questions inbox,
+lens). Level 1 nav is the Slack-style `WorkspaceRail` (Overview + Hub on top, one tile
+per workspace with its traffic light, expandable, context menus, settings at the
+bottom); level 2 is `ProjectNav` — one section per facet with its deep-link subviews as
+subsections, drag-rearrangeable (order in the settings store), rendered only when a
+workspace is entered. Cross-project modes (Overview/Hub) take the full width.
+
 ## Commands
 
 - `pnpm dev` — bridge server (ws://127.0.0.1:4517/crystal) + Vite web app (http://localhost:5173)
 - `pnpm test` — vitest at the repo root (tests live in `packages/*/src/**/*.test.ts`)
 - `pnpm typecheck` — `tsc --noEmit` in every package
 - `pnpm --filter @crystal/desktop dev` — Tauri desktop (Rust ≥ 1.77)
+- `pnpm --filter @crystal/relay dev|deploy` — the Cloudflare publish relay (wrangler)
 
 Node 24.18 is pinned via `use-node-version` in `.npmrc`; system `node` may be older —
 always run things through pnpm.
@@ -59,7 +68,25 @@ build/sign (+notarize on macOS) → signed updater `latest.json`).
   `files` in `tsconfig.base.json`).
 - UI styling: Tailwind v4 tokens defined in `packages/ui/src/styles.css` (`@theme`). Use
   the semantic utilities (`bg-surface-*`, `text-ink*`, `border-edge*`, accents) — never
-  raw hex in components.
+  raw hex in components. Every token is a `light-dark()` pair resolved by `color-scheme`
+  (OS preference by default; `data-theme` on `<html>` pins a side), so a component that
+  honors the tokens is theme-correct for free. Grays are near-neutral by design — don't
+  reintroduce blue-tinted surfaces. Terminals (xterm) and Monaco stay dark in both themes.
+- App-level preferences live in `packages/client/src/settings.ts` (module-singleton
+  zustand store, localStorage): theme, the composer Enter keymap, rail expansion, nav
+  section order. Every dispatch/compose textarea must route its keydown through
+  `enterKeyAction`/`useComposerKeydown` — Ctrl/Cmd+Enter always sends, Shift/Alt+Enter is
+  always a newline, and plain Enter obeys the user's setting; never hand-roll the check.
+  The settings dialog (`packages/sdk/src/SettingsDialog.tsx`) is their one UI home.
+- Publishing: the bridge can relay itself through a Cloudflare Worker + SQLite Durable
+  Object (`apps/relay`; server side `apps/server/src/publish-manager.ts`, settings at
+  `~/.crystal/publish.json`). The host dials OUT (`/i/<instance>/host`, pinned bearer
+  token) and remote clients ride a per-channel envelope over that one socket — the DO is
+  the entire trust boundary (PBKDF2 password verifier + per-IP and global rate limits);
+  the bridge's own token/origin checks never see relayed traffic. The envelope types are
+  duplicated in `packages/core/src/publish.ts` and `apps/relay/src/protocol.ts` — keep
+  them in lockstep. Bridge surface: `publish.status`/`publish.configure` (unscoped) +
+  the `publish.changed` event.
 - zustand v5: selectors must return stable references — no `?? []` literals inside
   selectors (use module-level empty constants); deriving arrays belongs outside the selector.
 - Workflows (the layer above manager/worker runs): rules are pure in
