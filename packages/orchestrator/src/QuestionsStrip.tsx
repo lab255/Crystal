@@ -7,7 +7,7 @@ import {
   type TaskItem,
   type TaskQuestion,
 } from "@crystal/core";
-import { useCrystal } from "@crystal/client";
+import { enterKeyAction, useCrystal, useSettings } from "@crystal/client";
 import { Button, Textarea, cn } from "@crystal/ui";
 
 /**
@@ -95,6 +95,7 @@ function StripQuestion({
   const [answering, setAnswering] = useState(soloOpen);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
+  const enterToSend = useSettings((s) => s.enterToSend);
   const [error, setError] = useState<string | null>(null);
 
   /**
@@ -161,11 +162,14 @@ function StripQuestion({
             value={text}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={(e) => {
-              if ((e.metaKey || e.ctrlKey) && e.key === "Enter") void send();
+              if (enterKeyAction(e, enterToSend) === "send") {
+                e.preventDefault();
+                void send();
+              }
               if (e.key === "Escape") setAnswering(false);
             }}
             rows={2}
-            placeholder="Your answer — it resumes the run that stopped for it (Ctrl+Enter)"
+            placeholder="Your answer — it resumes the run that stopped for it"
             aria-label={`Answer the question on ${task.title}`}
             className="min-h-0 flex-1"
           />

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { ExternalLink, Send } from "lucide-react";
 import type { HubQuestion } from "@crystal/core";
-import { useHub } from "@crystal/client";
+import { enterKeyAction, useHub, useSettings } from "@crystal/client";
 import { Button, Textarea, Tooltip, cn } from "@crystal/ui";
 import { useCrossWorkspaceNav } from "./common.js";
 
@@ -22,6 +22,7 @@ export function QuestionRow({
   defaultOpen?: boolean;
 }) {
   const answerQuestion = useHub((s) => s.answerQuestion);
+  const enterToSend = useSettings((s) => s.enterToSend);
   const goToProject = useCrossWorkspaceNav();
   const [answering, setAnswering] = useState(defaultOpen);
   const [text, setText] = useState("");
@@ -87,11 +88,14 @@ export function QuestionRow({
             value={text}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={(e) => {
-              if ((e.metaKey || e.ctrlKey) && e.key === "Enter") void send();
+              if (enterKeyAction(e, enterToSend) === "send") {
+                e.preventDefault();
+                void send();
+              }
               if (e.key === "Escape") setAnswering(false);
             }}
             rows={2}
-            placeholder="Your answer — it goes back to the run that stopped for it (Ctrl+Enter)"
+            placeholder="Your answer — it goes back to the run that stopped for it"
             aria-label={`Answer ${question.projectName}'s question`}
             className="min-h-0 flex-1"
           />

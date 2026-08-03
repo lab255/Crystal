@@ -15,21 +15,25 @@ import {
   AGENT_PERMISSION_MODES,
   AGENT_PROFILE_KINDS,
   AGENT_PROFILE_SCOPES,
+  AGENT_PROVIDERS,
   MODEL_HINTS,
   MODEL_PRESETS,
   RUN_PURPOSES,
   agentTag,
   createAgentProfile,
   isAgentTag,
+  modelHintsFor,
   presetById,
   type AgentPermissionMode,
   type AgentProfile,
   type AgentProfileScope,
+  type AgentProvider,
   type RunPurpose,
 } from "@crystal/core";
 import {
   formatRunCost,
   useAgents,
+  useComposerKeydown,
   useCrystal,
   useGrants,
   useTerminals,
@@ -453,6 +457,7 @@ function ProfileEditor({
   const { client } = useCrystal();
   const [name, setName] = useState(profile.name);
   const [kind, setKind] = useState(profile.kind);
+  const [provider, setProvider] = useState<AgentProvider>(profile.provider ?? "claude");
   const [model, setModel] = useState(profile.model);
   const [skills, setSkills] = useState<string[]>(profile.skills);
   const [tags, setTags] = useState<string[]>(profile.tags);
@@ -482,7 +487,8 @@ function ProfileEditor({
       ...profile,
       name: name.trim() || profile.name,
       kind,
-      model: model.trim() || "sonnet",
+      provider,
+      model: model.trim() || (provider === "codex" ? "auto" : "sonnet"),
       skills,
       tags,
       appendPrompt: appendPrompt.trim() || undefined,
@@ -562,7 +568,27 @@ function ProfileEditor({
             ))}
           </Select>
         </Field>
-        <Field label="Model" hint="Claude model alias or id, passed as --model">
+        <Field
+          label="Provider"
+          hint="Which CLI runs this agent — Claude Code or the OpenAI Codex CLI"
+        >
+          <Select
+            size="sm"
+            value={provider}
+            onChange={(e) => setProvider(e.target.value as AgentProvider)}
+            aria-label="Agent provider"
+          >
+            {AGENT_PROVIDERS.map((p) => (
+              <option key={p} value={p}>
+                {p}
+              </option>
+            ))}
+          </Select>
+        </Field>
+        <Field
+          label="Model"
+          hint={provider === "codex" ? "OpenAI model id, passed as --model" : "Claude model alias or id, passed as --model"}
+        >
           <Input
             value={model}
             onChange={(e) => setModel(e.target.value)}
@@ -571,7 +597,7 @@ function ProfileEditor({
             className="h-7 font-mono text-xs"
           />
           <datalist id="agent-model-hints">
-            {MODEL_HINTS.map((m) => (
+            {modelHintsFor(provider).map((m) => (
               <option key={m} value={m} />
             ))}
           </datalist>
@@ -765,6 +791,7 @@ function DispatchPanel({
   const [modelOverride, setModelOverride] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const onComposerKey = useComposerKeydown(() => void dispatch(!isolate));
 
   const repoId = repos.find((r) => r.path === cwd)?.id ?? null;
 
@@ -844,9 +871,7 @@ function DispatchPanel({
         <Textarea
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
-          onKeyDown={(e) => {
-            if ((e.metaKey || e.ctrlKey) && e.key === "Enter") void dispatch(!isolate);
-          }}
+          onKeyDown={onComposerKey}
           rows={5}
           placeholder={
             manager

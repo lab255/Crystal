@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Plus } from "lucide-react";
 import type { Program } from "@crystal/core";
-import { EMPTY_HUB_PROJECTS, EMPTY_HUB_RECENTS, useHub } from "@crystal/client";
+import { EMPTY_HUB_PROJECTS, EMPTY_HUB_RECENTS, useComposerKeydown, useHub } from "@crystal/client";
 import { Button, Input, Textarea, cn } from "@crystal/ui";
 import { parseBudget } from "./common.js";
 import { ProjectSelect } from "./ProjectSelect.js";
@@ -29,6 +29,7 @@ export function AddDeliveryForm({
     if (!root && projects[0]) setRoot(projects[0].root);
   }, [root, projects]);
   const [brief, setBrief] = useState("");
+  const onComposerKey = useComposerKeydown(() => void submit());
   const [budget, setBudget] = useState("");
   const [runCap, setRunCap] = useState("");
   const [dependsOn, setDependsOn] = useState<string[]>([]);
@@ -76,6 +77,7 @@ export function AddDeliveryForm({
       <Textarea
         value={brief}
         onChange={(e) => setBrief(e.target.value)}
+        onKeyDown={onComposerKey}
         rows={4}
         placeholder="What this project must deliver — outcomes and acceptance criteria, not implementation steps. Its own orchestrator refines and plans against this."
         aria-label="Delivery brief"

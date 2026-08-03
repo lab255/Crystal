@@ -10,6 +10,7 @@ import {
 } from "@crystal/core";
 import {
   useAgents,
+  useComposerKeydown,
   useCrystal,
   useTerminals,
   useWorkspace,
@@ -52,6 +53,8 @@ export function RunAgentCard({
   const [isolate, setIsolate] = useState(false);
   const [starting, setStarting] = useState(false);
   const [dispatchError, setDispatchError] = useState<string | null>(null);
+  // Same primary action as the "Run" button (interactive session).
+  const onComposerKey = useComposerKeydown(() => void runInteractive());
 
   useEffect(() => {
     setPromptDirty(false);
@@ -156,6 +159,7 @@ export function RunAgentCard({
           setPrompt(e.target.value);
           setPromptDirty(true);
         }}
+        onKeyDown={onComposerKey}
         rows={5}
         className="font-mono text-[11px]"
         aria-label="Agent prompt"

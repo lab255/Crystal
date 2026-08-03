@@ -1,7 +1,13 @@
 import { useEffect, useState } from "react";
 import { Layers, Rocket, Target } from "lucide-react";
 import { headline } from "@crystal/core";
-import { EMPTY_HUB_PROJECTS, EMPTY_HUB_RECENTS, useHub, useNav } from "@crystal/client";
+import {
+  EMPTY_HUB_PROJECTS,
+  EMPTY_HUB_RECENTS,
+  useComposerKeydown,
+  useHub,
+  useNav,
+} from "@crystal/client";
 import { Button, EmptyState, Input, Textarea } from "@crystal/ui";
 import { SegmentedTab, TabStrip, parseBudget } from "./common.js";
 import { ProjectSelect } from "./ProjectSelect.js";
@@ -62,6 +68,7 @@ function EpicForm({ onStarted }: { onStarted: (programId: string) => void }) {
   const [budget, setBudget] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const onComposerKey = useComposerKeydown(() => void submit());
 
   async function submit() {
     if (!root || !goal.trim() || busy) return;
@@ -106,6 +113,7 @@ function EpicForm({ onStarted }: { onStarted: (programId: string) => void }) {
       <Textarea
         value={goal}
         onChange={(e) => setGoal(e.target.value)}
+        onKeyDown={onComposerKey}
         rows={5}
         placeholder="What the project must deliver, as an outcome with acceptance criteria. Its orchestrator refines this with you before planning — rough is fine."
         aria-label="Epic goal"
@@ -143,6 +151,7 @@ function ProgramForm({ onStarted }: { onStarted: (programId: string) => void }) 
   const [budget, setBudget] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const onComposerKey = useComposerKeydown(() => void submit());
 
   async function submit() {
     if (!name.trim() || !goal.trim() || busy) return;
@@ -185,6 +194,7 @@ function ProgramForm({ onStarted }: { onStarted: (programId: string) => void }) 
       <Textarea
         value={goal}
         onChange={(e) => setGoal(e.target.value)}
+        onKeyDown={onComposerKey}
         rows={5}
         placeholder="The cross-project epic in full. You (or a program manager session) split it into one delivery per project next."
         aria-label="Program goal"

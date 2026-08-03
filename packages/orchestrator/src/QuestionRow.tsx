@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { CircleHelp, Send } from "lucide-react";
 import type { TaskQuestion } from "@crystal/core";
+import { enterKeyAction, useSettings } from "@crystal/client";
 import { Button, Textarea, cn } from "@crystal/ui";
 
 /**
@@ -19,6 +20,7 @@ export function QuestionRow({
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const enterToSend = useSettings((s) => s.enterToSend);
   const answered = question.answer != null;
 
   return (
@@ -75,7 +77,8 @@ export function QuestionRow({
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => {
-                if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && draft.trim()) {
+                if (enterKeyAction(e, enterToSend) === "send" && draft.trim()) {
+                  e.preventDefault();
                   setSending(true);
                   setError(null);
                   void onAnswer(question, draft.trim())
