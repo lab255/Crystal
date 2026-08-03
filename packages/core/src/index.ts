@@ -28,6 +28,7 @@ export * from "./grants.js";
 export * from "./insights.js";
 export * from "./recap.js";
 export * from "./attention.js";
+export * from "./task-attention.js";
 export * from "./workflow.js";
 export * from "./hub.js";
 export * from "./serialization.js";

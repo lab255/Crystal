@@ -34,8 +34,31 @@ function run(id: string): AgentRun {
   return { id, status: "completed" } as unknown as AgentRun;
 }
 
+/** A minimal board project holding open/answered questions. */
+function projectWith(questions: { id: string; answer?: string }[]) {
+  return {
+    path: ".crystal/projects/p.crystal",
+    project: {
+      name: "P",
+      tasks: [
+        {
+          id: "t1",
+          title: "Task",
+          questions: questions.map((q) => ({
+            id: q.id,
+            text: `Q ${q.id}`,
+            answer: q.answer ?? null,
+          })),
+        },
+      ],
+    },
+  };
+}
+
 /** A fake bridge connection: canned request results + a real event emitter. */
-function fakeClient(data: { runsByWs?: Record<string, AgentRun[]> } = {}) {
+function fakeClient(
+  data: { runsByWs?: Record<string, AgentRun[]>; projectsByWs?: Record<string, unknown[]> } = {},
+) {
   const events = new Emitter<BridgeEvents & { connection: { state: string } }>();
   const client = {
     events,
@@ -45,7 +68,9 @@ function fakeClient(data: { runsByWs?: Record<string, AgentRun[]> } = {}) {
       }
       if (method === "todos.get") return Promise.resolve({ todos: { items: [] } });
       if (method === "todos.save") return Promise.resolve({ ok: true });
-      if (method === "workspace.get") return Promise.resolve({ projects: [] });
+      if (method === "workspace.get") {
+        return Promise.resolve({ projects: data.projectsByWs?.[params.ws ?? ""] ?? [] });
+      }
       return Promise.reject(new Error(`unexpected method ${method}`));
     }),
   };
@@ -124,6 +149,38 @@ describe("fleet-store compound keys", () => {
     expect(store.getState().seenAtByWs["s2/w1"]).toBeTruthy();
     const persisted = JSON.parse(storage.getItem("crystal.seenRuns")!) as Record<string, string>;
     expect(persisted["s2/w1"]).toBeTruthy();
+  });
+});
+
+describe("question details per workspace", () => {
+  it("recounts open questions (with task context) on workspace.changed", async () => {
+    const store = createFleetStore();
+    const client = fakeClient({
+      projectsByWs: { w1: [projectWith([{ id: "q1" }, { id: "q2", answer: "done" }])] },
+    });
+    store.getState().attach("default", client);
+
+    client.events.emit("workspace.changed", { ws: "w1" } as never);
+    await vi.advanceTimersByTimeAsync(500); // recount debounce
+    const questions = store.getState().questionsByWs["default/w1"]!;
+    expect(questions.map((q) => q.question.id)).toEqual(["q1"]); // answered one filtered
+    expect(questions[0]!.taskId).toBe("t1");
+
+    // Same open-question ids → the stored reference must not churn (selector
+    // stability + the attention notifier reading recounts as no-ops).
+    client.events.emit("workspace.changed", { ws: "w1" } as never);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(store.getState().questionsByWs["default/w1"]).toBe(questions);
+  });
+
+  it("leaves unread workspaces ABSENT so seeding can tell unknown from empty", async () => {
+    const store = createFleetStore();
+    const client = fakeClient({ runsByWs: { w1: [run("r1")] } });
+    store.getState().attach("default", client);
+    await store.getState().refresh("default", ["w1"]);
+    // Runs landed, but no recount has read the board yet.
+    expect(store.getState().runsByWs["default/w1"]).toBeDefined();
+    expect("default/w1" in store.getState().questionsByWs).toBe(false);
   });
 });
 

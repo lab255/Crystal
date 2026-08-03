@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  AttentionTracker,
   attentionLight,
   countOpenQuestions,
   countUnrecoveredFailures,
   deriveNeedsYou,
   deriveRunAttention,
+  failureAttentionId,
+  questionAttentionId,
+  unrecoveredFailures,
   workspaceLight,
   type AttentionRun,
   type ProjectEntry,
@@ -114,6 +118,41 @@ describe("count helpers (selector-safe primitives)", () => {
     const runs = [overflowed, recovered, other];
     expect(countUnrecoveredFailures(runs)).toBe(1); // r1 recovered, r2 open
     expect(countUnrecoveredFailures(runs)).toBe(deriveNeedsYou([], runs).failures.length);
+  });
+
+  it("unrecoveredFailures is the list deriveNeedsYou surfaces", () => {
+    const runs = [failedRun("r1", OVERFLOW), failedRun("r2", null)];
+    expect(unrecoveredFailures(runs).map((r) => r.id)).toEqual(
+      deriveNeedsYou([], runs).failures.map((r) => r.id),
+    );
+  });
+});
+
+describe("AttentionTracker", () => {
+  it("seeds a source's first snapshot silently, then reports only new ids", () => {
+    const tracker = new AttentionTracker();
+    expect(tracker.next("ws1:questions", ["q:1", "q:2"])).toEqual([]); // reload — no spam
+    expect(tracker.next("ws1:questions", ["q:1", "q:2"])).toEqual([]);
+    expect(tracker.next("ws1:questions", ["q:1", "q:2", "q:3"])).toEqual(["q:3"]);
+    // Already announced — resolving and re-listing never re-announces.
+    expect(tracker.next("ws1:questions", ["q:3"])).toEqual([]);
+  });
+
+  it("seeds each source independently (late-arriving halves are not transitions)", () => {
+    const tracker = new AttentionTracker();
+    tracker.next("ws1:failures", ["f:a"]);
+    // The question recount lands later — still that source's first snapshot.
+    expect(tracker.next("ws1:questions", ["q:1"])).toEqual([]);
+    expect(tracker.next("ws1:questions", ["q:1", "q:2"])).toEqual(["q:2"]);
+    // A workspace opened mid-session seeds fresh too.
+    expect(tracker.next("ws2:failures", ["f:b"])).toEqual([]);
+  });
+
+  it("attention ids are namespaced so a question and a run cannot collide", () => {
+    const project = projectWithQuestions("a", [{ text: "Q" }]);
+    const q = deriveNeedsYou([project], []).questions[0]!;
+    const run = failedRun(q.question.id, OVERFLOW); // pathological same raw id
+    expect(questionAttentionId(q.question)).not.toBe(failureAttentionId(run));
   });
 });
 

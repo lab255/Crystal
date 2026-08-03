@@ -6,9 +6,10 @@ import { todosLight, worstLight, type TodoItem, type TrafficLight } from "./todo
 /**
  * THE workspace attention policy — every surface that tells the human "this
  * needs you" derives from this file, so the Overview cards, the workspace-tab
- * lights, the fleet rail dot, the orchestrator pill and the rail badge can
- * never disagree about what is waiting. Three lanes, each with its own way of
- * clearing:
+ * lights, the fleet rail dot, the orchestrator pill, the rail badge and the
+ * attention notifier can never disagree about what is waiting. (Per-task
+ * slicing and the grouped task list live in task-attention.ts, on the same
+ * primitives.) Three lanes, each with its own way of clearing:
  *
  * - **Attention** ("needs you"): open board questions + recoverable-failed
  *   runs no later run has recovered (see run-failure.ts). An agent is stopped
@@ -56,7 +57,7 @@ export interface AttentionRun {
 }
 
 /** A failure counts as recovered once any run resumes or hands off from it. */
-function recoveredRunIds(runs: readonly AttentionRun[]): Set<string> {
+export function recoveredRunIds(runs: readonly AttentionRun[]): Set<string> {
   const recovered = new Set<string>();
   for (const run of runs) {
     if (run.resumedFromRunId) recovered.add(run.resumedFromRunId);
@@ -69,10 +70,8 @@ function isUnrecoveredFailure(run: AttentionRun, recovered: ReadonlySet<string>)
   return run.status === "failed" && run.failure != null && !recovered.has(run.id);
 }
 
-export function deriveNeedsYou(
-  projects: readonly ProjectEntry[],
-  runs: readonly AgentRun[],
-): NeedsYou {
+/** All of a workspace's open questions as NeedsYou entries (task context attached). */
+export function needsYouQuestions(projects: readonly ProjectEntry[]): NeedsYouQuestion[] {
   const questions: NeedsYouQuestion[] = [];
   for (const { path, project } of projects) {
     for (const task of project.tasks) {
@@ -87,10 +86,23 @@ export function deriveNeedsYou(
       }
     }
   }
+  return questions;
+}
+
+/** Recoverable-failed runs no later run has recovered, newest first. */
+export function unrecoveredFailures(runs: readonly AgentRun[]): AgentRun[] {
   const recovered = recoveredRunIds(runs);
-  const failures = runs
+  return runs
     .filter((r) => isUnrecoveredFailure(r, recovered))
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+export function deriveNeedsYou(
+  projects: readonly ProjectEntry[],
+  runs: readonly AgentRun[],
+): NeedsYou {
+  const questions = needsYouQuestions(projects);
+  const failures = unrecoveredFailures(runs);
   return { questions, failures, count: questions.length + failures.length };
 }
 
@@ -113,6 +125,50 @@ export function countUnrecoveredFailures(runs: readonly AttentionRun[]): number 
     if (isUnrecoveredFailure(run, recovered)) count += 1;
   }
   return count;
+}
+
+/* ------------------------------------------------- *
+ * Attention transitions — the notification policy.  *
+ * ------------------------------------------------- */
+
+/** Stable notification identity of a waiting question (question ids are unique per ask). */
+export function questionAttentionId(question: TaskQuestion): string {
+  return `q:${question.id}`;
+}
+
+/** Stable notification identity of an unrecovered failure (recovery always spawns a new run id). */
+export function failureAttentionId(run: AttentionRun): string {
+  return `f:${run.id}`;
+}
+
+/**
+ * Transition detector behind "new attention" notifications (operator-oss's
+ * useOrchestrator seeding pattern): feed each source's successive snapshots of
+ * waiting-item ids; a source's FIRST snapshot seeds silently, so a page reload
+ * never re-announces what was already waiting — only ids that appear on a
+ * later snapshot come back as new. Sources seed independently because their
+ * data arrives at different times (a workspace's runs land with the fleet
+ * refresh; its question list only after the debounced board recount) — one
+ * shared seed flag would misread the late-arriving half as a transition.
+ * Seen ids are never forgotten: an item leaving and returning under the same
+ * id (impossible today — answers and recoveries both mint new ids) is quieter
+ * than a duplicate announcement.
+ */
+export class AttentionTracker {
+  private readonly seen = new Set<string>();
+  private readonly seeded = new Set<string>();
+
+  /** Returns the ids new since `source`'s last snapshot (empty on its seeding call). */
+  next(source: string, ids: readonly string[]): string[] {
+    if (!this.seeded.has(source)) {
+      this.seeded.add(source);
+      for (const id of ids) this.seen.add(id);
+      return [];
+    }
+    const fresh = ids.filter((id) => !this.seen.has(id));
+    for (const id of fresh) this.seen.add(id);
+    return fresh;
+  }
 }
 
 /* ------------------------------------------------------- *

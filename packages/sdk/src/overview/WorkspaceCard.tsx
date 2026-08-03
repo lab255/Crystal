@@ -53,7 +53,7 @@ export function WorkspaceCard({
   const runs = useFleet((s) => s.runsByWs[key] ?? EMPTY_RUNS);
   const todos = useFleet((s) => s.todosByWs[key] ?? EMPTY_TODOS);
   const seenAt = useFleet((s) => s.seenAtByWs[key] ?? null);
-  const questions = useFleet((s) => s.questionsByWs[key] ?? 0);
+  const questions = useFleet((s) => s.questionsByWs[key]?.length ?? 0);
 
   const active = sid === activeSid && ws.id === activeWsId;
   const light = workspaceLight(todos, runs, seenAt, questions);

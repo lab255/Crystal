@@ -160,6 +160,11 @@ export interface OrchestrateLink {
   project?: string;
   /** Selected task id (board tab). */
   task?: string;
+  /**
+   * Board-tab layout: unset = "list" (grouped task list beside the selected
+   * task's live session — the default working view), "board" = the kanban.
+   */
+  view?: "list" | "board";
   /** Selected agent run id (runs tab). */
   run?: string;
   /** Runs-tab purpose filter chip (unset = all purposes). */
@@ -368,13 +373,16 @@ export function formatDeepLink(link: DeepLink): string {
     const tab = o.tab ?? "board";
     path += `/${tab}`;
     if (o.project) add("project", o.project);
+    if (tab === "board" && o.view) add("view", o.view);
     if (tab === "board" && o.task) add("task", o.task);
     if (tab === "board" && o.group) add("group", o.group);
     if (tab === "board" && o.swim) add("swim", o.swim);
     if (tab === "board" && o.sort) add("sort", o.sort);
     if (tab === "board" && o.filter) add("filter", o.filter);
     if (tab === "board" && o.owner) add("owner", o.owner);
-    if ((tab === "runs" || tab === "agents") && o.run) add("run", o.run);
+    // The board tab owns `run` too: the list view's session pane can pin a
+    // specific turn of the selected task (unset = follow the newest).
+    if ((tab === "runs" || tab === "agents" || tab === "board") && o.run) add("run", o.run);
     if (tab === "runs" && o.purpose) add("purpose", o.purpose);
     if (tab === "workflows" && o.workflow) add("workflow", o.workflow);
     if (tab === "workflows" && o.builder) add("builder", "1");
@@ -563,6 +571,8 @@ export function parseDeepLink(hash: string): DeepLink {
     if (project) o.project = project;
     const task = params.get("task");
     if (task) o.task = task;
+    const view = params.get("view");
+    if (view === "list" || view === "board") o.view = view;
     const group = params.get("group");
     if (group) o.group = group;
     const swim = params.get("swim");
@@ -695,7 +705,7 @@ const ARCHITECT_VIEW_FIELDS: Record<ArchitectViewId, readonly (keyof ArchitectLi
 };
 
 const ORCHESTRATE_TAB_FIELDS: Record<OrchestratorTabId, readonly (keyof OrchestrateLink)[]> = {
-  board: ["tab", "project", "task", "group", "swim", "sort"],
+  board: ["tab", "project", "task", "view", "run", "group", "swim", "sort"],
   runs: ["tab", "project", "run", "purpose"],
   agents: ["tab", "project", "run"],
   workflows: ["tab", "project", "workflow", "builder", "template"],
