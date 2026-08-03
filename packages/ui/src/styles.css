@@ -1,8 +1,11 @@
 @import "tailwindcss";
 
 /*
- * Crystal theme — dark-first. Tokens are the single source of truth;
- * components use the generated utilities (bg-surface-1, text-ink-muted, …).
+ * Crystal theme. Tokens are the single source of truth; components use the
+ * generated utilities (bg-surface-1, text-ink-muted, …). Every color is a
+ * `light-dark()` pair resolved by `color-scheme`: the default follows the OS,
+ * and `data-theme="light|dark"` on <html> (settings store) pins one side.
+ * Grays are near-neutral with only a whisper of cool — never blue-tinted.
  */
 @theme {
   --font-sans:
@@ -10,49 +13,61 @@
   --font-mono:
     "Cascadia Code", ui-monospace, "JetBrains Mono", Consolas, monospace;
 
-  /* Surfaces (darkest to lightest) */
-  --color-surface-0: #0a0c11;
-  --color-surface-1: #10131a;
-  --color-surface-2: #161a23;
-  --color-surface-3: #1d222e;
-  --color-surface-active: #232a3a;
+  /* Surfaces (base to raised: darker→lighter in dark mode, the reverse in light) */
+  --color-surface-0: light-dark(#f6f6f7, #0e0f11);
+  --color-surface-1: light-dark(#efeff1, #141518);
+  --color-surface-2: light-dark(#e9e9ec, #1a1b1f);
+  --color-surface-3: light-dark(#e0e0e4, #212227);
+  --color-surface-active: light-dark(#d7d7dc, #292a30);
 
   /* Lines */
-  --color-edge: #232936;
-  --color-edge-strong: #313949;
+  --color-edge: light-dark(#d8d8dd, #26272d);
+  --color-edge-strong: light-dark(#bfbfc7, #383a42);
 
   /* Ink */
-  --color-ink: #e7eaf3;
-  --color-ink-muted: #99a1b3;
-  --color-ink-faint: #5d6577;
+  --color-ink: light-dark(#1c1d21, #e9eaec);
+  --color-ink-muted: light-dark(#595b64, #9b9da4);
+  --color-ink-faint: light-dark(#94969f, #61646c);
 
   /* Brand */
-  --color-crystal-300: #b3a6ff;
-  --color-crystal-400: #9d8cfc;
-  --color-crystal-500: #8b7cf6;
-  --color-crystal-600: #7a63e8;
-  --color-prism-400: #7de3f4;
-  --color-prism-500: #4ecbe0;
+  --color-crystal-300: light-dark(#6a5ae0, #b3a6ff);
+  --color-crystal-400: light-dark(#5f4fd4, #9d8cfc);
+  --color-crystal-500: light-dark(#7568ee, #8b7cf6);
+  --color-crystal-600: light-dark(#6553da, #7a63e8);
+  --color-prism-400: light-dark(#0da2bd, #7de3f4);
+  --color-prism-500: light-dark(#0b8ea6, #4ecbe0);
 
   /* Semantic */
-  --color-ok: #34d399;
-  --color-warn: #fbbf24;
-  --color-danger: #fb7185;
-  --color-info: #60a5fa;
+  --color-ok: light-dark(#0e9f6e, #34d399);
+  --color-warn: light-dark(#b45309, #fbbf24);
+  --color-danger: light-dark(#dc2655, #fb7185);
+  --color-info: light-dark(#3b6fd4, #7aa2e8);
 
   /* Node accents */
-  --color-accent-violet: #8b7cf6;
-  --color-accent-cyan: #22d3ee;
-  --color-accent-emerald: #34d399;
-  --color-accent-amber: #fbbf24;
-  --color-accent-rose: #fb7185;
-  --color-accent-blue: #60a5fa;
-  --color-accent-slate: #94a3b8;
+  --color-accent-violet: light-dark(#7568ee, #8b7cf6);
+  --color-accent-cyan: light-dark(#0891b2, #22d3ee);
+  --color-accent-emerald: light-dark(#0e9f6e, #34d399);
+  --color-accent-amber: light-dark(#b45309, #fbbf24);
+  --color-accent-rose: light-dark(#dc2655, #fb7185);
+  --color-accent-blue: light-dark(#3b6fd4, #60a5fa);
+  --color-accent-slate: light-dark(#64748b, #94a3b8);
 
   --radius-panel: 10px;
 }
 
 @layer base {
+  /* Theme selection: OS preference by default; data-theme pins a side.
+     `light-dark()` tokens above resolve through this. */
+  :root {
+    color-scheme: light dark;
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+  }
+
   html,
   body {
     height: 100%;
