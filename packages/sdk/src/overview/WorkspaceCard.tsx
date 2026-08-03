@@ -6,6 +6,7 @@ import {
   formatRecapAge,
   formatUsd,
   formatWsRef,
+  unrecoveredFailures,
   workspaceLight,
   TRAFFIC_LIGHT_LABELS,
   type WorkspaceDescriptor,
@@ -64,7 +65,11 @@ export function WorkspaceCard({
   const attn = useMemo(() => deriveRunAttention(runs, seenAt), [runs, seenAt]);
   const running = attn.running;
   const toReview = attn.review;
-  const failed = attn.failures + attn.reviewFailed;
+  // The two red lanes clear differently, so they never share a chip: `failed`
+  // (settled-unseen) goes away once the workspace is focused, while a run in
+  // `needRecovery` stays until something resumes or hands off from it.
+  const failed = attn.reviewFailed;
+  const needRecovery = useMemo(() => unrecoveredFailures(runs), [runs]);
   const openTodos = todos.filter((t) => !t.done).length;
 
   const enter = () => selectWorkspace(sid, ws.id);
@@ -75,6 +80,16 @@ export function WorkspaceCard({
   const goToBoard = () => {
     enter();
     updateNav({ ws: formatWsRef(sid, ws.id), mode: "orchestrate", orchestrate: { tab: "board" } });
+  };
+  // Same jump as the orchestrator pill: runs tab with the newest failure
+  // selected, so the recovery actions (resume / handoff) are one click away.
+  const goToFailure = () => {
+    enter();
+    updateNav({
+      ws: formatWsRef(sid, ws.id),
+      mode: "orchestrate",
+      orchestrate: { tab: "runs", run: needRecovery[0]?.id },
+    });
   };
 
   const openTerminal = (kind: "shell" | "agent") => {
@@ -169,6 +184,17 @@ export function WorkspaceCard({
             {questions} waiting on you
           </button>
         ) : null}
+        {needRecovery.length > 0 ? (
+          <button
+            type="button"
+            disabled={offline}
+            onClick={goToFailure}
+            title="Failed runs no later run has recovered — resume or hand off to clear; focusing the workspace won't"
+            className="rounded-full border border-danger/40 bg-danger/15 px-2 py-0.5 font-medium text-danger hover:bg-danger/25"
+          >
+            {needRecovery.length} need{needRecovery.length === 1 ? "s" : ""} recovery
+          </button>
+        ) : null}
         {running > 0 ? (
           <button
             type="button"
@@ -194,6 +220,7 @@ export function WorkspaceCard({
             type="button"
             disabled={offline}
             onClick={goToRuns}
+            title="Failed since you last looked — clears once you focus this workspace"
             className="rounded-full bg-danger/15 px-2 py-0.5 text-danger hover:bg-danger/25"
           >
             {failed} failed
