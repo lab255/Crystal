@@ -49,6 +49,7 @@ export {
 } from "./agent-store.js";
 export {
   EMPTY_PROJECT_ENTRIES,
+  EMPTY_QUESTIONS,
   EMPTY_RUNS,
   EMPTY_TODOS,
   createFleetStore,
@@ -85,6 +86,8 @@ export {
   type HubStore,
 } from "./hub-store.js";
 export { InteractiveRunBanner } from "./interactive-banner.js";
+export { InteractiveRunTerminal } from "./run-terminal.js";
+export { XtermView } from "./xterm-view.js";
 export {
   RunTranscript,
   formatRunCost,
@@ -114,6 +117,14 @@ export { createLensStore, type LensState, type LensStore } from "./lens-store.js
 export { createNavStore, type NavPatch, type NavState, type NavStore } from "./nav-store.js";
 export { requestOpenFile } from "./open-file.js";
 export { useNeedsYou, type NeedsYou, type NeedsYouQuestion } from "./needs-you.js";
+export {
+  useAttentionJump,
+  useFleetNeedsYou,
+  type AttentionTarget,
+  type FleetNeedsYou,
+  type WorkspaceNeedsYou,
+} from "./fleet-needs-you.js";
+export { useAttentionNotifications } from "./attention-notifier.js";
 export {
   RefCombobox,
   RefReviewBar,

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Bot, ChevronDown, Plus, Square, TerminalSquare, X } from "lucide-react";
 import {
+  XtermView,
   useFleetConnections,
   useTerminals,
   type TermChunk,
@@ -15,7 +16,6 @@ import {
   Tooltip,
   cn,
 } from "@crystal/ui";
-import { XtermView } from "./XtermView.js";
 
 /**
  * Bottom terminal panel — tabs span every open workspace of every connected

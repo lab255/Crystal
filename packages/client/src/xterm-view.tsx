@@ -2,7 +2,8 @@ import { useEffect, useRef } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { useTerminals, type TerminalTab } from "@crystal/client";
+import { useTerminals } from "./provider.js";
+import type { TerminalTab } from "./terminal-store.js";
 
 /** Theme token → concrete color (xterm can't consume CSS variables). */
 function cssColor(name: string, fallback: string): string {

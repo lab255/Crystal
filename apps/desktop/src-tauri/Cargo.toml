@@ -25,6 +25,10 @@ tokio = { version = "1", features = ["net", "io-util", "sync", "time"] }
 # app, then relaunch (process plugin). Desktop-only — gated in lib.rs.
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+# System toasts for "needs you" transitions (new agent question / classified
+# failure) — the WKWebView/WebView2 webview has no web Notification API, so
+# the attention notifier in @crystal/client goes through this plugin instead.
+tauri-plugin-notification = "2"
 
 # Job object with kill-on-close: the OS reaps the whole sidecar tree even if
 # the desktop process crashes without running its shutdown path.
