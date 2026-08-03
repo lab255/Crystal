@@ -69,3 +69,81 @@ export function isCrossProjectMode(mode: CrystalMode): boolean {
 export const WORKSPACE_FACETS: CrystalMode[] = CRYSTAL_MODES.filter(
   (m) => !isCrossProjectMode(m),
 );
+
+/**
+ * The project menu's second level — one entry per deep-link subview of a
+ * facet. `section` names the DeepLink field the subview lives under and `key`
+ * the field inside it, so ProjectNav can both read the active subview and
+ * write a nav patch generically. Modes absent here (code, jobs) are leaf
+ * sections. Must track the subview unions in core/deeplink.ts.
+ */
+export interface ModeSubsection {
+  id: string;
+  label: string;
+}
+
+export const MODE_SUBSECTIONS: Partial<
+  Record<
+    CrystalMode,
+    {
+      section: "architect" | "surfaces" | "orchestrate" | "quality";
+      key: "view" | "tab";
+      default: string;
+      items: ModeSubsection[];
+    }
+  >
+> = {
+  architect: {
+    section: "architect",
+    key: "view",
+    default: "architecture",
+    items: [
+      { id: "architecture", label: "Architecture" },
+      { id: "codebase", label: "Codebase" },
+      { id: "infra", label: "Infrastructure" },
+    ],
+  },
+  surfaces: {
+    section: "surfaces",
+    key: "view",
+    default: "screens",
+    items: [
+      { id: "screens", label: "Screens" },
+      { id: "components", label: "Components" },
+      { id: "stories", label: "Stories" },
+      { id: "apis", label: "APIs" },
+      { id: "schemas", label: "Schemas" },
+      { id: "client", label: "API client" },
+    ],
+  },
+  orchestrate: {
+    section: "orchestrate",
+    key: "tab",
+    default: "board",
+    items: [
+      { id: "board", label: "Board" },
+      { id: "runs", label: "Runs" },
+      { id: "agents", label: "Agents" },
+      { id: "workflows", label: "Workflows" },
+      { id: "costs", label: "Costs" },
+      { id: "insights", label: "Insights" },
+    ],
+  },
+  quality: {
+    section: "quality",
+    key: "view",
+    default: "tests",
+    items: [
+      { id: "tests", label: "Tests" },
+      { id: "coverage", label: "Coverage" },
+    ],
+  },
+};
+
+/** Facet order with the user's saved rearrangement applied (unknown ids drop, missing append). */
+export function orderedFacets(saved: string[]): CrystalMode[] {
+  const valid = saved.filter((m): m is CrystalMode =>
+    WORKSPACE_FACETS.includes(m as CrystalMode),
+  );
+  return [...valid, ...WORKSPACE_FACETS.filter((m) => !valid.includes(m))];
+}

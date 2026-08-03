@@ -3,6 +3,7 @@ import { FolderPlus, Unplug } from "lucide-react";
 import { useFleetConnections } from "@crystal/client";
 import { Button, EmptyState } from "@crystal/ui";
 import { OpenWorkspaceDialog } from "../OpenWorkspaceDialog.js";
+import { FleetPulse } from "./FleetPulse.js";
 import { WorkspaceCard } from "./WorkspaceCard.js";
 
 /**
@@ -41,6 +42,9 @@ export function OverviewMode() {
             <FolderPlus className="h-3.5 w-3.5" /> Open workspace…
           </Button>
         </header>
+
+        {/* Insights + costs headline — the agent system's pulse, fleet-wide. */}
+        <FleetPulse />
 
         {total === 0 ? (
           <EmptyState title="No workspaces open">

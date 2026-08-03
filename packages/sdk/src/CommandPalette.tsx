@@ -23,6 +23,8 @@ import {
   Network,
   PencilRuler,
   Plus,
+  Settings as SettingsIcon,
+  SunMoon,
   Target,
   Sparkles,
   TerminalSquare,
@@ -43,6 +45,7 @@ import {
 } from "@crystal/core";
 import {
   EMPTY_RUNS,
+  settingsStore,
   useAgents,
   useCrystal,
   useFleet,
@@ -109,11 +112,13 @@ export function CommandPalette({
   onOpenChange,
   onSwitchMode,
   onSelectWorkspace,
+  onOpenSettings,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSwitchMode: (mode: CrystalMode) => void;
   onSelectWorkspace: (id: string) => void;
+  onOpenSettings?: () => void;
 }) {
   const createArchitecture = useWorkspace((s) => s.createArchitecture);
   const createProject = useWorkspace((s) => s.createProject);
@@ -400,8 +405,28 @@ export function CommandPalette({
           void createProject("Untitled project");
         },
       },
+      {
+        id: "settings.open",
+        title: "Open settings",
+        icon: SettingsIcon,
+        run: () => onOpenSettings?.(),
+      },
+      {
+        id: "settings.theme",
+        title: "Toggle light / dark theme",
+        icon: SunMoon,
+        run: () => {
+          // From "system", jump to the opposite of what the OS is showing.
+          const s = settingsStore.getState();
+          const dark =
+            s.theme === "dark" ||
+            (s.theme === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+          s.set({ theme: dark ? "light" : "dark" });
+        },
+      },
     ];
   }, [
+    onOpenSettings,
     onSwitchMode,
     onSelectWorkspace,
     createArchitecture,

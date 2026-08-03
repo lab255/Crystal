@@ -29,8 +29,12 @@ import {
 const PANEL_HEIGHT_KEY = "crystal.terminalPanel.height";
 const PANEL_DEFAULT_HEIGHT = 256;
 const PANEL_MIN_HEIGHT = 120;
-/** Keep some app visible above the panel however far it is dragged. */
-const PANEL_MIN_APP_ABOVE = 160;
+/**
+ * Keep some app visible above the panel however far it is dragged. Budgets for
+ * the header + footer chrome (~60px) plus a usable strip of the nav column —
+ * the shell clips overflow either way, this just keeps the drag range sane.
+ */
+const PANEL_MIN_APP_ABOVE = 240;
 
 function clampPanelHeight(px: number): number {
   const max = Math.max(PANEL_MIN_HEIGHT, window.innerHeight - PANEL_MIN_APP_ABOVE);

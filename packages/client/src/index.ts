@@ -32,6 +32,18 @@ export {
 } from "./desktop-update.js";
 export { useWorkerMemo, type WorkerMemoResult } from "./use-worker-memo.js";
 export {
+  applyTheme,
+  enterKeyAction,
+  initTheme,
+  settingsStore,
+  useComposerKeydown,
+  useSettings,
+  type AppSettings,
+  type EnterBehavior,
+  type SettingsState,
+  type ThemePreference,
+} from "./settings.js";
+export {
   createWorkspaceStore,
   type WorkspaceState,
   type WorkspaceStore,

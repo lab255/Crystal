@@ -1,11 +1,12 @@
 import { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
-import { Check, DownloadCloud, FolderGit2, Gem, Link2, TerminalSquare } from "lucide-react";
+import { Check, ChevronRight, DownloadCloud, Gem, Inbox, Link2, Search } from "lucide-react";
 import {
   countOpenQuestions,
   countUnrecoveredFailures,
   parseDeepLink,
   workspaceLight,
   worstLight,
+  type HubViewId,
   type ProjectEntry,
   type TrafficLight,
 } from "@crystal/core";
@@ -14,6 +15,7 @@ import {
   EMPTY_RUNS,
   EMPTY_TODOS,
   checkForDesktopUpdateNow,
+  initTheme,
   useAgents,
   useCrystal,
   useDesktopUpdate,
@@ -28,23 +30,23 @@ import {
   wsKey,
   type ConnectionState,
 } from "@crystal/client";
-import { Spinner, StatusDot, Tooltip, TooltipProvider, TrafficLightDot, cn } from "@crystal/ui";
+import { Kbd, Spinner, StatusDot, Tooltip, TooltipProvider, cn } from "@crystal/ui";
 import { BranchSwitcher } from "./BranchSwitcher.js";
 import { CommandPalette } from "./CommandPalette.js";
 import { LensBar } from "./LensBar.js";
 import { useDeepLinks } from "./deeplinks.js";
 import {
   CRYSTAL_MODES,
-  MODE_ICONS,
   MODE_LABELS,
   isCrossProjectMode,
   type CrystalMode,
 } from "./modes.js";
-import { DevServersButton } from "./DevServersButton.js";
 import { GitPanel } from "./GitPanel.js";
 import { NeedsYouPill } from "./NeedsYouPill.js";
+import { ProjectNav } from "./ProjectNav.js";
+import { SettingsDialog } from "./SettingsDialog.js";
 import { TerminalPanel } from "./TerminalPanel.js";
-import { WorkspaceTabs } from "./WorkspaceTabs.js";
+import { WorkspaceRail } from "./WorkspaceRail.js";
 
 // Each mode is a lazy chunk: react-flow/dagre and Monaco only download when
 // their mode is first opened. Once visited, a mode stays mounted so canvas and
@@ -118,11 +120,15 @@ export function CrystalShell({
     setVisited((v) => (v.has(mode) ? v : new Set(v).add(mode)));
   }, [mode]);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   // Panel visibility lives in the terminals store so anything dispatching an
   // interactive agent session can reveal the panel (see focusTerminal).
   const terminalOpen = useTerminals((s) => s.panelOpen);
   const setTerminalOpen = useTerminals((s) => s.setPanelOpen);
   const [gitOpen, setGitOpen] = useState(false);
+
+  // Theme preference lands on <html> before anything paints twice.
+  useEffect(() => initTheme(), []);
 
   const { terminalsStore, navStore, fleet, activeSid, selectWorkspace: focusWorkspace } =
     useCrystal();
@@ -130,6 +136,9 @@ export function CrystalShell({
   const activeWsId = useWorkspaces((s) => s.activeId);
   const activeWsRoot = useWorkspaces(
     (s) => s.workspaces.find((w) => w.id === s.activeId)?.root ?? null,
+  );
+  const activeWsName = useWorkspaces(
+    (s) => s.workspaces.find((w) => w.id === s.activeId)?.name ?? null,
   );
   const saving = useWorkspace((s) => Object.keys(s.pendingSaves).length > 0);
   const wsError = useWorkspace((s) => s.error);
@@ -274,119 +283,92 @@ export function CrystalShell({
 
   return (
     <TooltipProvider>
-      <div className="flex h-full min-h-0 flex-col bg-surface-0 text-ink">
-        {/* Top level: workspaces (plus the cross-workspace Overview and the opener). */}
+      {/* overflow-hidden: the shell owns the viewport — a too-tall child (e.g.
+          the nav rail with the terminal panel dragged high) must clip inside
+          its row, never grow the document and scroll the page. */}
+      <div className="flex h-full min-h-0 flex-col overflow-hidden bg-surface-0 text-ink">
+        {/* Top navbar: context on the left (workspace ▸ branch), global
+            constructs on the right (search/palette, needs-you, inbox, lens). */}
         <header className="flex h-9 shrink-0 items-center gap-2 border-b border-edge bg-surface-1 px-2.5">
           <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-crystal-500 to-prism-500 shadow-lg shadow-crystal-500/30">
             <Gem className="h-4 w-4 text-white" />
           </div>
-          <WorkspaceTabs
-            mode={mode}
-            attention={attention}
-            onHome={() => switchMode("projects")}
-            onSelectWorkspace={selectWorkspace}
-          />
-          <BranchSwitcher />
+          <div className="flex min-w-0 items-center gap-1">
+            <span className="max-w-48 truncate text-xs font-medium text-ink">
+              {isCrossProjectMode(mode) ? MODE_LABELS[mode] : (activeWsName ?? "No workspace")}
+            </span>
+            {!isCrossProjectMode(mode) && activeWsName ? (
+              <>
+                <ChevronRight className="h-3 w-3 shrink-0 text-ink-faint" />
+                <BranchSwitcher />
+              </>
+            ) : null}
+          </div>
+
+          <div className="flex-1" />
+
+          <button
+            type="button"
+            onClick={() => setPaletteOpen(true)}
+            aria-label="Search and commands"
+            className="flex h-6.5 w-64 shrink items-center gap-2 rounded-md border border-edge bg-surface-0 px-2 text-xs text-ink-faint transition-colors hover:border-edge-strong hover:text-ink-muted"
+          >
+            <Search className="h-3.5 w-3.5 shrink-0" />
+            <span className="min-w-0 flex-1 truncate text-left">Search or jump to…</span>
+            <Kbd>Ctrl+K</Kbd>
+          </button>
+
           {/* Fleet-wide "needs you" (also hosts the attention notifier). */}
           <NeedsYouPill />
+          <Tooltip content="Inbox — agent questions across every project">
+            <button
+              type="button"
+              onClick={() => updateNav({ mode: "hub", hub: { view: "questions" as HubViewId } })}
+              aria-label="Open the questions inbox"
+              className={cn(
+                "relative flex h-6.5 w-6.5 shrink-0 items-center justify-center rounded-md transition-colors",
+                mode === "hub"
+                  ? "bg-crystal-500/20 text-crystal-300"
+                  : "text-ink-faint hover:bg-surface-3 hover:text-ink-muted",
+              )}
+            >
+              <Inbox className="h-4 w-4" />
+              {hubWaiting > 0 ? (
+                <span className="absolute -right-1 -top-1 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-warn px-0.5 text-[9px] font-bold text-surface-0">
+                  {hubWaiting}
+                </span>
+              ) : null}
+            </button>
+          </Tooltip>
           <LensBar onOpenTerminal={() => setTerminalOpen(true)} />
         </header>
 
-        <div className="flex min-h-0 flex-1">
-          {/* Mode rail: one icon per mode, Overview first. Badges surface work
-              happening elsewhere (running agents/jobs, cross-project attention). */}
-          <nav className="flex w-12 shrink-0 flex-col items-center gap-1 border-r border-edge bg-surface-1 py-2.5">
-            {CRYSTAL_MODES.map((m, i) => {
-              const Icon = MODE_ICONS[m];
-              const badge =
-                m === "orchestrate"
-                  ? runningRuns
-                  : m === "jobs"
-                    ? runningJobs
-                    : m === "hub"
-                      ? hubWaiting || liveProgramCount
-                      : 0;
-              const badgeWarns = m === "hub" && hubWaiting > 0;
-              // Agents waiting on the human outrank agents merely working.
-              const needs = m === "orchestrate" ? needsYouCount : 0;
-              return (
-                <Tooltip key={m} content={MODE_LABELS[m]} shortcut={`Ctrl+${i + 1}`} side="right">
-                  <button
-                    type="button"
-                    onClick={() => switchMode(m)}
-                    aria-label={MODE_LABELS[m]}
-                    aria-pressed={mode === m}
-                    className={cn(
-                      "relative flex h-9 w-9 items-center justify-center rounded-lg transition-colors",
-                      mode === m
-                        ? "bg-crystal-500/20 text-crystal-300"
-                        : "text-ink-faint hover:bg-surface-3 hover:text-ink-muted",
-                    )}
-                  >
-                    {mode === m ? (
-                      <span className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-full bg-crystal-400" />
-                    ) : null}
-                    <Icon className="h-4.5 w-4.5" />
-                    {needs > 0 ? (
-                      <span className="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-warn px-0.5 text-[9px] font-bold text-surface-0">
-                        {needs}
-                      </span>
-                    ) : badge > 0 ? (
-                      <span
-                        className={cn(
-                          "absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full px-0.5 text-[9px] font-bold text-surface-0",
-                          badgeWarns ? "bg-warn" : "bg-info",
-                        )}
-                      >
-                        {badge}
-                      </span>
-                    ) : null}
-                    {m === "projects" && (attention === "red" || attention === "yellow") ? (
-                      <TrafficLightDot light={attention} className="absolute -right-0.5 -top-0.5" />
-                    ) : null}
-                  </button>
-                </Tooltip>
-              );
-            })}
-
-            {/* Bottom rail: panel toggles, kept apart from the mode list —
-                these overlay/augment the current mode rather than replace it. */}
-            <div className="mt-auto flex flex-col items-center gap-1 border-t border-edge pt-1.5">
-              <DevServersButton />
-              <Tooltip content="Git tree & log" shortcut="Ctrl+Shift+G" side="right">
-                <button
-                  type="button"
-                  onClick={() => setGitOpen((o) => !o)}
-                  aria-label="Toggle git panel"
-                  aria-pressed={gitOpen}
-                  className={cn(
-                    "flex h-9 w-9 items-center justify-center rounded-lg transition-colors",
-                    gitOpen
-                      ? "bg-crystal-500/20 text-crystal-300"
-                      : "text-ink-faint hover:bg-surface-3 hover:text-ink-muted",
-                  )}
-                >
-                  <FolderGit2 className="h-4.5 w-4.5" />
-                </button>
-              </Tooltip>
-              <Tooltip content="Toggle the terminal panel" shortcut="Ctrl+`" side="right">
-                <button
-                  type="button"
-                  onClick={() => setTerminalOpen(!terminalOpen)}
-                  aria-label="Toggle terminal panel"
-                  aria-pressed={terminalOpen}
-                  className={cn(
-                    "flex h-9 w-9 items-center justify-center rounded-lg transition-colors",
-                    terminalOpen
-                      ? "bg-crystal-500/20 text-crystal-300"
-                      : "text-ink-faint hover:bg-surface-3 hover:text-ink-muted",
-                  )}
-                >
-                  <TerminalSquare className="h-4.5 w-4.5" />
-                </button>
-              </Tooltip>
-            </div>
-          </nav>
+        <div className="flex min-h-0 flex-1 overflow-hidden">
+          {/* Level 1: the workspace rail (Slack-style). Level 2: the project
+              menu — sections per facet, only when a workspace is entered. */}
+          <WorkspaceRail
+            mode={mode}
+            attention={attention}
+            hubBadge={hubWaiting || liveProgramCount}
+            hubWarns={hubWaiting > 0}
+            onHome={() => switchMode("projects")}
+            onHub={() => switchMode("hub")}
+            onSelectWorkspace={selectWorkspace}
+            onOpenSettings={() => setSettingsOpen(true)}
+          />
+          {!isCrossProjectMode(mode) ? (
+            <ProjectNav
+              mode={mode}
+              runningRuns={runningRuns}
+              needsYouCount={needsYouCount}
+              runningJobs={runningJobs}
+              gitOpen={gitOpen}
+              terminalOpen={terminalOpen}
+              onToggleGit={() => setGitOpen((o) => !o)}
+              onToggleTerminal={() => setTerminalOpen(!terminalOpen)}
+              onSwitchMode={switchMode}
+            />
+          ) : null}
 
           {gitOpen ? <GitPanel onClose={() => setGitOpen(false)} /> : null}
 
@@ -439,12 +421,15 @@ export function CrystalShell({
           </footer>
         ) : null}
 
+        <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
+
         {/* The palette lists the ACTIVE connection's workspaces (fleet v1). */}
         <CommandPalette
           open={paletteOpen}
           onOpenChange={setPaletteOpen}
           onSwitchMode={switchMode}
           onSelectWorkspace={(id) => selectWorkspace(activeSid, id)}
+          onOpenSettings={() => setSettingsOpen(true)}
         />
       </div>
     </TooltipProvider>
