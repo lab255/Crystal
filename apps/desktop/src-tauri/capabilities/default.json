@@ -1,6 +1,6 @@
 {
   "identifier": "default",
-  "description": "Baseline for the main window: core APIs (events, channels) for the bridge pipe relay, the updater (check/download/install) and process relaunch for in-app auto-update, and system notifications for needs-you attention transitions.",
+  "description": "Baseline for the main window: core APIs (events, channels) for the bridge pipe relay and the attention notifier's click event, plus the updater (check/download/install) and process relaunch for in-app auto-update.",
   "windows": ["*"],
-  "permissions": ["core:default", "updater:default", "process:default", "notification:default"]
+  "permissions": ["core:default", "updater:default", "process:default"]
 }
