@@ -57,7 +57,10 @@ function projectWith(questions: { id: string; answer?: string }[]) {
 
 /** A fake bridge connection: canned request results + a real event emitter. */
 function fakeClient(
-  data: { runsByWs?: Record<string, AgentRun[]>; projectsByWs?: Record<string, unknown[]> } = {},
+  data: {
+    runsByWs?: Record<string, AgentRun[]>;
+    projectsByWs?: Record<string, { path: string; project: unknown }[]>;
+  } = {},
 ) {
   const events = new Emitter<BridgeEvents & { connection: { state: string } }>();
   const client = {
@@ -141,6 +144,21 @@ describe("fleet-store compound keys", () => {
     // Detached connections no longer feed events.
     b.events.emit("agent.runChanged", { ws: "w9", run: run("ghost") } as never);
     expect(store.getState().runsByWs["s2/w9"]).toBeUndefined();
+  });
+
+  it("stores board snapshots per workspace via the debounced recount", async () => {
+    const store = createFleetStore();
+    const board = { path: ".crystal/projects/q3.crystal", project: { name: "Q3", tasks: [] } };
+    const a = fakeClient({ projectsByWs: { w1: [board] } });
+    store.getState().attach("default", a);
+
+    a.events.emit("workspace.changed", { ws: "w1" } as never);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(store.getState().projectsByWs["default/w1"]).toEqual([board]);
+
+    // A refresh that no longer lists w1 drops its boards with the rest.
+    await store.getState().refresh("default", []);
+    expect(store.getState().projectsByWs["default/w1"]).toBeUndefined();
   });
 
   it("marks seen under the compound key and persists it", () => {
