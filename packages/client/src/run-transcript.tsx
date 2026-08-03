@@ -180,6 +180,43 @@ function RunEventRow({ runEvent }: { runEvent: RunEvent }) {
           </div>
         </div>
       );
+    case "permission":
+      return (
+        <div
+          className={cn(
+            "flex items-start gap-2 rounded-lg border px-3 py-2 text-xs leading-relaxed text-ink",
+            event.state === "pending"
+              ? "border-warn/30 bg-warn/10"
+              : event.state === "allowed"
+                ? "border-ok/25 bg-ok/8"
+                : "border-danger/25 bg-danger/8",
+          )}
+        >
+          <CircleHelp
+            className={cn(
+              "mt-0.5 h-3.5 w-3.5 shrink-0",
+              event.state === "pending"
+                ? "text-warn"
+                : event.state === "allowed"
+                  ? "text-ok"
+                  : "text-danger",
+            )}
+          />
+          <div className="min-w-0">
+            <span className="whitespace-pre-wrap">
+              {event.state === "pending"
+                ? `Waiting for permission: ${event.detail ?? event.tool}`
+                : `Permission ${event.state}: ${event.detail ?? event.tool}`}
+            </span>
+            {event.state === "pending" ? (
+              <div className="mt-1 text-[10px] text-ink-faint">
+                Grant the tool in the Agents tab&apos;s grants panel, or answer the question on
+                the task — the run continues the moment it is decided.
+              </div>
+            ) : null}
+          </div>
+        </div>
+      );
     case "dispatch":
       return (
         <div className="flex items-start gap-2 rounded-lg border border-crystal-500/30 bg-crystal-500/10 px-3 py-2 text-xs leading-relaxed text-ink">

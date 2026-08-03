@@ -48,6 +48,11 @@ export interface InstanceInfo {
    * knowing whether its port was pinned.
    */
   hubMcpUrl?: string;
+  /**
+   * Shareable relay URL (`https://<relay>/i/<id>`), present while publishing
+   * is enabled — lets local tools show/copy the remote-access link.
+   */
+  publicUrl?: string;
   roots: string[];
   /**
    * Live workspace list, rewritten on every `workspaces.changed` — unlike

@@ -57,6 +57,7 @@ import { HUB_MCP_ID, handleMcpRequest, isMcpRequest } from "./mcp/http.js";
 import { INTERACTIVE_PROMPT_DELAY_MS, launchInteractiveRun } from "./interactive.js";
 import { overviewSourcesAtRef, surfacesSnapshotAtRef } from "./ref-snapshot.js";
 import { pasteInput } from "./terminal-manager.js";
+import { PublishManager } from "./publish-manager.js";
 import { sendApiRequest } from "./api-client-store.js";
 import { WorkspaceRegistry } from "./workspace-registry.js";
 
@@ -206,6 +207,11 @@ export async function startCrystalServer(opts: {
   mcpPort?: number | null;
   /** Where hub programs and program-manager runs persist (default `~/.crystal/hub`). */
   hubDir?: string | null;
+  /**
+   * Publish-server settings file (default `~/.crystal/publish.json`); `null`
+   * disables publishing on this server.
+   */
+  publishFile?: string | null;
 }): Promise<CrystalServer> {
   // Declared ahead of the registry: opening the startup workspaces already
   // broadcasts, and `broadcast` (hoisted) closes over this set.
@@ -371,6 +377,36 @@ export async function startCrystalServer(opts: {
   const requireHub = (): HubEngine => {
     if (!hub) throw new Error("The cross-project hub is disabled on this server.");
     return hub;
+  };
+
+  // --- Publishing: an outbound relay connection that turns remote browsers
+  // into ordinary bridge clients. Registered channels join `clients`, so they
+  // get event broadcasts through the same seam as pipe/WebSocket clients.
+  const publishFile =
+    opts.publishFile === undefined
+      ? path.join(os.homedir(), ".crystal", "publish.json")
+      : opts.publishFile;
+  let publish: PublishManager | null = null;
+  if (publishFile) {
+    publish = new PublishManager({
+      file: publishFile,
+      register: (client) => {
+        clients.add(client);
+        return () => clients.delete(client);
+      },
+      dispatchRaw: (raw) => dispatchRaw(raw),
+      onChanged: (status) => {
+        broadcast("publish.changed", status);
+        // The instance file advertises the share URL; keep it current.
+        scheduleInstanceRewrite();
+      },
+    });
+    await publish.start();
+  }
+  /** Narrows "publishing is configured" for the handler map. */
+  const requirePublish = (): PublishManager => {
+    if (!publish) throw new Error("Publishing is disabled on this server.");
+    return publish;
   };
 
   const handlers: Handlers = {
@@ -595,8 +631,8 @@ export async function startCrystalServer(opts: {
       await registry.get(ws).agents.abortResolve(runId);
       return { ok: true };
     },
-    "agent.handoff": async ({ ws, runId }) => ({
-      run: await registry.get(ws).agents.handoff(runId),
+    "agent.handoff": async ({ ws, runId, targetAgentId }) => ({
+      run: await registry.get(ws).agents.handoff(runId, { targetAgentId }),
     }),
     "terminal.create": async ({ ws, cwd, cols, rows }) => ({
       terminal: registry.get(ws).terminals.create({ cwd, cols, rows }),
@@ -943,6 +979,8 @@ export async function startCrystalServer(opts: {
       await requireHub().cancelManagerRun(runId);
       return { ok: true as const };
     },
+    "publish.status": () => requirePublish().status(),
+    "publish.configure": (params) => requirePublish().configure(params),
     "refactor.preview": ({ ws, intents }) => registry.get(ws).refactor().preview(intents),
     "refactor.apply": async ({ ws, intents }) => {
       const rt = registry.get(ws);
@@ -1206,6 +1244,7 @@ export async function startCrystalServer(opts: {
       port: listen?.port ?? null,
       mcpPort,
       ...(hub ? { hubMcpUrl } : {}),
+      ...(publish?.publicUrl() ? { publicUrl: publish.publicUrl()! } : {}),
       roots: registry.list().map((w) => w.root),
       workspaces: registry.list(),
       ...(token ? { token } : {}),
@@ -1296,6 +1335,9 @@ export async function startCrystalServer(opts: {
         clearTimeout(instanceTimer);
         instanceTimer = null;
       }
+      // Publish first: relayed clients are in `clients` and their channels
+      // must stop registering before the set is cleared below.
+      publish?.stop();
       hub?.dispose();
       await registry.closeAll();
       await instanceWrites;

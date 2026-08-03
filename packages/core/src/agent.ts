@@ -26,6 +26,16 @@ export const AgentIsolationSchema = z.enum(["none", "worktree"]);
 export type AgentIsolation = z.infer<typeof AgentIsolationSchema>;
 
 /**
+ * Which CLI executes a run. "claude" is the Claude Code CLI (the default —
+ * absent/null means claude everywhere, so records predating the field keep
+ * their meaning); "codex" is the OpenAI Codex CLI (`codex exec --json`,
+ * normalized by codex.ts into the same AgentEvent vocabulary).
+ */
+export const AGENT_PROVIDERS = ["claude", "codex"] as const;
+export const AgentProviderSchema = z.enum(AGENT_PROVIDERS);
+export type AgentProvider = z.infer<typeof AgentProviderSchema>;
+
+/**
  * A run's place in a manager/worker hierarchy. A "manager" run delegates by
  * dispatching "worker" runs (each pointing back via `parentRunId`); unset means
  * a standalone run that neither delegates nor was delegated.
@@ -117,6 +127,8 @@ export const AgentRunSchema = z.object({
   prompt: z.string(),
   /** Agent profile that executed this run (see agent-profile.ts). */
   agentId: z.string().nullish(),
+  /** CLI vendor that executed this run (null/absent = claude). */
+  provider: AgentProviderSchema.nullish(),
   /** Manager run that dispatched this worker, if any (see AgentRole). */
   parentRunId: z.string().nullish(),
   /**
@@ -187,6 +199,7 @@ export function createAgentRun(init: {
   isolation?: AgentIsolation;
   branch?: string | null;
   agentId?: string | null;
+  provider?: AgentProvider | null;
   parentRunId?: string | null;
   resumedFromRunId?: string | null;
   handoffFromRunId?: string | null;
@@ -206,6 +219,7 @@ export function createAgentRun(init: {
     isolation: init.branch ? "worktree" : (init.isolation ?? "none"),
     branch: init.branch ?? null,
     agentId: init.agentId ?? null,
+    provider: init.provider ?? null,
     parentRunId: init.parentRunId ?? null,
     resumedFromRunId: init.resumedFromRunId ?? null,
     handoffFromRunId: init.handoffFromRunId ?? null,
@@ -425,6 +439,18 @@ export type AgentEvent =
       recommended?: string | null;
     }
   | { type: "dispatch"; spec: WorkerSpec }
+  | {
+      /**
+       * A headless run asked to use a tool outside its allowlist (the CLI's
+       * `--permission-prompt-tool` routed the prompt to the server's
+       * permission broker). `pending` while the request waits on the grants
+       * ledger / board answer; `allowed`/`denied` when it settles.
+       */
+      type: "permission";
+      tool: string;
+      state: "pending" | "allowed" | "denied";
+      detail?: string;
+    }
   | { type: "stderr"; text: string }
   | { type: "status"; status: AgentRunStatus; message?: string }
   | { type: "unknown"; raw: unknown };

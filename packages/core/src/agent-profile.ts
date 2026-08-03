@@ -3,9 +3,11 @@ import { uid } from "./ids.js";
 import { tagOverlap } from "./tags.js";
 import {
   AgentIsolationSchema,
+  AgentProviderSchema,
   RunPurposeSchema,
   agentTag,
   type AgentIsolation,
+  type AgentProvider,
   type RunPurpose,
 } from "./agent.js";
 
@@ -95,6 +97,21 @@ export const AUTO_MODEL = "auto";
 export const MODEL_HINTS = [AUTO_MODEL, "fable", "opus", "sonnet", "haiku"] as const;
 
 /**
+ * Codex counterpart of {@link MODEL_HINTS}. "auto" resolves to
+ * {@link DEFAULT_CODEX_MODEL} — the model presets are Claude-tiered and have
+ * nothing sensible to say about OpenAI models.
+ */
+export const CODEX_MODEL_HINTS = [AUTO_MODEL, "gpt-5.2-codex", "gpt-5.2"] as const;
+
+/** What a codex profile's "auto" resolves to (presets are Claude-only dials). */
+export const DEFAULT_CODEX_MODEL = "gpt-5.2-codex";
+
+/** The suggestion list for a provider's model picker. */
+export function modelHintsFor(provider: AgentProvider | null | undefined): readonly string[] {
+  return provider === "codex" ? CODEX_MODEL_HINTS : MODEL_HINTS;
+}
+
+/**
  * A profile's concrete `--model` value: its own pin always wins; "auto"
  * resolves by the run's place in the hierarchy — a manager gets the preset's
  * manager model whatever profile it runs as (orchestration is a role, not a
@@ -106,6 +123,10 @@ export function resolveProfileModel(
   role?: "manager" | null,
 ): string {
   if (profile.model && profile.model !== AUTO_MODEL) return profile.model;
+  // Presets are Claude cost/capability tiers — a codex profile on "auto"
+  // resolves to the codex default instead of a Claude alias the OpenAI CLI
+  // would reject (or worse, silently map to something unexpected).
+  if (profile.provider === "codex") return DEFAULT_CODEX_MODEL;
   if (role === "manager") return preset.manager;
   return profile.kind === "specialist" ? preset.specialist : preset.worker;
 }
@@ -147,8 +168,15 @@ export const AgentProfileSchema = z.object({
   name: z.string(),
   kind: AgentProfileKindSchema.default("generic"),
   /**
-   * Claude model alias or id (`--model`), e.g. "sonnet", "opus", "fable" —
-   * or "auto" to follow the roster's model preset for this profile's kind.
+   * CLI vendor this profile's runs execute on. Defaults to "claude" so every
+   * existing profile keeps its meaning; "codex" spawns the OpenAI Codex CLI.
+   */
+  provider: AgentProviderSchema.default("claude"),
+  /**
+   * Model alias or id (`--model`), e.g. "sonnet", "opus", "fable" (claude) or
+   * "gpt-5.2-codex" (codex) — or "auto" to follow the roster's model preset
+   * for this profile's kind (codex profiles resolve "auto" to the codex
+   * default; presets are Claude tiers).
    */
   model: z.string().default(AUTO_MODEL),
   /** Skill names woven into dispatch prompts (specialists). */
@@ -258,6 +286,7 @@ export function matchAgent(tags: string[], roster: AgentRoster): AgentProfile | 
  */
 export interface AgentProfileOverlay {
   agentId: string;
+  provider: AgentProvider;
   model: string;
   skills: string[];
   appendPrompt: string | null;
@@ -280,6 +309,7 @@ export function profileOverlay(
 ): AgentProfileOverlay {
   return {
     agentId: profile.id,
+    provider: profile.provider ?? "claude",
     model: resolveProfileModel(profile, preset ?? presetById(null), role),
     skills: profile.skills,
     appendPrompt: profile.appendPrompt?.trim() || null,
@@ -293,6 +323,7 @@ export function profileOverlay(
 
 /** The dispatch fields an overlay can contribute to (explicit values win). */
 export interface ProfileDispatchInit {
+  provider?: AgentProvider | null;
   model?: string | null;
   skills?: string[];
   appendSystemPrompt?: string | null;
@@ -317,6 +348,7 @@ export function applyProfileOverlay<T extends ProfileDispatchInit>(
   if (!overlay) return params;
   const merged: ProfileDispatchInit = {
     ...params,
+    provider: params.provider ?? overlay.provider,
     model: params.model ?? overlay.model,
     skills: params.skills?.length ? params.skills : overlay.skills,
     appendSystemPrompt: params.appendSystemPrompt ?? overlay.appendPrompt,
@@ -351,6 +383,9 @@ export function rosterText(profiles: readonly AgentProfile[], preset?: ModelPres
     const bits = [
       `- ${p.id} "${p.name}"`,
       p.kind,
+      // Claude is the unmarked case; a second vendor is worth a manager's
+      // attention (no MCP board tools, own sandbox model).
+      p.provider === "codex" ? "codex" : null,
       `model ${resolveProfileModel(p, preset ?? presetById(null))}`,
       p.tags.length ? `tags: ${p.tags.join(", ")}` : null,
       p.skills.length ? `skills: ${p.skills.join(", ")}` : null,

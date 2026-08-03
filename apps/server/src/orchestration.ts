@@ -251,16 +251,35 @@ export class OrchestrationService {
     text: string,
     runId?: string | null,
     opts?: AskOptions,
-  ): Promise<{ ok: true } | { ok: false; reason: string }> {
+  ): Promise<{ ok: true; questionId: string } | { ok: false; reason: string }> {
     return this.mutate(projectPath, (project) => {
       const task = project.tasks.find((t) => t.id === taskId);
       if (!task) return { ok: false as const, reason: `Unknown task: ${taskId}` };
-      if (!task.questions.some((q) => q.runId === runId && q.text === text)) {
-        task.questions.push(createTaskQuestion(text, runId, opts));
-        task.updatedAt = nowIso();
-      }
-      return { ok: true as const };
+      const existing = task.questions.find((q) => q.runId === runId && q.text === text);
+      if (existing) return { ok: true as const, questionId: existing.id };
+      const question = createTaskQuestion(text, runId, opts);
+      task.questions.push(question);
+      task.updatedAt = nowIso();
+      return { ok: true as const, questionId: question.id };
     });
+  }
+
+  /**
+   * One question's answer, read outside the write queue (same read path as
+   * `snapshot`). `null` while the question is open — the permission broker
+   * polls this on board changes; `undefined` when the task/question is gone.
+   */
+  async questionAnswer(
+    projectPath: string,
+    taskId: string,
+    questionId: string,
+  ): Promise<string | null | undefined> {
+    const project = await this.loadProjectAt(projectPath).catch(() => null);
+    const question = project?.tasks
+      .find((t) => t.id === taskId)
+      ?.questions.find((q) => q.id === questionId);
+    if (!question) return undefined;
+    return question.answer ?? null;
   }
 
   /**

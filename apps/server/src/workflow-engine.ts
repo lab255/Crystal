@@ -258,6 +258,9 @@ export class WorkflowEngine {
      * Host the manager as a native interactive Claude session in the terminal
      * panel instead of a headless run — the owner answers its questions
      * (AskUserQuestion) right there, and steering messages are typed in live.
+     * DEFAULT when an interactive launcher is wired (a workspace with a
+     * terminal host); pass `false` explicitly for an unattended headless
+     * manager (the hub's cross-project dispatches always do).
      */
     interactive?: boolean;
   }): Promise<{ workflow: Workflow; run: AgentRun }> {
@@ -298,7 +301,10 @@ export class WorkflowEngine {
     });
 
     let run: AgentRun;
-    if (init.interactive && this.interactiveLauncher) {
+    // Interactive is the default wherever it is possible: the launcher is
+    // wired only when the workspace can host a PTY. Only an explicit
+    // `interactive: false` (unattended workflows, hub dispatches) opts out.
+    if (init.interactive !== false && this.interactiveLauncher) {
       const launched = await this.interactiveLauncher({
         ...params,
         prompt: buildWorkflowManagerPrompt(workflow, roster.agents, preset) + WORKFLOW_INTERACTIVE_NOTE,

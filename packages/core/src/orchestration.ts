@@ -174,13 +174,36 @@ export const MODEL_PRICING: readonly { match: string; pricing: ModelPricing }[] 
   { match: "opus", pricing: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 } },
   { match: "haiku", pricing: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 } },
   { match: "sonnet", pricing: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 } },
+  // OpenAI (Codex CLI runs). Rates as of 2026-08 ($0.875/Mtok in, $7/Mtok out
+  // after the mid-2026 halving; cached input at the standard 90% discount).
+  // OpenAI does not bill cache *writes* — cacheWrite = input keeps a stray
+  // cacheCreation count priced as plain input rather than at a phantom rate.
+  { match: "gpt-5.2-codex", pricing: { input: 0.875, output: 7, cacheRead: 0.0875, cacheWrite: 0.875 } },
+  { match: "gpt-5.2", pricing: { input: 0.875, output: 7, cacheRead: 0.0875, cacheWrite: 0.875 } },
+  { match: "codex", pricing: { input: 0.875, output: 7, cacheRead: 0.0875, cacheWrite: 0.875 } },
+  { match: "gpt", pricing: { input: 0.875, output: 7, cacheRead: 0.0875, cacheWrite: 0.875 } },
 ];
 
 const FALLBACK_PRICING: ModelPricing = { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 };
 
-export function pricingForModel(model: string | null | undefined): ModelPricing {
+/** Unknown *codex* models price at the GPT-5.2 tier, never as Sonnet. */
+const CODEX_FALLBACK_PRICING: ModelPricing = {
+  input: 0.875,
+  output: 7,
+  cacheRead: 0.0875,
+  cacheWrite: 0.875,
+};
+
+export function pricingForModel(
+  model: string | null | undefined,
+  provider?: string | null,
+): ModelPricing {
   const id = (model ?? "").toLowerCase();
-  return MODEL_PRICING.find((m) => id.includes(m.match))?.pricing ?? FALLBACK_PRICING;
+  const hit = MODEL_PRICING.find((m) => id.includes(m.match))?.pricing;
+  if (hit) return hit;
+  // The fallback is per-provider: a codex run whose model id we don't
+  // recognize must not be silently billed at Claude Sonnet rates.
+  return provider === "codex" ? CODEX_FALLBACK_PRICING : FALLBACK_PRICING;
 }
 
 /**
@@ -189,13 +212,19 @@ export function pricingForModel(model: string | null | undefined): ModelPricing 
  * estimation covers the rest. Every spend rollup (task, epic, workflow)
  * folds over this so the rule can never drift between them.
  */
-export function runCostUsd(run: Pick<AgentRun, "costUsd" | "model" | "usage">): number {
-  return run.costUsd ?? (run.usage ? estimateCostUsd(run.model, run.usage) : 0);
+export function runCostUsd(
+  run: Pick<AgentRun, "costUsd" | "model" | "usage"> & Partial<Pick<AgentRun, "provider">>,
+): number {
+  return run.costUsd ?? (run.usage ? estimateCostUsd(run.model, run.usage, run.provider) : 0);
 }
 
 /** Estimated $ for one run's usage at its model's prices. */
-export function estimateCostUsd(model: string | null | undefined, usage: AgentUsage): number {
-  const p = pricingForModel(model);
+export function estimateCostUsd(
+  model: string | null | undefined,
+  usage: AgentUsage,
+  provider?: string | null,
+): number {
+  const p = pricingForModel(model, provider);
   return (
     (usage.inputTokens * p.input +
       usage.outputTokens * p.output +

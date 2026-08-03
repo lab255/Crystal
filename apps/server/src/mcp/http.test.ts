@@ -50,6 +50,12 @@ function fakeRegistry(over: { dispatchWorker?: (runId: string, spec: WorkerSpec)
     workflows: {
       workflowForRun: async () => null,
     },
+    permissions: {
+      request: vi.fn(async (_runId: string, _tool: string, input: unknown) => ({
+        behavior: "allow" as const,
+        updatedInput: input as Record<string, unknown>,
+      })),
+    },
   };
   const registry = {
     get: (ws?: string) => {
@@ -104,6 +110,30 @@ describe("handleMcpRequest", () => {
     const { registry } = fakeRegistry();
     const rec = await post("/mcp/ws1/m1", { jsonrpc: "2.0", id: 0, method: "initialize", params: {} }, registry);
     expect(JSON.parse(rec.body).result.protocolVersion).toBe("2024-11-05");
+  });
+
+  it("routes request_permission through the workspace's permission broker", async () => {
+    const { registry } = fakeRegistry();
+    const rec = await post(
+      "/mcp/ws1/m1",
+      {
+        jsonrpc: "2.0",
+        id: 9,
+        method: "tools/call",
+        params: {
+          name: "request_permission",
+          arguments: { tool_name: "WebFetch", input: { url: "https://x" }, tool_use_id: "t1" },
+        },
+      },
+      registry,
+    );
+    const rt = (registry as unknown as { get(ws: string): { permissions: { request: unknown } } }).get("ws1");
+    expect(rt.permissions.request).toHaveBeenCalledWith("m1", "WebFetch", { url: "https://x" });
+    const reply = JSON.parse(rec.body);
+    expect(JSON.parse(reply.result.content[0].text)).toEqual({
+      behavior: "allow",
+      updatedInput: { url: "https://x" },
+    });
   });
 
   it("returns 202 with no body for a notification", async () => {

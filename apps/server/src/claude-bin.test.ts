@@ -2,7 +2,13 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { envWithBinDir, envWithToolchain, isBareName, resolveClaudeBin } from "./claude-bin.js";
+import {
+  claudeFallbackDirs,
+  envWithBinDir,
+  envWithToolchain,
+  isBareName,
+  resolveClaudeBin,
+} from "./claude-bin.js";
 
 const tmps: string[] = [];
 
@@ -98,6 +104,48 @@ describe("resolveClaudeBin", () => {
         shellLookup: noShell,
       }),
     ).toBe("claude");
+  });
+
+  it("covers the Windows installer, npm-global and version-manager homes", () => {
+    const home = "C:\\Users\\u";
+    const dirs = claudeFallbackDirs("win32", home, {
+      LOCALAPPDATA: "C:\\Users\\u\\AppData\\Local",
+      APPDATA: "C:\\Users\\u\\AppData\\Roaming",
+      PNPM_HOME: "D:\\pnpm",
+      VOLTA_HOME: "D:\\volta",
+    });
+    for (const expected of [
+      path.join(home, ".local", "bin"),
+      "C:\\Users\\u\\AppData\\Local\\Programs\\claude",
+      "C:\\Users\\u\\AppData\\Roaming\\npm",
+      "D:\\pnpm",
+      "C:\\Users\\u\\AppData\\Local\\pnpm",
+      path.join("D:\\volta", "bin"),
+      "C:\\Users\\u\\AppData\\Local\\Volta\\bin",
+      path.join(home, "scoop", "shims"),
+      "C:\\Users\\u\\AppData\\Local\\fnm\\aliases\\default",
+    ]) {
+      expect(dirs).toContain(expected);
+    }
+    // Env-derived entries degrade gracefully when the vars are absent — the
+    // list still probes the LOCALAPPDATA-default locations via the home dir.
+    const bare = claudeFallbackDirs("win32", home, {});
+    expect(bare).toContain(path.join(home, "AppData", "Local", "Programs", "claude"));
+    expect(bare).toContain(path.join(home, "scoop", "shims"));
+  });
+
+  it("finds a Windows install in a fallback dir when PATH misses", async () => {
+    const home = await tmpDir();
+    const programs = path.join(home, "AppData", "Local", "Programs", "claude");
+    await fs.mkdir(programs, { recursive: true });
+    const exe = await fakeBin(programs, "claude.exe");
+    const resolved = await resolveClaudeBin("claude", {
+      env: { Path: "C:\\nowhere" },
+      home,
+      platform: "win32",
+      shellLookup: noShell,
+    });
+    expect(resolved).toBe(exe);
   });
 
   it("never consults the login shell on Windows", async () => {

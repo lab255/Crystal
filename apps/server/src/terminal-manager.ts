@@ -8,6 +8,7 @@ import {
   type TerminalInfo,
   type TerminalStream,
 } from "@crystal/core";
+import { agentEnv, stripApiKey } from "./agent-manager.js";
 import { envWithToolchain } from "./claude-bin.js";
 import { resolveInRoot, toRelPath } from "./paths.js";
 
@@ -158,11 +159,18 @@ export class TerminalManager {
         // A command's env is COMPLETE, not a patch — merging over process.env
         // would resurrect keys the caller deliberately removed (the
         // child-session marker that disables transcript saving). Plain shells
-        // (no command) still get the project toolchain on PATH: a workspace
+        // (no command) get the project toolchain on PATH — a workspace
         // terminal where `pnpm`/`node` ENOENT is broken, whatever bare env a
-        // GUI-launched server inherited.
+        // GUI-launched server inherited — with the same two agent-spawn
+        // guards: no inherited child-session marker (a manual `claude` run
+        // here must still save transcripts / be resumable) and no leaked
+        // ANTHROPIC_API_KEY silently switching billing (CRYSTAL_ALLOW_API_KEY=1
+        // opts back in, same as agent spawns).
         env: (opts.command?.env ??
-          envWithToolchain(process.env, [cwdAbs, this.root])) as Record<string, string>,
+          envWithToolchain(agentEnv(stripApiKey(process.env)), [cwdAbs, this.root])) as Record<
+          string,
+          string
+        >,
       });
     } catch (err) {
       this.exit(record, null, `Failed to spawn ${file}: ${(err as Error).message}`);

@@ -544,3 +544,123 @@ describe("workflow tools", () => {
     expect(workflow.complete).toHaveBeenCalledWith("completed", "Shipped.");
   });
 });
+
+describe("McpDispatchServer permission + task-less ask tools", () => {
+  function permissionHarness(over: Partial<NonNullable<DispatchTools["permission"]>> = {}) {
+    const permission: NonNullable<DispatchTools["permission"]> = {
+      request: vi.fn(async (_tool: string, input: unknown) => ({
+        behavior: "allow" as const,
+        updatedInput: input as Record<string, unknown>,
+      })),
+      ...over,
+    };
+    const ask: NonNullable<DispatchTools["ask"]> = {
+      askQuestion: vi.fn(async () => ({ ok: true as const })),
+    };
+    return { server: new McpDispatchServer({ permission, ask }), permission, ask };
+  }
+
+  it("lists request_permission and the stream-only ask_question", async () => {
+    const { server } = permissionHarness();
+    const res = await server.handle({ jsonrpc: "2.0", id: 1, method: "tools/list" });
+    const names = (res?.result as { tools: { name: string }[] }).tools.map((t) => t.name);
+    expect(names).toEqual(["ask_question", "request_permission"]);
+  });
+
+  it("does not double-list ask_question when a board already carries it", async () => {
+    const board = {
+      snapshot: vi.fn(async () => ""),
+      taskDetail: vi.fn(async () => ""),
+      createEpic: vi.fn(),
+      createTask: vi.fn(),
+      claimTask: vi.fn(),
+      updateTask: vi.fn(),
+      releaseTask: vi.fn(),
+      askQuestion: vi.fn(async () => ({ ok: true as const })),
+      resolveQuestion: vi.fn(async () => ({ ok: true as const })),
+    } as unknown as NonNullable<DispatchTools["board"]>;
+    const ask = { askQuestion: vi.fn(async () => ({ ok: true as const })) };
+    const server = new McpDispatchServer({ board, ask });
+    const res = await server.handle({ jsonrpc: "2.0", id: 1, method: "tools/list" });
+    const names = (res?.result as { tools: { name: string }[] }).tools.map((t) => t.name);
+    expect(names.filter((n) => n === "ask_question")).toHaveLength(1);
+    // The board's implementation answers, not the stream-only fallback.
+    await server.handle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: { name: "ask_question", arguments: { question: "Which DB?" } },
+    });
+    expect(board.askQuestion).toHaveBeenCalled();
+    expect(ask.askQuestion).not.toHaveBeenCalled();
+  });
+
+  it("answers request_permission with the CLI's JSON contract in one text block", async () => {
+    const { server, permission } = permissionHarness();
+    const res = await server.handle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: {
+        name: "request_permission",
+        arguments: {
+          tool_name: "WebFetch",
+          input: { url: "https://x" },
+          tool_use_id: "toolu_1",
+        },
+      },
+    });
+    const content = (res?.result as { content: { type: string; text: string }[] }).content;
+    expect(content).toHaveLength(1);
+    expect(content[0]!.type).toBe("text");
+    expect(JSON.parse(content[0]!.text)).toEqual({
+      behavior: "allow",
+      updatedInput: { url: "https://x" },
+    });
+    expect(permission.request).toHaveBeenCalledWith("WebFetch", { url: "https://x" });
+  });
+
+  it("returns a JSON deny (never a JSON-RPC error) for malformed or failing requests", async () => {
+    const { server } = permissionHarness({
+      request: vi.fn(async () => {
+        throw new Error("broker exploded");
+      }),
+    });
+    const malformed = await server.handle({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "tools/call",
+      params: { name: "request_permission", arguments: {} },
+    });
+    expect(malformed?.error).toBeUndefined();
+    const deniedText = (malformed?.result as { content: { text: string }[] }).content[0]!.text;
+    expect(JSON.parse(deniedText).behavior).toBe("deny");
+
+    const failing = await server.handle({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "tools/call",
+      params: { name: "request_permission", arguments: { tool_name: "Bash" } },
+    });
+    expect(failing?.error).toBeUndefined();
+    const failText = (failing?.result as { content: { text: string }[] }).content[0]!.text;
+    expect(JSON.parse(failText)).toMatchObject({ behavior: "deny" });
+    expect(JSON.parse(failText).message).toContain("broker exploded");
+  });
+
+  it("routes ask_question to the stream-only fallback when no board/task surface exists", async () => {
+    const { server, ask } = permissionHarness();
+    const res = await server.handle({
+      jsonrpc: "2.0",
+      id: 5,
+      method: "tools/call",
+      params: { name: "ask_question", arguments: { question: "Deploy now?" } },
+    });
+    expect(ask.askQuestion).toHaveBeenCalledWith("Deploy now?", {
+      options: undefined,
+      recommended: undefined,
+    });
+    const text = (res?.result as { content: { text: string }[] }).content[0]!.text;
+    expect(text).toMatch(/no board task/);
+  });
+});

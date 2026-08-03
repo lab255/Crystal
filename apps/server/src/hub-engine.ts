@@ -114,6 +114,8 @@ export interface HubProjects {
       templateId?: string;
       budgetUsd?: number | null;
       runCapUsd?: number | null;
+      /** Hub dispatches always pass false — nobody sits at a delivery's terminal. */
+      interactive?: boolean;
     },
   ): Promise<Workflow>;
   /**
@@ -573,6 +575,11 @@ export class HubEngine {
             templateId: delivery.templateId ?? undefined,
             budgetUsd: delivery.budgetUsd,
             runCapUsd: delivery.runCapUsd,
+            // Workflow managers now default to interactive when the workspace
+            // can host a PTY — a dispatched delivery is unattended by
+            // construction, so opt out explicitly (headless stays steerable
+            // and, unlike a TUI, cost-cappable).
+            interactive: false,
           });
           program = patchDelivery(program, delivery.id, {
             ws: project.ws,

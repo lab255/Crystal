@@ -66,6 +66,41 @@ export interface DispatchTools {
   ownTask?: OwnTaskTools;
   /** Workflow control surface — present on a workflow's manager session. */
   workflow?: WorkflowTools;
+  /**
+   * The permission-prompt broker (`request_permission`) — present on every
+   * workspace-scoped run's endpoint so the CLI's `--permission-prompt-tool`
+   * always resolves.
+   */
+  permission?: PermissionTools;
+  /**
+   * Fallback ask surface for runs with neither a board nor a task: the
+   * question lands on the run's own stream (no board record), answerable by
+   * messaging the run. Ignored when `board`/`ownTask` already carry
+   * ask_question.
+   */
+  ask?: AskTools;
+}
+
+/**
+ * The CLI's permission-prompt contract (verified against CLI 2.1.220): it
+ * calls the tool with `{tool_name, input, tool_use_id}` and parses the single
+ * returned text block as JSON — `{"behavior":"allow","updatedInput":{…}}` or
+ * `{"behavior":"deny","message":"…"}`. The server half lives in
+ * permission-broker.ts; this interface is just its MCP face.
+ */
+export interface PermissionTools {
+  request(
+    toolName: string,
+    input: unknown,
+  ): Promise<
+    | { behavior: "allow"; updatedInput?: Record<string, unknown> }
+    | { behavior: "deny"; message: string }
+  >;
+}
+
+/** Stream-only ask for task-less runs (see DispatchTools.ask). */
+export interface AskTools {
+  askQuestion(text: string, ask?: AskOptions): Promise<{ ok: true } | { ok: false; reason: string }>;
 }
 
 /**
@@ -428,6 +463,32 @@ const RESOLVE_QUESTION_TOOL = {
   },
 } as const;
 
+const REQUEST_PERMISSION_TOOL = {
+  name: "request_permission",
+  description:
+    "Internal: the Claude CLI's permission-prompt broker (--permission-prompt-tool). " +
+    "Do not call this yourself — when a tool needs approval the CLI invokes it " +
+    "automatically. To escalate a decision to the human owner, use ask_question.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      tool_name: { type: "string", description: "The tool awaiting permission." },
+      input: { type: "object", description: "The tool call's input." },
+      tool_use_id: { type: "string", description: "The originating tool_use id." },
+    },
+    required: ["tool_name"],
+    additionalProperties: true,
+  },
+} as const;
+
+const RequestPermissionArgs = z
+  .object({
+    tool_name: z.string().min(1),
+    input: z.unknown().optional(),
+    tool_use_id: z.string().optional(),
+  })
+  .passthrough();
+
 const MY_TASK_TOOL = {
   name: "my_task",
   description:
@@ -649,6 +710,10 @@ export class McpDispatchServer {
           ...(this.tools.workflow ? WORKFLOW_TOOLS : []),
           ...(this.tools.board ? BOARD_TOOLS : []),
           ...(this.tools.ownTask ? OWN_TASK_TOOLS : []),
+          ...(this.tools.ask && !this.tools.board && !this.tools.ownTask
+            ? [ASK_QUESTION_TOOL]
+            : []),
+          ...(this.tools.permission ? [REQUEST_PERMISSION_TOOL] : []),
         ];
         // ask_question rides both the board and ownTask groups — list it once.
         return rpcOk(id, {
@@ -717,6 +782,34 @@ export class McpDispatchServer {
         return toolError(id, `worker_result failed: ${(err as Error).message}`);
       }
     }
+    const permission = this.tools.permission;
+    if (permission && name === "request_permission") {
+      const a = RequestPermissionArgs.safeParse(args ?? {});
+      // The reply must ALWAYS be the JSON contract in a text block — a
+      // JSON-RPC error here would read to the CLI as an unparseable prompt
+      // result, and the underlying tool call dies with a worse message.
+      if (!a.success) {
+        return toolText(
+          id,
+          JSON.stringify({
+            behavior: "deny",
+            message: `Malformed permission request: ${a.error.issues.map((i) => i.message).join("; ")}`,
+          }),
+        );
+      }
+      try {
+        const decision = await permission.request(a.data.tool_name, a.data.input ?? {});
+        return toolText(id, JSON.stringify(decision));
+      } catch (err) {
+        return toolText(
+          id,
+          JSON.stringify({
+            behavior: "deny",
+            message: `Permission broker failed: ${(err as Error).message}`,
+          }),
+        );
+      }
+    }
     const workflow = this.tools.workflow;
     if (workflow && WORKFLOW_TOOLS.some((t) => t.name === name)) {
       return this.callWorkflowTool(workflow, id, name!, args);
@@ -728,6 +821,26 @@ export class McpDispatchServer {
     const board = this.tools.board;
     if (board && BOARD_TOOLS.some((t) => t.name === name)) {
       return this.callBoardTool(board, id, name!, args);
+    }
+    const ask = this.tools.ask;
+    if (ask && name === "ask_question") {
+      const a = AskQuestionArgs.safeParse(args ?? {});
+      if (!a.success) return invalidArgs(id, name, a.error);
+      try {
+        const result = await ask.askQuestion(a.data.question, {
+          options: a.data.options,
+          recommended: a.data.recommended,
+        });
+        return result.ok
+          ? toolText(
+              id,
+              "Question noted on this run's stream (this run has no board task). " +
+                "The owner answers by messaging the run — keep working what you can.",
+            )
+          : toolError(id, result.reason);
+      } catch (err) {
+        return toolError(id, `ask_question failed: ${(err as Error).message}`);
+      }
     }
     return rpcFail(id, McpRpcError.MethodNotFound, `Unknown tool: ${name ?? "(none)"}`);
   }

@@ -47,6 +47,14 @@ export function agentEventToChunk(event: AgentEvent): AgentEventChunk | null {
       return event.message ? { stream: "system", text: `${event.message}\n` } : null;
     case "question":
       return { stream: "system", text: `? ${event.text} (answer from the task on the board)\n` };
+    case "permission":
+      return {
+        stream: "system",
+        text:
+          event.state === "pending"
+            ? `⏳ permission requested: ${event.detail ?? event.tool} (grant it in the Agents tab or answer on the task)\n`
+            : `${event.state === "allowed" ? "✔" : "✖"} permission ${event.state}: ${event.detail ?? event.tool}\n`,
+      };
     case "dispatch":
       return { stream: "system", text: `⑂ dispatch worker: ${event.spec.prompt.split("\n")[0]}\n` };
     case "init":

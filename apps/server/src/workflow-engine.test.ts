@@ -249,6 +249,26 @@ describe("WorkflowEngine", () => {
     expect(launched[0]!.tags).toContain(workflowTag(workflow.id));
   });
 
+  it("defaults to interactive when a launcher is wired; interactive:false opts out", async () => {
+    const { agents, engine } = makeEngine();
+    let launches = 0;
+    engine.interactiveLauncher = async (params) => {
+      launches += 1;
+      const run = createAgentRun({ prompt: params.prompt, role: "manager", tags: params.tags });
+      run.status = "running";
+      run.terminalId = "term_wf";
+      return { run, terminal: { id: "term_wf" } };
+    };
+    // No `interactive` field at all → the launcher hosts the manager.
+    await engine.start({ name: "Default", goal: "g" });
+    expect(launches).toBe(1);
+    expect(agents.started).toHaveLength(0);
+    // The explicit opt-out stays headless (unattended workflows, hub dispatches).
+    await engine.start({ name: "Unattended", goal: "g", interactive: false });
+    expect(launches).toBe(1);
+    expect(agents.started).toHaveLength(1);
+  });
+
   it("messages queue while the manager is live and deliver on settlement", async () => {
     const { agents, engine } = makeEngine();
     const { workflow, run } = await engine.start({ name: "W", goal: "g" });

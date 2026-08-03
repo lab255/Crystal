@@ -313,3 +313,37 @@ machinery rather than a parallel system:
 - Per-dispatch override: `workflow.start` gained `managerModel` (start-panel
   select, "Manager: <model>"), and `dispatch_worker`'s existing
   `model`/`agentId` fields are unchanged.
+
+## Codex provider (OpenAI Codex CLI)
+
+A profile may set `provider: "codex"` (Agents tab → Provider) to execute on
+the OpenAI Codex CLI instead of Claude Code. Install expectations: a `codex`
+binary on PATH (or `CRYSTAL_CODEX_BIN`), authenticated via ChatGPT login or
+`OPENAI_API_KEY` — agent spawns strip `ANTHROPIC_API_KEY` but deliberately
+keep `OPENAI_API_KEY`.
+
+What works:
+- **Headless runs**: `codex exec --json` with the prompt on stdin; the JSONL
+  thread events are normalized into the same `AgentEvent` stream Claude runs
+  emit (`CodexStreamParser` in core), so transcripts, cost rollups and cost
+  caps behave identically. Usage is estimated at OpenAI rates (per-provider
+  pricing fallback — an unknown codex model never bills as Sonnet).
+- **Resume**: the thread id rides `run.sessionId`; queued deliveries resume
+  the chain via `codex exec resume <id>`.
+- **Interactive**: the native codex TUI on a workspace PTY. Its own approval
+  prompts are the permission surface; Crystal's permission modes map onto
+  codex sandbox levels (`read-only` / `workspace-write` /
+  `danger-full-access`, the last still gated by the workspace bypass flag).
+- **Multi-agent handoff**: `agent.handoff` takes `targetAgentId` — the
+  summarize-and-reseed mechanism makes cross-vendor handoff safe (a Claude
+  chain's digest seeds a fresh codex session, or vice versa). The failure
+  banner offers a "hand off to" picker when the roster has other profiles.
+
+What degrades (visible, never crashing):
+- No MCP: the codex CLI takes no per-run mcp-config, so board tools
+  (`dispatch_worker`, `my_task`, `request_permission`) are absent — the
+  CRYSTAL_QUESTION / CRYSTAL_DISPATCH line protocols still work, so codex
+  runs can ask questions and managers should stay on Claude for now.
+- Interactive codex chains are not headlessly resumable after their terminal
+  closes (no `--session-id` equivalent; the TUI never reveals its thread id),
+  and there is no `~/.claude`-style transcript to harvest usage from.

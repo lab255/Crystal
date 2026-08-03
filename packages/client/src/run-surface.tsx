@@ -19,11 +19,15 @@ import {
   formatResetsAt,
   runFailureHint,
   usageTotalTokens,
+  type AgentProfile,
   type AgentRun,
   type MergePreviewResult,
   type MergeResult,
   type RunEvent,
 } from "@crystal/core";
+
+// zustand v5: selectors must return stable references.
+const EMPTY_PROFILES: AgentProfile[] = [];
 import {
   Badge,
   Button,
@@ -31,6 +35,7 @@ import {
   DialogClose,
   DialogContent,
   Input,
+  Select,
   Spinner,
   StatusDot,
   Tooltip,
@@ -42,7 +47,7 @@ import { parseUnifiedDiff, type FileDiff } from "./diff.js";
 import { InteractiveRunBanner } from "./interactive-banner.js";
 import { InteractiveRunTerminal } from "./run-terminal.js";
 import { MessageComposer, type ComposerSendResult } from "./message-composer.js";
-import { useAgents, useCrystal } from "./provider.js";
+import { useAgents, useCrystal, useWorkspace } from "./provider.js";
 import {
   RunTranscript,
   formatRunCost,
@@ -234,13 +239,20 @@ function FailureBanner({ run }: { run: AgentRun }) {
   // Selector-level find: returns an existing run object (stable reference),
   // so unrelated stream events don't re-render the banner.
   const successor = useAgents((s) => s.runs.find((r) => r.handoffFromRunId === run.id) ?? null);
+  const rosterAgents = useWorkspace((s) => s.roster?.agents ?? EMPTY_PROFILES);
   const [busy, setBusy] = useState(false);
+  // "" = same profile (classic fresh-session handoff); an id = multi-agent
+  // handoff — the continuation runs as that profile, vendor and all.
+  const [targetId, setTargetId] = useState("");
   const failure = run.failure!;
 
   async function handoff(): Promise<void> {
     setBusy(true);
     try {
-      await client.request("agent.handoff", { runId: run.id });
+      await client.request("agent.handoff", {
+        runId: run.id,
+        targetAgentId: targetId || null,
+      });
     } finally {
       setBusy(false);
     }
@@ -264,10 +276,31 @@ function FailureBanner({ run }: { run: AgentRun }) {
           successor ? (
             <Badge tone="cyan">handed off → {successor.id.slice(0, 10)}</Badge>
           ) : (
-            <Button variant="primary" size="xs" disabled={busy} onClick={() => void handoff()}>
-              {busy ? <Spinner className="h-3 w-3" /> : <Sparkles className="h-3 w-3" />}
-              Hand off to fresh session
-            </Button>
+            <span className="flex shrink-0 items-center gap-1.5">
+              {rosterAgents.length > 1 ? (
+                <Select
+                  size="sm"
+                  value={targetId}
+                  onChange={(e) => setTargetId(e.target.value)}
+                  aria-label="Hand off to agent"
+                  className="max-w-40"
+                >
+                  <option value="">Same agent</option>
+                  {rosterAgents
+                    .filter((a) => a.id !== run.agentId)
+                    .map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.name}
+                        {a.provider === "codex" ? " (codex)" : ""}
+                      </option>
+                    ))}
+                </Select>
+              ) : null}
+              <Button variant="primary" size="xs" disabled={busy} onClick={() => void handoff()}>
+                {busy ? <Spinner className="h-3 w-3" /> : <Sparkles className="h-3 w-3" />}
+                Hand off
+              </Button>
+            </span>
           )
         ) : failure.kind === "usage_limit" && failure.resetsAt ? (
           <Badge tone="amber">resets {formatResetsAt(failure.resetsAt)}</Badge>

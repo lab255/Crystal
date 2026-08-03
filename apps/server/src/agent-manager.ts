@@ -15,6 +15,7 @@ import {
   isWorkflowTag,
   nowIso,
   parseClaudeStreamLine,
+  CodexStreamParser,
   promptHeadline,
   runCostUsd,
   runFailureHint,
@@ -25,6 +26,7 @@ import {
   type AgentIsolation,
   type AgentPermissionMode,
   type AgentProfileOverlay,
+  type AgentProvider,
   type AgentRole,
   type AgentRun,
   type AskOptions,
@@ -34,7 +36,9 @@ import {
   type WorkerSpec,
 } from "@crystal/core";
 import { envWithBinDir, envWithToolchain, resolveClaudeBin } from "./claude-bin.js";
+import { codexExecArgs, codexInteractiveArgs, resolveCodexBin } from "./codex.js";
 import { runGit } from "./git.js";
+import { HUB_MCP_ID } from "./mcp/http.js";
 import { exists, resolveInRoot } from "./paths.js";
 import { PendingQueue } from "./pending-queue.js";
 import { killProcessTree } from "./process-tree.js";
@@ -74,7 +78,9 @@ export interface AgentStartParams {
   role?: AgentRole | null;
   purpose?: RunPurpose | null;
   tags?: string[];
-  /** Claude model alias/id for `--model` (from the dispatched agent profile). */
+  /** CLI vendor for this run (from the profile); null/absent = claude. */
+  provider?: AgentProvider | null;
+  /** Model alias/id for `--model` (from the dispatched agent profile). */
   model?: string | null;
   /** Skill names woven into the prompt (from the dispatched agent profile). */
   skills?: string[];
@@ -116,6 +122,7 @@ export interface InteractiveStartParams {
   role?: AgentRole | null;
   purpose?: RunPurpose | null;
   tags?: string[];
+  provider?: AgentProvider | null;
   model?: string | null;
   skills?: string[];
   appendSystemPrompt?: string | null;
@@ -277,7 +284,7 @@ function winShellQuote(arg: string): string {
  * `Bash(git *)`: everything outward-facing (push, publish, remote, clone)
  * and history-destroying (reset, clean) stays gated behind a human.
  */
-const ALLOWED_RUN_TOOLS = [
+export const ALLOWED_RUN_TOOLS = [
   "Bash(git status*)",
   "Bash(git add *)",
   "Bash(git commit *)",
@@ -313,6 +320,17 @@ const ALLOWED_RUN_TOOLS = [
 ] as const;
 
 /**
+ * The MCP tool headless runs are told to route permission prompts through
+ * (`--permission-prompt-tool`). Served by the workspace dispatch endpoint
+ * (mcp/dispatch-mcp.ts `request_permission`), brokered server-side against
+ * the grants ledger (permission-broker.ts). Confirmed contract (CLI 2.1.220):
+ * the CLI calls the tool with `{tool_name, input, tool_use_id}` and expects a
+ * single text content block whose text is a JSON
+ * `{"behavior":"allow","updatedInput":{…}}` or `{"behavior":"deny","message":"…"}`.
+ */
+export const PERMISSION_PROMPT_TOOL = "mcp__crystal__request_permission";
+
+/**
  * The Claude CLI argv for one run. When an mcp-config rides along, the
  * crystal server's tools are pre-allowed: headless (-p) runs have no one to
  * answer permission prompts, so without this every `mcp__crystal__*` call is
@@ -332,6 +350,12 @@ export function claudeRunArgs(opts: {
   disallowedTools?: string[] | null;
   /** Replaces the default acceptEdits when set. */
   permissionMode?: AgentPermissionMode | null;
+  /**
+   * MCP tool the CLI routes permission prompts to (`--permission-prompt-tool`,
+   * print-mode only). Only meaningful with an mcp-config that actually serves
+   * the tool — the CLI refuses to start when the named tool doesn't exist.
+   */
+  permissionPromptTool?: string | null;
 }): string[] {
   const args = [
     "-p",
@@ -350,6 +374,9 @@ export function claudeRunArgs(opts: {
     // servers only — login, hooks and other settings stay active. Interactive
     // sessions keep the owner's own MCP setup (they are at the terminal).
     args.push("--mcp-config", opts.mcpConfigPath, "--strict-mcp-config");
+    if (opts.permissionPromptTool) {
+      args.push("--permission-prompt-tool", opts.permissionPromptTool);
+    }
   }
   if (opts.appendSystemPrompt) args.push("--append-system-prompt", opts.appendSystemPrompt);
   const allowed = [
@@ -473,6 +500,8 @@ export class AgentManager {
   /** Set by disposeAll (workspace close): no new spawns from this manager. */
   private disposed = false;
   private resolvedBin: string | null = null;
+  private resolvedCodexBin: string | null = null;
+  private readonly codexBin = process.env.CRYSTAL_CODEX_BIN ?? "codex";
   /**
    * Worker-settlement notices queued per manager chain root, delivered by
    * resuming the manager's session as soon as no chain run is live. This is
@@ -622,7 +651,24 @@ export class AgentManager {
    * bare name survives, and the spawn surfaces a failed run, not a crash.
    */
   private async claudePath(): Promise<string> {
-    return (this.resolvedBin ??= await resolveClaudeBin(this.claudeBin));
+    if (!this.resolvedBin) {
+      this.resolvedBin = await resolveClaudeBin(this.claudeBin);
+      // One line per manager lifetime: the resolved path is the difference
+      // between diagnosing "spawn claude ENOENT" in seconds and in hours.
+      console.log(`[crystal] claude CLI: "${this.claudeBin}" resolved to "${this.resolvedBin}"`);
+    }
+    return this.resolvedBin;
+  }
+
+  /** Same ladder for the OpenAI Codex CLI (codex-provider profiles). */
+  private async codexPath(): Promise<string> {
+    if (!this.resolvedCodexBin) {
+      this.resolvedCodexBin = await resolveCodexBin(this.codexBin);
+      console.log(
+        `[crystal] codex CLI: "${this.codexBin}" resolved to "${this.resolvedCodexBin}"`,
+      );
+    }
+    return this.resolvedCodexBin;
   }
 
   /**
@@ -753,6 +799,11 @@ export class AgentManager {
     // as prepareInteractive.
     run.model = params.model ?? null;
     let cwdAbs = resolveInRoot(this.root, params.cwd ?? ".");
+    // The requested cwd in the real repo, before any worktree redirect. A
+    // worktree has no node_modules/.bin of its own, so the spawn env must
+    // also reach the ORIGINAL package's toolchain — for a sub-package cwd
+    // that is neither the worktree nor the workspace root.
+    const repoCwdAbs = cwdAbs;
 
     this.runs.set(run.id, run);
     this.indexTags(run);
@@ -786,28 +837,55 @@ export class AgentManager {
       }
     }
 
-    // Managers get dispatch + board tools; any run attached to a board task
-    // (workers, task runs from the board) gets the self-service task tools.
-    // The endpoint scopes the toolset by the run's role (see mcp/http.ts).
+    // Workspace-scoped headless runs ALWAYS get an mcp-config: beyond the
+    // role-scoped toolsets (managers: dispatch + board; task runs: my_task),
+    // the endpoint serves `request_permission` — the permission-prompt broker
+    // that lets a `-p` run ask instead of silently failing an ungranted tool
+    // — and `ask_question` for every run. The hub's manager keeps the old
+    // manager/task gate: its endpoint (mcp/hub-mcp.ts) has neither tool, and
+    // a bare /mcp/hub config on a plain run (handoff summarizer) would expose
+    // the whole external portfolio surface to it.
+    const hubScoped = this.mcp?.scope === HUB_MCP_ID;
+    const provider = params.provider === "codex" ? "codex" : "claude";
+    // Codex consumes no Claude-format mcp-config and has no permission-prompt
+    // flag — its sandbox IS its permission model (codexSandboxArgs); board
+    // questions still work via the CRYSTAL_QUESTION line protocol the parser
+    // extracts from agent messages.
     const mcpConfig =
-      run.role === "manager" || run.taskId ? await this.writeMcpConfig(run.id) : null;
+      provider === "codex"
+        ? null
+        : !hubScoped || run.role === "manager" || run.taskId
+          ? await this.writeMcpConfig(run.id)
+          : null;
     // Workspace grants ride every spawn, additively — an approval recorded in
     // the ledger applies to the next run without touching profiles.
     const granted = (await this.grantsResolver?.().catch(() => [])) ?? [];
-    const args = claudeRunArgs({
-      model: params.model,
-      resumeSessionId: params.resumeSessionId,
-      mcpConfigPath: mcpConfig,
-      appendSystemPrompt: params.appendSystemPrompt,
-      allowedTools: granted.length
-        ? [...(params.allowedTools ?? []), ...granted]
-        : params.allowedTools,
-      disallowedTools: params.disallowedTools,
-      permissionMode: await this.gatedPermissionMode(run, params.permissionMode),
-    });
+    const permissionMode = await this.gatedPermissionMode(run, params.permissionMode);
+    const args =
+      provider === "codex"
+        ? codexExecArgs({
+            model: params.model,
+            resumeSessionId: params.resumeSessionId,
+            permissionMode,
+          })
+        : claudeRunArgs({
+            model: params.model,
+            resumeSessionId: params.resumeSessionId,
+            mcpConfigPath: mcpConfig,
+            appendSystemPrompt: params.appendSystemPrompt,
+            allowedTools: granted.length
+              ? [...(params.allowedTools ?? []), ...granted]
+              : params.allowedTools,
+            disallowedTools: params.disallowedTools,
+            permissionMode,
+            // Only where the endpoint actually serves the tool — the CLI validates
+            // the name against the MCP config at startup and refuses to run.
+            permissionPromptTool: mcpConfig && !hubScoped ? PERMISSION_PROMPT_TOOL : null,
+          });
 
-    const claudeBin = await this.claudePath();
-    const plan = planClaudeSpawn(claudeBin, args);
+    const binName = provider === "codex" ? this.codexBin : this.claudeBin;
+    const bin = provider === "codex" ? await this.codexPath() : await this.claudePath();
+    const plan = planClaudeSpawn(bin, args);
     let child: ChildProcessWithoutNullStreams;
     try {
       child = spawn(plan.file, plan.args, {
@@ -821,14 +899,20 @@ export class AgentManager {
         // The project toolchain rides along too: the agent's own commands
         // (pnpm/node/node_modules/.bin) must resolve from the run's cwd and
         // the workspace root, wherever the server was launched from.
+        // claudeSpawnEnv strips only ANTHROPIC_API_KEY — a codex spawn keeps
+        // its OPENAI_API_KEY (that is a legitimate way to run the Codex CLI).
         env: envWithBinDir(
-          envWithToolchain(agentEnv(claudeSpawnEnv(process.env)), [cwdAbs, this.root]),
-          claudeBin,
+          envWithToolchain(agentEnv(claudeSpawnEnv(process.env)), [
+            cwdAbs,
+            repoCwdAbs,
+            this.root,
+          ]),
+          bin,
         ),
         stdio: ["pipe", "pipe", "pipe"],
       });
     } catch (err) {
-      return this.finish(run, "failed", `Failed to spawn ${this.claudeBin}: ${(err as Error).message}`);
+      return this.finish(run, "failed", `Failed to spawn ${binName}: ${(err as Error).message}`);
     }
 
     this.procs.set(run.id, { child, cancelled: false });
@@ -838,9 +922,9 @@ export class AgentManager {
     // an unhandled 'error' event kills the whole server — this is exactly
     // how the desktop bridge used to die on agent.start.
     child.on("error", (err) => {
-      void this.finish(run, "failed", `Failed to spawn ${this.claudeBin}: ${err.message}`);
+      void this.finish(run, "failed", `Failed to spawn ${binName}: ${err.message}`);
     });
-    // Claude exiting before the prompt flushes (instant CLI startup errors)
+    // The CLI exiting before the prompt flushes (instant startup errors)
     // EPIPEs stdin; without a listener that is fatal too. 'close' settles.
     child.stdin.on("error", (err) => {
       this.record(run, { type: "stderr", text: `stdin: ${err.message}` });
@@ -848,11 +932,16 @@ export class AgentManager {
 
     const stdout = new LineBuffer(MAX_STREAM_LINE_BYTES);
     const stderr = new LineBuffer(MAX_STREAM_LINE_BYTES);
+    // Codex streams a different JSONL vocabulary — one stateful parser per
+    // run normalizes it into the same AgentEvent union Claude's parser emits.
+    const codexParser = provider === "codex" ? new CodexStreamParser() : null;
+    const parseLine = (line: string) =>
+      codexParser ? codexParser.push(line) : parseClaudeStreamLine(line);
 
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => {
       for (const line of stdout.push(chunk)) {
-        for (const event of parseClaudeStreamLine(line)) this.record(run, event);
+        for (const event of parseLine(line)) this.record(run, event);
       }
     });
 
@@ -865,7 +954,7 @@ export class AgentManager {
 
     child.on("close", (code) => {
       for (const line of stdout.flush()) {
-        for (const event of parseClaudeStreamLine(line)) this.record(run, event);
+        for (const event of parseLine(line)) this.record(run, event);
       }
       const proc = this.procs.get(run.id);
       // finish() always runs on close: it records the terminal status event and
@@ -876,7 +965,7 @@ export class AgentManager {
         : code === 0
           ? "completed"
           : "failed";
-      void this.finish(run, fallback, run.resultText ?? `claude exited with code ${code}`);
+      void this.finish(run, fallback, run.resultText ?? `${binName} exited with code ${code}`);
     });
 
     // Prompt goes over stdin — no shell quoting of user text, ever. Specialist
@@ -925,31 +1014,43 @@ export class AgentManager {
     const presetModel = await this.presetModelFor(params);
     if (presetModel) params = { ...params, model: presetModel };
     const run = createAgentRun(params);
+    const provider = params.provider === "codex" ? "codex" : "claude";
     // A known session id (--session-id) keeps the chain resumable headlessly
-    // once the terminal closes — the TUI emits no stream-json to learn it from.
-    run.sessionId = randomUUID();
+    // once the terminal closes — the TUI emits no stream-json to learn it
+    // from. Codex has no such flag: its thread id is never learnable from the
+    // TUI, so an interactive codex chain is not headlessly resumable after
+    // its terminal exits (recorded on the run by the null sessionId).
+    if (provider !== "codex") run.sessionId = randomUUID();
     run.model = params.model ?? null;
     this.runs.set(run.id, run);
     this.indexTags(run);
     this.runEvents.set(run.id, []);
 
     const mcpConfig =
-      run.role === "manager" || run.taskId ? await this.writeMcpConfig(run.id) : null;
+      provider !== "codex" && (run.role === "manager" || run.taskId)
+        ? await this.writeMcpConfig(run.id)
+        : null;
     // Same grants injection as headless spawns — the ledger is workspace
     // policy, and an interactive session is still an agent run.
     const grantedInteractive = (await this.grantsResolver?.().catch(() => [])) ?? [];
-    const args = claudeInteractiveArgs({
-      model: params.model,
-      sessionId: run.sessionId,
-      mcpConfigPath: mcpConfig,
-      appendSystemPrompt: params.appendSystemPrompt,
-      allowedTools: grantedInteractive.length
-        ? [...(params.allowedTools ?? []), ...grantedInteractive]
-        : params.allowedTools,
-      disallowedTools: params.disallowedTools,
-      permissionMode: await this.gatedPermissionMode(run, params.permissionMode),
-    });
-    const claudeBin = await this.claudePath();
+    const args =
+      provider === "codex"
+        ? codexInteractiveArgs({
+            model: params.model,
+            permissionMode: await this.gatedPermissionMode(run, params.permissionMode),
+          })
+        : claudeInteractiveArgs({
+            model: params.model,
+            sessionId: run.sessionId!,
+            mcpConfigPath: mcpConfig,
+            appendSystemPrompt: params.appendSystemPrompt,
+            allowedTools: grantedInteractive.length
+              ? [...(params.allowedTools ?? []), ...grantedInteractive]
+              : params.allowedTools,
+            disallowedTools: params.disallowedTools,
+            permissionMode: await this.gatedPermissionMode(run, params.permissionMode),
+          });
+    const bin = provider === "codex" ? await this.codexPath() : await this.claudePath();
 
     let prompt = params.prompt;
     if (params.skills?.length) {
@@ -959,14 +1060,14 @@ export class AgentManager {
 
     return {
       run: { ...run },
-      file: claudeBin,
+      file: bin,
       args,
       env: envWithBinDir(
         envWithToolchain(agentEnv(stripApiKey(process.env)), [
           resolveInRoot(this.root, run.cwd ?? "."),
           this.root,
         ]),
-        claudeBin,
+        bin,
       ),
       cwd: run.cwd,
       prompt,
@@ -1038,6 +1139,9 @@ export class AgentManager {
    */
   private async harvestInteractiveUsage(run: AgentRun): Promise<boolean> {
     if (!run.sessionId) return false;
+    // Codex writes no ~/.claude transcript — nothing to harvest, and absence
+    // must not be read as "the session never existed".
+    if (run.provider === "codex") return true;
     try {
       const projectsDir = path.join(os.homedir(), ".claude", "projects");
       const name = `${run.sessionId}.jsonl`;
@@ -1326,6 +1430,9 @@ export class AgentManager {
           resumeSessionId: session,
           resumedFromRunId: latest.id,
           agentId: root.agentId,
+          // A resumed turn re-enters the SAME session — it must stay on the
+          // chain's CLI vendor (codex resumes via `codex exec resume`).
+          provider: latest.provider ?? root.provider ?? null,
           // Resumed turns stay on the chain's model — the CLI would otherwise
           // fall back to its configured default mid-conversation.
           model: latest.model ?? root.model ?? null,
@@ -1387,7 +1494,7 @@ export class AgentManager {
    * Returns the continuation run (the summarizer run is tracked but not
    * returned — it exists to be billed and inspectable, not followed).
    */
-  async handoff(runId: string): Promise<AgentRun> {
+  async handoff(runId: string, opts: { targetAgentId?: string | null } = {}): Promise<AgentRun> {
     await this.ensureLoaded();
     const rootId = chainRootId(runId, this.runs);
     if (this.chainLive(rootId)) {
@@ -1433,21 +1540,31 @@ export class AgentManager {
 
     // A fresh session is a fresh set of CLI invocations — the chain's profile
     // policy (standing prompt, tool rules) must ride along or fall off here.
-    const overlay = root.agentId
-      ? await this.profileResolver?.(root.agentId).catch(() => null)
+    // A TARGET profile reroutes the continuation to a different agent —
+    // possibly a different CLI vendor entirely; the summarize-and-reseed shape
+    // is exactly what makes that safe (no session continuity is assumed).
+    const targetId = opts.targetAgentId ?? root.agentId ?? null;
+    const overlay = targetId
+      ? await this.profileResolver?.(targetId).catch(() => null)
       : null;
+    const retargeted = Boolean(opts.targetAgentId && opts.targetAgentId !== root.agentId);
+    if (opts.targetAgentId && !overlay) {
+      throw new Error(`Unknown agent profile: ${opts.targetAgentId}`);
+    }
     const continuation = await this.start({
       prompt:
-        `${root.prompt}\n\n---\n[Context handoff] A previous session worked on this task until its ` +
-        `context filled up. Its handoff note:\n\n${summary}\n\n` +
+        `${root.prompt}\n\n---\n[Context handoff] A previous session worked on this task` +
+        (retargeted ? " and it is now being handed to you" : " until its context filled up") +
+        `. Its handoff note:\n\n${summary}\n\n` +
         `Continue from where it left off. Verify the current state (files, git status) before ` +
         `redoing anything — work may already be complete on disk.`,
       cwd: root.cwd,
       taskId: root.taskId,
       projectId: root.projectId,
       repoId: root.repoId,
-      agentId: root.agentId,
-      model: latest.model ?? root.model ?? null,
+      agentId: targetId,
+      provider: retargeted ? (overlay?.provider ?? null) : (latest.provider ?? root.provider ?? null),
+      model: retargeted ? (overlay?.model ?? null) : (latest.model ?? root.model ?? null),
       appendSystemPrompt: overlay?.appendPrompt ?? null,
       allowedTools: overlay?.allowedTools,
       disallowedTools: overlay?.disallowedTools,
@@ -1564,6 +1681,19 @@ export class AgentManager {
       ...(ask?.options?.length ? { options: ask.options } : {}),
       ...(ask?.recommended ? { recommended: ask.recommended } : {}),
     });
+  }
+
+  /**
+   * Surface a permission-broker state change on the run's live event stream
+   * (pending → the UI shows "run X wants tool Y"; allowed/denied closes it).
+   */
+  notePermission(
+    runId: string,
+    event: { tool: string; state: "pending" | "allowed" | "denied"; detail?: string },
+  ): void {
+    const run = this.runs.get(runId);
+    if (!run) return;
+    this.record(run, { type: "permission", ...event });
   }
 
   /** True while any live run carries `tag` — no copy, no sort, early exit. */

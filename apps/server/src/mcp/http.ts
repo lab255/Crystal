@@ -103,6 +103,23 @@ export async function handleMcpRequest(
   // A manager run tagged `workflow:<id>` also drives its workflow record.
   const workflow = isManager && run ? await rt.workflows.workflowForRun(run) : null;
   const server = new McpDispatchServer({
+    // Every workspace-scoped run can broker permission prompts — the spawn
+    // passes `--permission-prompt-tool mcp__crystal__request_permission`, and
+    // the CLI refuses to start if the tool is missing from the endpoint.
+    permission: run
+      ? { request: (toolName, input) => rt.permissions.request(runId, toolName, input) }
+      : undefined,
+    // Task-less, non-manager runs still get ask_question: stream-only (no
+    // board task to attach to), answered by messaging the run.
+    ask:
+      run && !isManager && !run.taskId
+        ? {
+            askQuestion: async (text, ask) => {
+              rt.agents.noteQuestion(runId, text, ask);
+              return { ok: true as const };
+            },
+          }
+        : undefined,
     workflow: workflow
       ? {
           status: () => rt.workflows.statusText(workflow.id),

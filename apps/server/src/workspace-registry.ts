@@ -21,7 +21,8 @@ import {
   type ModelPreset,
 } from "@crystal/core";
 import { AgentLibrary, GlobalAgentStore } from "./agent-library.js";
-import { AgentManager } from "./agent-manager.js";
+import { ALLOWED_RUN_TOOLS, AgentManager } from "./agent-manager.js";
+import { PermissionBroker } from "./permission-broker.js";
 import { AnalysisBackend, createCodeMapFacade, type CodeMapFacade } from "./analysis-host.js";
 import { launchInteractiveRun } from "./interactive.js";
 import { CodeIndexService } from "./code-index.js";
@@ -84,6 +85,8 @@ export class WorkspaceRuntime {
   readonly agentLibrary: AgentLibrary;
   /** Per-workspace tool grants + permission-denial tally (see grants-store.ts). */
   readonly grants: GrantsStore;
+  /** Pending permission prompts from headless runs (see permission-broker.ts). */
+  readonly permissions: PermissionBroker;
   readonly services: ServiceManager;
   readonly standing: StandingTaskEngine;
   /** Manifest name, kept fresh by workspace.get / saveManifest handlers. */
@@ -148,9 +151,60 @@ export class WorkspaceRuntime {
     this.quality = new QualityService(root);
     this.devservers = new DevServerService(root, this.terminals);
     this.apiclient = new ApiClientStore(appDataDir(root));
-    this.orchestration = new OrchestrationService(this.store, this.agents, () =>
-      this.notifyWorkspaceChanged?.(),
+    this.orchestration = new OrchestrationService(this.store, this.agents, () => {
+      this.notifyWorkspaceChanged?.();
+      // A board write may be the answer to a pending permission question.
+      void this.permissions?.onBoardChanged();
+    });
+    // The permission-prompt broker: headless runs route CLI permission
+    // prompts here (--permission-prompt-tool → mcp/http.ts → this). Grants
+    // and profile allowlists auto-allow; everything else parks as a board
+    // question + run stream event until granted, answered, or timed out.
+    this.permissions = new PermissionBroker(
+      {
+        run: (runId) => this.agents.get(runId),
+        grantPatterns: () => this.grants.allowedTools(),
+        profilePatterns: async (agentId) =>
+          agentId ? ((await this.resolveProfile(agentId))?.allowedTools ?? []) : [],
+        note: (runId, event) => this.agents.notePermission(runId, event),
+        fileQuestion: async (run, text, options, recommended) => {
+          if (!run.taskId) return null;
+          const projectPath = await this.orchestration.projectPathForRun(run);
+          const result = await this.orchestration.addQuestion(
+            projectPath,
+            run.taskId,
+            text,
+            run.id,
+            { options, recommended },
+          );
+          return result.ok
+            ? { projectPath, taskId: run.taskId, questionId: result.questionId }
+            : null;
+        },
+        readAnswer: async (ref) =>
+          (await this.orchestration.questionAnswer(ref.projectPath, ref.taskId, ref.questionId)) ??
+          null,
+        closeQuestion: async (ref, runId, note) => {
+          await this.orchestration.resolveQuestion(
+            ref.projectPath,
+            ref.taskId,
+            runId,
+            note,
+            ref.questionId,
+          );
+        },
+        // Same fold the stream-detected denials use — the AgentsTab grants
+        // panel shows both under one tally.
+        onDenied: (run, tool) => this.agents.onToolDenied?.(run, tool),
+      },
+      [...ALLOWED_RUN_TOOLS, "mcp__crystal"],
     );
+    // A grants edit is the unblock path for parked requests; a settling run
+    // can never take an answer, so its requests deny immediately.
+    this.grants.events.on("changed", () => void this.permissions.recheckGrants());
+    this.agents.events.on("runChanged", ({ run }) => {
+      if (SettledRuns.isTerminal(run)) this.permissions.cancelForRun(run.id);
+    });
     // Installs the dispatch guard (pause/budget veto) and settle hooks.
     this.workflows = new WorkflowEngine(
       appDataDir(root),
@@ -390,6 +444,9 @@ export class WorkspaceRuntime {
     this.agentLibrary.dispose();
     this.standing.dispose();
     this.services.dispose();
+    // Settle parked permission prompts before killing runs — every waiting
+    // MCP HTTP request gets its deny instead of hanging on a dead workspace.
+    this.permissions.dispose();
     // Kill live agent runs BEFORE their terminals: a closed workspace with
     // its orchestrator still running is how the hub's one-per-project
     // invariant broke (cancel recorded, orchestrator alive, retry doubled).

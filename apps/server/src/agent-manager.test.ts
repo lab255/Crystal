@@ -74,6 +74,21 @@ describe("claudeRunArgs", () => {
     const args = claudeRunArgs({ permissionMode: "bypassPermissions" });
     expect(args[args.indexOf("--permission-mode") + 1]).toBe("bypassPermissions");
   });
+
+  it("routes permission prompts to the broker tool when the config serves it", () => {
+    const args = claudeRunArgs({
+      mcpConfigPath: "C:\\data\\mcp\\run_1.json",
+      permissionPromptTool: "mcp__crystal__request_permission",
+    });
+    expect(args[args.indexOf("--permission-prompt-tool") + 1]).toBe(
+      "mcp__crystal__request_permission",
+    );
+  });
+
+  it("never emits --permission-prompt-tool without an mcp-config (the CLI validates the tool exists)", () => {
+    const args = claudeRunArgs({ permissionPromptTool: "mcp__crystal__request_permission" });
+    expect(args).not.toContain("--permission-prompt-tool");
+  });
 });
 
 describe("claudeInteractiveArgs", () => {
@@ -268,6 +283,7 @@ describe("dispatchWorker agent profiles", () => {
       agentId === "sec"
         ? {
             agentId: "sec",
+            provider: "claude" as const,
             model: "sonnet",
             skills: ["security-review"],
             appendPrompt: "Only review.",

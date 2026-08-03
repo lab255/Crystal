@@ -36,9 +36,23 @@ export function claudeFallbackDirs(
   env: NodeJS.ProcessEnv = process.env,
 ): string[] {
   if (platform === "win32") {
+    const local = env.LOCALAPPDATA ?? path.join(home, "AppData", "Local");
     return [
+      // Native installer default, then its official per-user program dir.
       path.join(home, ".local", "bin"),
+      path.join(local, "Programs", "claude"),
+      // npm-global homes: %APPDATA%\npm (default prefix), pnpm's standalone
+      // home, and version managers' shim/bin dirs (volta, scoop, fnm).
       ...(env.APPDATA ? [path.join(env.APPDATA, "npm")] : []),
+      ...(env.PNPM_HOME ? [env.PNPM_HOME] : []),
+      path.join(local, "pnpm"),
+      ...(env.VOLTA_HOME ? [path.join(env.VOLTA_HOME, "bin")] : []),
+      path.join(local, "Volta", "bin"),
+      path.join(home, "scoop", "shims"),
+      // fnm's default alias points at the active node install dir, where an
+      // `npm i -g` claude shim lands (layout differs across fnm versions).
+      path.join(local, "fnm", "aliases", "default"),
+      path.join(local, "fnm", "aliases", "default", "installation"),
     ];
   }
   return [

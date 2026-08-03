@@ -74,6 +74,35 @@ loads `https://…` and the client opens `wss://…/crystal` same-origin — the
 server stays plain http/ws behind it. Keep **one replica**: terminals and agent
 runs are in-process and are not shared across replicas.
 
+## Publishing (relay)
+
+Publishing exposes a bridge server to the internet **without opening a port**:
+the server keeps one *outbound* WebSocket to a relay (`apps/relay`, a
+Cloudflare Worker + Durable Object), and remote browsers connect to the relay
+instead of to your machine. Each remote client gets a channel; its bridge
+frames ride the single host socket, and on the server every channel becomes an
+ordinary bridge client — same request dispatch, same event broadcasts.
+
+- **The Durable Object is the trust boundary.** The server generates a host
+  token on first enable; the first connect claims the relay instance and pins
+  the token's hash, so nobody else can take it over. The token is persisted in
+  `~/.crystal/publish.json` (0600) and never crosses the bridge surface.
+- **Remote clients authenticate with an access password** (min 8 chars) the
+  host sets — the relay stores only a PBKDF2 verifier and issues short-lived
+  session tokens. Password attempts are **rate-limited** per-IP and globally
+  at the relay, so brute force stalls before it reaches your machine.
+- The host socket keeps itself alive (`crystal:ping` every 30s, auto-ponged by
+  the relay) and reconnects with capped exponential backoff (1s → 30s).
+
+Drive it over the bridge: `publish.configure {enabled, relayUrl, password}`
+enables/disables and sets the password; `publish.status` (and the
+`publish.changed` event) report connection state and the shareable URL
+(`https://<relay>/i/<instanceId>`), which is also advertised as `publicUrl` in
+the instance file.
+
+Deploy the relay to your own Cloudflare account with
+`pnpm --filter @crystal/relay deploy`.
+
 ## Bare Node
 
 ```bash

@@ -4,9 +4,72 @@ import {
   denialsForWorkflow,
   emptyGrantsLedger,
   isPermissionDenial,
+  matchesToolPattern,
   recordDenial,
   setGrantedTools,
+  toolAllowedByPatterns,
 } from "./grants.js";
+
+describe("matchesToolPattern", () => {
+  it("matches bare tool names exactly", () => {
+    expect(matchesToolPattern("WebFetch", {}, "WebFetch")).toBe(true);
+    expect(matchesToolPattern("WebSearch", {}, "WebFetch")).toBe(false);
+    // A bare name never matches a mere prefix of another tool's name.
+    expect(matchesToolPattern("WebFetcher", {}, "WebFetch")).toBe(false);
+  });
+
+  it("treats a bare MCP server name as a whole-server grant", () => {
+    expect(matchesToolPattern("mcp__crystal__ask_question", {}, "mcp__crystal")).toBe(true);
+    expect(matchesToolPattern("mcp__other__tool", {}, "mcp__crystal")).toBe(false);
+  });
+
+  it("matches Bash(prefix:*) as a command prefix", () => {
+    const p = "Bash(git commit:*)";
+    expect(matchesToolPattern("Bash", { command: "git commit -m x" }, p)).toBe(true);
+    expect(matchesToolPattern("Bash", { command: "git commit" }, p)).toBe(true);
+    expect(matchesToolPattern("Bash", { command: "git push" }, p)).toBe(false);
+    expect(matchesToolPattern("WebFetch", { command: "git commit" }, p)).toBe(false);
+  });
+
+  it("matches glob-style specs (the dev-loop allowlist shapes)", () => {
+    expect(matchesToolPattern("Bash", { command: "git status --short" }, "Bash(git status*)")).toBe(true);
+    expect(matchesToolPattern("Bash", { command: "git add ." }, "Bash(git add *)")).toBe(true);
+    expect(matchesToolPattern("Bash", { command: "git add" }, "Bash(git add *)")).toBe(false);
+    expect(matchesToolPattern("Bash", { command: "rm -rf /" }, "Bash(git add *)")).toBe(false);
+  });
+
+  it("requires an exact argument match when the spec has no wildcard", () => {
+    expect(matchesToolPattern("Bash", { command: "npm test" }, "Bash(npm test)")).toBe(true);
+    expect(matchesToolPattern("Bash", { command: "npm test --watch" }, "Bash(npm test)")).toBe(false);
+  });
+
+  it("fails closed when the call has no recognizable string argument", () => {
+    expect(matchesToolPattern("Bash", {}, "Bash(git status*)")).toBe(false);
+    expect(matchesToolPattern("Bash", null, "Bash(*)")).toBe(false);
+    // …but a bare-name grant still covers it.
+    expect(matchesToolPattern("Bash", {}, "Bash")).toBe(true);
+  });
+
+  it("reads the primary argument from the common input keys", () => {
+    expect(matchesToolPattern("Read", { file_path: "/etc/hosts" }, "Read(/etc/*)")).toBe(true);
+    expect(matchesToolPattern("WebFetch", { url: "https://a.dev/x" }, "WebFetch(https://a.dev*)")).toBe(true);
+  });
+
+  it("never treats regex metacharacters in a spec as regex", () => {
+    expect(matchesToolPattern("Bash", { command: "echo a.b" }, "Bash(echo a.b)")).toBe(true);
+    expect(matchesToolPattern("Bash", { command: "echo aXb" }, "Bash(echo a.b)")).toBe(false);
+  });
+});
+
+describe("toolAllowedByPatterns", () => {
+  it("answers across a pattern list", () => {
+    const patterns = ["mcp__crystal", "Bash(git status*)"];
+    expect(toolAllowedByPatterns("mcp__crystal__board_status", {}, patterns)).toBe(true);
+    expect(toolAllowedByPatterns("Bash", { command: "git status" }, patterns)).toBe(true);
+    expect(toolAllowedByPatterns("Bash", { command: "git push" }, patterns)).toBe(false);
+    expect(toolAllowedByPatterns("WebFetch", {}, [])).toBe(false);
+  });
+});
 
 describe("recordDenial", () => {
   it("folds repeats per (tool, workflow) and keeps other keys separate", () => {

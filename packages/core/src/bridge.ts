@@ -56,6 +56,7 @@ import type {
   ProgramSpend,
 } from "./hub.js";
 import type { WorkspaceManifest } from "./workspace.js";
+import type { PublishStatus } from "./publish.js";
 
 /**
  * Bridge protocol — the JSON message contract between a Crystal UI and a
@@ -551,7 +552,18 @@ export interface BridgeMethods {
    * uncommitted work carries over. The recovery for context-overflow
    * failures, and a deliberate reset for any long session.
    */
-  "agent.handoff": { params: WsScope & { runId: string }; result: { run: AgentRun } };
+  "agent.handoff": {
+    params: WsScope & {
+      runId: string;
+      /**
+       * Hand the continuation to a DIFFERENT agent profile (multi-agent
+       * handoff) — possibly another CLI vendor; the summarize-and-reseed
+       * mechanism carries the context across. Absent = same profile.
+       */
+      targetAgentId?: string | null;
+    };
+    result: { run: AgentRun };
+  };
   /** Spawn a PTY shell terminal in the workspace (cwd relative to the root). */
   "terminal.create": {
     params: WsScope & { cwd?: string; cols?: number; rows?: number };
@@ -1134,6 +1146,21 @@ export interface BridgeMethods {
   "hub.runEvents": { params: { runId: string }; result: { events: RunEvent[] } };
   "hub.cancelRun": { params: { runId: string }; result: { ok: true } };
 
+  /** Current publish-server state (relay connection, share URL). */
+  "publish.status": { params: Record<string, never>; result: PublishStatus };
+  /**
+   * Change the publish configuration. Omitted fields are left alone; a
+   * `password` (min 8 chars) is forwarded to the relay so remote clients must
+   * present it — it is applied immediately when the host is connected and
+   * rides the next (re)connect otherwise. Enabling for the first time mints
+   * the instance id and host token server-side; the token never leaves the
+   * server.
+   */
+  "publish.configure": {
+    params: { enabled?: boolean; relayUrl?: string | null; password?: string | null };
+    result: PublishStatus;
+  };
+
   /** Dry-run of refactor intents — per-intent engine + change summaries. */
   "refactor.preview": {
     params: WsScope & { intents: RefactorIntent[] };
@@ -1182,6 +1209,9 @@ export const UNSCOPED_METHODS: readonly BridgeMethodName[] = [
   "hub.runs",
   "hub.runEvents",
   "hub.cancelRun",
+  // Publishing is server-level: one relay connection exposes every workspace.
+  "publish.status",
+  "publish.configure",
 ];
 
 export interface BridgeRequest<M extends BridgeMethodName = BridgeMethodName> {
@@ -1253,6 +1283,11 @@ export interface BridgeEvents {
   "hub.questionsChanged": { programId: string; questions: HubQuestion[] };
   /** A program-manager run changed (status, usage, result). */
   "hub.runChanged": { run: AgentRun };
+  /**
+   * The publish-server state changed (configured, relay connected or lost, a
+   * remote client attached). Server-level, so no `ws`.
+   */
+  "publish.changed": PublishStatus;
   /** A streamed event from a program-manager run. */
   "hub.event": RunEvent;
 }
