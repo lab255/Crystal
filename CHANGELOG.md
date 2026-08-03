@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.19.0 (2026-08-03)
+
+### Features
+
+- cross-workspace needs-you rollup + attention notifications ([`235a4ea`](https://github.com/eliotlim/crystal/commit/235a4ea))
+- command palette jumps to any task across projects ([`6a98133`](https://github.com/eliotlim/crystal/commit/6a98133))
+- embed the interactive run's terminal in the run surface ([`9df9757`](https://github.com/eliotlim/crystal/commit/9df9757))
+- operator-style list+session working view with a per-task attention model ([`e5620a9`](https://github.com/eliotlim/crystal/commit/e5620a9))
+
 ## v0.18.0 (2026-08-02)
 
 ### Features
