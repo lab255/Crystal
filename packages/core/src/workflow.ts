@@ -321,6 +321,43 @@ export function stageFromArchetype(
 }
 
 /**
+ * The stage a click-to-add appends after: the *tail* of the graph — the
+ * deepest stage by dependency depth, ties broken by insertion order (later
+ * wins, matching how authors read the stage list). Null for an empty graph.
+ * Kept here rather than in the builder because "what comes last" is a claim
+ * about the DAG, not about the canvas.
+ */
+export function tailStageId(stages: WorkflowStageDef[]): string | null {
+  if (stages.length === 0) return null;
+  const byId = new Map(stages.map((s) => [s.id, s]));
+  const depths = new Map<string, number>();
+  const visiting = new Set<string>();
+  const depthOf = (id: string): number => {
+    const known = depths.get(id);
+    if (known != null) return known;
+    if (visiting.has(id)) return 0; // cycle guard — validation reports it
+    visiting.add(id);
+    const def = byId.get(id);
+    const depth = def?.dependsOn.length
+      ? 1 + Math.max(...def.dependsOn.filter((d) => byId.has(d) && d !== id).map(depthOf), -1)
+      : 0;
+    visiting.delete(id);
+    depths.set(id, depth);
+    return depth;
+  };
+  let tail = stages[0]!;
+  let best = -1;
+  for (const stage of stages) {
+    const depth = depthOf(stage.id);
+    if (depth >= best) {
+      best = depth;
+      tail = stage;
+    }
+  }
+  return tail.id;
+}
+
+/**
  * A template's scope, trusting the built-in registry over the record's own
  * field: `scope` is persisted data and a hand-edited file could claim
  * anything, but built-in-ness is decided by the id being in the registry.

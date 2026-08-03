@@ -28,6 +28,7 @@ import {
   stageBoardStatus,
   stageFromArchetype,
   stagePurpose,
+  tailStageId,
   templateOf,
   templateScope,
   templateWarnings,
@@ -496,6 +497,49 @@ describe("template scoping and derivation", () => {
     const second = stageFromArchetype(review, [first.id]);
     expect(second.id).toBe("review-2");
     expect(stageFromArchetype(review, [first.id, second.id]).id).toBe("review-3");
+  });
+
+  it("tailStageId finds the deepest stage, later insertion breaking ties", () => {
+    expect(tailStageId([])).toBeNull();
+    // Linear chain: the last stage is the tail wherever it sits in the array.
+    expect(tailStageId(SIMPLE_WORKFLOW_TEMPLATE.stages)).toBe(
+      SIMPLE_WORKFLOW_TEMPLATE.stages[SIMPLE_WORKFLOW_TEMPLATE.stages.length - 1]!.id,
+    );
+    // a → b ∥ c → d: d is deepest.
+    expect(tailStageId(customTemplate().stages)).toBe("d");
+    // Two leaves at the same depth: the later-inserted one wins — that is the
+    // stage the author most recently added, so click-to-add chains from it.
+    const t = makeTemplate({
+      id: "wft_tie",
+      name: "Tie",
+      stages: [
+        { id: "root", name: "Root", purpose: "plan", dependsOn: [], perTrack: false, description: "r" },
+        { id: "left", name: "Left", purpose: "implement", dependsOn: ["root"], perTrack: false, description: "l" },
+        { id: "right", name: "Right", purpose: "implement", dependsOn: ["root"], perTrack: false, description: "r" },
+      ],
+    });
+    expect(tailStageId(t.stages)).toBe("right");
+    // Depth beats array position: a deep stage early in the array still wins.
+    const shuffled = makeTemplate({
+      id: "wft_shuffled",
+      name: "Shuffled",
+      stages: [
+        { id: "end", name: "End", purpose: "release", dependsOn: ["mid"], perTrack: false, description: "e" },
+        { id: "mid", name: "Mid", purpose: "implement", dependsOn: ["start"], perTrack: false, description: "m" },
+        { id: "start", name: "Start", purpose: "plan", dependsOn: [], perTrack: false, description: "s" },
+      ],
+    });
+    expect(tailStageId(shuffled.stages)).toBe("end");
+    // A cycle must not hang or throw — validation reports it; tail is best-effort.
+    const cyclic = makeTemplate({
+      id: "wft_cycle",
+      name: "Cycle",
+      stages: [
+        { id: "a", name: "A", purpose: "plan", dependsOn: ["b"], perTrack: false, description: "a" },
+        { id: "b", name: "B", purpose: "plan", dependsOn: ["a"], perTrack: false, description: "b" },
+      ],
+    });
+    expect(typeof tailStageId(cyclic.stages)).toBe("string");
   });
 
   it("a custom template's persisted positions survive a round-trip", () => {

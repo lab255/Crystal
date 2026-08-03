@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { AlertTriangle, GripVertical, Info } from "lucide-react";
+import { AlertTriangle, CheckCircle2, GripVertical, Info, LayoutGrid } from "lucide-react";
 import {
   AUTO_MODEL,
   MODEL_HINTS,
@@ -8,6 +8,7 @@ import {
   TASK_STATUSES,
   TASK_STATUS_LABELS,
   stageFromArchetype,
+  tailStageId,
   templateWarnings,
   validateWorkflowTemplate,
   type RunPurpose,
@@ -16,12 +17,13 @@ import {
   type WorkflowStageDef,
   type WorkflowTemplate,
 } from "@crystal/core";
-import { Badge, Field, Input, Select, Textarea, Tooltip, cn } from "@crystal/ui";
+import { Badge, Button, Field, Input, Select, Textarea, Tooltip, cn } from "@crystal/ui";
 import { STAGE_DND_MIME, WorkflowGraph } from "./WorkflowGraph.js";
 
 /**
  * Editing one stage graph: palette on the left, canvas in the middle,
- * stage inspector on the right.
+ * inspector on the right — the selected stage's, or (in the builder) the
+ * template's own name/description/validation when nothing is selected.
  *
  * Deliberately value-in/value-out and unaware of persistence, because the
  * same editing surface serves two very different jobs — authoring a template
@@ -35,6 +37,7 @@ export function TemplateEditor({
   readOnly = false,
   selectedStageId,
   onSelectStage,
+  templateInspector = false,
   footer,
   className,
 }: {
@@ -44,6 +47,12 @@ export function TemplateEditor({
   readOnly?: boolean;
   selectedStageId?: string | null;
   onSelectStage?: (id: string | null) => void;
+  /**
+   * With no stage selected, show the template-level inspector (name,
+   * description, validation summary). The builder turns this on; the start
+   * panel's inline tweak editor keeps the space for the canvas.
+   */
+  templateInspector?: boolean;
   /** Extra content under the canvas (the builder puts its hint line here). */
   footer?: React.ReactNode;
   className?: string;
@@ -59,6 +68,7 @@ export function TemplateEditor({
     [template, problems.length],
   );
   const stage = template.stages.find((s) => s.id === stageId) ?? null;
+  const hasManualPositions = template.stages.some((s) => s.x != null && s.y != null);
 
   const mutate = (fn: (t: WorkflowTemplate) => WorkflowTemplate) => {
     if (editable) onChange!(fn(template));
@@ -69,7 +79,12 @@ export function TemplateEditor({
       stages: t.stages.map((s) => (s.id === id ? { ...s, ...patch } : s)),
     }));
 
-  const dropArchetype = (key: string, position: { x: number; y: number }) => {
+  /**
+   * Materialize an archetype as a stage. A drop carries a position (free
+   * placement); a click carries none — the stage joins the auto layout wired
+   * onto the graph's current tail, so "click, click, click" builds a chain.
+   */
+  const addArchetype = (key: string, position?: { x: number; y: number }) => {
     const archetype = STAGE_ARCHETYPES.find((a) => a.key === key);
     if (!archetype) return;
     const stages = template.stages;
@@ -78,13 +93,15 @@ export function TemplateEditor({
       stages.map((s) => s.id),
       position,
     );
-    mutate((t) => ({ ...t, stages: [...t.stages, created] }));
-    selectStage(created.id);
+    const tail = position ? null : tailStageId(stages);
+    const wired = tail ? { ...created, dependsOn: [tail] } : created;
+    mutate((t) => ({ ...t, stages: [...t.stages, wired] }));
+    selectStage(wired.id);
   };
 
   return (
     <div className={cn("flex h-full min-h-0", className)}>
-      {editable ? <StagePalette /> : null}
+      {editable ? <StagePalette onAdd={(key) => addArchetype(key)} /> : null}
 
       <div className="flex min-w-0 flex-1 flex-col">
         {problems.length || warnings.length ? (
@@ -105,14 +122,40 @@ export function TemplateEditor({
           </div>
         ) : null}
 
-        <div className="min-h-0 flex-1">
+        <div className="relative min-h-0 flex-1">
+          {editable ? (
+            <div className="absolute right-2 top-2 z-10">
+              <Tooltip
+                content={
+                  hasManualPositions
+                    ? "Clear every hand-placed position — the layered auto-layout takes over again"
+                    : "No hand-placed positions — the auto-layout already owns this graph"
+                }
+              >
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  disabled={!hasManualPositions}
+                  className="border border-edge bg-surface-2 shadow-sm"
+                  onClick={() =>
+                    mutate((t) => ({
+                      ...t,
+                      stages: t.stages.map((s) => ({ ...s, x: undefined, y: undefined })),
+                    }))
+                  }
+                >
+                  <LayoutGrid className="h-3 w-3" /> Re-layout
+                </Button>
+              </Tooltip>
+            </div>
+          ) : null}
           <WorkflowGraph
             stages={template.stages}
             editable={editable}
             selectedStageId={stageId}
             onSelectStage={selectStage}
             onMoveStage={(id, position) => mutateStage(id, { x: position.x, y: position.y })}
-            onDropStage={dropArchetype}
+            onDropStage={addArchetype}
             onConnectDep={(from, to) =>
               mutate((t) => ({
                 ...t,
@@ -155,50 +198,143 @@ export function TemplateEditor({
           editable={editable}
           onPatch={(patch) => mutateStage(stage.id, patch)}
         />
+      ) : editable && templateInspector ? (
+        <TemplateInspector
+          template={template}
+          problems={problems}
+          warnings={warnings}
+          onPatch={(patch) => mutate((t) => ({ ...t, ...patch }))}
+        />
       ) : null}
     </div>
   );
 }
 
 /**
- * The stage palette. Entries are dragged onto the canvas rather than clicked,
- * so where a stage lands is the user's choice — which is the whole point of
- * persisting positions.
+ * The stage palette. Click appends the stage after the graph's current tail
+ * (the fast path for building a chain); drag places it freely — which is the
+ * whole point of persisting positions.
  */
-function StagePalette() {
+function StagePalette({ onAdd }: { onAdd: (key: string) => void }) {
   return (
     <aside className="flex w-44 shrink-0 flex-col border-r border-edge bg-surface-1">
       <div className="border-b border-edge px-3 py-2">
         <div className="text-xs font-semibold text-ink">Stages</div>
         <p className="mt-0.5 text-[10px] leading-snug text-ink-faint">
-          Drag onto the canvas, then draw arrows between handles to set the order.
+          Click to add after the last stage, or drag anywhere on the canvas.
         </p>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-1.5">
         {STAGE_ARCHETYPES.map((archetype) => (
-          <PaletteEntry key={archetype.key} archetype={archetype} />
+          <PaletteEntry key={archetype.key} archetype={archetype} onAdd={onAdd} />
         ))}
       </div>
     </aside>
   );
 }
 
-function PaletteEntry({ archetype }: { archetype: StageArchetype }) {
+function PaletteEntry({
+  archetype,
+  onAdd,
+}: {
+  archetype: StageArchetype;
+  onAdd: (key: string) => void;
+}) {
   return (
     <Tooltip content={archetype.description}>
-      <div
+      <button
+        type="button"
         draggable
+        onClick={() => onAdd(archetype.key)}
         onDragStart={(event) => {
           event.dataTransfer.setData(STAGE_DND_MIME, archetype.key);
           event.dataTransfer.effectAllowed = "copy";
         }}
-        className="mb-1 flex cursor-grab items-center gap-1.5 rounded-lg border border-transparent px-2 py-1.5 hover:border-edge hover:bg-surface-2 active:cursor-grabbing"
+        className="mb-1 flex w-full cursor-grab items-center gap-1.5 rounded-lg border border-transparent px-2 py-1.5 text-left hover:border-edge hover:bg-surface-2 active:cursor-grabbing"
       >
         <GripVertical className="h-3 w-3 shrink-0 text-ink-faint" />
         <span className="min-w-0 flex-1 truncate text-xs text-ink">{archetype.name}</span>
         <span className="shrink-0 font-mono text-[9px] text-ink-faint">{archetype.purpose}</span>
-      </div>
+      </button>
     </Tooltip>
+  );
+}
+
+/**
+ * Purposes that describe run attribution, never a stage's job — `question`,
+ * `index` and `survey` are minted by other machinery (paired asks, the code
+ * indexer, spikes), so offering them here only invites miswired stages. A
+ * stage already carrying one (e.g. the research archetype's `survey`) keeps
+ * it as a selectable option rather than rendering a lying blank select.
+ */
+const NON_STAGE_PURPOSES: ReadonlySet<RunPurpose> = new Set(["question", "index", "survey"]);
+
+function stagePurposeOptions(current: RunPurpose): RunPurpose[] {
+  return RUN_PURPOSES.filter((p) => p === current || !NON_STAGE_PURPOSES.has(p));
+}
+
+/** The template's own settings, shown while no stage is selected. */
+function TemplateInspector({
+  template,
+  problems,
+  warnings,
+  onPatch,
+}: {
+  template: WorkflowTemplate;
+  problems: string[];
+  warnings: string[];
+  onPatch: (patch: Partial<WorkflowTemplate>) => void;
+}) {
+  return (
+    <aside className="flex w-72 shrink-0 flex-col overflow-y-auto border-l border-edge bg-surface-1 p-3">
+      <div className="mb-2 text-xs font-semibold text-ink">Template</div>
+      <div className="space-y-3">
+        <Field label="Name">
+          <Input
+            value={template.name}
+            onChange={(e) => onPatch({ name: e.target.value })}
+            aria-label="Template name"
+            className="h-7 text-xs"
+          />
+        </Field>
+        <Field label="Description" hint="One line for the picker — what this shape of work is for">
+          <Textarea
+            value={template.description}
+            onChange={(e) => onPatch({ description: e.target.value })}
+            rows={3}
+            aria-label="Template description"
+            className="text-xs"
+          />
+        </Field>
+      </div>
+
+      <div className="mt-3 border-t border-edge pt-2">
+        <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-ink-faint">
+          Checks
+        </div>
+        {problems.length === 0 && warnings.length === 0 ? (
+          <p className="flex items-start gap-1.5 text-[11px] text-ok">
+            <CheckCircle2 className="mt-px h-3.5 w-3.5 shrink-0" />
+            <span>Valid — ready to save and run.</span>
+          </p>
+        ) : (
+          <ul className="space-y-1.5">
+            {problems.map((p) => (
+              <li key={p} className="flex items-start gap-1.5 text-[11px] leading-snug text-danger">
+                <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0" />
+                <span>{p}</span>
+              </li>
+            ))}
+            {warnings.map((w) => (
+              <li key={w} className="flex items-start gap-1.5 text-[11px] leading-snug text-warn">
+                <Info className="mt-px h-3.5 w-3.5 shrink-0" />
+                <span>{w}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </aside>
   );
 }
 
@@ -238,20 +374,6 @@ function StageInspector({
               className="h-7 text-xs"
             />
           </Field>
-          <Field label="Worker purpose">
-            <Select
-              size="sm"
-              value={stage.purpose}
-              onChange={(e) => onPatch({ purpose: e.target.value as RunPurpose })}
-              aria-label="Stage purpose"
-            >
-              {RUN_PURPOSES.map((p) => (
-                <option key={p} value={p}>
-                  {p}
-                </option>
-              ))}
-            </Select>
-          </Field>
           <Field
             label="Board column"
             hint="Where this stage's tasks sit on the orchestrator board while it works"
@@ -272,31 +394,6 @@ function StageInspector({
               ))}
             </Select>
           </Field>
-          <Field label="Model" hint="Cost routing — heavyweight only where code gets written">
-            <Input
-              value={stage.model ?? ""}
-              onChange={(e) => onPatch({ model: e.target.value.trim() || undefined })}
-              placeholder="CLI default"
-              list="wf-builder-models"
-              aria-label="Stage model"
-              className="h-7 text-xs"
-            />
-            <datalist id="wf-builder-models">
-              {/* A stage model rides dispatch_worker's raw `model` — only profile
-                  models resolve the "auto" sentinel, so it is excluded here. */}
-              {MODEL_HINTS.filter((m) => m !== AUTO_MODEL).map((m) => (
-                <option key={m} value={m} />
-              ))}
-            </datalist>
-          </Field>
-          <label className="flex items-center gap-2 text-xs text-ink">
-            <input
-              type="checkbox"
-              checked={stage.perTrack}
-              onChange={(e) => onPatch({ perTrack: e.target.checked })}
-            />
-            Runs once per parallel track
-          </label>
           <Field label="Description" hint="Woven into the manager's prompt">
             <Textarea
               value={stage.description}
@@ -318,6 +415,55 @@ function StageInspector({
               className="text-xs"
             />
           </Field>
+          {/* The archetype already set purpose/model/track sensibly — these
+              knobs matter rarely, so they fold away rather than pad the
+              everyday form. */}
+          <details>
+            <summary className="cursor-pointer text-[10px] font-semibold uppercase tracking-wider text-ink-faint">
+              Advanced
+            </summary>
+            <div className="mt-2 space-y-3">
+              <Field label="Worker purpose">
+                <Select
+                  size="sm"
+                  value={stage.purpose}
+                  onChange={(e) => onPatch({ purpose: e.target.value as RunPurpose })}
+                  aria-label="Stage purpose"
+                >
+                  {stagePurposeOptions(stage.purpose).map((p) => (
+                    <option key={p} value={p}>
+                      {p}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+              <Field label="Model" hint="Cost routing — heavyweight only where code gets written">
+                <Input
+                  value={stage.model ?? ""}
+                  onChange={(e) => onPatch({ model: e.target.value.trim() || undefined })}
+                  placeholder="CLI default"
+                  list="wf-builder-models"
+                  aria-label="Stage model"
+                  className="h-7 text-xs"
+                />
+                <datalist id="wf-builder-models">
+                  {/* A stage model rides dispatch_worker's raw `model` — only profile
+                      models resolve the "auto" sentinel, so it is excluded here. */}
+                  {MODEL_HINTS.filter((m) => m !== AUTO_MODEL).map((m) => (
+                    <option key={m} value={m} />
+                  ))}
+                </datalist>
+              </Field>
+              <label className="flex items-center gap-2 text-xs text-ink">
+                <input
+                  type="checkbox"
+                  checked={stage.perTrack}
+                  onChange={(e) => onPatch({ perTrack: e.target.checked })}
+                />
+                Runs once per parallel track
+              </label>
+            </div>
+          </details>
         </div>
       ) : (
         <div className="space-y-2 text-[11px] text-ink-muted">

@@ -41,6 +41,7 @@ import {
   formatRunCost,
   formatRunTokens,
   useAgents,
+  useComposerKeydown,
   useCrystal,
   useRunSurface,
   useTerminals,
@@ -52,6 +53,7 @@ import {
   Badge,
   Button,
   EmptyState,
+  Field,
   Input,
   Select,
   Spinner,
@@ -757,6 +759,7 @@ function NewWorkflowPanel({
   const preset = presetById(roster?.preset);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const onComposerKey = useComposerKeydown(() => void create());
   /**
    * A one-off graph for this run. Held here and passed to `start`, which
    * snapshots it into the workflow — nothing is written to the library, so
@@ -778,7 +781,9 @@ function NewWorkflowPanel({
     setTweak(null);
   };
 
-  async function create(interactive = false) {
+  // Interactive is the default — matching both the primary Start button and
+  // the server's own default; "Start headless" passes false explicitly.
+  async function create(interactive = true) {
     if (!name.trim() || !goal.trim() || busy || tweakProblems.length) return;
     setBusy(true);
     setError(null);
@@ -824,6 +829,7 @@ function NewWorkflowPanel({
         <Textarea
           value={goal}
           onChange={(e) => setGoal(e.target.value)}
+          onKeyDown={onComposerKey}
           rows={5}
           placeholder="Describe the goal. The manager refines it with you before planning — rough is fine."
           aria-label="Workflow goal"
@@ -894,55 +900,70 @@ function NewWorkflowPanel({
             />
           </div>
         ) : null}
-        <div className="mt-2 flex items-center gap-2">
-          <Input
-            value={budget}
-            onChange={(e) => setBudgetInput(e.target.value)}
-            placeholder="Budget USD (optional)"
-            aria-label="Budget in USD"
-            className="w-40"
-          />
-          <Tooltip content="Per-run cost cap: any single run (manager turns included) crossing it is killed mid-flight — the lever against one runaway resume.">
-            <Input
-              value={runCap}
-              onChange={(e) => setRunCapInput(e.target.value)}
-              placeholder="$/run cap"
-              aria-label="Per-run cost cap in USD"
-              className="w-24"
-            />
-          </Tooltip>
-          <Select
-            className="flex-1"
-            value={projectId}
-            onChange={(e) => setProjectId(e.target.value)}
-            aria-label="Project board"
-          >
-            <option value="">Default board</option>
-            {projects.map((p) => (
-              <option key={p.project.id} value={p.project.id}>
-                {p.project.name}
-              </option>
-            ))}
-          </Select>
-          <Tooltip content={`The orchestrator model for this run only. The project preset (${preset.name}) is set on the Agents tab.`}>
-            <Select
-              className="w-44"
-              value={managerModel}
-              onChange={(e) => setManagerModel(e.target.value)}
-              aria-label="Manager model"
-            >
-              <option value="">Manager: {preset.manager} (preset)</option>
-              {/* "" already means "follow the preset", so the auto sentinel is redundant here. */}
-              {MODEL_HINTS.filter((m) => m !== AUTO_MODEL && m !== preset.manager).map((m) => (
-                <option key={m} value={m}>
-                  Manager: {m}
-                </option>
-              ))}
-            </Select>
-          </Tooltip>
-          {/* Interactive is the default: the manager runs as a native Claude
-              session in the terminal panel. Headless stays available for
-              unattended workflows. */}
+        {/* Everything a workflow can start without — budgets, board, model —
+            folds away so the required trio (name, goal, template) stays the
+            whole visible form. */}
+        <details className="mt-3">
+          <summary className="cursor-pointer text-[10px] font-semibold uppercase tracking-wider text-ink-faint">
+            Options — budget, board, manager model
+          </summary>
+          <div className="mt-2 grid grid-cols-2 gap-3">
+            <Field label="Budget (USD)" hint="Total spend cap — the workflow pauses when reached">
+              <Input
+                value={budget}
+                onChange={(e) => setBudgetInput(e.target.value)}
+                placeholder="No budget"
+                aria-label="Budget in USD"
+              />
+            </Field>
+            <Field label="Per-run cap (USD)">
+              <Tooltip content="Per-run cost cap: any single run (manager turns included) crossing it is killed mid-flight — the lever against one runaway resume.">
+                <Input
+                  value={runCap}
+                  onChange={(e) => setRunCapInput(e.target.value)}
+                  placeholder="No cap"
+                  aria-label="Per-run cost cap in USD"
+                />
+              </Tooltip>
+            </Field>
+            <Field label="Project board" hint="Where the manager plans its tasks">
+              <Select
+                value={projectId}
+                onChange={(e) => setProjectId(e.target.value)}
+                aria-label="Project board"
+              >
+                <option value="">Default board</option>
+                {projects.map((p) => (
+                  <option key={p.project.id} value={p.project.id}>
+                    {p.project.name}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Field label="Manager model">
+              <Tooltip content={`The orchestrator model for this run only. The project preset (${preset.name}) is set on the Agents tab.`}>
+                <Select
+                  value={managerModel}
+                  onChange={(e) => setManagerModel(e.target.value)}
+                  aria-label="Manager model"
+                >
+                  <option value="">{preset.manager} (preset)</option>
+                  {/* "" already means "follow the preset", so the auto sentinel is redundant here. */}
+                  {MODEL_HINTS.filter((m) => m !== AUTO_MODEL && m !== preset.manager).map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+                </Select>
+              </Tooltip>
+            </Field>
+          </div>
+        </details>
+
+        {/* Interactive is the default: the manager runs as a native Claude
+            session in the terminal panel. Headless stays available for
+            unattended workflows. */}
+        <div className="mt-3 flex items-center gap-2">
           <Tooltip content="Host the manager as a native interactive Claude session in the terminal panel — it asks you decisions directly (AskUserQuestion, still logged on the board), and you steer it by typing.">
             <Button
               variant="primary"
@@ -958,11 +979,14 @@ function NewWorkflowPanel({
               variant="secondary"
               size="sm"
               disabled={busy || !name.trim() || !goal.trim() || tweakProblems.length > 0}
-              onClick={() => void create()}
+              onClick={() => void create(false)}
             >
               <Play className="h-3 w-3" /> Start headless
             </Button>
           </Tooltip>
+          <span className="text-[10px] leading-snug text-ink-faint">
+            Start runs the manager in a terminal session · headless runs it in the background
+          </span>
         </div>
         {error ? <p className="mt-2 text-[11px] text-danger">{error}</p> : null}
         {tweakProblems.length ? (

@@ -18,7 +18,7 @@ import {
   type WorkflowTemplate,
 } from "@crystal/core";
 import { useWorkflows } from "@crystal/client";
-import { Badge, Button, EmptyState, Input, Tooltip, cn } from "@crystal/ui";
+import { Badge, Button, EmptyState, Tooltip, cn } from "@crystal/ui";
 import { TemplateEditor } from "./TemplateEditor.js";
 
 /**
@@ -147,64 +147,59 @@ export function TemplateBuilder({
       {/* Editor */}
       <main className="flex min-w-0 flex-1 flex-col">
         <header className="flex items-center gap-2 border-b border-edge px-3 py-2">
-          {draft ? (
-            <>
-              <Input
-                value={draft.name}
-                onChange={(e) => {
-                  setDraft({ ...draft, name: e.target.value });
-                  setDirty(true);
-                }}
-                aria-label="Template name"
-                className="h-7 w-56 text-[13px] font-semibold"
-              />
-              <Badge tone={scopeOf === "global" ? "cyan" : "slate"}>
-                {scopeOf === "global" ? "global" : "this project"}
-              </Badge>
-            </>
-          ) : (
-            <span className="flex items-center gap-2 text-[13px] font-semibold text-ink">
-              {view?.name ?? "Templates"}
-              {view && !editable ? <Badge tone="slate">built-in</Badge> : null}
-            </span>
-          )}
+          <span className="flex min-w-0 items-center gap-2 text-[13px] font-semibold text-ink">
+            <span className="truncate">{view?.name ?? "Templates"}</span>
+            {view && !editable ? <Badge tone="slate">built-in</Badge> : null}
+          </span>
 
           <div className="ml-auto flex items-center gap-1.5">
             {draft ? (
               <>
-                {/* Moving scope is a save with a different target, so it is
-                    offered here rather than as a field in the inspector. */}
-                <Tooltip
-                  content={
-                    scopeOf === "global"
-                      ? "Move to this project only"
-                      : "Share with every project on this machine"
-                  }
-                >
-                  <Button
-                    variant="ghost"
-                    size="xs"
-                    disabled={busy}
-                    onClick={() =>
-                      void run(async () => {
-                        const target = scopeOf === "global" ? "project" : "global";
-                        const saved = await saveTemplate(draft, target);
-                        setDirty(false);
-                        onSelectTemplate(saved.id);
-                      })
-                    }
-                  >
-                    {scopeOf === "global" ? (
-                      <>
-                        <FolderDown className="h-3 w-3" /> Make project-only
-                      </>
-                    ) : (
-                      <>
-                        <Globe className="h-3 w-3" /> Share globally
-                      </>
-                    )}
-                  </Button>
-                </Tooltip>
+                {/* Scope, as one concept: a template lives in exactly one of
+                    built-in / library / this project, and moving it is a save
+                    with a different target directory — so the two writable
+                    scopes read as a labeled pair, not scattered actions. */}
+                <div className="mr-1 flex items-center gap-1 rounded-lg border border-edge px-1 py-0.5">
+                  <span className="px-1 text-[10px] font-semibold uppercase tracking-wider text-ink-faint">
+                    Scope
+                  </span>
+                  <Tooltip content="Pinned to this project only">
+                    <Button
+                      variant="ghost"
+                      size="xs"
+                      disabled={busy}
+                      className={cn(scopeOf === "project" && "bg-surface-3 text-ink")}
+                      onClick={() => {
+                        if (scopeOf === "project") return;
+                        void run(async () => {
+                          const saved = await saveTemplate(draft, "project");
+                          setDirty(false);
+                          onSelectTemplate(saved.id);
+                        });
+                      }}
+                    >
+                      <FolderDown className="h-3 w-3" /> This project
+                    </Button>
+                  </Tooltip>
+                  <Tooltip content="Shared library — visible from every project on this machine">
+                    <Button
+                      variant="ghost"
+                      size="xs"
+                      disabled={busy}
+                      className={cn(scopeOf === "global" && "bg-surface-3 text-ink")}
+                      onClick={() => {
+                        if (scopeOf === "global") return;
+                        void run(async () => {
+                          const saved = await saveTemplate(draft, "global");
+                          setDirty(false);
+                          onSelectTemplate(saved.id);
+                        });
+                      }}
+                    >
+                      <Globe className="h-3 w-3" /> All projects
+                    </Button>
+                  </Tooltip>
+                </div>
                 <Button
                   variant="primary"
                   size="xs"
@@ -272,6 +267,7 @@ export function TemplateBuilder({
             readOnly={draft == null}
             selectedStageId={stageId}
             onSelectStage={setStageId}
+            templateInspector
             onChange={
               draft
                 ? (next) => {
@@ -283,8 +279,9 @@ export function TemplateBuilder({
             footer={
               draft ? (
                 <p className="border-t border-edge px-3 py-1 text-[10px] text-ink-faint">
-                  Drag a stage from the palette onto the canvas · drag between handles to add a
-                  dependency · select an edge or stage and press Backspace to remove it
+                  Click a palette stage to add it after the last one (drag for free placement) ·
+                  drag between handles to add a dependency · select an edge or stage and press
+                  Backspace to remove it
                 </p>
               ) : null
             }
