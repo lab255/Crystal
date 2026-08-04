@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.20.0 (2026-08-04)
+
+### Features
+
+- simplify the workflow builder and start panel ([`aed66fd`](https://github.com/eliotlim/crystal/commit/aed66fd))
+- unified dispatch keymap across every composer ([`f3f0f50`](https://github.com/eliotlim/crystal/commit/f3f0f50))
+- IA overhaul — top navbar, workspace rail, project menu, settings ([`bf73296`](https://github.com/eliotlim/crystal/commit/bf73296))
+- light/dark/system theming, de-blued neutral palette ([`d517b7c`](https://github.com/eliotlim/crystal/commit/d517b7c))
+- publish relay, permission broker, Codex provider, agent handoff targets ([`304badc`](https://github.com/eliotlim/crystal/commit/304badc))
+
 ## v0.19.0 (2026-08-03)
 
 ### Features
