@@ -7,6 +7,7 @@ import {
   type ArchitectureGraph,
   type C4Projection,
 } from "@crystal/core";
+import { estimateGraphDims } from "./card-metrics.js";
 import type { FlowProjection } from "./dataflow.js";
 
 /**
@@ -276,13 +277,18 @@ export function c4Reserve(
   graph: ArchitectureGraph,
   base?: ReadonlyMap<string, { width: number; height: number }>,
 ): Map<string, { width: number; height: number }> {
-  const reserve = new Map(base ?? []);
+  const reserve = estimateGraphDims(graph);
   for (const n of graph.nodes) {
-    if (reserve.has(n.id)) continue;
-    if (n.kind === "container") reserve.set(n.id, { width: 300, height: 170 });
-    else if (n.kind === "system" && n.size == null) reserve.set(n.id, { width: 340, height: 190 });
-    else if (n.kind === "entity") reserve.set(n.id, { width: 180, height: 90 });
+    const estimated = reserve.get(n.id);
+    if (n.kind === "container" && estimated) {
+      // C4 container cards stay visually generous even when their current
+      // content is short. Height remains content-driven so sparse diagrams
+      // no longer reserve blanket 300x170 rectangles.
+      reserve.set(n.id, { ...estimated, width: Math.max(260, estimated.width) });
+    }
   }
+  // Measured/system-card slots supplied by the caller are authoritative.
+  for (const [id, size] of base ?? []) reserve.set(id, size);
   return reserve;
 }
 

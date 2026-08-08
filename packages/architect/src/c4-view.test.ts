@@ -267,6 +267,16 @@ describe("c4Reserve", () => {
     const entity = node("schema:src/data.ts#User", { kind: "entity" });
     expect(c4Reserve(graph([entity])).get(entity.id)).toEqual({ width: 180, height: 90 });
   });
+
+  it("estimates bare container kinds while preserving authoritative base entries", () => {
+    const container = node("ctr:web", { kind: "container" });
+    const bareSystem = node("sys:bare", { kind: "system", size: null });
+    const measured = { width: 360, height: 210 };
+    const reserve = c4Reserve(graph([container, bareSystem]), new Map([[container.id, measured]]));
+
+    expect(reserve.get(container.id)).toEqual(measured);
+    expect(reserve.get(bareSystem.id)).toEqual({ width: 288, height: 56 });
+  });
 });
 
 describe("remapFlowProjection", () => {
