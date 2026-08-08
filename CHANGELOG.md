@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.23.0 (2026-08-08)
+
+### Features
+
+- merge the API client into the API surface view ([`279c556`](https://github.com/lab255/Crystal/commit/279c556))
+- C4 bar lanes, component-packed flow layout, data schema in C4 ([`8b4ac36`](https://github.com/lab255/Crystal/commit/8b4ac36))
+- merge the hub into the Overview mode ([`0b2997e`](https://github.com/lab255/Crystal/commit/0b2997e))
+- multi-tab and multi-window support ([`a1b50af`](https://github.com/lab255/Crystal/commit/a1b50af))
+- shell IA overhaul — rail tools, three-lane navbar, viewport lock ([`be83fac`](https://github.com/lab255/Crystal/commit/be83fac))
+
+### Bug Fixes
+
+- scope the schema view to one project at a time ([`dea7778`](https://github.com/lab255/Crystal/commit/dea7778))
+
+### ⚠ BREAKING CHANGES
+
+- merge the hub into the Overview mode ([`0b2997e`](https://github.com/lab255/Crystal/commit/0b2997e))
+
 ## v0.22.0 (2026-08-08)
 
 ### Features
