@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.25.0 (2026-08-08)
+
+### Features
+
+- wire ELK layout into the architecture view ([`da7834c`](https://github.com/lab255/Crystal/commit/da7834c))
+- ELK compound layout engine + deterministic card metrics ([`69ceb0c`](https://github.com/lab255/Crystal/commit/69ceb0c))
+
+### Bug Fixes
+
+- survive RF measurement races, pack degenerate ELK scopes ([`28c78d9`](https://github.com/lab255/Crystal/commit/28c78d9))
+
 ## v0.24.0 (2026-08-08)
 
 ### Features
