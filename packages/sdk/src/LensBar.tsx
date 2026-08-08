@@ -11,6 +11,7 @@ import {
 import {
   createWorkspaceFacet,
   formatLensParam,
+  isProgramLive,
   lensLabel,
   suggestIndexFacets,
   type IndexFacetSuggestion,
@@ -38,7 +39,7 @@ const DIFF_WORKTREE = formatLensParam({ kind: "diff", scope: "worktree" });
 const DIFF_BASE = formatLensParam({ kind: "diff", scope: "base" });
 
 export interface LensBarProps {
-  /** Reveal the terminal panel so an Ask AI console is visible when its run starts. */
+  /** @deprecated Used only to reveal the fallback agent console when the hub is unavailable. */
   onOpenTerminal?: () => void;
 }
 
@@ -47,16 +48,18 @@ export interface LensBarProps {
  * every mode renders through). Idle it's a compact "Lens" menu — review diffs
  * (working tree / vs base / vs any ref) and saved workspace facets; active
  * it's a chip with the resolved member count, refresh, save-as-facet and
- * clear. "Ask AI" pipes the current slice (deep link + lens membership) into
- * a fresh agent console.
+ * clear. "Ask AI" pipes the current slice (deep link + lens membership) to
+ * the program coordinator, with an agent-console fallback when the hub is
+ * unavailable.
  */
 export function LensBar({ onOpenTerminal }: LensBarProps) {
-  const { client, lensStore, terminalsStore } = useCrystal();
+  const { client, hubStore, lensStore, terminalsStore } = useCrystal();
   const activeWsId = useWorkspaces((s) => s.activeId);
   const activeWsRoot = useWorkspaces(
     (s) => s.workspaces.find((w) => w.id === s.activeId)?.root ?? null,
   );
   const lensParam = useNav((l) => l.lens ?? null);
+  const selectedProgramId = useNav((l) => l.projects?.program ?? null);
   const updateNav = useNavUpdate();
 
   const spec = useLens((s) => s.spec);
@@ -74,6 +77,7 @@ export function LensBar({ onOpenTerminal }: LensBarProps) {
   const [saveName, setSaveName] = useState("");
   const [askOpen, setAskOpen] = useState(false);
   const [askText, setAskText] = useState("");
+  const [askBusy, setAskBusy] = useState(false);
   const [barError, setBarError] = useState<string | null>(null);
 
   // Saved facets load lazily when the menu opens (cached per workspace);
@@ -130,9 +134,10 @@ export function LensBar({ onOpenTerminal }: LensBarProps) {
     setSaveName("");
   }, [saveName, activeWsId, spec, lensStore, updateNav]);
 
-  const submitAsk = useCallback(() => {
+  const submitAsk = useCallback(async () => {
     const question = askText.trim();
-    if (!question || !activeWsId) return;
+    if (!question || !activeWsId || askBusy) return;
+    setAskBusy(true);
     setBarError(null);
     const prompt = buildAskPrompt({
       question,
@@ -144,16 +149,57 @@ export function LensBar({ onOpenTerminal }: LensBarProps) {
       dirs: membership?.dirs ?? [],
     });
     try {
-      const terminals = terminalsStore.getState();
-      const consoleId = terminals.openAgentConsole(activeWsId);
-      onOpenTerminal?.();
+      let hub = hubStore.getState();
+      if (!hub.loaded && !hub.error) {
+        await hub.refresh();
+        hub = hubStore.getState();
+      }
+
+      if (!hub.loaded || hub.error) {
+        const terminals = terminalsStore.getState();
+        const consoleId = terminals.openAgentConsole(activeWsId);
+        onOpenTerminal?.();
+        await terminals.send(consoleId, prompt);
+      } else {
+        const program =
+          hub.programs.find((candidate) =>
+            candidate.id === selectedProgramId && isProgramLive(candidate.status)
+          ) ??
+          hub.programs.find((candidate) => isProgramLive(candidate.status)) ??
+          (await hub.createProgram({
+            name: "Ask AI",
+            goal: "Ad-hoc questions asked from the workspace UI.",
+          }));
+
+        if (!program.managerRunId) await hub.startManager(program.id);
+        await hub.message(program.id, prompt);
+        updateNav({
+          mode: "projects",
+          projects: { view: "chat", program: program.id },
+        });
+      }
+
       setAskOpen(false);
       setAskText("");
-      terminals.send(consoleId, prompt).catch((err: Error) => setBarError(err.message));
     } catch (err) {
       setBarError((err as Error).message);
+    } finally {
+      setAskBusy(false);
     }
-  }, [askText, activeWsId, activeWsRoot, spec, facets, membership, terminalsStore, onOpenTerminal]);
+  }, [
+    askText,
+    activeWsId,
+    askBusy,
+    activeWsRoot,
+    spec,
+    facets,
+    membership,
+    hubStore,
+    selectedProgramId,
+    terminalsStore,
+    onOpenTerminal,
+    updateNav,
+  ]);
 
   if (!activeWsId) return null;
 
@@ -368,6 +414,7 @@ export function LensBar({ onOpenTerminal }: LensBarProps) {
           type="button"
           aria-label="Ask AI"
           aria-pressed={askOpen}
+          disabled={askBusy}
           onClick={() => {
             setAskOpen((o) => !o);
             setSaveOpen(false);
@@ -387,9 +434,11 @@ export function LensBar({ onOpenTerminal }: LensBarProps) {
         <Input
           autoFocus
           value={askText}
+          disabled={askBusy}
+          aria-busy={askBusy}
           onChange={(e) => setAskText(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter") submitAsk();
+            if (e.key === "Enter") void submitAsk();
             else if (e.key === "Escape") setAskOpen(false);
           }}
           placeholder="Ask about this slice… e.g. is there an existing pattern for this?"
