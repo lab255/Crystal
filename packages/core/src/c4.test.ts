@@ -7,15 +7,19 @@ import {
   C4_USER_PERSON_ID,
   c4RelId,
   c4ViewKey,
+  containerForFile,
   deriveC4Model,
   isInfraCategory,
   projectC4,
   relationVerb,
   rollupC4Marks,
+  schemaNodeId,
+  schemaRefEdgeId,
   type C4DeriveInput,
 } from "./c4.js";
 import type { CodeExternalDep } from "./external-services.js";
 import type { CodeModule, CodeModuleDep } from "./codemap.js";
+import type { SchemaSurface } from "./surfaces.js";
 
 /** A three-container monorepo: server app, web app, shared library code. */
 const MODULES: CodeModule[] = [
@@ -83,6 +87,41 @@ const INPUT: C4DeriveInput = {
   modules: MODULES,
   deps: DEPS,
 };
+
+const USER_SCHEMA: SchemaSurface = {
+  id: "apps/server/src/data.ts#User",
+  name: "User",
+  file: "apps/server/src/data.ts",
+  line: 3,
+  kind: "interface",
+  fields: [
+    { name: "id", type: "string", pk: true },
+    { name: "email", type: "string" },
+  ],
+  usedBy: 4,
+};
+const TEAM_SCHEMA: SchemaSurface = {
+  id: "apps/server/src/data.ts#Team",
+  name: "Team",
+  file: "apps/server/src/data.ts",
+  line: 12,
+  kind: "interface",
+  fields: [
+    { name: "owner", type: "User", references: "User" },
+    { name: "view", type: "ViewState", references: "ViewState" },
+  ],
+  usedBy: 2,
+};
+const VIEW_SCHEMA: SchemaSurface = {
+  id: "apps/web/src/state.ts#ViewState",
+  name: "ViewState",
+  file: "apps/web/src/state.ts",
+  line: 5,
+  kind: "type",
+  fields: [{ name: "viewer", type: "User", references: "User" }],
+  usedBy: 3,
+};
+const SCHEMAS = [USER_SCHEMA, TEAM_SCHEMA, VIEW_SCHEMA] as const;
 
 function derive() {
   return deriveC4Model(INPUT);
@@ -225,6 +264,17 @@ describe("projectC4 · context", () => {
     expect(projection.drill[C4_SYSTEM_ID]).toEqual({ level: "containers" });
     expect(projection.typeLines[C4_SYSTEM_ID]).toBe("Software System");
   });
+
+  it("rolls schema entities into the visible software system", () => {
+    const projection = projectC4({
+      graph: derivedGraph(),
+      model: derive(),
+      view: { level: "context" },
+      schemas: SCHEMAS,
+    });
+    expect(projection.graph.nodes.some((node) => node.id.startsWith("schema:"))).toBe(false);
+    expect(projection.nodeRollup[schemaNodeId(USER_SCHEMA.id)]).toBe(C4_SYSTEM_ID);
+  });
 });
 
 describe("projectC4 · containers", () => {
@@ -259,6 +309,28 @@ describe("projectC4 · containers", () => {
     expect(projection.drill["ctr:apps-web"]).toEqual({ level: "components", scope: "ctr:apps-web" });
     // The open boundary drills back out.
     expect(projection.drill[C4_SYSTEM_ID]).toEqual({ level: "context" });
+  });
+
+  it("rolls schema entities into owners and annotates container cards", () => {
+    const projection = projectC4({
+      graph: derivedGraph(),
+      model: derive(),
+      view: { level: "containers" },
+      schemas: SCHEMAS,
+    });
+    const byId = new Map(projection.graph.nodes.map((node) => [node.id, node]));
+
+    expect(byId.has(schemaNodeId(USER_SCHEMA.id))).toBe(false);
+    expect(projection.nodeRollup[schemaNodeId(USER_SCHEMA.id)]).toBe("ctr:apps-server");
+    expect(projection.nodeRollup[schemaNodeId(VIEW_SCHEMA.id)]).toBe("ctr:apps-web");
+    expect(byId.get("ctr:apps-server")?.description).toContain("2 entities");
+    expect(byId.get("ctr:apps-web")?.description).toContain("1 entity");
+
+    const marks = rollupC4Marks(
+      { [schemaNodeId(USER_SCHEMA.id)]: { kind: "changed", detail: "field added" } },
+      projection,
+    );
+    expect(marks["ctr:apps-server"]).toEqual({ kind: "changed", detail: "1 changed" });
   });
 });
 
@@ -304,6 +376,47 @@ describe("projectC4 · components", () => {
       ),
     ).toBe(true);
   });
+
+  it("renders owned schemas as entities and only materializes in-scope references", () => {
+    const projection = projectC4({
+      graph: derivedGraph(),
+      model: derive(),
+      view: { level: "components", scope: "ctr:apps-server" },
+      schemas: SCHEMAS,
+    });
+    const byId = new Map(projection.graph.nodes.map((node) => [node.id, node]));
+    const userId = schemaNodeId(USER_SCHEMA.id);
+    const teamId = schemaNodeId(TEAM_SCHEMA.id);
+
+    expect(byId.get(userId)).toMatchObject({
+      kind: "entity",
+      parentId: "ctr:apps-server",
+      codeFile: USER_SCHEMA.file,
+      entityFields: ["id", "email"],
+    });
+    expect(byId.get(teamId)?.parentId).toBe("ctr:apps-server");
+    expect(byId.has(schemaNodeId(VIEW_SCHEMA.id))).toBe(false);
+    expect(projection.typeLines[userId]).toBe("Entity · interface");
+    expect(
+      projection.graph.edges.find(
+        (edge) => edge.id === schemaRefEdgeId(TEAM_SCHEMA.id, USER_SCHEMA.id),
+      ),
+    ).toMatchObject({ source: teamId, target: userId, kind: "data", label: "owner" });
+    expect(
+      projection.graph.edges.some(
+        (edge) => edge.id === schemaRefEdgeId(TEAM_SCHEMA.id, VIEW_SCHEMA.id),
+      ),
+    ).toBe(false);
+  });
+
+  it("leaves the projection unchanged when schemas are absent or empty", () => {
+    const base = {
+      graph: derivedGraph(),
+      model: derive(),
+      view: { level: "components", scope: "ctr:apps-server" } as const,
+    };
+    expect(projectC4({ ...base, schemas: [] })).toEqual(projectC4(base));
+  });
 });
 
 describe("rollupC4Marks", () => {
@@ -335,5 +448,6 @@ describe("c4 helpers", () => {
     expect(c4ViewKey({ level: "components", scope: "ctr:x" })).toBe("components:ctr:x");
     expect(isInfraCategory("queue")).toBe(true);
     expect(isInfraCategory("payments")).toBe(false);
+    expect(containerForFile(derive(), USER_SCHEMA.file)).toBe("ctr:apps-server");
   });
 });

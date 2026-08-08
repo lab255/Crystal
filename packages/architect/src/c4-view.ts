@@ -116,7 +116,8 @@ export function applyC4Edit(args: {
         manualNodesChanged = true;
       }
     }
-    // Aggregates (ctr:, c4:system, person:user) re-derive — deletion is a no-op.
+    // Projection-only nodes (aggregates and schema: entities) re-derive —
+    // deletion is a deliberate no-op rather than a manual-node mutation.
   }
 
   // Edges: additions and label/kind edits land in manualEdges; deletions of
@@ -280,6 +281,7 @@ export function c4Reserve(
     if (reserve.has(n.id)) continue;
     if (n.kind === "container") reserve.set(n.id, { width: 300, height: 170 });
     else if (n.kind === "system" && n.size == null) reserve.set(n.id, { width: 340, height: 190 });
+    else if (n.kind === "entity") reserve.set(n.id, { width: 180, height: 90 });
   }
   return reserve;
 }

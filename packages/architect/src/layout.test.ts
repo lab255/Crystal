@@ -36,6 +36,57 @@ describe("autoLayout — flow mode", () => {
       expect(Number.isFinite(n.position.y)).toBe(true);
     }
   });
+
+  it("packs disconnected siblings into compact wrapped rows", () => {
+    const g = graph(Array.from({ length: 13 }, (_, i) => node(`n${i}`, "service")));
+    const laid = autoLayout(g);
+    const xs = new Set(laid.nodes.map((n) => n.position.x));
+    const ys = new Set(laid.nodes.map((n) => n.position.y));
+    const right = Math.max(...laid.nodes.map((n) => n.position.x + 200));
+
+    expect(xs.size).toBeGreaterThan(1);
+    expect(ys.size).toBe(3);
+    expect(right).toBeLessThanOrEqual(1200);
+  });
+
+  it("keeps mixed connected-component footprints pairwise non-overlapping", () => {
+    const ids = ["a1", "a2", "b1", "b2", "b3", "solo1", "solo2"];
+    const sizes = new Map([
+      ["a1", { width: 260, height: 90 }],
+      ["a2", { width: 180, height: 160 }],
+      ["b1", { width: 380, height: 100 }],
+      ["b2", { width: 140, height: 220 }],
+      ["b3", { width: 240, height: 80 }],
+      ["solo1", { width: 510, height: 130 }],
+      ["solo2", { width: 170, height: 300 }],
+    ]);
+    const laid = autoLayout(
+      graph(
+        ids.map((id) => node(id, "service")),
+        [
+          { id: "ea", source: "a1", target: "a2", kind: "sync", label: "" },
+          { id: "eb1", source: "b1", target: "b2", kind: "sync", label: "" },
+          { id: "eb2", source: "b2", target: "b3", kind: "sync", label: "" },
+        ],
+      ),
+      { reserve: sizes },
+    );
+
+    for (let i = 0; i < laid.nodes.length; i += 1) {
+      const a = laid.nodes[i]!;
+      const aSize = sizes.get(a.id)!;
+      for (let j = i + 1; j < laid.nodes.length; j += 1) {
+        const b = laid.nodes[j]!;
+        const bSize = sizes.get(b.id)!;
+        const overlaps =
+          a.position.x < b.position.x + bSize.width &&
+          a.position.x + aSize.width > b.position.x &&
+          a.position.y < b.position.y + bSize.height &&
+          a.position.y + aSize.height > b.position.y;
+        expect(overlaps, `${a.id} overlaps ${b.id}`).toBe(false);
+      }
+    }
+  });
 });
 
 describe("autoLayout — reserved footprints", () => {
@@ -50,16 +101,14 @@ describe("autoLayout — reserved footprints", () => {
     expect(topOf(laid, "b")).toBeGreaterThanOrEqual(topOf(laid, "a") + 620);
   });
 
-  it("spreads siblings horizontally by reserved widths", () => {
+  it("spaces disconnected siblings by reserved footprints when rows wrap", () => {
     const g = graph([node("a", "service"), node("b", "service")]);
     const reserve = new Map([
       ["a", { width: 840, height: 620 }],
       ["b", { width: 840, height: 620 }],
     ]);
     const laid = autoLayout(g, { reserve });
-    const ax = laid.nodes.find((n) => n.id === "a")!.position.x;
-    const bx = laid.nodes.find((n) => n.id === "b")!.position.x;
-    expect(Math.abs(ax - bx)).toBeGreaterThanOrEqual(840);
+    expect(topOf(laid, "b")).toBeGreaterThanOrEqual(topOf(laid, "a") + 620);
   });
 
   it("fitContainersToChildren sizes containers around reserved child footprints", () => {

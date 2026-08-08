@@ -13,6 +13,9 @@ const LEAF_H = 84;
 const PADDING_X = 24;
 const PADDING_Y = 48; // room for container headers
 const BAND_GAP = 72;
+const ROW_MAX_W = 1200;
+const GAP_X = 36;
+const GAP_Y = 36;
 
 /** Band order for `layers` mode; `null` = unlayered (containers, notes). */
 const LAYER_ORDER: readonly (ArchLayer | null)[] = ["entry", "service", "data", null];
@@ -27,7 +30,8 @@ const STACK_ORDER: readonly (StackBand | null)[] = ["frontend", "boundary", "ser
 
 export interface AutoLayoutOptions {
   /**
-   * "flow" (default): one top-to-bottom dagre pass per scope.
+   * "flow" (default): top-to-bottom Dagre inside each connected component,
+   * then compact wrapped-row packing of the component blocks per scope.
    * "layers": role-banded. Backend scopes stack entry/service/data bands
    * top-down; scopes mixing frontend and backend lay out as horizontal
    * fullstack columns (frontend → api boundary → services → data). Dagre
@@ -285,6 +289,109 @@ function dagrePass(
   return out;
 }
 
+interface RowItem<T> {
+  item: T;
+  width: number;
+  height: number;
+}
+
+interface PackedRowItem<T> extends RowItem<T> {
+  x: number;
+  y: number;
+}
+
+/** Pack measured rectangles left-to-right, wrapping onto compact rows. */
+function packRows<T>(items: readonly RowItem<T>[]): {
+  items: PackedRowItem<T>[];
+  width: number;
+  height: number;
+} {
+  const packed: PackedRowItem<T>[] = [];
+  let x = 0;
+  let rowY = 0;
+  let rowH = 0;
+  let width = 0;
+  for (const item of items) {
+    if (x > 0 && x + item.width > ROW_MAX_W) {
+      rowY += rowH + GAP_Y;
+      x = 0;
+      rowH = 0;
+    }
+    packed.push({ ...item, x, y: rowY });
+    width = Math.max(width, x + item.width);
+    rowH = Math.max(rowH, item.height);
+    x += item.width + GAP_X;
+  }
+  return { items: packed, width, height: rowY + rowH };
+}
+
+/** Undirected components of the edges that remain inside one parent scope. */
+function connectedComponents(graph: ArchitectureGraph, ids: readonly string[]): string[][] {
+  const scope = new Set(ids);
+  const adjacent = new Map(ids.map((id) => [id, new Set<string>()]));
+  for (const edge of graph.edges) {
+    if (edge.source === edge.target || !scope.has(edge.source) || !scope.has(edge.target)) continue;
+    adjacent.get(edge.source)!.add(edge.target);
+    adjacent.get(edge.target)!.add(edge.source);
+  }
+
+  const seen = new Set<string>();
+  const components: string[][] = [];
+  for (const start of ids) {
+    if (seen.has(start)) continue;
+    const component: string[] = [];
+    const pending = [start];
+    seen.add(start);
+    while (pending.length > 0) {
+      const id = pending.pop()!;
+      component.push(id);
+      for (const neighbor of adjacent.get(id)!) {
+        if (seen.has(neighbor)) continue;
+        seen.add(neighbor);
+        pending.push(neighbor);
+      }
+    }
+    components.push(component);
+  }
+  return components;
+}
+
+interface FlowBlock {
+  nodes: { id: string; x: number; y: number }[];
+  width: number;
+  height: number;
+}
+
+function layoutFlowBlock(
+  graph: ArchitectureGraph,
+  ids: string[],
+  dims: Map<string, { width: number; height: number }>,
+): FlowBlock {
+  if (ids.length === 1) {
+    const id = ids[0]!;
+    const size = dims.get(id)!;
+    return { nodes: [{ id, x: 0, y: 0 }], ...size };
+  }
+
+  const pass = dagrePass(graph, ids, dims, new Set(ids));
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const [id, pos] of pass) {
+    const size = dims.get(id)!;
+    minX = Math.min(minX, pos.x);
+    minY = Math.min(minY, pos.y);
+    maxX = Math.max(maxX, pos.x + size.width);
+    maxY = Math.max(maxY, pos.y + size.height);
+  }
+  return {
+    nodes: [...pass].map(([id, pos]) => ({ id, x: pos.x - minX, y: pos.y - minY })),
+    width: maxX - minX,
+    height: maxY - minY,
+  };
+}
+
 function layoutScopeFlow(
   graph: ArchitectureGraph,
   ids: string[],
@@ -292,12 +399,18 @@ function layoutScopeFlow(
   positions: Map<string, { x: number; y: number }>,
   nested: boolean,
 ): void {
-  const scope = new Set(ids);
-  for (const [id, pos] of dagrePass(graph, ids, dims, scope)) {
-    positions.set(id, {
-      x: pos.x + (nested ? PADDING_X : 0),
-      y: pos.y + (nested ? PADDING_Y : 0),
-    });
+  const blocks = connectedComponents(graph, ids).map((component) =>
+    layoutFlowBlock(graph, component, dims),
+  );
+  const packed = packRows(
+    blocks.map((block) => ({ item: block, width: block.width, height: block.height })),
+  );
+  const x0 = nested ? PADDING_X : 0;
+  const y0 = nested ? PADDING_Y : 0;
+  for (const placed of packed.items) {
+    for (const node of placed.item.nodes) {
+      positions.set(node.id, { x: x0 + placed.x + node.x, y: y0 + placed.y + node.y });
+    }
   }
 }
 
@@ -320,9 +433,6 @@ function layoutScopeLayers(
     width: number;
     height: number;
   }
-  const BAND_MAX_W = 1200;
-  const GAP_X = 36;
-  const GAP_Y = 36;
   const laid: LaidBand[] = [];
   for (const band of bands) {
     if (band.ids.length === 0) continue;
@@ -333,24 +443,17 @@ function layoutScopeLayers(
     const ordered = [...pass.entries()]
       .sort((a, b) => a[1].x - b[1].x || a[1].y - b[1].y)
       .map(([id]) => id);
-    const nodes: LaidBand["nodes"] = [];
-    let x = 0;
-    let rowY = 0;
-    let rowH = 0;
-    let width = 0;
-    for (const id of ordered) {
-      const d = dims.get(id)!;
-      if (x > 0 && x + d.width > BAND_MAX_W) {
-        rowY += rowH + GAP_Y;
-        x = 0;
-        rowH = 0;
-      }
-      nodes.push({ id, x, y: rowY });
-      width = Math.max(width, x + d.width);
-      rowH = Math.max(rowH, d.height);
-      x += d.width + GAP_X;
-    }
-    laid.push({ nodes, width, height: rowY + rowH });
+    const packed = packRows(
+      ordered.map((id) => {
+        const size = dims.get(id)!;
+        return { item: id, ...size };
+      }),
+    );
+    laid.push({
+      nodes: packed.items.map(({ item: id, x, y }) => ({ id, x, y })),
+      width: packed.width,
+      height: packed.height,
+    });
   }
 
   const maxWidth = Math.max(0, ...laid.map((b) => b.width));

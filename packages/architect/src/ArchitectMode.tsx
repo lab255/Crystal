@@ -357,6 +357,7 @@ function DiagramsView({
   const layersParam = useNav((l) => l.architect?.layers) ?? null;
   const screensOn = layersParam?.split(",").includes("screens") ?? false;
   const endpointsOn = screensOn && (layersParam?.split(",").includes("endpoints") ?? false);
+  const [showData, setShowData] = useState(true);
   const setScreensOn = useCallback(
     // Turning screens off retires the routes tier with it — endpoints are
     // the screens layer's targets, meaningless alone.
@@ -369,6 +370,7 @@ function DiagramsView({
   );
   const [screensData, setScreensData] = useState<{
     screens: SurfacesReport["screens"];
+    schemas: SurfacesReport["schemas"];
     calls: SurfaceMapReport["calls"];
   } | null>(null);
   const fetchScreens = useCallback(async () => {
@@ -377,9 +379,9 @@ function DiagramsView({
         client.request("surfaces.get", {}),
         client.request("surfaces.map", {}),
       ]);
-      setScreensData({ screens: report.screens, calls: map.calls });
+      setScreensData({ screens: report.screens, schemas: report.schemas, calls: map.calls });
     } catch {
-      // No analyzable frontend — the layer simply stays empty.
+      // No analyzable surfaces — the optional layers simply stay empty.
     }
   }, [client]);
   // Screens are fetched for the architecture view even with the layer off:
@@ -400,8 +402,13 @@ function DiagramsView({
     () => (screensOn && screensData ? { ...screensData, endpoints: endpointsOn } : null),
     [screensOn, screensData, endpointsOn],
   );
+  const schemasData = screensData?.schemas ?? null;
   const { overviewData, codeSummary, derived, c4Model, reconciled, rendered, commitEdited } =
-    useCanonicalArchitecture({ surfaces: surfacesInput, screens: screensData?.screens ?? null });
+    useCanonicalArchitecture({
+      surfaces: surfacesInput,
+      screens: screensData?.screens ?? null,
+      schemas: schemasData,
+    });
 
   /* ---- C4 altitude: level + scope live in the deep-linkable nav store ---- */
 
@@ -646,10 +653,11 @@ function DiagramsView({
             graph: displayGraph,
             model: c4Model,
             view: { level, scope },
+            schemas: showData ? (schemasData ?? undefined) : undefined,
             manualEdges: reconciled?.manualEdges,
           })
         : null,
-    [c4Enabled, displayGraph, c4Model, level, scope, reconciled],
+    [c4Enabled, displayGraph, c4Model, level, scope, showData, schemasData, reconciled],
   );
   const c4Laid = useMemo(() => {
     if (!c4Projection || !reconciled || !rendered) return null;
@@ -1202,6 +1210,37 @@ function DiagramsView({
     setDraftPath(null);
   }
 
+  function renderDraftBar(embedded = false) {
+    if (!activeDraft) return null;
+    return (
+      <DraftBar
+        draft={activeDraft.draft}
+        stale={draftStale(activeDraft.draft)}
+        reviewOn={reviewOn}
+        onToggleReview={() => setReviewOn(!reviewOn)}
+        onRename={(name) =>
+          updateArchDraft(activeDraft.path, {
+            ...activeDraft.draft,
+            name,
+            updatedAt: new Date().toISOString(),
+          })
+        }
+        onApply={applyDraft}
+        onRebase={rebaseActiveDraft}
+        onClose={() => setDraftPath(null)}
+        onDiscard={discardDraft}
+        refactorChip={
+          <RefactorChip
+            intents={draftRefactors}
+            problems={refactorProblems}
+            onRemove={removeRefactor}
+          />
+        }
+        embedded={embedded}
+      />
+    );
+  }
+
   return (
     <div className="h-full min-h-0">
       <Split storageKey="architect:diagrams" direction="horizontal">
@@ -1436,6 +1475,13 @@ function DiagramsView({
                       ? activeDraft.draft.graph
                       : ((c4Enabled ? c4Laid : null) ?? displayGraph ?? rendered)
                   }
+                  headerExtra={
+                    activeDraft
+                      ? renderDraftBar(true)
+                      : c4Enabled && c4Model && !reviewOn
+                        ? <C4Bar view={{ level, scope }} model={c4Model} onNavigate={setC4View} />
+                        : null
+                  }
                   diffMarks={
                     activeDraft
                       ? null
@@ -1469,6 +1515,8 @@ function DiagramsView({
                   onToggleContracts={setShowContracts}
                   showScreens={screensOn}
                   onToggleScreens={setScreensOn}
+                  showData={showData}
+                  onToggleData={c4Enabled ? setShowData : undefined}
                   showEndpoints={endpointsOn}
                   onToggleEndpoints={setEndpointsOn}
                   extraNodeEntries={extraNodeEntries}
@@ -1484,37 +1532,7 @@ function DiagramsView({
                   }
                 />
               )}
-              {c4Enabled && c4Model && !reviewOn ? (
-                <div className="absolute left-1/2 top-3 z-10 -translate-x-1/2">
-                  <C4Bar view={{ level, scope }} model={c4Model} onNavigate={setC4View} />
-                </div>
-              ) : null}
-              {activeDraft ? (
-                <DraftBar
-                  draft={activeDraft.draft}
-                  stale={draftStale(activeDraft.draft)}
-                  reviewOn={reviewOn}
-                  onToggleReview={() => setReviewOn(!reviewOn)}
-                  onRename={(name) =>
-                    updateArchDraft(activeDraft.path, {
-                      ...activeDraft.draft,
-                      name,
-                      updatedAt: new Date().toISOString(),
-                    })
-                  }
-                  onApply={applyDraft}
-                  onRebase={rebaseActiveDraft}
-                  onClose={() => setDraftPath(null)}
-                  onDiscard={discardDraft}
-                  refactorChip={
-                    <RefactorChip
-                      intents={draftRefactors}
-                      problems={refactorProblems}
-                      onRemove={removeRefactor}
-                    />
-                  }
-                />
-              ) : null}
+              {activeDraft && reviewOn ? renderDraftBar() : null}
               <ApplyRefactorsDialog
                 open={applyDialogOpen}
                 onOpenChange={(open) => !applyBusy && setApplyDialogOpen(open)}
@@ -1938,6 +1956,7 @@ function DraftBar({
   onClose,
   onDiscard,
   refactorChip,
+  embedded = false,
 }: {
   draft: ArchDraft;
   stale: boolean;
@@ -1949,12 +1968,21 @@ function DraftBar({
   onClose: () => void;
   onDiscard: () => void;
   refactorChip?: React.ReactNode;
+  /** Inside the canvas header lane, positioning belongs to the Panel stack. */
+  embedded?: boolean;
 }) {
   const [name, setName] = useState(draft.name);
   useEffect(() => setName(draft.name), [draft.id, draft.name]);
 
   return (
-    <div className="absolute left-1/2 top-3 z-20 flex max-w-[90%] -translate-x-1/2 flex-wrap items-center gap-2 gap-y-1 rounded-xl border border-warn/40 bg-surface-2/95 py-1 pl-2.5 pr-1 shadow-xl shadow-black/30 backdrop-blur">
+    <div
+      className={cn(
+        "z-20 flex flex-wrap items-center gap-2 gap-y-1 rounded-xl border border-warn/40 bg-surface-2/95 py-1 pl-2.5 pr-1 shadow-xl shadow-black/30 backdrop-blur",
+        embedded
+          ? "max-w-full"
+          : "absolute left-1/2 top-3 max-w-[90%] -translate-x-1/2",
+      )}
+    >
       <GitBranch className="h-3.5 w-3.5 shrink-0 text-warn" />
       <input
         value={name}

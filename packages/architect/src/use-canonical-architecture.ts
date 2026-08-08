@@ -6,11 +6,13 @@ import {
   deriveC4Model,
   extractOverlay,
   reconcileOverlay,
+  schemaNodeId,
   type ArchOverlay,
   type ArchitectureGraph,
   type C4Model,
   type CodeMapSummary,
   type ScreenApiCall,
+  type SchemaSurface,
   type ScreenSurface,
   type SystemOverview,
 } from "@crystal/core";
@@ -48,6 +50,8 @@ export function useCanonicalArchitecture(options?: {
    * The layer's own screens win when both are set.
    */
   screens?: readonly ScreenSurface[] | null;
+  /** Schema ids that exist only in C4 projections, kept known to the overlay. */
+  schemas?: readonly SchemaSurface[] | null;
 }): {
   overviewData: SystemOverview | null;
   codeSummary: CodeMapSummary | null;
@@ -80,6 +84,7 @@ export function useCanonicalArchitecture(options?: {
   const updateArchOverlay = useWorkspace((s) => s.updateArchOverlay);
   const surfaces = options?.surfaces ?? null;
   const screensInfo = options?.screens ?? null;
+  const schemasInfo = options?.schemas ?? null;
 
   useEffect(() => {
     if (connection === "open") void loadArchOverlay();
@@ -135,9 +140,23 @@ export function useCanonicalArchitecture(options?: {
         : null,
     [overviewData, codeSummary, surfaces, screensInfo],
   );
+  // The surfaces report arrives independently of the code map. Until it
+  // resolves, preserve existing schema projection ids so a quick edit cannot
+  // prune their pins; an eventual empty report still removes genuinely stale
+  // ids because [] is distinct from the loading null.
+  const knownSchemaIds = useMemo(() => {
+    if (schemasInfo != null) return schemasInfo.map((schema) => schemaNodeId(schema.id));
+    if (!overlay) return [];
+    const ids = new Set(Object.keys(overlay.overrides).filter((id) => id.startsWith("schema:")));
+    for (const positions of Object.values(overlay.c4Layouts)) {
+      for (const id of Object.keys(positions)) if (id.startsWith("schema:")) ids.add(id);
+    }
+    return [...ids];
+  }, [schemasInfo, overlay]);
   // Fold the fresh derivation through the overlay (drops dead positional
   // overrides, keeps semantic ones as stale). The C4 aggregates count as
-  // known ids so per-level pins and renamed containers survive.
+  // known ids so per-level pins, schema entity pins, and renamed containers
+  // survive without ever entering the flat graph/extractOverlay path.
   const reconciled = useMemo(
     () =>
       overlay && derived
@@ -145,11 +164,16 @@ export function useCanonicalArchitecture(options?: {
             overlay,
             derived,
             c4Model
-              ? ["c4:system", "person:user", ...c4Model.containers.map((c) => c.id)]
+              ? [
+                  "c4:system",
+                  "person:user",
+                  ...c4Model.containers.map((c) => c.id),
+                  ...knownSchemaIds,
+                ]
               : undefined,
           ).overlay
         : null,
-    [overlay, derived, c4Model],
+    [overlay, derived, c4Model, knownSchemaIds],
   );
   const rendered = useMemo(() => {
     if (!derived || !reconciled) return null;

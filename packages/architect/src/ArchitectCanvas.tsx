@@ -14,7 +14,16 @@ import {
   type Node as RfNode,
   type Viewport,
 } from "@xyflow/react";
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type MouseEvent as ReactMouseEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type DragEvent,
+  type MouseEvent as ReactMouseEvent,
+  type ReactNode,
+} from "react";
 import {
   Code2,
   Copy,
@@ -179,6 +188,8 @@ function isCodeChildId(id: string): boolean {
 export interface ArchitectCanvasProps {
   graph: ArchitectureGraph;
   onChange: (graph: ArchitectureGraph) => void;
+  /** Compact view controls that share a header lane above the canvas toolbar. */
+  headerExtra?: ReactNode;
   /** Live code map for the overlay + code expansion; null while unavailable. */
   codeSummary?: CodeMapSummary | null;
   /**
@@ -223,6 +234,9 @@ export interface ArchitectCanvasProps {
   /** Screens layer toggle (the folded-in surfaces map). */
   showScreens?: boolean;
   onToggleScreens?: (on: boolean) => void;
+  /** Data-schema entities in C4 component projections. */
+  showData?: boolean;
+  onToggleData?: (on: boolean) => void;
   /** Routes tier of the screens layer — called endpoints as their own nodes. */
   showEndpoints?: boolean;
   onToggleEndpoints?: (on: boolean) => void;
@@ -363,6 +377,7 @@ const NO_MOVES: MoveLikeIntent[] = [];
 function CanvasInner({
   graph,
   onChange,
+  headerExtra,
   codeSummary,
   overview,
   overlayOn,
@@ -388,6 +403,8 @@ function CanvasInner({
   onToggleContracts,
   showScreens,
   onToggleScreens,
+  showData,
+  onToggleData,
   showEndpoints,
   onToggleEndpoints,
   extraNodeEntries,
@@ -2293,45 +2310,50 @@ function CanvasInner({
             here so a fully-loaded toolbar wraps instead of running off the
             canvas (the right-side review cluster keeps its corner). */}
         <Panel position="top-left" className="max-w-[calc(100%-11rem)]">
-          <Toolbar
-            graph={graph}
-            facet={
-              activeFacet
-                ? {
-                    name: activeFacet.name,
-                    shown: viewGraph.nodes.length,
-                    total: graph.nodes.length,
-                    empty: activeFacet.nodeIds.length === 0,
-                  }
-                : null
-            }
-            onExitFacet={() => nav({ architect: { facet: null } })}
-            defaultEdgeKind={defaultEdgeKind}
-            onDefaultEdgeKindChange={setDefaultEdgeKind}
-            onAutoLayout={runAutoLayout}
-            onFitView={() => void fitView({ padding: 0.15, duration: 300 })}
-            onRename={(name) => commit({ ...graphRef.current, name })}
-            lodLevel={lodLevel}
-            onLodLevelChange={setLodLevel}
-            lodCounts={lodCounts}
-            overlayOn={overlayOn}
-            onToggleOverlay={onToggleOverlay}
-            showDuplicates={showDuplicates}
-            onToggleDuplicates={onToggleDuplicates}
-            showFindings={showFindings}
-            onToggleFindings={onToggleFindings}
-            showChanges={showChanges}
-            onToggleChanges={onToggleChanges}
-            showInsights={showInsights}
-            onToggleInsights={onToggleInsights}
-            showContracts={showContracts}
-            onToggleContracts={onToggleContracts}
-            showScreens={showScreens}
-            onToggleScreens={onToggleScreens}
-            showEndpoints={showEndpoints}
-            onToggleEndpoints={onToggleEndpoints}
-            onOpenWorkspacesMap={onOpenWorkspacesMap}
-          />
+          <div className="flex max-w-full flex-col items-start gap-2">
+            {headerExtra}
+            <Toolbar
+              graph={graph}
+              facet={
+                activeFacet
+                  ? {
+                      name: activeFacet.name,
+                      shown: viewGraph.nodes.length,
+                      total: graph.nodes.length,
+                      empty: activeFacet.nodeIds.length === 0,
+                    }
+                  : null
+              }
+              onExitFacet={() => nav({ architect: { facet: null } })}
+              defaultEdgeKind={defaultEdgeKind}
+              onDefaultEdgeKindChange={setDefaultEdgeKind}
+              onAutoLayout={runAutoLayout}
+              onFitView={() => void fitView({ padding: 0.15, duration: 300 })}
+              onRename={(name) => commit({ ...graphRef.current, name })}
+              lodLevel={lodLevel}
+              onLodLevelChange={setLodLevel}
+              lodCounts={lodCounts}
+              overlayOn={overlayOn}
+              onToggleOverlay={onToggleOverlay}
+              showDuplicates={showDuplicates}
+              onToggleDuplicates={onToggleDuplicates}
+              showFindings={showFindings}
+              onToggleFindings={onToggleFindings}
+              showChanges={showChanges}
+              onToggleChanges={onToggleChanges}
+              showInsights={showInsights}
+              onToggleInsights={onToggleInsights}
+              showContracts={showContracts}
+              onToggleContracts={onToggleContracts}
+              showScreens={showScreens}
+              onToggleScreens={onToggleScreens}
+              showData={showData}
+              onToggleData={onToggleData}
+              showEndpoints={showEndpoints}
+              onToggleEndpoints={onToggleEndpoints}
+              onOpenWorkspacesMap={onOpenWorkspacesMap}
+            />
+          </div>
         </Panel>
         <Panel position="center-left">
           <Palette onAdd={addAtViewportCenter} />

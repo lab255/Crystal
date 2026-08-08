@@ -57,13 +57,23 @@ describe("overlay c4Layouts", () => {
     let overlay = createArchOverlay();
     overlay = setC4Position(overlay, "containers", "sys:auth", { x: 5, y: 5 });
     overlay = setC4Position(overlay, "containers", "ctr:web", { x: 9, y: 9 });
+    overlay = setC4Position(
+      overlay,
+      "components:ctr:web",
+      "schema:src/data.ts#User",
+      { x: 12, y: 24 },
+    );
     overlay = setC4Position(overlay, "components:ctr:web", "sys:gone", { x: 1, y: 1 });
     overlay = { ...overlay, overrides: { "ctr:web": { label: "Storefront" } } };
 
     const derived = graph([node("sys:auth")]);
-    const { overlay: out, staleIds } = reconcileOverlay(overlay, derived, ["ctr:web"]);
+    const { overlay: out, staleIds } = reconcileOverlay(overlay, derived, [
+      "ctr:web",
+      "schema:src/data.ts#User",
+    ]);
     expect(out.c4Layouts).toEqual({
       containers: { "sys:auth": { x: 5, y: 5 }, "ctr:web": { x: 9, y: 9 } },
+      "components:ctr:web": { "schema:src/data.ts#User": { x: 12, y: 24 } },
     });
     // The renamed container is known, not stale.
     expect(out.overrides["ctr:web"]).toEqual({ label: "Storefront" });

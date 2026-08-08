@@ -3,7 +3,8 @@ import { canonicalSystemIds } from "./arch-derive.js";
 import type { CodeModule, CodeModuleDep } from "./codemap.js";
 import type { DiffMark, DiffMarks } from "./diagram-diff.js";
 import type { CodeExternalDep, ExternalServiceCategory } from "./external-services.js";
-import type { ScreenSurface } from "./surfaces.js";
+import { moduleForFile } from "./highlight.js";
+import type { SchemaSurface, ScreenSurface } from "./surfaces.js";
 import type { SystemModule, SystemOverview } from "./system-overview.js";
 
 /**
@@ -68,6 +69,9 @@ const slug = (value: string): string =>
 
 export const containerNodeIdOf = (modulePath: string): string => `ctr:${slug(modulePath)}`;
 export const c4RelId = (source: string, target: string): string => `c4rel:${source}->${target}`;
+export const schemaNodeId = (schemaId: string): string => `schema:${schemaId}`;
+export const schemaRefEdgeId = (sourceId: string, targetId: string): string =>
+  `schemaref:${sourceId}--${targetId}`;
 
 /**
  * Stable key for one C4 view — the per-level manual layout in the overlay
@@ -168,6 +172,8 @@ export interface C4Model {
   containerOfSystem: Record<string, string>;
   /** Code-map module path → container id (screens/routes attribution). */
   containerOfModule: Record<string, string>;
+  /** Module roots retained for longest-prefix file ownership during projection. */
+  modules: readonly CodeModule[];
   /** External service id → its category (splits infra from external systems). */
   categoryOfService: Record<string, ExternalServiceCategory>;
   /** External service id → display name ("PostgreSQL") — the C4 technology line. */
@@ -398,10 +404,17 @@ export function deriveC4Model(input: C4DeriveInput): C4Model {
     containers,
     containerOfSystem,
     containerOfModule,
+    modules: [...modules],
     categoryOfService,
     nameOfService,
     hasScreens,
   };
+}
+
+/** Owning C4 container for a workspace-relative file, via code-map modules. */
+export function containerForFile(model: C4Model, file: string): string | null {
+  const modulePath = moduleForFile(file, model.modules);
+  return modulePath ? (model.containerOfModule[modulePath] ?? null) : null;
 }
 
 /* ------------------------------------------------------------------ */
@@ -430,6 +443,8 @@ export interface C4ProjectInput {
   graph: ArchitectureGraph;
   model: C4Model;
   view: C4View;
+  /** Workspace data schemas; omitted keeps the pre-schema projection unchanged. */
+  schemas?: readonly SchemaSurface[];
   /**
    * Overlay manual edges — may reference aggregate ids (person→container…)
    * that the canonical composition drops as dangling. Re-attached here when
@@ -533,6 +548,33 @@ function personNodes(graph: ArchitectureGraph, model: C4Model): ArchNode[] {
   return out;
 }
 
+/** Reference edges among exactly the entity set visible in one component scope. */
+function schemaReferenceEdges(schemas: readonly SchemaSurface[]): ArchEdge[] {
+  const byName = new Map(schemas.map((schema) => [schema.name, schema]));
+  const refs = new Map<
+    string,
+    { source: SchemaSurface; target: SchemaSurface; fields: string[] }
+  >();
+  for (const source of schemas) {
+    for (const field of source.fields) {
+      if (!field.references) continue;
+      const target = byName.get(field.references);
+      if (!target) continue;
+      const id = schemaRefEdgeId(source.id, target.id);
+      const ref = refs.get(id) ?? { source, target, fields: [] };
+      if (!ref.fields.includes(field.name)) ref.fields.push(field.name);
+      refs.set(id, ref);
+    }
+  }
+  return [...refs.entries()].map(([id, ref]) => ({
+    id,
+    source: schemaNodeId(ref.source.id),
+    target: schemaNodeId(ref.target.id),
+    kind: "data",
+    label: ref.fields.join(", "),
+  }));
+}
+
 /** Aggregate several parallel edges into one C4 relationship edge. */
 interface RelAccumulator {
   source: string;
@@ -620,6 +662,16 @@ export function projectC4(input: C4ProjectInput): C4Projection {
   const edges: ArchEdge[] = [];
   const rels = new Map<string, RelAccumulator>();
 
+  const schemas = input.schemas ?? [];
+  const schemasOfContainer = new Map<string, SchemaSurface[]>();
+  for (const schema of schemas) {
+    const owner = containerForFile(model, schema.file);
+    if (!owner) continue;
+    schemasOfContainer.set(owner, [...(schemasOfContainer.get(owner) ?? []), schema]);
+  }
+  const entityCount = (containerId: string): number =>
+    schemasOfContainer.get(containerId)?.length ?? 0;
+
   const containerById = new Map(model.containers.map((c) => [c.id, c]));
   const persons = personNodes(graph, model);
   for (const p of persons) typeLines[p.id] = "Person";
@@ -658,6 +710,9 @@ export function projectC4(input: C4ProjectInput): C4Projection {
         ...(c.screenCount > 0
           ? [`${c.screenCount} screen${c.screenCount === 1 ? "" : "s"}`]
           : []),
+        ...(entityCount(c.id) > 0
+          ? [`${entityCount(c.id)} entit${entityCount(c.id) === 1 ? "y" : "ies"}`]
+          : []),
       ].join(" · "),
       parentId,
       tech: c.tech,
@@ -678,6 +733,9 @@ export function projectC4(input: C4ProjectInput): C4Projection {
     );
     typeLines[C4_SYSTEM_ID] = "Software System";
     drill[C4_SYSTEM_ID] = { level: "containers" };
+    for (const owned of schemasOfContainer.values()) {
+      for (const schema of owned) nodeRollup[schemaNodeId(schema.id)] = C4_SYSTEM_ID;
+    }
 
     for (const n of graph.nodes) {
       const cls = classOf.get(n.id)!;
@@ -723,6 +781,10 @@ export function projectC4(input: C4ProjectInput): C4Projection {
     typeLines[C4_SYSTEM_ID] = "Software System";
     // The open boundary drills UP — double-click zooms back out to context.
     drill[C4_SYSTEM_ID] = { level: "context" };
+
+    for (const [containerId, owned] of schemasOfContainer) {
+      for (const schema of owned) nodeRollup[schemaNodeId(schema.id)] = containerId;
+    }
 
     for (const c of model.containers) nodes.push(containerCard(c, C4_SYSTEM_ID));
 
@@ -821,6 +883,23 @@ export function projectC4(input: C4ProjectInput): C4Projection {
                 : "Component";
       }
     }
+
+    const scopedSchemas = schemasOfContainer.get(scopeId) ?? [];
+    for (const schema of scopedSchemas) {
+      const id = schemaNodeId(schema.id);
+      nodes.push(
+        makeNode({
+          id,
+          kind: "entity",
+          label: schema.name,
+          parentId: scopeId,
+          codeFile: schema.file,
+          entityFields: schema.fields.map((field) => field.name),
+        }),
+      );
+      typeLines[id] = `Entity · ${schema.kind}`;
+    }
+    edges.push(...schemaReferenceEdges(scopedSchemas));
 
     // Neighbors: whatever the members exchange with, one hop out.
     const visible = new Set(nodes.map((n) => n.id));

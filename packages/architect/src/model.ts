@@ -25,6 +25,7 @@ import {
   Rows3,
   Server,
   StickyNote,
+  Table2,
   UserRound,
   Waypoints,
   Zap,
@@ -63,6 +64,7 @@ export const KIND_META: Record<ArchNodeKind, KindMeta> = {
   note: { label: "Note", icon: StickyNote, defaultAccent: "amber" },
   person: { label: "Person", icon: UserRound, defaultAccent: "blue" },
   container: { label: "Container", icon: Container, defaultAccent: "cyan" },
+  entity: { label: "Entity", icon: Table2, defaultAccent: "emerald" },
 };
 
 export const ACCENT_CSS: Record<AccentName, string> = {

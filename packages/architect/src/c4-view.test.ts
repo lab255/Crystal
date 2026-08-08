@@ -8,6 +8,7 @@ import {
 import {
   applyAggregateOverrides,
   applyC4Edit,
+  c4Reserve,
   projectFacets,
   remapFlowProjection,
 } from "./c4-view.js";
@@ -107,6 +108,42 @@ describe("applyC4Edit", () => {
     });
     expect(out.hiddenIds).toEqual(["sys:api"]);
     expect(out.manualNodes).toEqual([]);
+  });
+
+  it("pins schema entities per level and treats deletion as a projection-only no-op", () => {
+    const entity = node("schema:src/data.ts#User", {
+      kind: "entity",
+      parentId: "ctr:apps-server",
+      entityFields: ["id", "email"],
+    });
+    const projected = { ...PROJECTED, nodes: [...PROJECTED.nodes, entity] };
+    const moved = {
+      ...projected,
+      nodes: projected.nodes.map((n) =>
+        n.id === entity.id ? { ...n, position: { x: 75, y: 125 } } : n,
+      ),
+    };
+    const pinned = applyC4Edit({
+      overlay: createArchOverlay(),
+      derived: DERIVED,
+      projected,
+      edited: moved,
+      viewKey: "components:ctr:apps-server",
+    });
+    expect(pinned.c4Layouts["components:ctr:apps-server"]?.[entity.id]).toEqual({
+      x: 75,
+      y: 125,
+    });
+
+    const deleted = applyC4Edit({
+      overlay: createArchOverlay(),
+      derived: DERIVED,
+      projected,
+      edited: { ...projected, nodes: projected.nodes.filter((n) => n.id !== entity.id) },
+      viewKey: "components:ctr:apps-server",
+    });
+    expect(deleted.hiddenIds).toEqual([]);
+    expect(deleted.manualNodes).toEqual([]);
   });
 
   it("adds manual nodes pinned where dropped, parent only when canonical", () => {
@@ -222,6 +259,13 @@ describe("applyAggregateOverrides", () => {
     const byId = new Map(out.nodes.map((n) => [n.id, n]));
     expect(byId.get("ctr:apps-server")?.label).toBe("Bridge");
     expect(byId.get("sys:api")?.label).toBe("sys:api");
+  });
+});
+
+describe("c4Reserve", () => {
+  it("reserves the compact entity card footprint", () => {
+    const entity = node("schema:src/data.ts#User", { kind: "entity" });
+    expect(c4Reserve(graph([entity])).get(entity.id)).toEqual({ width: 180, height: 90 });
   });
 });
 

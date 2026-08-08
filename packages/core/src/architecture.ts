@@ -33,6 +33,9 @@ export const ARCH_NODE_KINDS = [
   // kind (and a palette kind for planned apps).
   "person",
   "container",
+  // Data-schema entity projected into a C4 component boundary. Entity cards
+  // are derived from `SchemaSurface`, never inferred as infrastructure.
+  "entity",
 ] as const;
 
 export const ArchNodeKindSchema = z.enum(ARCH_NODE_KINDS);
@@ -63,6 +66,7 @@ export const DEFAULT_LAYER_OF_KIND: Partial<Record<ArchNodeKind, ArchLayer>> = {
   datastore: "data",
   cache: "data",
   queue: "data",
+  entity: "data",
   person: "entry",
   container: "service",
 };
@@ -185,6 +189,8 @@ export const ArchNodeSchema = z.object({
     .nullish(),
   /** Traffic-simulation overrides; absent = simulate with kind defaults. */
   sim: SimNodeConfigSchema.nullish(),
+  /** Field names on a derived data-schema entity (plain, worker-safe data). */
+  entityFields: z.array(z.string()).optional(),
 });
 export type ArchNode = z.infer<typeof ArchNodeSchema>;
 

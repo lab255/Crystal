@@ -107,6 +107,8 @@ export const LeafNode = memo(function LeafNode({ data, selected }: NodeProps<Arc
   // C4-notation style; outside the C4 view the kind/role label stands.
   const kindLabel = data.c4Type ? `[${data.c4Type}]` : (roleMeta?.label ?? meta.label);
   const person = arch.kind === "person";
+  const entity = arch.kind === "entity";
+  const entityFields = arch.entityFields ?? [];
   const slot = data.slot;
 
   const hlAttrs = highlightAttrs(
@@ -232,7 +234,9 @@ export const LeafNode = memo(function LeafNode({ data, selected }: NodeProps<Arc
         // plain leaves stay compact.
         arch.kind === "container" || arch.kind === "system"
           ? "min-w-56 max-w-72"
-          : "min-w-40 max-w-56",
+          : entity
+            ? "h-[90px] w-[180px] overflow-hidden"
+            : "min-w-40 max-w-56",
         "transition-shadow",
         // The C4 person silhouette: a rounded head-and-shoulders card.
         person ? "rounded-t-[26px] rounded-b-lg" : "rounded-lg",
@@ -273,7 +277,19 @@ export const LeafNode = memo(function LeafNode({ data, selected }: NodeProps<Arc
       >
         {kindLabel}
       </div>
-      {arch.description ? (
+      {entity && entityFields.length > 0 ? (
+        <div className="mt-1 grid grid-cols-2 gap-x-2 border-t border-edge/60 pt-1 font-mono text-[9px] leading-3 text-ink-muted">
+          {entityFields.slice(0, 4).map((field) => (
+            <span key={field} className="truncate" title={field}>
+              {field}
+            </span>
+          ))}
+          {entityFields.length > 4 ? (
+            <span className="col-span-2 text-ink-faint">+{entityFields.length - 4} more</span>
+          ) : null}
+        </div>
+      ) : null}
+      {!entity && arch.description ? (
         <div
           className={cn(
             "mt-1 line-clamp-2 text-[11px] leading-snug text-ink-muted",
@@ -283,7 +299,7 @@ export const LeafNode = memo(function LeafNode({ data, selected }: NodeProps<Arc
           {arch.description}
         </div>
       ) : null}
-      {arch.tech.length > 0 ? (
+      {!entity && arch.tech.length > 0 ? (
         <div className="mt-1.5 flex flex-wrap gap-1">
           {arch.tech.slice(0, 4).map((t) => (
             <Badge key={t} tone="neutral">

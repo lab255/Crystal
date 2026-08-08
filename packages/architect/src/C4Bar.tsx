@@ -151,6 +151,7 @@ function C4Legend({ level }: { level: C4Level }) {
     }
     return [
       kind("service", "Component — a building block inside this container"),
+      kind("entity", "Entity — a workspace data schema"),
       kind("container", "Neighbouring container"),
       kind("external", "External system / infrastructure"),
     ];

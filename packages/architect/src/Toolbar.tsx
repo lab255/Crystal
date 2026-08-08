@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { AppWindow, ClipboardCheck, Copy, Handshake, History, Layers, LayoutGrid, Lightbulb, Maximize2, Network, Radar, Rows3, Waypoints, X } from "lucide-react";
+import { AppWindow, ClipboardCheck, Copy, Handshake, History, Layers, LayoutGrid, Lightbulb, Maximize2, Network, Radar, Rows3, TableProperties, Waypoints, X } from "lucide-react";
 import type { ArchEdgeKind, ArchitectureGraph, CodeLodLevel } from "@crystal/core";
 import { Button, Tooltip, cn } from "@crystal/ui";
 import { EDGE_KIND_STYLE } from "./model.js";
@@ -32,6 +32,8 @@ export function Toolbar({
   onToggleContracts,
   showScreens,
   onToggleScreens,
+  showData,
+  onToggleData,
   showEndpoints,
   onToggleEndpoints,
   onOpenWorkspacesMap,
@@ -63,6 +65,9 @@ export function Toolbar({
   onToggleContracts?: (on: boolean) => void;
   showScreens?: boolean;
   onToggleScreens?: (on: boolean) => void;
+  /** Data-schema entities in the active C4 component boundary. */
+  showData?: boolean;
+  onToggleData?: (on: boolean) => void;
   /** Routes tier of the screens layer — called endpoints as their own nodes. */
   showEndpoints?: boolean;
   onToggleEndpoints?: (on: boolean) => void;
@@ -264,6 +269,24 @@ export function Toolbar({
           >
             <AppWindow className="h-3.5 w-3.5" />
             screens
+          </button>
+        </Tooltip>
+      ) : null}
+      {onToggleData ? (
+        <Tooltip content="Data schemas — entities and their in-scope references inside C4 components">
+          <button
+            type="button"
+            aria-pressed={showData}
+            onClick={() => onToggleData(!showData)}
+            className={cn(
+              "flex h-6 items-center gap-1.5 rounded-md px-1.5 text-[11px] transition-colors",
+              showData
+                ? "bg-crystal-500/15 text-crystal-300"
+                : "text-ink-faint hover:text-ink-muted",
+            )}
+          >
+            <TableProperties className="h-3.5 w-3.5" />
+            Data
           </button>
         </Tooltip>
       ) : null}
