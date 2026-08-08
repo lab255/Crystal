@@ -10,8 +10,7 @@ import {
   type CoverageReport,
   type FileCoverage,
   type PackageTestSetup,
-  type QualityRun,
-  type QualityRunScope,
+  type QualityRunUpdate,
   type QualityRunSummary,
   type TestCaseResult,
   type TestCaseStatus,
@@ -87,10 +86,27 @@ function normalizeRel(rel: string): string {
   return rel.replace(/\\/g, "/").replace(/^\.\//, "");
 }
 
+function normalizePackageDir(dir: string): string {
+  return normalizeRel(dir).replace(/\/+$/, "") || ".";
+}
+
 export interface RunArgScope {
   file?: string;
   testName?: string;
+  testNamePath?: string[];
   coverage?: boolean;
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Exact full-name pattern when a hierarchy is available; leaf filtering stays compatible. */
+export function buildTestNamePattern(scope: RunArgScope): string | undefined {
+  const pathParts = scope.testNamePath?.map(sanitizeTestName).filter(Boolean);
+  if (pathParts?.length) return `^${pathParts.map(escapeRegExp).join(" ")}$`;
+  if (scope.testName) return sanitizeTestName(scope.testName);
+  return undefined;
 }
 
 /** CLI args for a scoped vitest run writing JSON results to `outputFile`. */
@@ -104,9 +120,9 @@ export function buildVitestArgs(
     windows && /\s/.test(outputFile) ? `--outputFile="${outputFile}"` : `--outputFile=${outputFile}`,
   );
   if (scope.file) args.push(quoteArg(normalizeRel(scope.file), windows));
-  if (scope.testName) {
-    const name = sanitizeTestName(scope.testName);
-    args.push("-t", windows ? `"${name}"` : name);
+  const testNamePattern = buildTestNamePattern(scope);
+  if (testNamePattern) {
+    args.push("-t", windows ? `"${testNamePattern}"` : testNamePattern);
   }
   if (scope.coverage) {
     args.push("--coverage.enabled", "--coverage.reporter=json", "--coverage.reporter=json-summary");
@@ -126,9 +142,9 @@ export function buildJestArgs(
   );
   args.push("--testLocationInResults");
   if (scope.file) args.push("--runTestsByPath", quoteArg(normalizeRel(scope.file), windows));
-  if (scope.testName) {
-    const name = sanitizeTestName(scope.testName);
-    args.push("-t", windows ? `"${name}"` : name);
+  const testNamePattern = buildTestNamePattern(scope);
+  if (testNamePattern) {
+    args.push("-t", windows ? `"${testNamePattern}"` : testNamePattern);
   }
   if (scope.coverage) {
     args.push("--coverage", "--coverageReporters=json", "--coverageReporters=json-summary");
@@ -148,9 +164,9 @@ export function buildPlaywrightArgs(
 ): string[] {
   const args = ["test", "--reporter=json"];
   if (scope.file) args.push(quoteArg(normalizeRel(scope.file), windows));
-  if (scope.testName) {
-    const name = sanitizeTestName(scope.testName);
-    args.push("-g", windows ? `"${name}"` : name);
+  const testNamePattern = buildTestNamePattern(scope);
+  if (testNamePattern) {
+    args.push("-g", windows ? `"${testNamePattern}"` : testNamePattern);
   }
   return args;
 }
@@ -213,14 +229,16 @@ export function pickSetupForFile(
  */
 export function planRunJobs(
   packages: readonly PackageTestSetup[],
-  scope: { file?: string; coverage?: boolean },
+  scope: { file?: string; packageDir?: string; coverage?: boolean },
 ): RunJobPlan[] {
   const wantCoverage = Boolean(scope.coverage);
   if (scope.file) {
-    const dir = owningPackageDir(packages, scope.file);
+    const dir = scope.packageDir ?? owningPackageDir(packages, scope.file);
     const pkg =
       pickSetupForFile(packages.filter((p) => p.dir === dir), scope.file) ??
-      pickSetupForFile(packages.filter((p) => p.dir === "."), scope.file);
+      (scope.packageDir
+        ? undefined
+        : pickSetupForFile(packages.filter((p) => p.dir === "."), scope.file));
     if (!pkg) return [];
     return [
       {
@@ -231,7 +249,10 @@ export function planRunJobs(
       },
     ];
   }
-  const runnable = packages.filter(
+  const candidates = scope.packageDir
+    ? packages.filter((p) => p.dir === scope.packageDir)
+    : packages;
+  const runnable = candidates.filter(
     (p) => p.runner === "vitest" || p.runner === "jest" || p.runner === "playwright",
   );
   if (runnable.length > 0) {
@@ -242,8 +263,12 @@ export function planRunJobs(
       coverage: wantCoverage && pkg.coverageCapable,
     }));
   }
-  const root = packages.find((p) => p.dir === "." && p.runner === "script");
-  return root ? [{ dir: ".", mode: "script", script: root.script, coverage: false }] : [];
+  const script = candidates.find(
+    (p) => p.runner === "script" && (scope.packageDir || p.dir === "."),
+  );
+  return script
+    ? [{ dir: script.dir, mode: "script", script: script.script, coverage: false }]
+    : [];
 }
 
 // ---------------------------------------------------------------------------
@@ -254,6 +279,27 @@ const ANSI_RE = /\u001b\[[0-9;]*[A-Za-z]/g;
 
 function stripAnsi(text: string): string {
   return text.replace(ANSI_RE, "");
+}
+
+const VITEST_PROGRESS_RE =
+  /^\s*([✓✔√❯×✗↓])\s+(?:\|[^|\r\n]+\|\s+)?(.+?\.(?:test|spec)\.(?:ts|tsx|js|jsx|mjs|cjs))(?=\s+(?:\(|\[)|\s*$)/;
+
+/** One conservative Vitest default-reporter file completion line. */
+export function parseVitestProgressLine(
+  line: string,
+): { file: string; status: TestCaseStatus } | null {
+  const match = VITEST_PROGRESS_RE.exec(stripAnsi(line));
+  if (!match) return null;
+  const marker = match[1]!;
+  return {
+    file: normalizeRel(match[2]!.trim()),
+    status:
+      marker === "↓"
+        ? "skip"
+        : marker === "❯" || marker === "×" || marker === "✗"
+          ? "fail"
+          : "pass",
+  };
 }
 
 interface JestishAssertion {
@@ -716,12 +762,25 @@ interface ExecJob {
   tmpJson: string | null;
 }
 
+interface CoverageProbe {
+  path: string;
+  target: string;
+  before: string | null;
+}
+
 interface LiveRun {
-  run: QualityRun;
+  run: QualityRunUpdate;
   child: ChildProcess;
   /** Remaining jobs after the current one (executed in order). */
   queue: ExecJob[];
   job: ExecJob;
+  jobIndex: number;
+  jobCount: number;
+  /** Index where the current job's interim file rows begin. */
+  jobFileStart: number;
+  jobProgressFiles: Set<string>;
+  stdoutLineBuffer: string;
+  coverageProbes: CoverageProbe[];
   cancelled: boolean;
   timedOut: boolean;
   timer: NodeJS.Timeout;
@@ -745,11 +804,11 @@ interface LiveRun {
  */
 export class QualityService {
   readonly events = new Emitter<{
-    runChanged: { run: QualityRun };
+    runChanged: { run: QualityRunUpdate };
     coverageChanged: Record<string, never>;
   }>();
 
-  private history: QualityRun[] = [];
+  private history: QualityRunUpdate[] = [];
   private live: LiveRun | null = null;
   private counter = 0;
   private coverageCache: { key: string; report: CoverageReport | null } | null = null;
@@ -949,7 +1008,13 @@ export class QualityService {
 
   // -- run ------------------------------------------------------------------
 
-  async run(params: { file?: string; testName?: string; coverage?: boolean }): Promise<{ run: QualityRun }> {
+  async run(params: {
+    file?: string;
+    testName?: string;
+    testNamePath?: string[];
+    packageDir?: string;
+    coverage?: boolean;
+  }): Promise<{ run: QualityRunUpdate }> {
     if (this.live && this.live.run.status === "running") {
       throw new Error("A test run is already in progress");
     }
@@ -957,13 +1022,28 @@ export class QualityService {
     // Validate the file scope before creating the run — traversal throws.
     const scopeFile = params.file ? normalizeRel(params.file) : undefined;
     if (scopeFile) resolveInRoot(this.root, scopeFile);
+    const packageDir =
+      params.packageDir === undefined ? undefined : normalizePackageDir(params.packageDir);
+    if (packageDir) resolveInRoot(this.root, packageDir);
 
     const packages = await this.detectPackages();
-    const scope: QualityRunScope = {};
+    if (packageDir && !packages.some((pkg) => pkg.dir === packageDir)) {
+      const detected = [...new Set(packages.map((pkg) => pkg.dir))];
+      throw new Error(
+        `Unknown test package directory: ${packageDir}. Detected packages: ${detected.join(", ") || "none"}.`,
+      );
+    }
+    if (scopeFile && packageDir && owningPackageDir(packages, scopeFile) !== packageDir) {
+      throw new Error(`Test file ${scopeFile} is not owned by package ${packageDir}.`);
+    }
+
+    const scope: QualityRunUpdate["scope"] = {};
     if (scopeFile) scope.file = scopeFile;
     if (params.testName) scope.testName = params.testName;
+    if (params.testNamePath?.length) scope.testNamePath = [...params.testNamePath];
+    if (packageDir) scope.packageDir = packageDir;
 
-    const run: QualityRun = {
+    const run: QualityRunUpdate = {
       id: `q-${++this.counter}`,
       status: "running",
       startedAt: nowIso(),
@@ -971,15 +1051,36 @@ export class QualityService {
       withCoverage: false,
       files: [],
     };
-    this.history.unshift(run);
-    if (this.history.length > MAX_RUN_HISTORY) this.history.length = MAX_RUN_HISTORY;
-    this.emitRun(run);
 
-    const plans = planRunJobs(packages, { file: scopeFile, coverage: params.coverage });
+    const plans = planRunJobs(packages, {
+      file: scopeFile,
+      packageDir,
+      coverage: params.coverage,
+    });
     if (plans.length === 0) {
+      this.rememberRun(run);
+      this.emitRun(run);
       return this.settleEarly(run, "error", "No test runner detected in this workspace.");
     }
     run.withCoverage = plans.some((p) => p.coverage);
+
+    const coveragePaths = [
+      ...new Set(
+        plans
+          .filter((plan) => plan.coverage)
+          .map((plan) =>
+            plan.dir === "."
+              ? "coverage/coverage-final.json"
+              : `${plan.dir}/coverage/coverage-final.json`,
+          ),
+      ),
+    ];
+    const coverageProbes = await Promise.all(
+      coveragePaths.map(async (coveragePath): Promise<CoverageProbe> => {
+        const target = resolveInRoot(this.root, coveragePath);
+        return { path: coveragePath, target, before: await this.coverageFingerprint(target) };
+      }),
+    );
 
     const jobs: ExecJob[] = plans.map((plan, i) => ({
       plan,
@@ -992,6 +1093,12 @@ export class QualityService {
       child: null as unknown as ChildProcess, // set by spawnJob before use
       queue: jobs.slice(1),
       job: jobs[0]!,
+      jobIndex: 0,
+      jobCount: jobs.length,
+      jobFileStart: 0,
+      jobProgressFiles: new Set(),
+      stdoutLineBuffer: "",
+      coverageProbes,
       cancelled: false,
       timedOut: false,
       timer: setTimeout(() => {}, 0),
@@ -1004,11 +1111,13 @@ export class QualityService {
     };
     clearTimeout(live.timer);
     this.live = live;
+    this.rememberRun(run);
+    this.emitRun(run);
 
     const spawned = await this.spawnJob(live);
     if (!spawned) {
       // The first job could not start and nothing else recovered the run —
-      // settleJobless already finalized it.
+      // queue advancement already finalized it.
       return { run: { ...run } };
     }
     return { run: { ...run } };
@@ -1062,6 +1171,7 @@ export class QualityService {
       const argScope: RunArgScope = {
         file,
         testName: live.run.scope.testName,
+        testNamePath: live.run.scope.testNamePath,
         coverage: plan.coverage,
       };
       args =
@@ -1105,6 +1215,9 @@ export class QualityService {
     live.jobSettled = false;
     live.stdoutTail = "";
     live.stderrTail = "";
+    live.stdoutLineBuffer = "";
+    live.jobFileStart = live.run.files.length;
+    live.jobProgressFiles.clear();
     clearTimeout(live.timer);
     live.timer = setTimeout(() => {
       live.timedOut = true;
@@ -1114,6 +1227,7 @@ export class QualityService {
     child.stdout?.setEncoding("utf8");
     child.stdout?.on("data", (chunk: string) => {
       live.stdoutTail = (live.stdoutTail + chunk).slice(-MAX_TAIL_BYTES);
+      if (plan.mode === "vitest") this.consumeVitestProgress(live, chunk);
     });
     child.stderr?.setEncoding("utf8");
     child.stderr?.on("data", (chunk: string) => {
@@ -1126,22 +1240,59 @@ export class QualityService {
     child.on("close", (code) => {
       void this.settle(live, child, code, null);
     });
+    live.run.progress = {
+      packageDir: plan.dir,
+      jobIndex: live.jobIndex + 1,
+      jobCount: live.jobCount,
+    };
+    this.emitRun(live.run);
     return true;
+  }
+
+  private consumeVitestProgress(live: LiveRun, chunk: string): void {
+    const lines = (live.stdoutLineBuffer + chunk).split(/\r\n|\n|\r/);
+    live.stdoutLineBuffer = lines.pop() ?? "";
+    for (const line of lines) this.recordVitestProgress(live, line);
+  }
+
+  private recordVitestProgress(live: LiveRun, line: string): void {
+    const progress = parseVitestProgressLine(line);
+    if (!progress) return;
+    const { dir } = live.job.plan;
+    const file = path.isAbsolute(progress.file)
+      ? toRelPath(this.root, path.resolve(progress.file))
+      : dir === "." || progress.file.startsWith(`${dir}/`)
+        ? progress.file
+        : path.posix.join(dir, progress.file);
+    try {
+      resolveInRoot(this.root, file);
+    } catch {
+      return;
+    }
+    if (live.jobProgressFiles.has(file)) return;
+    live.jobProgressFiles.add(file);
+    live.run.files.push({ file, status: progress.status, tests: [] });
+    this.emitRun(live.run);
   }
 
   /** Move to the next queued job, or finalize when the queue is drained. */
   private async advanceQueue(live: LiveRun): Promise<boolean> {
     const next = live.queue.shift();
     if (next && !live.cancelled && !live.timedOut) {
+      live.jobIndex += 1;
       live.job = next;
       return this.spawnJob(live);
     }
-    this.finalize(live);
+    await this.finalize(live);
     return false;
   }
 
   /** Settle a run that never got a process off the ground. */
-  private settleEarly(run: QualityRun, status: "error", message: string): { run: QualityRun } {
+  private settleEarly(
+    run: QualityRunUpdate,
+    status: "error",
+    message: string,
+  ): { run: QualityRunUpdate } {
     run.status = status;
     run.error = message;
     run.finishedAt = nowIso();
@@ -1178,6 +1329,8 @@ export class QualityService {
         live.jobErrors.push(`${label}: ${tail()}`);
       }
     } else {
+      if (live.stdoutLineBuffer) this.recordVitestProgress(live, live.stdoutLineBuffer);
+      run.files = run.files.slice(0, live.jobFileStart);
       // Failing tests exit non-zero but still write valid JSON — always
       // prefer the reporter output over the exit code.
       const parsed = await this.readRunJson(job.tmpJson, job.plan.mode, job.plan.dir);
@@ -1209,7 +1362,7 @@ export class QualityService {
   }
 
   /** Settle the whole run once the queue is drained (or aborted). */
-  private finalize(live: LiveRun): void {
+  private async finalize(live: LiveRun): Promise<void> {
     const { run } = live;
     if (run.status !== "running") return;
     clearTimeout(live.timer);
@@ -1228,12 +1381,44 @@ export class QualityService {
     }
 
     run.finishedAt = nowIso();
+    delete run.progress;
+
+    if (run.withCoverage && run.status !== "cancelled") {
+      const produced = await this.freshCoverageProduced(live.coverageProbes);
+      if (!produced) {
+        run.coverageMissing = true;
+        run.coveragePathsProbed = live.coverageProbes.map((probe) => probe.path);
+      }
+    }
     this.emitRun(run);
 
     if (run.withCoverage && (run.status === "passed" || run.status === "failed")) {
       this.coverageCache = null;
       void this.readCoverage().then(() => this.events.emit("coverageChanged", {}));
     }
+  }
+
+  private async coverageFingerprint(target: string): Promise<string | null> {
+    try {
+      const stat = await fs.stat(target);
+      return `${stat.mtimeMs}:${stat.size}`;
+    } catch {
+      return null;
+    }
+  }
+
+  private async freshCoverageProduced(probes: readonly CoverageProbe[]): Promise<boolean> {
+    for (const probe of probes) {
+      const after = await this.coverageFingerprint(probe.target);
+      if (after === null || after === probe.before) continue;
+      try {
+        const json = JSON.parse(await fs.readFile(probe.target, "utf8")) as unknown;
+        if (parseIstanbulCoverage(json, this.root, nowIso())) return true;
+      } catch {
+        /* malformed coverage output is not usable coverage data */
+      }
+    }
+    return false;
   }
 
   private async readRunJson(
@@ -1253,8 +1438,26 @@ export class QualityService {
     }
   }
 
-  private emitRun(run: QualityRun): void {
-    this.events.emit("runChanged", { run: { ...run } });
+  private emitRun(run: QualityRunUpdate): void {
+    this.events.emit("runChanged", {
+      run: {
+        ...run,
+        scope: {
+          ...run.scope,
+          ...(run.scope.testNamePath ? { testNamePath: [...run.scope.testNamePath] } : {}),
+        },
+        files: [...run.files],
+        ...(run.progress ? { progress: { ...run.progress } } : {}),
+        ...(run.coveragePathsProbed
+          ? { coveragePathsProbed: [...run.coveragePathsProbed] }
+          : {}),
+      },
+    });
+  }
+
+  private rememberRun(run: QualityRunUpdate): void {
+    this.history.unshift(run);
+    if (this.history.length > MAX_RUN_HISTORY) this.history.length = MAX_RUN_HISTORY;
   }
 
   // -- cancel / runs --------------------------------------------------------
@@ -1273,8 +1476,8 @@ export class QualityService {
     void killProcessTree(child.pid, { child });
   }
 
-  async runs(): Promise<{ runs: QualityRun[] }> {
-    return { runs: this.history.map((r) => ({ ...r })) };
+  async runs(): Promise<{ runs: QualityRunUpdate[] }> {
+    return { runs: this.history.map((r) => ({ ...r, files: [...r.files] })) };
   }
 
   // -- coverage -------------------------------------------------------------

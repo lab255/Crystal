@@ -79,6 +79,22 @@ export interface WsScope {
   ws?: string;
 }
 
+/** Additive quality-run state carried by bridge responses and progress events. */
+export type QualityRunUpdate = QualityRun & {
+  scope: QualityRun["scope"] & {
+    /** Run only the detected package at this workspace-relative directory. */
+    packageDir?: string;
+    /** Exact describe/test hierarchy used to build the runner name pattern. */
+    testNamePath?: string[];
+  };
+  /** The package job currently executing; indexes are one-based. */
+  progress?: { packageDir: string; jobIndex: number; jobCount: number };
+  /** A requested coverage run settled without producing fresh Istanbul JSON. */
+  coverageMissing?: true;
+  /** Workspace-relative Istanbul paths checked for this coverage run. */
+  coveragePathsProbed?: string[];
+};
+
 /** One headless tool call parked while it waits for an explicit owner decision. */
 export interface PendingPermission {
   id: string;
@@ -895,17 +911,23 @@ export interface BridgeMethods {
   /** How (and whether) this workspace can run tests — see quality.ts. */
   "quality.detect": { params: WsScope; result: TestRunnerInfo };
   /**
-   * Start a test run (optionally scoped to a file / name filter, optionally
-   * with coverage). One run at a time per workspace; starting while one is
-   * live fails. Progress streams as `quality.runChanged` events.
+   * Start a test run (optionally scoped to a package / file / name filter,
+   * optionally with coverage). One run at a time per workspace; starting
+   * while one is live fails. Progress streams as `quality.runChanged` events.
    */
   "quality.run": {
-    params: WsScope & { file?: string; testName?: string; coverage?: boolean };
-    result: { run: QualityRun };
+    params: WsScope & {
+      file?: string;
+      testName?: string;
+      testNamePath?: string[];
+      packageDir?: string;
+      coverage?: boolean;
+    };
+    result: { run: QualityRunUpdate };
   };
   "quality.cancel": { params: WsScope & { runId: string }; result: { ok: true } };
   /** Recent runs, newest first (capped) — the live run included. */
-  "quality.runs": { params: WsScope; result: { runs: QualityRun[] } };
+  "quality.runs": { params: WsScope; result: { runs: QualityRunUpdate[] } };
   /**
    * The latest coverage report — parsed from the workspace's istanbul output
    * (`coverage/coverage-final.json`), whether Crystal or the user produced
@@ -1341,7 +1363,7 @@ export interface BridgeEvents {
   /** The API-client state was saved (another client, or this one). */
   "apiclient.changed": { ws: string };
   /** A test run started, streamed new results, or settled (payload = full run). */
-  "quality.runChanged": { ws: string; run: QualityRun };
+  "quality.runChanged": { ws: string; run: QualityRunUpdate };
   /** New coverage data landed (a coverage run finished or external output changed). */
   "quality.coverageChanged": { ws: string };
   /** A workflow was created or changed (stage advanced, spend, pause, settle). */
