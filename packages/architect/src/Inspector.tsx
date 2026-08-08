@@ -25,6 +25,7 @@ import { deleteEdges, deleteNodes, updateEdge, updateNode } from "./graph-ops.js
 import { ACCENT_CSS, EDGE_KIND_STYLE, KIND_META, type AccentName } from "./model.js";
 import { SystemPanel, type SystemSelection } from "./panels/SystemPanel.js";
 import { highlightAttrs, hlClass, useViewHighlight } from "./use-highlight.js";
+import { C4_AGGREGATE_HINT, isC4AggregateId } from "./c4-view.js";
 
 /**
  * What the side pane explains about the selected node beyond its own fields:
@@ -400,6 +401,14 @@ function NodeEditor({
     (k) => isContainerKind(k) === isContainerKind(node.kind),
   );
 
+  if (isC4AggregateId(node.id, "node")) {
+    return (
+      <div className="rounded-lg border border-edge bg-surface-1 px-2.5 py-2 text-[11px] text-ink-muted">
+        {C4_AGGREGATE_HINT}
+      </div>
+    );
+  }
+
   return (
     <>
       <Field label="Name">
@@ -535,7 +544,8 @@ function EdgeEditor({
   useEffect(() => setLabel(edge.label), [edge.id]);
 
   const nodeName = (id: string) => graph.nodes.find((n) => n.id === id)?.label ?? "?";
-  const hasContract = onOpenContract != null && edge.id.startsWith("link:");
+  const aggregate = isC4AggregateId(edge.id, "edge");
+  const hasContract = onOpenContract != null && (edge.id.startsWith("link:") || aggregate);
 
   return (
     <>
@@ -563,36 +573,44 @@ function EdgeEditor({
           View boundary contract
         </Button>
       ) : null}
-      <Field label="Kind">
-        <Select
-          value={edge.kind}
-          onChange={(e) =>
-            onGraphChange(updateEdge(graph, edge.id, { kind: e.target.value as ArchEdgeKind }))
-          }
-          options={ARCH_EDGE_KINDS.map((k) => ({ value: k, label: k }))}
-        />
-      </Field>
-      <Field label="Label">
-        <Input
-          value={label}
-          onChange={(e) => setLabel(e.target.value)}
-          onBlur={() => onGraphChange(updateEdge(graph, edge.id, { label }))}
-          onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
-          placeholder="e.g. gRPC, events"
-        />
-      </Field>
-      <Button
-        variant="danger"
-        size="sm"
-        className="w-full justify-center"
-        onClick={() => {
-          onGraphChange(deleteEdges(graph, [edge.id]));
-          onDeleted();
-        }}
-      >
-        <Trash2 className="h-3.5 w-3.5" />
-        Delete connection
-      </Button>
+      {aggregate ? (
+        <div className="rounded-lg border border-edge bg-surface-1 px-2.5 py-2 text-[11px] text-ink-muted">
+          {C4_AGGREGATE_HINT}
+        </div>
+      ) : (
+        <>
+          <Field label="Kind">
+            <Select
+              value={edge.kind}
+              onChange={(e) =>
+                onGraphChange(updateEdge(graph, edge.id, { kind: e.target.value as ArchEdgeKind }))
+              }
+              options={ARCH_EDGE_KINDS.map((k) => ({ value: k, label: k }))}
+            />
+          </Field>
+          <Field label="Label">
+            <Input
+              value={label}
+              onChange={(e) => setLabel(e.target.value)}
+              onBlur={() => onGraphChange(updateEdge(graph, edge.id, { label }))}
+              onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+              placeholder="e.g. gRPC, events"
+            />
+          </Field>
+          <Button
+            variant="danger"
+            size="sm"
+            className="w-full justify-center"
+            onClick={() => {
+              onGraphChange(deleteEdges(graph, [edge.id]));
+              onDeleted();
+            }}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            Delete connection
+          </Button>
+        </>
+      )}
     </>
   );
 }

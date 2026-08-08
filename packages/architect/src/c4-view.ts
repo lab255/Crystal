@@ -6,6 +6,7 @@ import {
   type ArchOverlay,
   type ArchitectureGraph,
   type C4Projection,
+  type C4View,
 } from "@crystal/core";
 import { estimateGraphDims } from "./card-metrics.js";
 import type { FlowProjection } from "./dataflow.js";
@@ -33,6 +34,33 @@ const OVERRIDABLE = ["label", "kind", "description", "tech", "accent", "href", "
 
 const sameJson = (a: unknown, b: unknown): boolean =>
   JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+
+export const C4_AGGREGATE_HINT = "derived — hide its components instead";
+export const C4_AGGREGATE_DELETE_NOTICE =
+  "Container cards derive from the code — hide components instead";
+
+/** Projection-only C4 elements re-derive and cannot be removed durably. */
+export function isC4AggregateId(id: string, kind: "node" | "edge"): boolean {
+  if (kind === "edge") return id.startsWith("c4rel:");
+  return id.startsWith("ctr:") || id.startsWith("c4:") || id === "person:user";
+}
+
+/** Split a React Flow delete batch before any subtree-inclusive graph operation runs. */
+export function filterC4DeletionIds(
+  ids: readonly string[],
+  kind: "node" | "edge",
+): { deletable: string[]; blocked: string[] } {
+  const deletable: string[] = [];
+  const blocked: string[] = [];
+  for (const id of ids) (isC4AggregateId(id, kind) ? blocked : deletable).push(id);
+  return { deletable, blocked };
+}
+
+export function c4AddRejection(view: C4View): string | null {
+  return view.level === "components"
+    ? "Components derive from code — switch to Containers to add a node, or draw an edge to place it."
+    : null;
+}
 
 export function applyC4Edit(args: {
   overlay: ArchOverlay;

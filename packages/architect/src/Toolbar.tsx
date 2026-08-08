@@ -242,7 +242,7 @@ export function Toolbar({
         </Tooltip>
       ) : null}
       {onToggleChanges ? (
-        <Tooltip content="Recent changes — files touched lately, their wiring and blast radius (works without git)">
+        <Tooltip content="Recent edits from file timestamps — their wiring and blast radius (works without git)">
           <button
             type="button"
             aria-pressed={showChanges}
@@ -255,7 +255,7 @@ export function Toolbar({
             )}
           >
             <History className="h-3.5 w-3.5" />
-            changes
+            Recent edits (file timestamps)
           </button>
         </Tooltip>
       ) : null}

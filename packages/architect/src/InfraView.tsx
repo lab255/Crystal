@@ -63,7 +63,16 @@ import { CodeNode, type CodeNodeData, type CodeRfNode } from "./codemap/CodeNode
 import { InlineRename } from "./ContextMenu.js";
 import { absolutePosition as graphAbsolutePosition, addNode as opAddNode, updateNode } from "./graph-ops.js";
 import { DRAG_MIME, PALETTE_KINDS, Palette } from "./Palette.js";
-import { infraGroups, knownTargets, layerBands, placedEdges } from "./infra.js";
+import {
+  INFRA_ZONE_KINDS,
+  environmentPlacementCount,
+  infraGroups,
+  knownTargets,
+  layerBands,
+  placedEdges,
+  zoneNestingRejection,
+  type InfraZoneKind,
+} from "./infra.js";
 import { detectedExternals, detectedInternalEdges, externalNodeId } from "./infra-deps.js";
 import { ACCENT_CSS, EDGE_KIND_STYLE, KIND_META, accentOf } from "./model.js";
 import { SimActionsContext, SimEditor, SimPanel, applyTrafficToEdges, useSimActions } from "./SimPanel.js";
@@ -89,8 +98,8 @@ import {
 /** dataTransfer type for dragging an unplaced component from the sidebar. */
 const INFRA_DRAG_MIME = "application/x-crystal-infra-node";
 
-const ZONE_KINDS = ["vpc", "subnet", "securitygroup"] as const satisfies readonly ArchNodeKind[];
-type ZoneKind = (typeof ZONE_KINDS)[number];
+const ZONE_KINDS = INFRA_ZONE_KINDS;
+type ZoneKind = InfraZoneKind;
 
 function isZoneKind(kind: ArchNodeKind): kind is ZoneKind {
   return (ZONE_KINDS as readonly ArchNodeKind[]).includes(kind);
@@ -328,14 +337,6 @@ function rfNestingDepth(nodes: readonly RfNode[], nodeId: string): number {
   return depth;
 }
 
-function canNestZone(child: ZoneKind, parent: ZoneKind): boolean {
-  return child === "subnet"
-    ? parent === "vpc"
-    : child === "securitygroup"
-      ? parent === "vpc" || parent === "subnet"
-      : false;
-}
-
 function adaptiveColumns(
   count: number,
   canvas: { width: number; height: number },
@@ -428,6 +429,7 @@ function InfraInner({
   const [newEnvName, setNewEnvName] = useState("");
   const [newEnvKind, setNewEnvKind] = useState<ArchEnvironment["kind"]>("cloud");
   const [targetPrompt, setTargetPrompt] = useState<TargetPrompt | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const { screenToFlowPosition } = useReactFlow();
   const canvasRef = useRef<HTMLDivElement>(null);
   const [canvasSize, setCanvasSize] = useState({ width: 1200, height: 760 });
@@ -444,6 +446,12 @@ function InfraInner({
     observer.observe(element);
     return () => observer.disconnect();
   }, [graph.environments.length]);
+
+  useEffect(() => {
+    if (!notice) return;
+    const timer = setTimeout(() => setNotice(null), 5_000);
+    return () => clearTimeout(timer);
+  }, [notice]);
 
   // Keep a ref of the latest graph so the sim tick always reads fresh state.
   const graphRef = useRef(graph);
@@ -582,6 +590,16 @@ function InfraInner({
   };
 
   const removeEnvironment = (id: string) => {
+    const environment = graph.environments.find((candidate) => candidate.id === id);
+    if (!environment) return;
+    const count = environmentPlacementCount(graph, id);
+    if (
+      !window.confirm(
+        `Remove environment “${environment.name}”? This removes ${count} placement${count === 1 ? "" : "s"}.`,
+      )
+    ) {
+      return;
+    }
     // Strip the environment and every placement keyed by it.
     onChange({
       ...graph,
@@ -1046,19 +1064,13 @@ function InfraInner({
     [nodes],
   );
 
-  /** Deepest eligible deployment zone whose absolute rect contains a point. */
+  /** Deepest deployment zone whose absolute rect contains a point. */
   const zoneAtPoint = useCallback(
-    (
-      point: { x: number; y: number },
-      childKind?: ZoneKind,
-      excludeId?: string,
-    ): ZoneRfNode | null => {
+    (point: { x: number; y: number }, excludeId?: string): ZoneRfNode | null => {
       let best: ZoneRfNode | null = null;
       let bestDepth = -1;
       for (const candidate of nodes) {
         if (candidate.type !== "zone" || candidate.id === excludeId) continue;
-        const data = candidate.data as ZoneData;
-        if (childKind && !canNestZone(childKind, data.kind)) continue;
         if (excludeId) {
           let parentId = candidate.parentId;
           let excludedDescendant = false;
@@ -1103,7 +1115,15 @@ function InfraInner({
           x: abs.x + (node.measured?.width ?? node.width ?? zoneSize(arch.kind).width) / 2,
           y: abs.y + (node.measured?.height ?? node.height ?? zoneSize(arch.kind).height) / 2,
         };
-        const parent = zoneAtPoint(center, arch.kind, node.id);
+        const parent = zoneAtPoint(center, node.id);
+        if (parent) {
+          const rejection = zoneNestingRejection(arch.kind, (parent.data as ZoneData).kind);
+          if (rejection) {
+            setNotice(rejection);
+            setNodes(scene.nodes);
+            return;
+          }
+        }
         const parentAbs = parent ? rfAbsolutePosition(nodes, parent.id) : { x: 0, y: 0 };
         onChange(
           updateNode(graphRef.current, node.id, {
@@ -1245,7 +1265,15 @@ function InfraInner({
       if (!kind || !INFRA_PALETTE_KINDS.includes(kind) || !activeEnv) return;
       evt.preventDefault();
       if (isZoneKind(kind)) {
-        addZoneAt(kind, point, zoneAtPoint(point, kind));
+        const parent = zoneAtPoint(point);
+        if (parent) {
+          const rejection = zoneNestingRejection(kind, (parent.data as ZoneData).kind);
+          if (rejection) {
+            setNotice(rejection);
+            return;
+          }
+        }
+        addZoneAt(kind, point, parent);
         return;
       }
       // Create + place in ONE graph change so undo/persistence see a single edit.
@@ -1522,6 +1550,19 @@ function InfraInner({
             }}
             onCancel={() => setTargetPrompt(null)}
           />
+        ) : null}
+        {notice ? (
+          <div className="absolute bottom-3 left-1/2 z-20 flex max-w-lg -translate-x-1/2 items-center gap-2 rounded-xl border border-warn/40 bg-surface-2/95 px-3 py-2 text-[11px] text-ink-muted shadow-xl shadow-black/30 backdrop-blur">
+            <span className="min-w-0">{notice}</span>
+            <button
+              type="button"
+              onClick={() => setNotice(null)}
+              className="shrink-0 text-ink-faint hover:text-ink"
+              aria-label="Dismiss"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
         ) : null}
       </div>
 

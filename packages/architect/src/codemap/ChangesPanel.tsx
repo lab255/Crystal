@@ -21,12 +21,15 @@ const WINDOW_OPTIONS: { label: string; hours: number }[] = [
 export function ChangesPanel({
   ws,
   moduleFilter,
+  reviewActive = false,
   onOpenFile,
   onClose,
 }: {
   ws?: string;
   /** Only files owned by this module (module level). */
   moduleFilter?: string;
+  /** A vs-ref review is active; distinguish this mtime list from its diff. */
+  reviewActive?: boolean;
   onOpenFile: (file: string, line: number) => void;
   onClose: () => void;
 }) {
@@ -71,7 +74,7 @@ export function ChangesPanel({
       <div className="flex items-center gap-2 border-b border-edge px-3 py-2.5">
         <History className="h-3.5 w-3.5 shrink-0 text-crystal-300" />
         <span className="min-w-0 flex-1 truncate text-xs font-semibold text-ink">
-          Recent changes
+          Recent edits (file timestamps)
           {moduleFilter ? <span className="text-ink-faint"> in {moduleFilter}</span> : null}
         </span>
         {files ? (
@@ -80,7 +83,7 @@ export function ChangesPanel({
             {addedCount > 0 ? `, ${addedCount} new` : ""}
           </span>
         ) : null}
-        <Button variant="ghost" size="icon-sm" onClick={onClose} aria-label="Close recent changes">
+        <Button variant="ghost" size="icon-sm" onClick={onClose} aria-label="Close recent edits">
           <X className="h-3.5 w-3.5" />
         </Button>
       </div>
@@ -120,6 +123,11 @@ export function ChangesPanel({
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
+        {reviewActive ? (
+          <div className="mb-3 rounded-lg border border-edge bg-surface-2 px-2.5 py-2 text-[10.5px] leading-relaxed text-ink-muted">
+            This is the mtime working set — the review&apos;s changed files are on the diff badge/panel.
+          </div>
+        ) : null}
         {error ? <div className="text-[11px] text-warn">{error}</div> : null}
         {!files && !error ? (
           <div className="flex items-center gap-2 text-[11px] text-ink-faint">

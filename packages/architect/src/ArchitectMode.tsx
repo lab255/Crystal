@@ -8,6 +8,7 @@ import {
   Check,
   CloudUpload,
   Crosshair,
+  Eye,
   GitBranch,
   GitCompareArrows,
   GitMerge,
@@ -43,8 +44,10 @@ import {
   mergeGraphs,
   projectC4,
   rollupC4Marks,
+  setNodeOverride,
   suggestFacets,
   type ArchDraft,
+  type ArchOverlay,
   type ArchitectureGraph,
   type C4View,
   type CodeMapProgress,
@@ -123,6 +126,8 @@ import { C4Bar } from "./C4Bar.js";
 import { buildSystemCardFacts, systemCardSlot } from "./system-card.js";
 import { filterRoutesForMovedEndpoints } from "./elk-layout.js";
 import { useElkLayout } from "./use-elk-layout.js";
+import { summarizeOverride } from "./canonical-overlay.js";
+import { bareCodeMapPatch } from "./navigation.js";
 
 const EMPTY_DRAFTS: never[] = [];
 const EMPTY_REFACTORS: never[] = [];
@@ -174,6 +179,15 @@ export function ArchitectMode() {
 
   const activeWs = useWorkspaces((s) => s.activeId);
   const setActiveWs = useWorkspaces((s) => s.setActive);
+  const linkedWs = useNav((l) => l.ws) ?? null;
+  const codeMapLevel = useNav((l) => l.architect?.codemap) ?? null;
+
+  // A bare legacy code-map link has no drill payload. Seed it without losing
+  // the aliased codebase view while workspace state settles.
+  useEffect(() => {
+    if (view !== "codebase" || codeMapLevel) return;
+    nav({ architect: bareCodeMapPatch(linkedWs, activeWs) });
+  }, [view, codeMapLevel, linkedWs, activeWs, nav]);
 
   /** Drilling stays in the unified canvas: expand the node linked to the module. */
   const expandCode = useCallback(
@@ -421,6 +435,7 @@ function DiagramsView({
     derived,
     c4Model,
     reconciled,
+    staleIds,
     rendered,
     loading: architectureLoading,
     error: architectureError,
@@ -1301,6 +1316,9 @@ function DiagramsView({
 
   function discardDraft() {
     if (!activeDraft) return;
+    if (!window.confirm(`Delete draft “${activeDraft.draft.name}”? This cannot be undone.`)) {
+      return;
+    }
     void deleteArchDraft(activeDraft.path);
     setDraftPath(null);
   }
@@ -1490,6 +1508,13 @@ function DiagramsView({
                       <DropdownMenuItem
                         className="text-danger"
                         onSelect={() => {
+                          if (
+                            !window.confirm(
+                              `Delete draft “${d.draft.name}”? This cannot be undone.`,
+                            )
+                          ) {
+                            return;
+                          }
                           if (draftPath === d.path) setDraftPath(null);
                           void deleteArchDraft(d.path);
                         }}
@@ -1512,6 +1537,13 @@ function DiagramsView({
                   onActivate={setActiveFacetId}
                   onGraphChange={commitGraph}
                   onNotice={setNotice}
+                />
+              ) : null}
+              {!activeDraft && reconciled ? (
+                <OverlayStateSection
+                  overlay={reconciled}
+                  staleIds={staleIds}
+                  onChange={updateArchOverlay}
                 />
               ) : null}
               {effectiveGraph ? (
@@ -1544,7 +1576,9 @@ function DiagramsView({
           <Split storageKey="architect:journey" direction="vertical">
             <Pane minSize="35%">
               <main className="relative h-full w-full min-w-0">
-        {loading ? (
+        {!activeWs ? (
+          <EmptyState icon={Boxes} title="No workspace open — open one from the Overview" />
+        ) : loading ? (
           <div className="flex h-full items-center justify-center">
             <Spinner />
           </div>
@@ -1621,9 +1655,11 @@ function DiagramsView({
                   onToggleEndpoints={setEndpointsOn}
                   extraNodeEntries={extraNodeEntries}
                   onOpenContract={activeDraft ? undefined : openContractForEdge}
+                  onNotice={setNotice}
                   c4={
                     c4Enabled && c4Laid && c4Projection
                       ? {
+                          view: c4Projection.view,
                           typeLines: c4Projection.typeLines,
                           drill: c4Projection.drill,
                           onDrill: setC4View,
@@ -1796,6 +1832,7 @@ function DiagramsView({
           <Pane defaultSize={384} minSize={260} maxSize={640}>
             <ChangesPanel
               ws={activeWs ?? undefined}
+              reviewActive={refReview.active != null}
               onOpenFile={(file, line) => requestOpenFile(file, line)}
               onClose={() => setShowChanges(false)}
             />
@@ -1841,6 +1878,85 @@ function DiagramsView({
         ) : null}
       </Split>
 
+    </div>
+  );
+}
+
+function OverlayStateSection({
+  overlay,
+  staleIds,
+  onChange,
+}: {
+  overlay: ArchOverlay;
+  staleIds: readonly string[];
+  onChange: (overlay: ArchOverlay) => void;
+}) {
+  const rows = (
+    ids: readonly string[],
+    action: (id: string) => void,
+    actionLabel: (id: string) => string,
+    icon: React.ReactNode,
+  ) =>
+    ids.map((id) => (
+      <div
+        key={id}
+        className="group flex items-start gap-1.5 rounded-lg px-2 py-1.5 hover:bg-surface-2"
+      >
+        <span className="min-w-0 flex-1">
+          <span className="block truncate font-mono text-[10.5px] text-ink-muted" title={id}>
+            {id}
+          </span>
+          <span
+            className="block truncate text-[9.5px] text-ink-faint"
+            title={summarizeOverride(overlay.overrides[id])}
+          >
+            {summarizeOverride(overlay.overrides[id])}
+          </span>
+        </span>
+        <Tooltip content={actionLabel(id)}>
+          <button
+            type="button"
+            onClick={() => action(id)}
+            aria-label={actionLabel(id)}
+            className="mt-0.5 shrink-0 text-ink-faint opacity-0 hover:text-ink group-hover:opacity-100 focus:opacity-100"
+          >
+            {icon}
+          </button>
+        </Tooltip>
+      </div>
+    ));
+
+  return (
+    <div className="mt-3 border-t border-edge pt-2">
+      <div className="px-1.5 pb-1 text-[11px] font-semibold uppercase tracking-wider text-ink-faint">
+        Hidden ({overlay.hiddenIds.length})
+      </div>
+      {rows(
+        overlay.hiddenIds,
+        (id) =>
+          onChange({
+            ...overlay,
+            hiddenIds: overlay.hiddenIds.filter((item) => item !== id),
+          }),
+        (id) => `Un-hide ${id}`,
+        <Eye className="h-3.5 w-3.5" />,
+      )}
+      {overlay.hiddenIds.length === 0 ? (
+        <div className="px-2 py-1 text-[10px] text-ink-faint">No hidden components.</div>
+      ) : null}
+
+      <div className="mt-2 px-1.5 pb-1 text-[11px] font-semibold uppercase tracking-wider text-ink-faint">
+        Stale ({staleIds.length})
+      </div>
+      {rows(
+        staleIds,
+        (id) => onChange(setNodeOverride(overlay, id, null)),
+        (id) => `Remove override for ${id}`,
+        <Trash2 className="h-3.5 w-3.5" />,
+      )}
+      {staleIds.length === 0 ? (
+        <div className="px-2 py-1 text-[10px] text-ink-faint">No stale overrides.</div>
+      ) : null}
     </div>
   );
 }
@@ -1950,6 +2066,8 @@ function FacetsSection({
   };
 
   const remove = (id: string) => {
+    const facet = graph.facets.find((item) => item.id === id);
+    if (!facet || !window.confirm(`Delete facet “${facet.name}”? This cannot be undone.`)) return;
     if (activeFacetId === id) onActivate(null);
     onGraphChange({ ...graph, facets: graph.facets.filter((f) => f.id !== id) });
   };

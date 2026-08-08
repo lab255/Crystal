@@ -5,7 +5,15 @@ import {
   type ArchNode,
   type ArchitectureGraph,
 } from "@crystal/core";
-import { groupLayer, infraGroups, knownTargets, layerBands, placedEdges } from "./infra.js";
+import {
+  environmentPlacementCount,
+  groupLayer,
+  infraGroups,
+  knownTargets,
+  layerBands,
+  placedEdges,
+  zoneNestingRejection,
+} from "./infra.js";
 
 function node(id: string, kind: ArchNode["kind"], placements: ArchNode["placements"] = {}): ArchNode {
   return { ...createArchNode(kind, id, { x: 0, y: 0 }), id, placements };
@@ -88,5 +96,22 @@ describe("knownTargets", () => {
       node("b", "frontend", { prod: vercel }),
     ]);
     expect(knownTargets(g)).toEqual(["aws / ecs", "vercel"]);
+  });
+});
+
+describe("destructive deployment edits", () => {
+  it("counts every placement an environment removal will destroy", () => {
+    const g = graph([
+      node("a", "service", { prod: ecs, staging: vercel }),
+      node("b", "frontend", { prod: vercel }),
+      node("c", "datastore"),
+    ]);
+    expect(environmentPlacementCount(g, "prod")).toBe(2);
+    expect(environmentPlacementCount(g, "staging")).toBe(1);
+  });
+
+  it("explains rejected zone nesting narrowly", () => {
+    expect(zoneNestingRejection("vpc", "subnet")).toBe("A VPC can't nest inside a subnet");
+    expect(zoneNestingRejection("subnet", "vpc")).toBeNull();
   });
 });

@@ -1287,7 +1287,7 @@ function CodeMapInner({
             </Tooltip>
           ) : null}
           {level && level.kind !== "all" ? (
-            <Tooltip content="Recent changes — files touched lately, their wiring and blast radius (works without git)">
+            <Tooltip content="Recent edits from file timestamps — their wiring and blast radius (works without git)">
               <button
                 type="button"
                 aria-pressed={showChanges}
@@ -1298,7 +1298,7 @@ function CodeMapInner({
                 )}
               >
                 <History className="h-3 w-3" />
-                changes
+                Recent edits (file timestamps)
               </button>
             </Tooltip>
           ) : null}
@@ -1573,6 +1573,7 @@ function CodeMapInner({
             <ChangesPanel
               ws={level.ws}
               moduleFilter={level.kind === "module" ? level.path : undefined}
+              reviewActive={refReview.active != null}
               onOpenFile={openInEditor}
               onClose={() => setShowChanges(false)}
             />
