@@ -35,11 +35,18 @@ export function ElkEdge({
 }: EdgeProps<ArchRfEdge>) {
   // The route is required for `type: "elk"`; endpoint fallback keeps the
   // component defensive if stale external edge data reaches React Flow.
-  const route = data?.route ?? [
-    { x: sourceX, y: sourceY },
-    { x: targetX, y: targetY },
-  ];
-  const midpoint = longestSegmentMidpoint(route);
+  const route =
+    data?.route?.points ??
+    [
+      { x: sourceX, y: sourceY },
+      { x: targetX, y: targetY },
+    ];
+  const midpoint = data?.route?.label
+    ? {
+        x: data.route.label.x + data.route.label.width / 2,
+        y: data.route.label.y + data.route.label.height / 2,
+      }
+    : longestSegmentMidpoint(route);
 
   return (
     <>
@@ -53,7 +60,7 @@ export function ElkEdge({
       {label ? (
         <EdgeLabelRenderer>
           <div
-            className="pointer-events-none absolute rounded bg-surface-1/90 px-1 py-px text-[10px] text-ink-muted"
+            className="pointer-events-none absolute whitespace-nowrap rounded bg-surface-1/90 px-1 py-px text-[10px] text-ink-muted"
             style={{
               transform: `translate(-50%, -50%) translate(${midpoint.x}px, ${midpoint.y}px)`,
               ...(labelStyle as React.CSSProperties | undefined),

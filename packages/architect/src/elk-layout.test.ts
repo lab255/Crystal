@@ -7,7 +7,13 @@ import {
   type ArchitectureGraph,
 } from "@crystal/core";
 import { estimateCardSize } from "./card-metrics.js";
-import { elkAutoLayout, filterRoutesForMovedEndpoints } from "./elk-layout.js";
+import {
+  elkAutoLayout,
+  filterRoutesForMovedEndpoints,
+  placeFallbackEdgeLabels,
+  type ElkRoute,
+  type ElkRouteLabel,
+} from "./elk-layout.js";
 
 type Size = { width: number; height: number };
 type Point = { x: number; y: number };
@@ -120,6 +126,15 @@ function contains(box: Box, point: Point): boolean {
   );
 }
 
+function labelsOverlap(a: ElkRouteLabel, b: ElkRouteLabel): boolean {
+  return (
+    a.x < b.x + b.width &&
+    a.x + a.width > b.x &&
+    a.y < b.y + b.height &&
+    a.y + a.height > b.y
+  );
+}
+
 describe("elkAutoLayout", () => {
   it("fits compounds, separates every sibling scope, and follows C4 ranks", async () => {
     const input = fixture();
@@ -191,13 +206,37 @@ describe("elkAutoLayout", () => {
     const edges = new Map(input.graph.edges.map((edge) => [edge.id, edge]));
     for (const [edgeId, route] of first.routes) {
       const edge = edges.get(edgeId)!;
-      expect(route.length, `${edge.id} point count`).toBeGreaterThanOrEqual(2);
-      for (const point of route) {
+      expect(route.points.length, `${edge.id} point count`).toBeGreaterThanOrEqual(2);
+      for (const point of route.points) {
         expect(Number.isFinite(point.x), `${edge.id} route x`).toBe(true);
         expect(Number.isFinite(point.y), `${edge.id} route y`).toBe(true);
       }
-      expect(contains(expandedBy(boxes.get(edge.source)!, 150), route[0]!)).toBe(true);
-      expect(contains(expandedBy(boxes.get(edge.target)!, 150), route.at(-1)!)).toBe(true);
+      expect(contains(expandedBy(boxes.get(edge.source)!, 150), route.points[0]!)).toBe(true);
+      expect(contains(expandedBy(boxes.get(edge.target)!, 150), route.points.at(-1)!)).toBe(true);
+      if (edge.label.trim()) expect(route.label, `${edge.id} label position`).toBeDefined();
+    }
+
+    const graphBounds = [...boxes.values()].reduce(
+      (bounds, box) => ({
+        x: Math.min(bounds.x, box.x),
+        y: Math.min(bounds.y, box.y),
+        right: Math.max(bounds.right, box.x + box.width),
+        bottom: Math.max(bounds.bottom, box.y + box.height),
+      }),
+      { x: Infinity, y: Infinity, right: -Infinity, bottom: -Infinity },
+    );
+    for (const [edgeId, route] of first.routes) {
+      if (!route.label) continue;
+      expect(Number.isFinite(route.label.x), `${edgeId} label x`).toBe(true);
+      expect(Number.isFinite(route.label.y), `${edgeId} label y`).toBe(true);
+      expect(route.label.x, `${edgeId} label left`).toBeGreaterThanOrEqual(graphBounds.x);
+      expect(route.label.y, `${edgeId} label top`).toBeGreaterThanOrEqual(graphBounds.y);
+      expect(route.label.x + route.label.width, `${edgeId} label right`).toBeLessThanOrEqual(
+        graphBounds.right,
+      );
+      expect(route.label.y + route.label.height, `${edgeId} label bottom`).toBeLessThanOrEqual(
+        graphBounds.bottom,
+      );
     }
   });
 
@@ -218,7 +257,13 @@ describe("elkAutoLayout", () => {
         { id: "e:2-3", source: "cmp:m2", target: "cmp:m3", kind: "dependency", label: "" },
         // Crosses the packed boundary — ELK crashes on a hierarchical edge
         // into a rectpacked scope unless the endpoint snaps to the border.
-        { id: "e:in", source: outside.id, target: "cmp:m5", kind: "sync", label: "" },
+        {
+          id: "e:in",
+          source: outside.id,
+          target: "cmp:m5",
+          kind: "sync",
+          label: "crosses packed scope",
+        },
       ],
     );
     const dims = new Map(members.map((m) => [m.id, { width: 224, height: 96 }]));
@@ -244,6 +289,49 @@ describe("elkAutoLayout", () => {
       }
     }
   });
+
+  it("uses the requested aspect ratio when rectangle-packing a sparse scope", async () => {
+    const pen = node("ctr:shared", "group", { size: { width: 640, height: 420 } });
+    const members = Array.from({ length: 20 }, (_, i) =>
+      node(`cmp:m${i}`, "service", { parentId: pen.id }),
+    );
+    const input = graph([pen, ...members]);
+    const dims = new Map(members.map((member) => [member.id, { width: 180, height: 90 }]));
+
+    const wide = await elkAutoLayout(input, { dims, aspectRatio: 3 });
+    const tall = await elkAutoLayout(input, { dims, aspectRatio: 0.75 });
+    const wideSize = wide.graph.nodes.find((item) => item.id === pen.id)!.size!;
+    const tallSize = tall.graph.nodes.find((item) => item.id === pen.id)!.size!;
+
+    expect(wideSize.width / wideSize.height).toBeGreaterThan(tallSize.width / tallSize.height);
+  });
+});
+
+describe("placeFallbackEdgeLabels", () => {
+  it("separates overlapping labels deterministically in edge-id order", () => {
+    const points = [
+      { x: 0, y: 50 },
+      { x: 200, y: 50 },
+    ];
+    const routes = new Map<string, ElkRoute>([
+      ["edge:z", { points }],
+      ["edge:a", { points }],
+    ]);
+    const labels = new Map([
+      ["edge:z", "same label"],
+      ["edge:a", "same label"],
+    ]);
+
+    const first = placeFallbackEdgeLabels(routes, labels);
+    const second = placeFallbackEdgeLabels(routes, labels);
+    expect(second).toEqual(first);
+    const a = first.get("edge:a")!.label!;
+    const z = first.get("edge:z")!.label!;
+    expect(labelsOverlap(a, z)).toBe(false);
+    // The lexically first edge owns the unchanged midpoint.
+    expect(a.x + a.width / 2).toBe(100);
+    expect(a.y + a.height / 2).toBe(50);
+  });
 });
 
 describe("filterRoutesForMovedEndpoints", () => {
@@ -266,9 +354,9 @@ describe("filterRoutesForMovedEndpoints", () => {
         item.id === parent.id ? { ...item, position: { x: 10, y: 0 } } : item,
       ),
     };
-    const routes = new Map([
-      ["nested", [{ x: 20, y: 30 }, { x: 500, y: 40 }]],
-      ["stable", [{ x: 0, y: 500 }, { x: 200, y: 500 }]],
+    const routes = new Map<string, ElkRoute>([
+      ["nested", { points: [{ x: 20, y: 30 }, { x: 500, y: 40 }] }],
+      ["stable", { points: [{ x: 0, y: 500 }, { x: 200, y: 500 }] }],
     ]);
 
     const filtered = filterRoutesForMovedEndpoints(laid, displayed, routes);
@@ -287,7 +375,9 @@ describe("filterRoutesForMovedEndpoints", () => {
         position: { x: item.position.x + 0.5, y: item.position.y - 0.5 },
       })),
     };
-    const routes = new Map([["ab", [{ x: 0, y: 0 }, { x: 10, y: 10 }]]]);
+    const routes = new Map<string, ElkRoute>([
+      ["ab", { points: [{ x: 0, y: 0 }, { x: 10, y: 10 }] }],
+    ]);
     expect(filterRoutesForMovedEndpoints(laid, displayed, routes)).toBe(routes);
   });
 });

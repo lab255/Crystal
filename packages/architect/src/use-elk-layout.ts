@@ -1,16 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ArchitectureGraph } from "@crystal/core";
-import { elkAutoLayout } from "./elk-layout.js";
+import { elkAutoLayout, type ElkRoute } from "./elk-layout.js";
 import { autoLayoutFitted } from "./layout.js";
 
 type Size = { width: number; height: number };
-type Point = { x: number; y: number };
-
 interface PublishedLayout {
   graph: ArchitectureGraph;
   dimsKey: string;
+  aspectRatioKey: string;
   laid: ArchitectureGraph;
-  routes: ReadonlyMap<string, Point[]> | null;
+  routes: ReadonlyMap<string, ElkRoute> | null;
   /**
    * Bumped when a solve lands for a graph id that had none yet — the moment
    * the canvas should reframe. Same-level refinements (measured dims) keep
@@ -41,12 +40,14 @@ function dimensionsKey(dims: ReadonlyMap<string, Size> | null): string {
 export function useElkLayout(
   graph: ArchitectureGraph | null,
   dims: ReadonlyMap<string, Size> | null,
+  aspectRatio = 1.7,
 ): {
   laid: ArchitectureGraph | null;
-  routes: ReadonlyMap<string, Point[]> | null;
+  routes: ReadonlyMap<string, ElkRoute> | null;
   revision: number;
 } {
   const dimsKey = dimensionsKey(dims);
+  const aspectRatioKey = Number.isFinite(aspectRatio) ? aspectRatio.toFixed(3) : "1.700";
   const dimsRef = useRef(dims);
   dimsRef.current = dims;
   const serial = useRef(0);
@@ -70,12 +71,16 @@ export function useElkLayout(
     const inputDims = dimsRef.current;
     const revisionFor = (previous: PublishedLayout | null): number =>
       previous == null ? 1 : previous.graph.id === graph.id ? previous.revision : previous.revision + 1;
-    void elkAutoLayout(graph, { dims: inputDims ?? undefined })
+    void elkAutoLayout(graph, {
+      dims: inputDims ?? undefined,
+      aspectRatio: Number(aspectRatioKey),
+    })
       .then((result) => {
         if (serial.current !== token) return;
         setPublished((previous) => ({
           graph,
           dimsKey,
+          aspectRatioKey,
           laid: result.graph,
           routes: result.routes,
           revision: revisionFor(previous),
@@ -90,6 +95,7 @@ export function useElkLayout(
         setPublished((previous) => ({
           graph,
           dimsKey,
+          aspectRatioKey,
           laid: fallback,
           routes: null,
           revision: revisionFor(previous),
@@ -100,10 +106,14 @@ export function useElkLayout(
       // cleanup so a completed solve never publishes into a retired hook.
       if (serial.current === token) serial.current += 1;
     };
-  }, [graph, dimsKey, fallback]);
+  }, [graph, dimsKey, aspectRatioKey, fallback]);
 
   if (!graph || !fallback) return { laid: null, routes: null, revision: 0 };
-  if (published?.graph === graph && published.dimsKey === dimsKey) {
+  if (
+    published?.graph === graph &&
+    published.dimsKey === dimsKey &&
+    published.aspectRatioKey === aspectRatioKey
+  ) {
     return { laid: published.laid, routes: published.routes, revision: published.revision };
   }
   // Measurements and projected content can change without changing C4

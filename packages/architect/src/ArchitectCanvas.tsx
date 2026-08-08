@@ -160,6 +160,7 @@ import {
 import { PartNode } from "./nodes/PartNode.js";
 import { ElkEdge } from "./nodes/ElkEdge.js";
 import { buildSystemCardFacts, systemCardSlot } from "./system-card.js";
+import type { ElkRoute } from "./elk-layout.js";
 
 const nodeTypes = {
   container: ContainerNode,
@@ -193,12 +194,14 @@ function isCodeChildId(id: string): boolean {
 export interface ArchitectCanvasProps {
   graph: ArchitectureGraph;
   onChange: (graph: ArchitectureGraph) => void;
-  /** Absolute ELK polylines for edges whose endpoints still match the solve. */
-  edgeRoutes?: ReadonlyMap<string, { x: number; y: number }[]> | null;
+  /** Absolute ELK routes for edges whose endpoints still match the solve. */
+  edgeRoutes?: ReadonlyMap<string, ElkRoute> | null;
   /** Bumps when a level's first async solve lands — the canvas reframes. */
   layoutRevision?: number;
   /** Browser-measured card footprints fed back into the asynchronous layout. */
   onMeasured?: (sizes: ReadonlyMap<string, { width: number; height: number }>) => void;
+  /** React Flow wrapper size, used to target ELK's component packing. */
+  onCanvasSize?: (size: { width: number; height: number }) => void;
   /** C4 resets its per-view pins; other canvases commit a dagre layout. */
   onAutoLayout?: () => void;
   /** Compact view controls that share a header lane above the canvas toolbar. */
@@ -393,6 +396,7 @@ function CanvasInner({
   edgeRoutes,
   layoutRevision,
   onMeasured,
+  onCanvasSize,
   onAutoLayout,
   headerExtra,
   codeSummary,
@@ -453,6 +457,23 @@ function CanvasInner({
   useEffect(() => {
     updateNodeInternals(graph.nodes.map((n) => n.id));
   }, [graph, updateNodeInternals]);
+
+  useEffect(() => {
+    const wrapper = wrapperRef.current;
+    if (!wrapper || !onCanvasSize) return;
+    const report = (width: number, height: number) => {
+      if (width > 0 && height > 0 && Number.isFinite(width) && Number.isFinite(height)) {
+        onCanvasSize({ width, height });
+      }
+    };
+    const bounds = wrapper.getBoundingClientRect();
+    report(bounds.width, bounds.height);
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry) report(entry.contentRect.width, entry.contentRect.height);
+    });
+    observer.observe(wrapper);
+    return () => observer.disconnect();
+  }, [onCanvasSize]);
 
   // Keep a ref of the latest graph so stale-closure callbacks always mutate fresh state.
   const graphRef = useRef(graph);
@@ -1046,7 +1067,7 @@ function CanvasInner({
     };
     let renderRoutes = edgeRoutes;
     if (edgeRoutes && (dragOverrides.size > 0 || displacements.size > 0)) {
-      let filteredRoutes: Map<string, { x: number; y: number }[]> | null = null;
+      let filteredRoutes: Map<string, ElkRoute> | null = null;
       for (const edge of viewGraph.edges) {
         if (
           !edgeRoutes.has(edge.id) ||

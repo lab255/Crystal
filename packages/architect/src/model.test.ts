@@ -54,15 +54,20 @@ describe("toRfEdges — ELK routes", () => {
         { id: "bc", source: "b", target: "c", kind: "async" as const, label: "" },
       ],
     };
-    const route = [
-      { x: 10, y: 20 },
-      { x: 10, y: 80 },
-      { x: 90, y: 80 },
-    ];
+    const route = {
+      points: [
+        { x: 10, y: 20 },
+        { x: 10, y: 80 },
+        { x: 90, y: 80 },
+      ],
+      label: { x: 15, y: 25, width: 40, height: 17 },
+    };
 
     const edges = toRfEdges(g, NONE, null, new Map([["ab", route]]));
     expect(edges[0]).toMatchObject({ type: "elk", data: { route } });
     expect(edges[0]!.data!.route).not.toBe(route);
+    expect(edges[0]!.data!.route!.points).not.toBe(route.points);
+    expect(edges[0]!.data!.route!.label).not.toBe(route.label);
     expect(edges[1]!.type).toBe("default");
     expect(edges[1]!.data).not.toHaveProperty("route");
   });
