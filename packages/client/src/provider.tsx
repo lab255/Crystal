@@ -343,11 +343,24 @@ function createFleetRuntime(defaultTarget: string | BridgeTransportFactory): Fle
     disposers.push(
       client.events.on("connection", ({ state }) => {
         if (state === "open") {
-          void workspacesStore.getState().refresh();
-          // On reconnect the active id may be unchanged; refresh scoped stores
-          // explicitly since the subscription above won't fire.
-          if (workspacesStore.getState().activeId) refreshScoped();
-          refreshFleetSlice();
+          // The scoped/fleet refreshes must wait for the workspace list: on a
+          // cold reload activeId is still null (and workspaces []) until
+          // `workspaces.list` resolves, so reading them synchronously skipped
+          // agent.list entirely AND cleared the fleet slice — the "all runs
+          // vanish after refresh" bug. On reconnect the active id may be
+          // unchanged; refresh scoped stores explicitly since the
+          // subscription above won't fire for an unchanged id.
+          void workspacesStore
+            .getState()
+            .refresh()
+            .then(() => {
+              const active = workspacesStore.getState().activeId;
+              if (active) {
+                client.setScope(active);
+                refreshScoped();
+              }
+              refreshFleetSlice();
+            });
         }
       }),
     );
