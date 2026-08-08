@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.28.0 (2026-08-08)
+
+### Features
+
+- typed steer receipts on all routes, fleet permission counts, browse errors, turn deep-links, composer-compliant console ([`2851094`](https://github.com/lab255/Crystal/commit/2851094))
+
 ## v0.27.0 (2026-08-08)
 
 ### Features
