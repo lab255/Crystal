@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   BookmarkPlus,
   GitCompareArrows,
@@ -31,12 +31,12 @@ import {
   Tooltip,
   cn,
 } from "@crystal/ui";
+import { BASE_BRANCH_LENS_PARAM, CAPABILITY_EVENTS } from "./capabilities.js";
 
 /** How many member files ride along in an Ask AI prompt before "+N more". */
 const ASK_FILE_LIMIT = 40;
 
 const DIFF_WORKTREE = formatLensParam({ kind: "diff", scope: "worktree" });
-const DIFF_BASE = formatLensParam({ kind: "diff", scope: "base" });
 
 export interface LensBarProps {
   /** @deprecated Used only to reveal the fallback agent console when the hub is unavailable. */
@@ -134,6 +134,25 @@ export function LensBar({ onOpenTerminal }: LensBarProps) {
     setSaveName("");
   }, [saveName, activeWsId, spec, lensStore, updateNav]);
 
+  useEffect(() => {
+    const setBase = () => setLens(BASE_BRANCH_LENS_PARAM);
+    const clear = () => setLens(null);
+    const save = () => {
+      if (lensParam === null || spec === null || spec.kind === "facet") return;
+      setMenuOpen(false);
+      setAskOpen(false);
+      setSaveOpen(true);
+    };
+    window.addEventListener(CAPABILITY_EVENTS.setBaseLens, setBase);
+    window.addEventListener(CAPABILITY_EVENTS.clearLens, clear);
+    window.addEventListener(CAPABILITY_EVENTS.saveLens, save);
+    return () => {
+      window.removeEventListener(CAPABILITY_EVENTS.setBaseLens, setBase);
+      window.removeEventListener(CAPABILITY_EVENTS.clearLens, clear);
+      window.removeEventListener(CAPABILITY_EVENTS.saveLens, save);
+    };
+  }, [lensParam, setLens, spec]);
+
   const submitAsk = useCallback(async () => {
     const question = askText.trim();
     if (!question || !activeWsId || askBusy) return;
@@ -217,7 +236,7 @@ export function LensBar({ onOpenTerminal }: LensBarProps) {
       <DropdownMenuRadioGroup value={lensParam ?? ""} onValueChange={setLens}>
         {[
           { param: DIFF_WORKTREE, label: "Working tree changes" },
-          { param: DIFF_BASE, label: "Diff vs base branch" },
+          { param: BASE_BRANCH_LENS_PARAM, label: "Diff vs base branch" },
         ].map(({ param, label }) => (
           <DropdownMenuRadioItem key={param} value={param} className="gap-2">
             <GitCompareArrows className="h-3.5 w-3.5 shrink-0 text-ink-faint" />

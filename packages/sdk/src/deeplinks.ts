@@ -6,8 +6,23 @@ import {
   parseDeepLink,
   parseWsRef,
 } from "@crystal/core";
-import { useCrystal } from "@crystal/client";
+import { useCrystal, type ServerConnection } from "@crystal/client";
 import type { CrystalMode } from "./modes.js";
+
+export const UNKNOWN_WORKSPACE_NOTICE =
+  "This link points at a workspace this server doesn't have open";
+
+export function linkedWorkspaceAvailability(
+  ws: string,
+  connection: Pick<ServerConnection, "workspaces"> | null,
+  listKnown = false,
+): "available" | "pending" | "unknown" {
+  if (!connection) return "unknown";
+  if (connection.workspaces.some((workspace) => workspace.id === ws)) return "available";
+  // A non-empty mirror proves the list arrived. An empty mirror needs the
+  // caller's request result because empty is also the cold-start value.
+  return listKnown || connection.workspaces.length > 0 ? "unknown" : "pending";
+}
 
 /**
  * Two-way sync between the nav store and the URL hash.
@@ -16,7 +31,7 @@ import type { CrystalMode } from "./modes.js";
  *   the nav store; a linked workspace ref (`wsId` or `sid:wsId` — bare means
  *   the default server) is activated once that server's workspace list
  *   arrives (one-shot — a stale id from another machine, or a sid of a
- *   connection this client doesn't have, is simply ignored).
+ *   connection this client doesn't have, raises a visible notice).
  * - Nav-store changes write the canonical hash back: pushState when the
  *   navigation identity changes (mode, subview, drill level, open document —
  *   back-button-worthy; see `deepLinkNavIdentity`), replaceState for
@@ -24,7 +39,11 @@ import type { CrystalMode } from "./modes.js";
  * - The URL always mirrors the *active* (server, workspace) pair; the store
  *   keeps every mode's view state so mode switches restore where you were.
  */
-export function useDeepLinks(enabled: boolean, defaultMode: CrystalMode): void {
+export function useDeepLinks(
+  enabled: boolean,
+  defaultMode: CrystalMode,
+  onNotice?: (message: string) => void,
+): void {
   const { navStore, fleet, selectWorkspace } = useCrystal();
 
   useEffect(() => {
@@ -32,30 +51,63 @@ export function useDeepLinks(enabled: boolean, defaultMode: CrystalMode): void {
 
     // Workspace ref from an applied link, waiting for the workspace list.
     let pendingWs: { sid: string; ws: string } | null = null;
+    let resolvingWs = false;
+    let pendingKnownPresent = false;
 
     const activeRef = (): string | null => {
       const conn = fleet.connection(fleet.activeSid);
       return conn?.activeWs ? formatWsRef(conn.sid, conn.activeWs) : null;
     };
 
+    const rejectPendingWs = () => {
+      pendingWs = null;
+      onNotice?.(UNKNOWN_WORKSPACE_NOTICE);
+      const ref = activeRef();
+      if ((navStore.getState().link.ws ?? null) !== ref) {
+        navStore.getState().update({ ws: ref });
+      }
+    };
+
     const tryActivateWs = () => {
       if (!pendingWs) return;
       const conn = fleet.connection(pendingWs.sid);
-      if (!conn) {
-        // No such connection here (a link from a machine with more bridges).
-        pendingWs = null;
+      const availability = linkedWorkspaceAvailability(pendingWs.ws, conn);
+      if (availability === "unknown") {
+        rejectPendingWs();
         return;
       }
-      if (conn.workspaces.some((w) => w.id === pendingWs!.ws)) {
+      if (availability === "available" && conn) {
         if (conn.activeWs !== pendingWs.ws || fleet.activeSid !== pendingWs.sid) {
           selectWorkspace(pendingWs.sid, pendingWs.ws);
         }
         pendingWs = null;
-      } else if (conn.workspaces.length > 0) {
-        // List is loaded and the linked workspace isn't open there — give up
-        // and let the active-workspace mirror rewrite the URL.
-        pendingWs = null;
+        return;
       }
+      if (pendingKnownPresent || resolvingWs || conn?.state !== "open") return;
+      const client = fleet.clientOf(pendingWs.sid);
+      if (!client) return;
+      const expected = pendingWs;
+      resolvingWs = true;
+      void client
+        .request("workspaces.list", {})
+        .then(({ workspaces }) => {
+          if (pendingWs?.sid !== expected.sid || pendingWs.ws !== expected.ws) return;
+          if (linkedWorkspaceAvailability(expected.ws, { workspaces }, true) === "unknown") {
+            rejectPendingWs();
+          } else {
+            // The provider's parallel refresh owns the workspaces store; once
+            // its mirror lands, the regular path above performs the switch.
+            pendingKnownPresent = true;
+          }
+        })
+        .catch(() => {})
+        .finally(() => {
+          resolvingWs = false;
+          const changed =
+            pendingWs !== null &&
+            (pendingWs.sid !== expected.sid || pendingWs.ws !== expected.ws);
+          if (pendingKnownPresent || changed) tryActivateWs();
+        });
     };
 
     const applyFromUrl = () => {
@@ -66,6 +118,7 @@ export function useDeepLinks(enabled: boolean, defaultMode: CrystalMode): void {
       // so the broken hash doesn't linger as if it meant something.
       const unknown = raw.length > 2 && !parsed.mode;
       pendingWs = parsed.ws && parsed.ws !== activeRef() ? parseWsRef(parsed.ws) : null;
+      pendingKnownPresent = false;
       if (!parsed.mode) parsed.mode = unknown ? defaultMode : (navStore.getState().link.mode ?? defaultMode);
       navStore.getState().apply(parsed);
       tryActivateWs();
@@ -110,5 +163,5 @@ export function useDeepLinks(enabled: boolean, defaultMode: CrystalMode): void {
       window.removeEventListener("popstate", applyFromUrl);
       window.removeEventListener("hashchange", applyFromUrl);
     };
-  }, [enabled, defaultMode, navStore, fleet, selectWorkspace]);
+  }, [enabled, defaultMode, navStore, fleet, selectWorkspace, onNotice]);
 }

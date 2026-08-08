@@ -46,6 +46,15 @@ import { ConnectBridgeDialog } from "./ConnectBridgeDialog.js";
 import { DevServersButton } from "./DevServersButton.js";
 import { OpenWorkspaceDialog } from "./OpenWorkspaceDialog.js";
 import { RecentWorkspaceRowContent } from "./RecentWorkspaceRow.js";
+import { attentionLegendText } from "./shell-labels.js";
+import {
+  MODE_SHORTCUTS,
+  SHELL_SHORTCUTS,
+  shortcutHint,
+  workspaceShortcutHint,
+} from "./shortcuts.js";
+
+const ATTENTION_LEGEND = attentionLegendText();
 
 /**
  * The far-left workspace rail — Slack-style. Top: the cross-project levels
@@ -213,7 +222,7 @@ export function WorkspaceRail({
       >
         {levelButton({
           label: "Overview",
-          shortcut: "Ctrl+1",
+          shortcut: shortcutHint(MODE_SHORTCUTS[0]!),
           icon: <LayoutGrid className="h-4.5 w-4.5 shrink-0" />,
           active: mode === "projects",
           onClick: onHome,
@@ -310,10 +319,16 @@ export function WorkspaceRail({
                       ) : null}
                       {/* Attention dot — the whole point of the rail tile. */}
                       {light === "red" || light === "yellow" ? (
-                        <TrafficLightDot
-                          light={light}
-                          className={cn("absolute", expanded ? "right-1.5" : "right-0.5 top-0.5")}
-                        />
+                        <Tooltip content={ATTENTION_LEGEND} side="right">
+                          <span
+                            className={cn(
+                              "absolute inline-flex",
+                              expanded ? "right-1.5" : "right-0.5 top-0.5",
+                            )}
+                          >
+                            <TrafficLightDot light={light} />
+                          </span>
+                        </Tooltip>
                       ) : null}
                       {expanded && (c.workspaces.length > 1 || multiServer) ? (
                         <span
@@ -337,7 +352,7 @@ export function WorkspaceRail({
                     <Tooltip
                       key={`${c.sid}:${w.id}`}
                       content={multiServer ? `${c.label} · ${w.name}` : w.name}
-                      shortcut={i < 9 ? `Ctrl+Alt+${i + 1}` : undefined}
+                      shortcut={workspaceShortcutHint(i)}
                       side="right"
                     >
                       {tile}
@@ -398,8 +413,12 @@ export function WorkspaceRail({
             expanded ? "flex-row items-center justify-center" : "flex-col items-center",
           )}
         >
-          <DevServersButton />
-          <Tooltip content="Git tree & log" shortcut="Ctrl+Shift+G" side={expanded ? "top" : "right"}>
+          <DevServersButton side={expanded ? "top" : "right"} />
+          <Tooltip
+            content="Git tree & log"
+            shortcut={shortcutHint(SHELL_SHORTCUTS.git)}
+            side={expanded ? "top" : "right"}
+          >
             <button
               type="button"
               onClick={onToggleGit}
@@ -417,7 +436,7 @@ export function WorkspaceRail({
           </Tooltip>
           <Tooltip
             content="Toggle the terminal panel"
-            shortcut="Ctrl+`"
+            shortcut={shortcutHint(SHELL_SHORTCUTS.terminal)}
             side={expanded ? "top" : "right"}
           >
             <button

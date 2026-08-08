@@ -20,6 +20,7 @@ import {
   parseDeepLink,
   workspaceLight,
   worstLight,
+  type PublishStatus,
   type ProjectEntry,
   type TrafficLight,
 } from "@crystal/core";
@@ -48,7 +49,9 @@ import {
 } from "@crystal/client";
 import { Kbd, Spinner, StatusDot, Tooltip, TooltipProvider, cn } from "@crystal/ui";
 import { BranchSwitcher } from "./BranchSwitcher.js";
+import { CAPABILITY_EVENTS, REVIEW_REF_NAV } from "./capabilities.js";
 import { CommandPalette } from "./CommandPalette.js";
+import { KeyboardShortcutsDialog } from "./KeyboardShortcutsDialog.js";
 import { LensBar } from "./LensBar.js";
 import { useDeepLinks } from "./deeplinks.js";
 import {
@@ -61,9 +64,16 @@ import { GitPanel } from "./GitPanel.js";
 import { NeedsYouPill } from "./NeedsYouPill.js";
 import { ProjectNav } from "./ProjectNav.js";
 import { ProjectMenu, ProjectSwitcher } from "./ProjectSwitcher.js";
-import { SettingsDialog } from "./SettingsDialog.js";
+import { SettingsDialog, type SettingsSection } from "./SettingsDialog.js";
 import { TerminalPanel } from "./TerminalPanel.js";
 import { WorkspaceRail } from "./WorkspaceRail.js";
+import { PUBLIC_LINK_COPIED_NOTICE, shareLinkFor } from "./share-link.js";
+import {
+  MODE_SHORTCUTS,
+  SHELL_SHORTCUTS,
+  matchesShortcut,
+  shortcutHint,
+} from "./shortcuts.js";
 
 // Each mode is a lazy chunk: react-flow/dagre and Monaco only download when
 // their mode is first opened. Once visited, a mode stays mounted so canvas and
@@ -130,7 +140,13 @@ export function CrystalShell({
   const fallbackMode = urlMode ?? initialMode ?? "projects";
   const mode = useNav((l) => l.mode) ?? fallbackMode;
   const updateNav = useNavUpdate();
-  useDeepLinks(deepLinking, initialMode ?? "projects");
+  const noticeSequence = useRef(0);
+  const [notice, setNotice] = useState<{ id: number; message: string } | null>(null);
+  const showNotice = useCallback((message: string) => {
+    setNotice({ id: ++noticeSequence.current, message });
+  }, []);
+  const dismissNotice = useCallback(() => setNotice(null), []);
+  useDeepLinks(deepLinking, initialMode ?? "projects", showNotice);
 
   const [visited, setVisited] = useState<ReadonlySet<CrystalMode>>(() => new Set([fallbackMode]));
   useEffect(() => {
@@ -138,6 +154,8 @@ export function CrystalShell({
   }, [mode]);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<SettingsSection | undefined>();
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   // Panel visibility lives in the terminals store so anything dispatching an
   // interactive agent session can reveal the panel (see focusTerminal).
   const terminalOpen = useTerminals((s) => s.panelOpen);
@@ -216,6 +234,16 @@ export function CrystalShell({
     [updateNav, onModeChange],
   );
 
+  const openSettings = useCallback((section?: SettingsSection) => {
+    setSettingsSection(section);
+    setSettingsOpen(true);
+  }, []);
+
+  const onSettingsOpenChange = useCallback((open: boolean) => {
+    setSettingsOpen(open);
+    if (!open) setSettingsSection(undefined);
+  }, []);
+
   // Last facet visited per (server, workspace): re-entering a workspace from
   // the Overview restores where you were in it.
   const lastFacet = useRef(new Map<string, CrystalMode>());
@@ -250,19 +278,21 @@ export function CrystalShell({
       // can still be dismissed from inside itself.
       const target = e.target;
       if (target instanceof HTMLElement && target.closest(".xterm")) {
-        const isPanelToggle = (e.ctrlKey || e.metaKey) && e.key === "`";
+        const isPanelToggle = matchesShortcut(e, SHELL_SHORTCUTS.terminal);
         if (!isPanelToggle) return;
       }
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "p") {
+      const inTextInput =
+        target instanceof HTMLElement &&
+        !!target.closest(
+          "input, textarea, select, [contenteditable]:not([contenteditable='false'])",
+        );
+      if (matchesShortcut(e, SHELL_SHORTCUTS.palette)) {
         e.preventDefault();
         setPaletteOpen(true);
-      } else if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "g") {
+      } else if (matchesShortcut(e, SHELL_SHORTCUTS.git)) {
         e.preventDefault();
         setGitOpen((o) => !o);
-      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
-        e.preventDefault();
-        setPaletteOpen(true);
-      } else if ((e.ctrlKey || e.metaKey) && e.altKey && /^[1-9]$/.test(e.key)) {
+      } else if (matchesShortcut(e, SHELL_SHORTCUTS.workspaces)) {
         // Workspace tabs are the top level: Ctrl+Alt+n jumps to the nth
         // workspace, counted across every connected server in tab order.
         const all = fleet.store
@@ -273,28 +303,28 @@ export function CrystalShell({
           e.preventDefault();
           selectWorkspace(ws.sid, ws.id);
         }
-      } else if (
-        (e.ctrlKey || e.metaKey) &&
-        !e.altKey &&
-        Number(e.key) >= 1 &&
-        Number(e.key) <= CRYSTAL_MODES.length
-      ) {
+      } else if (MODE_SHORTCUTS.some((binding) => matchesShortcut(e, binding))) {
         e.preventDefault();
-        switchMode(CRYSTAL_MODES[Number(e.key) - 1]!);
-      } else if ((e.ctrlKey || e.metaKey) && e.key === "`") {
+        switchMode(MODE_SHORTCUTS.find((binding) => matchesShortcut(e, binding))!.mode);
+      } else if (matchesShortcut(e, SHELL_SHORTCUTS.terminal)) {
         e.preventDefault();
         terminalsStore.getState().setPanelOpen(!terminalsStore.getState().panelOpen);
-      } else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "l") {
+      } else if (matchesShortcut(e, SHELL_SHORTCUTS.copyLink)) {
         // Copy a shareable link to the current view (the header button shows
         // the feedback). Browsers reserve Cmd+L for the address bar; in the
         // desktop shell it's ours.
         e.preventDefault();
         window.dispatchEvent(new CustomEvent("crystal:copy-link"));
-      } else if ((e.ctrlKey || e.metaKey) && (e.key === "[" || e.key === "]")) {
+      } else if (matchesShortcut(e, SHELL_SHORTCUTS.historyBack)) {
         // In-app history — mirrors the header back/forward buttons.
         e.preventDefault();
-        if (e.key === "[") history.back();
-        else history.forward();
+        history.back();
+      } else if (matchesShortcut(e, SHELL_SHORTCUTS.historyForward)) {
+        e.preventDefault();
+        history.forward();
+      } else if (!inTextInput && matchesShortcut(e, SHELL_SHORTCUTS.cheatSheet)) {
+        e.preventDefault();
+        setShortcutsOpen(true);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -337,12 +367,47 @@ export function CrystalShell({
       else void terminalsStore.getState().openShell(ws, undefined, undefined, undefined, sid);
     };
     window.addEventListener("crystal:open-terminal", onOpenTerminal);
+    let reviewFrame: number | null = null;
+    const onReviewRef = () => {
+      switchMode("architect");
+      updateNav(REVIEW_REF_NAV);
+      let clicked = false;
+      let attempts = 0;
+      const reveal = () => {
+        const visible = <T extends HTMLElement,>(elements: NodeListOf<T>): T | undefined =>
+          [...elements].find((element) => !element.closest(".hidden"));
+        const input = visible(
+          document.querySelectorAll<HTMLInputElement>('input[placeholder="Review vs ref…"]'),
+        );
+        if (input) {
+          input.focus();
+          reviewFrame = null;
+          return;
+        }
+        if (!clicked) {
+          const trigger = visible(
+            document.querySelectorAll<HTMLButtonElement>('button[aria-label="Review vs ref…"]'),
+          );
+          if (trigger) {
+            trigger.click();
+            clicked = true;
+          }
+        }
+        if (++attempts < 120) reviewFrame = requestAnimationFrame(reveal);
+        else reviewFrame = null;
+      };
+      if (reviewFrame !== null) cancelAnimationFrame(reviewFrame);
+      reviewFrame = requestAnimationFrame(reveal);
+    };
+    window.addEventListener(CAPABILITY_EVENTS.reviewRef, onReviewRef);
     return () => {
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("crystal:open-file", onOpenFile);
       window.removeEventListener("crystal:open-terminal", onOpenTerminal);
+      window.removeEventListener(CAPABILITY_EVENTS.reviewRef, onReviewRef);
+      if (reviewFrame !== null) cancelAnimationFrame(reviewFrame);
     };
-  }, [switchMode, selectWorkspace, fleet, terminalsStore]);
+  }, [switchMode, selectWorkspace, fleet, terminalsStore, updateNav]);
 
   return (
     <TooltipProvider>
@@ -372,7 +437,7 @@ export function CrystalShell({
             </div>
             {deepLinking ? (
               <>
-                <Tooltip content="Back" shortcut="Ctrl+[">
+                <Tooltip content="Back" shortcut={shortcutHint(SHELL_SHORTCUTS.historyBack)}>
                   <button
                     type="button"
                     aria-label="Back"
@@ -382,7 +447,7 @@ export function CrystalShell({
                     <ArrowLeft className="h-3.5 w-3.5" />
                   </button>
                 </Tooltip>
-                <Tooltip content="Forward" shortcut="Ctrl+]">
+                <Tooltip content="Forward" shortcut={shortcutHint(SHELL_SHORTCUTS.historyForward)}>
                   <button
                     type="button"
                     aria-label="Forward"
@@ -413,7 +478,7 @@ export function CrystalShell({
               </span>
             ) : (
               <>
-                <ProjectMenu onOpenSettings={() => setSettingsOpen(true)} />
+                <ProjectMenu onOpenSettings={() => openSettings()} />
                 <ProjectSwitcher onSelectWorkspace={selectWorkspace} />
                 <ChevronRight className="h-3 w-3 shrink-0 text-ink-faint" />
                 <BranchSwitcher />
@@ -434,7 +499,7 @@ export function CrystalShell({
           >
             <Search className="h-3.5 w-3.5 shrink-0" />
             <span className="min-w-0 flex-1 truncate text-left">Search or jump to…</span>
-            <Kbd>Ctrl+K</Kbd>
+            <Kbd>{shortcutHint(SHELL_SHORTCUTS.palette)}</Kbd>
           </button>
 
           <div
@@ -468,7 +533,7 @@ export function CrystalShell({
                 ) : null}
               </button>
             </Tooltip>
-            {deepLinking ? <CopyLinkButton /> : null}
+            {deepLinking ? <CopyLinkButton onNotice={showNotice} /> : null}
             <LensBar onOpenTerminal={() => setTerminalOpen(true)} />
             {platform === "windows" || platform === "linux" ? <DesktopWindowControls /> : null}
           </div>
@@ -487,7 +552,7 @@ export function CrystalShell({
             onToggleGit={() => setGitOpen((o) => !o)}
             onToggleTerminal={() => setTerminalOpen(!terminalOpen)}
             onSelectWorkspace={selectWorkspace}
-            onOpenSettings={() => setSettingsOpen(true)}
+            onOpenSettings={() => openSettings()}
           />
           {!isCrossProjectMode(mode) ? (
             <ProjectNav
@@ -549,7 +614,13 @@ export function CrystalShell({
           </footer>
         ) : null}
 
-        <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
+        <SettingsDialog
+          open={settingsOpen}
+          onOpenChange={onSettingsOpenChange}
+          section={settingsSection}
+        />
+
+        <KeyboardShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
 
         {/* The palette lists the ACTIVE connection's workspaces (fleet v1). */}
         <CommandPalette
@@ -557,8 +628,11 @@ export function CrystalShell({
           onOpenChange={setPaletteOpen}
           onSwitchMode={switchMode}
           onSelectWorkspace={(id) => selectWorkspace(activeSid, id)}
-          onOpenSettings={() => setSettingsOpen(true)}
+          onOpenSettings={openSettings}
+          onOpenShortcuts={() => setShortcutsOpen(true)}
         />
+
+        <ShellNotice notice={notice} onDismiss={dismissNotice} />
       </div>
     </TooltipProvider>
   );
@@ -732,25 +806,59 @@ function VersionBadge() {
  * Ctrl/Cmd+L triggers the same copy via the `crystal:copy-link` event (the
  * shell's keydown dispatches it), so the feedback lands on this button.
  */
-function CopyLinkButton() {
+function CopyLinkButton({ onNotice }: { onNotice: (message: string) => void }) {
+  const { client } = useCrystal();
   const [copied, setCopied] = useState(false);
+  const publishStatus = useRef<PublishStatus | null>(null);
   useEffect(() => {
     if (!copied) return;
     const t = setTimeout(() => setCopied(false), 1500);
     return () => clearTimeout(t);
   }, [copied]);
   useEffect(() => {
-    const onCopy = () => {
-      navigator.clipboard
-        .writeText(window.location.href)
-        .then(() => setCopied(true))
-        .catch(() => {});
+    let cancelled = false;
+    publishStatus.current = null;
+    void client
+      .request("publish.status", {})
+      .then((status) => {
+        if (!cancelled) publishStatus.current = status;
+      })
+      .catch(() => {});
+    const unsubscribe = client.events.on("publish.changed", (status) => {
+      publishStatus.current = status;
+    });
+    const copy = async () => {
+      let status = publishStatus.current;
+      if (status === null) {
+        try {
+          status = await client.request("publish.status", {});
+          publishStatus.current = status;
+        } catch {
+          // Older bridge: copy the local deep link as before.
+        }
+      }
+      const link = shareLinkFor(status, window.location.href, window.location.hash);
+      try {
+        await navigator.clipboard.writeText(link.href);
+        setCopied(true);
+        if (link.public) onNotice(PUBLIC_LINK_COPIED_NOTICE);
+      } catch {
+        /* clipboard unavailable */
+      }
     };
+    const onCopy = () => void copy();
     window.addEventListener("crystal:copy-link", onCopy);
-    return () => window.removeEventListener("crystal:copy-link", onCopy);
-  }, []);
+    return () => {
+      cancelled = true;
+      unsubscribe();
+      window.removeEventListener("crystal:copy-link", onCopy);
+    };
+  }, [client, onNotice]);
   return (
-    <Tooltip content="Copy a shareable link to this view" shortcut="Ctrl+L">
+    <Tooltip
+      content="Copy a shareable link to this view"
+      shortcut={shortcutHint(SHELL_SHORTCUTS.copyLink)}
+    >
       <button
         type="button"
         aria-label="Copy link to this view"
@@ -763,5 +871,38 @@ function CopyLinkButton() {
         {copied ? <Check className="h-3.5 w-3.5" /> : <Link2 className="h-3.5 w-3.5" />}
       </button>
     </Tooltip>
+  );
+}
+
+function ShellNotice({
+  notice,
+  onDismiss,
+}: {
+  notice: { id: number; message: string } | null;
+  onDismiss: () => void;
+}) {
+  useEffect(() => {
+    if (!notice) return;
+    const timer = setTimeout(onDismiss, 4000);
+    return () => clearTimeout(timer);
+  }, [notice, onDismiss]);
+  if (!notice) return null;
+  return (
+    <div
+      key={notice.id}
+      role="status"
+      aria-live="polite"
+      className="fixed left-1/2 top-12 z-[70] flex -translate-x-1/2 items-center gap-2 rounded-lg border border-edge-strong bg-surface-3 px-3 py-2 text-xs text-ink shadow-xl shadow-black/40"
+    >
+      {notice.message}
+      <button
+        type="button"
+        aria-label="Dismiss notice"
+        onClick={onDismiss}
+        className="rounded p-0.5 text-ink-faint hover:bg-surface-active hover:text-ink"
+      >
+        <X className="h-3 w-3" />
+      </button>
+    </div>
   );
 }

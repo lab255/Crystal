@@ -16,8 +16,10 @@ import {
   DropdownMenuLabel,
   DropdownMenuTrigger,
   Spinner,
+  Tooltip,
   cn,
 } from "@crystal/ui";
+import { DEV_SERVERS_TOOLTIP } from "./shell-labels.js";
 
 /**
  * The rail's dev-server launcher: every detected candidate (monorepo-aware,
@@ -26,7 +28,7 @@ import {
  * in the panel, and the sniffed URL opens in the browser. Rows are plain
  * elements (not menu items) so the panel stays open across actions.
  */
-export function DevServersButton() {
+export function DevServersButton({ side = "right" }: { side?: "top" | "right" }) {
   const { client } = useCrystal();
   const activeWs = useWorkspaces((s) => s.activeId);
   const focusTerminal = useTerminals((s) => s.focusTerminal);
@@ -86,26 +88,27 @@ export function DevServersButton() {
         if (o) refresh();
       }}
     >
-      <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          aria-label="Dev servers"
-          title="Dev servers"
-          className={cn(
-            "relative flex h-9 w-9 items-center justify-center rounded-lg transition-colors",
-            open
-              ? "bg-crystal-500/20 text-crystal-300"
-              : "text-ink-faint hover:bg-surface-3 hover:text-ink-muted",
-          )}
-        >
-          <ServerCog className="h-4.5 w-4.5" />
-          {runningCount > 0 ? (
-            <span className="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-ok px-0.5 text-[9px] font-bold text-surface-0">
-              {runningCount}
-            </span>
-          ) : null}
-        </button>
-      </DropdownMenuTrigger>
+      <Tooltip content={DEV_SERVERS_TOOLTIP} side={side}>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            aria-label="Dev servers"
+            className={cn(
+              "relative flex h-9 w-9 items-center justify-center rounded-lg transition-colors",
+              open
+                ? "bg-crystal-500/20 text-crystal-300"
+                : "text-ink-faint hover:bg-surface-3 hover:text-ink-muted",
+            )}
+          >
+            <ServerCog className="h-4.5 w-4.5" />
+            {runningCount > 0 ? (
+              <span className="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-ok px-0.5 text-[9px] font-bold text-surface-0">
+                {runningCount}
+              </span>
+            ) : null}
+          </button>
+        </DropdownMenuTrigger>
+      </Tooltip>
       <DropdownMenuContent side="right" align="end" className="w-96 max-w-[90vw]">
         <DropdownMenuLabel>Dev servers</DropdownMenuLabel>
         {error ? (
