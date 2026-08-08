@@ -57,7 +57,7 @@ import {
   type CodeMapSummary,
   type DiffMarks,
 } from "@crystal/core";
-import { useNav } from "@crystal/client";
+import { useNav, useWorkspaces } from "@crystal/client";
 import { Badge, Button, EmptyState, Input, Tooltip, cn } from "@crystal/ui";
 import { CodeNode, type CodeNodeData, type CodeRfNode } from "./codemap/CodeNode.js";
 import { InlineRename } from "./ContextMenu.js";
@@ -85,6 +85,7 @@ import {
   type SimTickState,
   type SimTotals,
 } from "./simulation.js";
+import { ExportMenu } from "./ExportMenu.js";
 
 /**
  * Deployment view — the C4 deployment diagram: the same architecture
@@ -432,6 +433,9 @@ function InfraInner({
   const [notice, setNotice] = useState<string | null>(null);
   const { screenToFlowPosition } = useReactFlow();
   const canvasRef = useRef<HTMLDivElement>(null);
+  const workspaceName = useWorkspaces(
+    (s) => s.workspaces.find((workspace) => workspace.id === s.activeId)?.name ?? "workspace",
+  );
   const [canvasSize, setCanvasSize] = useState({ width: 1200, height: 760 });
 
   useEffect(() => {
@@ -1464,6 +1468,13 @@ function InfraInner({
               </button>
             </>
           ) : null}
+          <div className="mx-0.5 h-4 w-px bg-edge" />
+          <ExportMenu
+            canvasRef={canvasRef}
+            workspace={workspaceName}
+            view="infra"
+            onNotice={setNotice}
+          />
         </div>
 
         {/* Palette — new components drag onto a target (or click to add, then

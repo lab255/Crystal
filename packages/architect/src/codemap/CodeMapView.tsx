@@ -116,6 +116,7 @@ import { LodSlider } from "./LodSlider.js";
 import { cappedExpansionFiles } from "../live-code.js";
 import { HUGE_TREE_FILE_LIMIT } from "../lod-config.js";
 import { MapActionsContext, SYMBOL_TONES, mapNodeTypes, type MapActions } from "./map-nodes.js";
+import { ExportMenu } from "../ExportMenu.js";
 
 const crossNodeTypes = { code: CodeNode };
 
@@ -235,6 +236,8 @@ function CodeMapInner({
   const [crossEdge, setCrossEdge] = useState<CrossWorkspaceEdge | null>(null);
   const [loading, setLoading] = useState(true);
   const [pulse, setPulse] = useState(false);
+  const [renderAllForExport, setRenderAllForExport] = useState(false);
+  const canvasRef = useRef<HTMLDivElement>(null);
   // Bumped by codemap.changed — every cached detail keyed below re-fetches.
   const [generation, setGeneration] = useState(0);
 
@@ -1179,7 +1182,7 @@ function CodeMapInner({
     <div className="h-full min-h-0">
       <Split storageKey="architect:codemap" direction="horizontal">
         <Pane minSize="40%">
-          <div className="relative h-full w-full min-w-0">
+          <div ref={canvasRef} className="relative h-full w-full min-w-0">
         <div className="absolute left-3 top-3 z-10 flex max-w-[calc(100%-1.5rem)] flex-wrap items-center gap-1 gap-y-1 rounded-xl border border-edge bg-surface-2/95 px-2.5 py-1.5 text-xs shadow-xl shadow-black/30 backdrop-blur">
           {origin ? (
             <>
@@ -1303,6 +1306,18 @@ function CodeMapInner({
             </Tooltip>
           ) : null}
           {loading ? <Spinner className="ml-1 h-3 w-3" /> : null}
+          <span className="ml-1 h-4 w-px bg-edge" />
+          <ExportMenu
+            canvasRef={canvasRef}
+            workspace={
+              level && level.kind !== "all"
+                ? wsName(level.ws)
+                : (workspaces.find((workspace) => workspace.id === activeWs)?.name ?? "workspaces")
+            }
+            view="codebase"
+            onNotice={setDropNotice}
+            onRenderAllChange={setRenderAllForExport}
+          />
         </div>
 
         {level && level.kind !== "all" ? (
@@ -1486,6 +1501,7 @@ function CodeMapInner({
             menuFor={menuFor}
             externalHover={externalHover}
             pinned={pinned}
+            renderAllForExport={renderAllForExport}
             onHoverNode={setHover}
             onPinNode={pin}
             onModuleMoved={(path, pos) =>
@@ -1606,6 +1622,7 @@ function WorkspaceMapCanvas({
   pinned,
   onHoverNode,
   onPinNode,
+  renderAllForExport,
 }: {
   scene: MapScene;
   /** Bumped when the LoD level or facet lens re-poses the map — refit the viewport. */
@@ -1629,6 +1646,7 @@ function WorkspaceMapCanvas({
   onHoverNode: (ref: HighlightRef | null) => void;
   /** Pin a highlight into the deep link, or clear it with `null`. */
   onPinNode: (ref: HighlightRef | null) => void;
+  renderAllForExport: boolean;
 }) {
   const [nodes, setNodes, onNodesChange] = useNodesState<MapRfNode>(scene.nodes);
   const [snap, setSnap] = useState(() => {
@@ -1787,7 +1805,7 @@ function WorkspaceMapCanvas({
       snapGrid={[16, 16]}
       // Same webview-heap guard as the architecture canvas: only visible
       // nodes mount DOM; the scene itself still holds every node.
-      onlyRenderVisibleElements
+      onlyRenderVisibleElements={!renderAllForExport}
       proOptions={{ hideAttribution: true }}
       className="bg-surface-0"
     >
