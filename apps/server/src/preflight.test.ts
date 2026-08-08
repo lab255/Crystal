@@ -63,6 +63,7 @@ describe("probeEnvironment", () => {
 
 describe("probeAssertions", () => {
   let repo: string;
+  let outsideFile: string;
 
   beforeAll(async () => {
     const { probeAssertions } = await import("./preflight.js");
@@ -80,10 +81,13 @@ describe("probeAssertions", () => {
     await git("add", "-A");
     await git("commit", "-m", "init");
     await git("branch", "release/2.3");
+    outsideFile = path.join(path.dirname(repo), `${path.basename(repo)}-outside.txt`);
+    await fs.writeFile(outsideFile, "outside");
   }, 30_000);
 
   afterAll(async () => {
     await fs.rm(repo, { recursive: true, force: true }).catch(() => {});
+    await fs.rm(outsideFile, { force: true }).catch(() => {});
   });
 
   it("returns null when the text carries no assert lines", async () => {
@@ -115,12 +119,41 @@ describe("probeAssertions", () => {
     expect(report!.ok).toBe(false);
   }, 30_000);
 
-  it("fails unrecognized assertion kinds loudly instead of skipping them", async () => {
+  it("fails file assertions that escape the workspace", async () => {
     const { probeAssertions } = await import("./preflight.js");
-    const report = await probeAssertions(repo, "assert: pr 204 is green");
-    expect(report!.checks).toHaveLength(1);
-    expect(report!.checks[0]!.ok).toBe(false);
-    expect(report!.checks[0]!.detail).toContain("unrecognized assertion");
+    const relativeOutside = path.relative(repo, outsideFile);
+    const report = await probeAssertions(repo, `assert: file ${relativeOutside}`);
+    expect(report!.checks[0]).toMatchObject({
+      kind: "file",
+      arg: relativeOutside,
+      ok: false,
+      detail: "outside the workspace",
+    });
+    expect(report!.ok).toBe(false);
+
+    if (process.platform !== "win32") {
+      await fs.symlink(outsideFile, path.join(repo, "outside-link"));
+      const linked = await probeAssertions(repo, "assert: file outside-link");
+      expect(linked!.checks[0]).toMatchObject({
+        ok: false,
+        detail: "outside the workspace",
+      });
+    }
+  });
+
+  it("fails bare and unrecognized assertions loudly instead of skipping them", async () => {
+    const { probeAssertions } = await import("./preflight.js");
+    const report = await probeAssertions(repo, "assert:\nassert: pr 204 is green");
+    expect(report!.checks).toHaveLength(2);
+    expect(report!.checks[0]).toMatchObject({
+      kind: "malformed",
+      raw: "assert:",
+      ok: false,
+    });
+    expect(report!.checks[0]!.detail).toContain("malformed assertion");
+    expect(report!.checks[1]!.ok).toBe(false);
+    expect(report!.checks[1]!.detail).toContain("unrecognized assertion");
+    expect(report!.ok).toBe(false);
   });
 
   it("cmd claims run in the workspace root and judge the exit code", async () => {

@@ -8,6 +8,7 @@ import {
   c4RelId,
   c4ViewKey,
   containerForFile,
+  containerNodeIdOf,
   deriveC4Model,
   isInfraCategory,
   projectC4,
@@ -161,6 +162,45 @@ describe("deriveC4Model", () => {
     expect(model.hasScreens).toBe(true);
     expect(model.categoryOfService.stripe).toBe("payments");
     expect(model.nameOfService.postgres).toBe("PostgreSQL");
+  });
+
+  it("disambiguates colliding module slugs without changing ordinary ids", () => {
+    const fooDash = system({
+      id: "sys:foo-dash",
+      name: "Foo dash",
+      parts: [{ path: "apps/foo-bar/src", pkg: "apps/foo-bar", fileCount: 4 }],
+      endpoints: [{ method: "GET", path: "/dash", file: "apps/foo-bar/src/api.ts" }],
+    });
+    const fooUnderscore = system({
+      id: "sys:foo-underscore",
+      name: "Foo underscore",
+      parts: [{ path: "apps/foo_bar/src", pkg: "apps/foo_bar", fileCount: 5 }],
+      endpoints: [{ method: "GET", path: "/underscore", file: "apps/foo_bar/src/api.ts" }],
+    });
+    const modules: CodeModule[] = [
+      { path: ".", name: "collision", fileCount: 9 },
+      { path: "apps/foo-bar", name: "foo-dash", fileCount: 4 },
+      { path: "apps/foo_bar", name: "foo-underscore", fileCount: 5 },
+    ];
+    const input: C4DeriveInput = {
+      overview: overview([fooDash, fooUnderscore]),
+      externals: [],
+      modules,
+    };
+
+    const first = deriveC4Model(input);
+    const reversed = deriveC4Model({ ...input, modules: [...modules].reverse() });
+    const dashId = first.containerOfModule["apps/foo-bar"]!;
+    const underscoreId = first.containerOfModule["apps/foo_bar"]!;
+    expect(dashId).not.toBe(underscoreId);
+    expect(first.containers.map((container) => container.id)).toEqual(
+      expect.arrayContaining([dashId, underscoreId]),
+    );
+    expect(reversed.containerOfModule["apps/foo-bar"]).toBe(dashId);
+    expect(reversed.containerOfModule["apps/foo_bar"]).toBe(underscoreId);
+
+    expect(containerNodeIdOf("apps/server")).toBe("ctr:apps-server");
+    expect(derive().containerOfModule["apps/server"]).toBe("ctr:apps-server");
   });
 
   it("folds library code into a single app instead of minting a shared box", () => {

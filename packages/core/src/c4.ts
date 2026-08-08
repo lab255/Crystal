@@ -223,6 +223,47 @@ function aggregateTech(systems: readonly SystemModule[], cap = 4): string[] {
     .map(([pkg]) => pkg);
 }
 
+/** Stable, runtime-independent suffix for the rare module paths that slug alike. */
+function modulePathHash(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = Math.imul(hash ^ value.charCodeAt(i), 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0").slice(0, 6);
+}
+
+/**
+ * Container ids stay byte-for-byte compatible unless two source paths have
+ * the same slug. Every member of a colliding group gets a path-derived suffix
+ * so the result is independent of code-map traversal order.
+ */
+function containerIdsForModules(modules: readonly CodeModule[]): Map<string, string> {
+  const pathsByBase = new Map<string, string[]>();
+  for (const module of modules) {
+    const base = containerNodeIdOf(module.path);
+    const paths = pathsByBase.get(base) ?? [];
+    if (!paths.includes(module.path)) paths.push(module.path);
+    pathsByBase.set(base, paths);
+  }
+
+  const ids = new Map<string, string>();
+  for (const [base, paths] of pathsByBase) {
+    if (paths.length === 1) {
+      ids.set(paths[0]!, base);
+      continue;
+    }
+    const used = new Set<string>();
+    for (const modulePath of [...paths].sort()) {
+      const stem = `${base}-${modulePathHash(modulePath)}`;
+      let id = stem;
+      for (let suffix = 2; used.has(id); suffix += 1) id = `${stem}-${suffix}`;
+      used.add(id);
+      ids.set(modulePath, id);
+    }
+  }
+  return ids;
+}
+
 /**
  * Derive the C4 container tier. A *package* module seeds a container when it
  * carries a deployable signal: it serves HTTP routes, it owns routed screens,
@@ -303,6 +344,7 @@ export function deriveC4Model(input: C4DeriveInput): C4Model {
     if (f.owned.length === 0) return false;
     return f.servesHttp || f.ownsScreens || f.topOfGraph;
   });
+  const containerIdOfModule = containerIdsForModules(seeds);
 
   const containers: C4Container[] = [];
   const containerOfSystem: Record<string, string> = {};
@@ -314,8 +356,9 @@ export function deriveC4Model(input: C4DeriveInput): C4Model {
   if (seeds.length > 0) {
     for (const m of seeds) {
       const f = moduleFacts(m);
+      const containerId = containerIdOfModule.get(m.path)!;
       containers.push({
-        id: containerNodeIdOf(m.path),
+        id: containerId,
         name: m.name,
         variant: variantFor(f.servesHttp, f.ownsFrontend),
         tech: aggregateTech(f.owned),
@@ -324,8 +367,8 @@ export function deriveC4Model(input: C4DeriveInput): C4Model {
         fileCount: f.owned.reduce((n, s) => n + s.fileCount, 0),
         screenCount: 0,
       });
-      containerOfModule[m.path] = containerNodeIdOf(m.path);
-      for (const s of f.owned) containerOfSystem[idOf(s.id)] = containerNodeIdOf(m.path);
+      containerOfModule[m.path] = containerId;
+      for (const s of f.owned) containerOfSystem[idOf(s.id)] = containerId;
     }
     // Library code: into the single app when there is one, else the explicit
     // shared container.

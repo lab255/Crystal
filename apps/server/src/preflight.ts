@@ -53,6 +53,28 @@ export async function probeEnvironment(
 /** How long one `assert: cmd …` may run before it counts as failed. */
 const ASSERT_CMD_TIMEOUT_MS = 30_000;
 
+function isWithinRoot(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return (
+    relative === "" ||
+    (!path.isAbsolute(relative) &&
+      relative !== ".." &&
+      !relative.startsWith(`..${path.sep}`))
+  );
+}
+
+/** Resolve a claimed file without letting lexical traversal or symlinks leave the workspace. */
+async function assertedFileInRoot(root: string, claimed: string): Promise<string | null> {
+  const rootAbs = path.resolve(root);
+  const candidate = path.resolve(rootAbs, claimed);
+  if (!isWithinRoot(rootAbs, candidate)) return null;
+
+  const rootReal = await fs.realpath(rootAbs);
+  const candidateReal = await fs.realpath(candidate).catch(() => null);
+  if (candidateReal && !isWithinRoot(rootReal, candidateReal)) return null;
+  return candidate;
+}
+
 /**
  * The probing half of the premise check (rules in core/premise.ts): verify a
  * brief's `assert:` claims against the real repo at `root`. Returns null when
@@ -84,13 +106,18 @@ export async function probeAssertions(
 
   const checks: PremiseCheck[] = [];
   for (const a of asserts) {
-    if (a.kind == null) {
+    if (a.kind === "malformed") {
       checks.push({
-        kind: "cmd",
+        kind: "malformed",
         arg: a.arg,
         raw: a.raw,
         ok: false,
-        detail: "unrecognized assertion — use branch/ref/file/tool/cmd",
+        detail:
+          a.reason === "unknown-kind"
+            ? "unrecognized assertion — use branch/ref/file/tool/cmd"
+            : a.reason === "missing-argument"
+              ? "malformed assertion — an argument is required"
+              : "malformed assertion — expected branch/ref/file/tool/cmd",
       });
       continue;
     }
@@ -121,8 +148,13 @@ export async function probeAssertions(
           break;
         }
         case "file": {
-          ok = await fs.access(path.resolve(root, a.arg)).then(() => true, () => false);
-          detail = ok ? "exists" : "not found under the workspace root";
+          const candidate = await assertedFileInRoot(root, a.arg);
+          if (!candidate) {
+            detail = "outside the workspace";
+          } else {
+            ok = await fs.access(candidate).then(() => true, () => false);
+            detail = ok ? "exists" : "not found under the workspace root";
+          }
           break;
         }
         case "tool": {

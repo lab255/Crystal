@@ -401,7 +401,7 @@ export function validateWorkflowTemplate(template: WorkflowTemplate): string[] {
   // Kahn's algorithm — anything left over after peeling roots sits on a cycle.
   const indegree = new Map(template.stages.map((s) => [s.id, 0]));
   for (const stage of template.stages) {
-    for (const dep of stage.dependsOn) {
+    for (const dep of new Set(stage.dependsOn)) {
       if (dep !== stage.id && indegree.has(dep)) {
         indegree.set(stage.id, (indegree.get(stage.id) ?? 0) + 1);
       }
@@ -1024,6 +1024,20 @@ export const WorkflowSchema = z.object({
   tracks: z.array(WorkflowTrackSchema).default([]),
   createdAt: z.string(),
   updatedAt: z.string(),
+}).superRefine((workflow, ctx) => {
+  const branches = new Map<string, number>();
+  workflow.tracks.forEach((track, index) => {
+    const first = branches.get(track.branch);
+    if (first != null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["tracks", index, "branch"],
+        message: `Track branch is already used by track ${workflow.tracks[first]!.id}: ${track.branch}`,
+      });
+    } else {
+      branches.set(track.branch, index);
+    }
+  });
 });
 export type Workflow = z.infer<typeof WorkflowSchema>;
 
@@ -1166,9 +1180,14 @@ export function setTrackStatus(
   };
 }
 
-/** Default branch name for a track: `wf/<workflow-slug>/<track-slug>`. */
+/** Default branch name for a track: `wf/<workflow-slug>/<track-slug>[-N]`. */
 export function defaultTrackBranch(workflow: Workflow, trackName: string): string {
-  return `wf/${slugify(workflow.name)}/${slugify(trackName)}`;
+  const base = `wf/${slugify(workflow.name)}/${slugify(trackName)}`;
+  const used = new Set(workflow.tracks.map((track) => track.branch));
+  if (!used.has(base)) return base;
+  let suffix = 2;
+  while (used.has(`${base}-${suffix}`)) suffix += 1;
+  return `${base}-${suffix}`;
 }
 
 /** Add a parallel development track (branch defaults to {@link defaultTrackBranch}). */
@@ -1177,10 +1196,14 @@ export function addTrack(
   init: { name: string; branch?: string | null; taskIds?: string[] },
   at = nowIso(),
 ): { workflow: Workflow; track: WorkflowTrack } {
+  const explicitBranch = init.branch?.trim() || null;
+  if (explicitBranch && workflow.tracks.some((track) => track.branch === explicitBranch)) {
+    throw new Error(`Track branch is already in use: ${explicitBranch}`);
+  }
   const track = WorkflowTrackSchema.parse({
     id: uid("track"),
     name: init.name,
-    branch: init.branch?.trim() || defaultTrackBranch(workflow, init.name),
+    branch: explicitBranch ?? defaultTrackBranch(workflow, init.name),
     taskIds: init.taskIds ?? [],
     createdAt: at,
   });

@@ -222,6 +222,45 @@ describe("agent-facing rendering", () => {
     expect(text.split("\n---\n")).toHaveLength(2);
   });
 
+  it("includes open questions and cross-program project locks in portfolio status", () => {
+    const lockBase = createProgram({ name: "Release train", goal: "Ship the API." });
+    const lockDelivery = addDelivery(lockBase, {
+      projectRoot: "/repos/shared-api",
+      brief: "Cut the release.",
+    });
+    const lockingProgram = patchDelivery(
+      lockDelivery.program,
+      lockDelivery.delivery.id,
+      { status: "running", ws: "ws-api", workflowId: "wf-release" },
+    );
+
+    const waitingBase = createProgram({ name: "Migration", goal: "Move clients." });
+    const waitingDelivery = addDelivery(waitingBase, {
+      projectRoot: "/repos/shared-api",
+      brief: "Add the compatibility endpoint.",
+    });
+    const question = {
+      deliveryId: lockDelivery.delivery.id,
+      projectName: "shared-api",
+      ws: "ws-api",
+      taskId: "task-1",
+      taskTitle: "Release contract",
+      questionId: "question-1",
+      text: "Should the old endpoint remain available?",
+      createdAt: "2026-08-01T00:00:00.000Z",
+    };
+
+    const text = portfolioStatusText([
+      { program: waitingDelivery.program, spend: programSpend({}) },
+      { program: lockingProgram, spend: programSpend({}), questions: [question] },
+    ]);
+    expect(text).toContain("Should the old endpoint remain available?");
+    expect(text).toContain(
+      `LOCKED by program "Release train" delivery ${lockDelivery.delivery.id}`,
+    );
+    expect(text).not.toContain(`Ready to dispatch: ${waitingDelivery.delivery.id}`);
+  });
+
   it("gives the program manager its standing protocol", () => {
     const { program } = twoProjectProgram();
     const prompt = buildProgramManagerPrompt({ ...program, budgetUsd: 50 });

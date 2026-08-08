@@ -9,6 +9,20 @@ import {
 
 const NOW = new Date(2026, 7, 2, 12, 0, 0); // Aug 2, 12:00 local
 
+function inTimeZone<T>(timeZone: string, run: () => T): T {
+  const env = (globalThis as typeof globalThis & {
+    process: { env: Record<string, string | undefined> };
+  }).process.env;
+  const previous = env.TZ;
+  env.TZ = timeZone;
+  try {
+    return run();
+  } finally {
+    if (previous == null) delete env.TZ;
+    else env.TZ = previous;
+  }
+}
+
 describe("nextFireAt", () => {
   it("interval: due immediately when never fired, then lastFired + N", () => {
     const schedule = { kind: "every", minutes: 30 } as const;
@@ -40,6 +54,30 @@ describe("nextFireAt", () => {
     const next = nextFireAt(schedule, thisMorning, NOW);
     expect(next.getDate()).toBe(3); // Aug 3
     expect(next.getHours()).toBe(3);
+  });
+
+  it("daily: keeps the local fire time across spring-forward", () => {
+    inTimeZone("America/New_York", () => {
+      const schedule = { kind: "daily", hour: 9, minute: 15 } as const;
+      const now = new Date(2026, 2, 7, 12, 0);
+      const fired = new Date(2026, 2, 7, 9, 15, 5).toISOString();
+      const next = nextFireAt(schedule, fired, now);
+      expect([next.getFullYear(), next.getMonth(), next.getDate()]).toEqual([2026, 2, 8]);
+      expect([next.getHours(), next.getMinutes()]).toEqual([9, 15]);
+      expect(next.getTime() - new Date(2026, 2, 7, 9, 15).getTime()).toBe(23 * 60 * 60_000);
+    });
+  });
+
+  it("daily: keeps the local fire time across fallback instead of scheduling twice", () => {
+    inTimeZone("America/New_York", () => {
+      const schedule = { kind: "daily", hour: 9, minute: 15 } as const;
+      const now = new Date(2026, 9, 31, 12, 0);
+      const fired = new Date(2026, 9, 31, 9, 15, 5).toISOString();
+      const next = nextFireAt(schedule, fired, now);
+      expect([next.getFullYear(), next.getMonth(), next.getDate()]).toEqual([2026, 10, 1]);
+      expect([next.getHours(), next.getMinutes()]).toEqual([9, 15]);
+      expect(next.getTime() - new Date(2026, 9, 31, 9, 15).getTime()).toBe(25 * 60 * 60_000);
+    });
   });
 });
 

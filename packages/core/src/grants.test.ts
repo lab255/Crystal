@@ -18,9 +18,12 @@ describe("matchesToolPattern", () => {
     expect(matchesToolPattern("WebFetcher", {}, "WebFetch")).toBe(false);
   });
 
-  it("treats a bare MCP server name as a whole-server grant", () => {
-    expect(matchesToolPattern("mcp__crystal__ask_question", {}, "mcp__crystal")).toBe(true);
-    expect(matchesToolPattern("mcp__other__tool", {}, "mcp__crystal")).toBe(false);
+  it("requires an explicit wildcard for tool-name prefixes", () => {
+    expect(matchesToolPattern("mcp", {}, "mcp")).toBe(true);
+    expect(matchesToolPattern("mcp__crystal__ask_question", {}, "mcp")).toBe(false);
+    expect(matchesToolPattern("mcp__crystal__ask_question", {}, "mcp__crystal")).toBe(false);
+    expect(matchesToolPattern("mcp__crystal__ask_question", {}, "mcp__crystal__*")).toBe(true);
+    expect(matchesToolPattern("mcp__other__tool", {}, "mcp__crystal__*")).toBe(false);
   });
 
   it("matches Bash(prefix:*) as a command prefix", () => {
@@ -63,7 +66,7 @@ describe("matchesToolPattern", () => {
 
 describe("toolAllowedByPatterns", () => {
   it("answers across a pattern list", () => {
-    const patterns = ["mcp__crystal", "Bash(git status*)"];
+    const patterns = ["mcp__crystal__*", "Bash(git status*)"];
     expect(toolAllowedByPatterns("mcp__crystal__board_status", {}, patterns)).toBe(true);
     expect(toolAllowedByPatterns("Bash", { command: "git status" }, patterns)).toBe(true);
     expect(toolAllowedByPatterns("Bash", { command: "git push" }, patterns)).toBe(false);

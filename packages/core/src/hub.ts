@@ -662,11 +662,19 @@ export function deliveryGoalText(program: Program, delivery: ProgramDelivery): s
 }
 
 /** One delivery's line in a status rendering. */
-function deliveryLine(program: Program, delivery: ProgramDelivery): string {
+function deliveryLine(
+  program: Program,
+  delivery: ProgramDelivery,
+  others: readonly Program[] = [],
+): string {
   const blockers = deliveryBlockers(program, delivery);
+  const crossProgramLock = projectBusy(delivery, others);
   const bits = [
     `- ${delivery.id} ${delivery.projectName} [${delivery.status}]`,
     delivery.status === "pending" && blockers.length ? `blocked by ${blockers.join(", ")}` : null,
+    delivery.status === "pending" && crossProgramLock
+      ? `LOCKED by program "${crossProgramLock.program.name}" delivery ${crossProgramLock.delivery.id}`
+      : null,
     delivery.workflowId ? `workflow ${delivery.workflowId}` : null,
     delivery.budgetUsd != null ? `budget $${delivery.budgetUsd.toFixed(2)}` : null,
     delivery.runCapUsd != null ? `run cap $${delivery.runCapUsd.toFixed(2)}` : null,
@@ -703,7 +711,7 @@ export function programStatusText(
     lines.push("- (none yet — add_delivery to split the goal across projects)");
   }
   for (const delivery of program.deliveries) {
-    lines.push(deliveryLine(program, delivery));
+    lines.push(deliveryLine(program, delivery, others));
     const own = spend.byDelivery[delivery.id];
     if (own?.runCount) {
       lines.push(
@@ -762,7 +770,16 @@ export function portfolioStatusText(
   // slipping a blank line in here would render as an empty program block.
   return [
     `${entries.length} program(s), ${live.length} live — total spend $${total.toFixed(2)}`,
-    ...entries.map((e) => programStatusText(e.program, e.spend)),
+    ...entries.map((entry) =>
+      programStatusText(
+        entry.program,
+        entry.spend,
+        entry.questions ?? [],
+        entries
+          .filter((other) => other.program.id !== entry.program.id)
+          .map((other) => other.program),
+      ),
+    ),
   ].join("\n\n---\n\n");
 }
 

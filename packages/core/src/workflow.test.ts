@@ -11,6 +11,7 @@ import {
   STANDARD_WORKFLOW_TEMPLATE,
   TURN_LOG_LIMIT,
   WORKFLOW_TEMPLATES,
+  WorkflowSchema,
   activeBoardStatuses,
   addTrack,
   appendTurnLog,
@@ -115,6 +116,12 @@ describe("template validation and authoring", () => {
     expect(validateWorkflowTemplate(t).join(" ")).toMatch(/cycle/i);
   });
 
+  it("does not mistake duplicate dependency edges for a cycle", () => {
+    const t = customTemplate();
+    t.stages[1]!.dependsOn = ["a", "a"];
+    expect(validateWorkflowTemplate(t)).toEqual([]);
+  });
+
   it("duplicateTemplate mints an editable custom copy", () => {
     const copy = duplicateTemplate(STANDARD_WORKFLOW_TEMPLATE);
     expect(isCustomTemplateId(copy.id)).toBe(true);
@@ -207,6 +214,26 @@ describe("workflow instances", () => {
     expect(workflow.tracks).toHaveLength(1);
     const { track: custom } = addTrack(workflow, { name: "UI", branch: "feat/ui" });
     expect(custom.branch).toBe("feat/ui");
+  });
+
+  it("disambiguates default branches and rejects explicit branch reuse", () => {
+    const wf = makeWorkflow();
+    const first = addTrack(wf, { name: "API layer" });
+    const second = addTrack(first.workflow, { name: "API layer" });
+    expect(first.track.branch).toBe("wf/payments-v2/api-layer");
+    expect(second.track.branch).toBe("wf/payments-v2/api-layer-2");
+
+    expect(() =>
+      addTrack(second.workflow, { name: "Other", branch: first.track.branch }),
+    ).toThrow(/branch is already in use/i);
+
+    const duplicate = {
+      ...second.workflow,
+      tracks: second.workflow.tracks.map((track, index) =>
+        index === 1 ? { ...track, branch: first.track.branch } : track,
+      ),
+    };
+    expect(WorkflowSchema.safeParse(duplicate).success).toBe(false);
   });
 });
 

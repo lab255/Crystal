@@ -104,7 +104,9 @@ export function nextFireAt(
     // Today's slot has passed — due immediately unless it already fired
     // at-or-after the slot.
     if (last == null || last < todaySlot.getTime()) return todaySlot;
-    return new Date(todaySlot.getTime() + 24 * 60 * 60 * 1000);
+    const tomorrowSlot = new Date(todaySlot);
+    tomorrowSlot.setDate(tomorrowSlot.getDate() + 1);
+    return tomorrowSlot;
   }
   return todaySlot;
 }
