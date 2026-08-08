@@ -16,9 +16,9 @@ terminal / copy path / new window / close), the `ProjectSwitcher`, the git-only
 `BranchSwitcher`), the search/command bar dead-center, and the global constructs
 right (fleet "needs you" pill, questions inbox → Overview inbox, copy-link
 (Ctrl/Cmd+L), lens — the `LensBar` owns ALL lens/facet functions incl. suggested
-index facets). Shell tabs (`tabs.ts`/`TabStrip`, saved DeepLinks over the one
-mounted shell) appear at two+; real windows via `openNewWindow` (Tauri `new_window`
-command — the sidecar dies with the LAST window). Level 1 nav is the Slack-style
+index facets). New views open as native browser tabs on web or real OS windows via
+`openNewWindow` (Tauri `new_window` — the sidecar dies with the LAST window).
+Level 1 nav is the Slack-style
 `WorkspaceRail` (Overview on top, one tile per workspace with its traffic light,
 runners/git/terminal toggles + settings at the bottom); level 2 is `ProjectNav` —
 one section per facet with its deep-link subviews as subsections,

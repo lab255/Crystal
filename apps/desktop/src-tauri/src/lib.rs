@@ -562,15 +562,25 @@ fn new_window(app: tauri::AppHandle, url: Option<String>) -> Result<(), String> 
         .and_then(|u| u.split_once('#').map(|(_, f)| format!("#{f}")))
         .unwrap_or_default();
     let n = WINDOW_SEQ.fetch_add(1, Ordering::SeqCst);
-    tauri::WebviewWindowBuilder::new(
+    let builder = tauri::WebviewWindowBuilder::new(
         &app,
         format!("crystal-{n}"),
         tauri::WebviewUrl::App(format!("index.html{frag}").into()),
     )
     .title("Crystal")
     .inner_size(1500.0, 950.0)
-    .build()
-    .map_err(|e| e.to_string())?;
+    .min_inner_size(980.0, 620.0)
+    .center()
+    .theme(Some(tauri::Theme::Dark))
+    .background_color(tauri::webview::Color(10, 12, 17, 255));
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .title_bar_style(tauri::TitleBarStyle::Overlay)
+        .hidden_title(true)
+        .traffic_light_position(tauri::LogicalPosition::new(12.0, 11.0));
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    let builder = builder.decorations(false);
+    builder.build().map_err(|e| e.to_string())?;
     Ok(())
 }
 

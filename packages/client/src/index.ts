@@ -30,7 +30,12 @@ export {
   type DesktopUpdatePhase,
   type DesktopUpdateState,
 } from "./desktop-update.js";
-export { openNewWindow } from "./desktop-window.js";
+export {
+  desktopPlatform,
+  isDesktop,
+  openNewWindow,
+  type DesktopPlatform,
+} from "./desktop-window.js";
 export { useWorkerMemo, type WorkerMemoResult } from "./use-worker-memo.js";
 export {
   applyTheme,

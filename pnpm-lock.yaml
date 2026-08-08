@@ -389,6 +389,9 @@ importers:
       '@crystal/ui':
         specifier: workspace:*
         version: link:../ui
+      '@tauri-apps/api':
+        specifier: ^2.4.0
+        version: 2.11.1
       lucide-react:
         specifier: ^0.469.0
         version: 0.469.0(react@19.2.7)
