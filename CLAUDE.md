@@ -1,20 +1,31 @@
 # Crystal — notes for Claude Code
 
-Crystal is a pnpm-workspace IDE with eight modes (cross-project overview with traffic-light
-todos, the hub — cross-project programs dispatched to per-project orchestrators,
-architecture diagrammer (three consolidated views: derived-architecture / codebase /
-infrastructure, one shared vs-ref review), surfaces explorer — screens/components/stories/APIs/schemas,
+Crystal is a pnpm-workspace IDE with seven modes (the cross-project Overview — a
+dashboard of traffic-light project cards plus the absorbed hub surfaces: the
+coordinator chat (program manager, cross-project programs dispatched to per-project
+orchestrators) and the questions inbox; architecture diagrammer (three consolidated
+views: derived-architecture / codebase / infrastructure, one shared vs-ref review),
+surfaces explorer — screens/components/stories/API surface/schemas,
 PM/agent orchestration, Monaco editor, quality — test runner + coverage, jobs hub) plus a
 bottom terminal panel that runs shells and agent consoles in any open workspace. Read
 `README.md` for the product shape; this file is the mechanics.
 
-Shell IA (packages/sdk): top navbar = context left (active workspace ▸ branch), global
-constructs right (search/command palette, fleet "needs you" pill, hub questions inbox,
-lens). Level 1 nav is the Slack-style `WorkspaceRail` (Overview + Hub on top, one tile
-per workspace with its traffic light, expandable, context menus, settings at the
-bottom); level 2 is `ProjectNav` — one section per facet with its deep-link subviews as
-subsections, drag-rearrangeable (order in the settings store), rendered only when a
-workspace is entered. Cross-project modes (Overview/Hub) take the full width.
+Shell IA (packages/sdk): the top navbar is a three-lane grid — left context (back/
+forward history + new-tab, the active project's menu (`ProjectMenu`: settings /
+terminal / copy path / new window / close), the `ProjectSwitcher`, the git-only
+`BranchSwitcher`), the search/command bar dead-center, and the global constructs
+right (fleet "needs you" pill, questions inbox → Overview inbox, copy-link
+(Ctrl/Cmd+L), lens — the `LensBar` owns ALL lens/facet functions incl. suggested
+index facets). Shell tabs (`tabs.ts`/`TabStrip`, saved DeepLinks over the one
+mounted shell) appear at two+; real windows via `openNewWindow` (Tauri `new_window`
+command — the sidecar dies with the LAST window). Level 1 nav is the Slack-style
+`WorkspaceRail` (Overview on top, one tile per workspace with its traffic light,
+runners/git/terminal toggles + settings at the bottom); level 2 is `ProjectNav` —
+one section per facet with its deep-link subviews as subsections,
+drag-rearrangeable (order in the settings store), rendered only when a workspace is
+entered. The Overview (the one cross-project mode) takes the full width. The
+document viewport is locked (html/body overflow hidden, page pinch/ctrl-wheel zoom
+suppressed in CrystalShell) — only inner panes scroll, canvases keep their own zoom.
 
 ## Commands
 
@@ -169,7 +180,13 @@ build/sign (+notarize on macOS) → signed updater `latest.json`).
   copy (`deriveTemplate`, provenance in `basedOn`), so editing a project's fork can
   never reach the library; and a one-off graph passed to `workflow.start` as `template`
   is snapshotted into that run alone, never persisted.
-- The hub (the layer above workflows) is **cross-project**: a `Program` is one
+- The hub (the layer above workflows) is **cross-project** — engine unchanged, but
+  its UI now lives inside the Overview mode: `#/projects/chat` (CoordinatorChat, a
+  plain conversation with the program manager; program picker + create form) and
+  `#/projects/inbox` (QuestionsView). `packages/hub` exports only those two
+  components; old `#/hub/...` links are permanent parse aliases. Delivery/budget
+  management has no dedicated screens — the manager drives it over MCP. A
+  `Program` is one
   high-level epic split into per-project `ProgramDelivery`s, each dispatched as
   a workflow inside that project — from there the project's own orchestrator
   owns its development flow. Rules are pure in `packages/core/src/hub.ts`
