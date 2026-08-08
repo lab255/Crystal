@@ -25,6 +25,8 @@ export interface WorkspaceNeedsYou {
   name: string;
   /** Server label when several bridges are connected; null on a lone fleet. */
   serverLabel: string | null;
+  /** Full fleet run snapshot, used by transition consumers beyond needs-you. */
+  runs: AgentRun[];
   questions: NeedsYouQuestion[];
   failures: AgentRun[];
   count: number;
@@ -62,6 +64,7 @@ export function useFleetNeedsYou(): FleetNeedsYou {
           key,
           name: w.name,
           serverLabel: multiServer ? c.label : null,
+          runs: runs ?? EMPTY_RUNS,
           questions,
           failures,
           count: questions.length + failures.length,
@@ -75,16 +78,17 @@ export function useFleetNeedsYou(): FleetNeedsYou {
   }, [connections, runsByWs, questionsByWs]);
 }
 
-/** One waiting item, addressed well enough to jump to it from anywhere. */
+/** One notification item, addressed well enough to jump to it from anywhere. */
 export type AttentionTarget =
   | { kind: "question"; sid: string; ws: string; question: NeedsYouQuestion }
-  | { kind: "failure"; sid: string; ws: string; run: AgentRun };
+  | { kind: "failure"; sid: string; ws: string; run: AgentRun }
+  | { kind: "run"; sid: string; ws: string; run: AgentRun }
+  | { kind: "workflow"; sid: string; ws: string; workflowId: string };
 
 /**
- * Jump to a waiting item from any mode: focus its (server, workspace) pair and
- * deep-link the orchestrator to the waiting task's board card (whose session
- * and answer box render alongside) or to the failed run. Same shape as the
- * overview card's go-to-board/runs actions.
+ * Jump to a notification item from any mode: focus its (server, workspace)
+ * pair and deep-link the orchestrator to the task board, run review, or
+ * workflow view. Same shape as the overview card's navigation actions.
  */
 export function useAttentionJump(): (target: AttentionTarget) => void {
   const { selectWorkspace, navStore } = useCrystal();
@@ -101,6 +105,12 @@ export function useAttentionJump(): (target: AttentionTarget) => void {
             project: target.question.projectPath,
             task: target.question.taskId,
           },
+        });
+      } else if (target.kind === "workflow") {
+        navStore.getState().update({
+          ws,
+          mode: "orchestrate",
+          orchestrate: { tab: "workflows", workflow: target.workflowId },
         });
       } else {
         navStore.getState().update({

@@ -2,6 +2,7 @@ import type { AgentRun, AgentRunStatus } from "./agent.js";
 import { openQuestions, type Project, type TaskQuestion } from "./project.js";
 import type { RunFailure } from "./run-failure.js";
 import { todosLight, worstLight, type TodoItem, type TrafficLight } from "./todo.js";
+import type { Workflow } from "./workflow.js";
 
 /**
  * THE workspace attention policy — every surface that tells the human "this
@@ -136,9 +137,16 @@ export function questionAttentionId(question: TaskQuestion): string {
   return `q:${question.id}`;
 }
 
+/** Stable notification identity shared by every notification category for one run. */
+export function runAttentionId(run: Pick<AttentionRun, "id">): string {
+  // Keep the established failure-id encoding: this identity is public and
+  // now also claims the same run in the review notification source.
+  return `f:${run.id}`;
+}
+
 /** Stable notification identity of an unrecovered failure (recovery always spawns a new run id). */
 export function failureAttentionId(run: AttentionRun): string {
-  return `f:${run.id}`;
+  return runAttentionId(run);
 }
 
 /**
@@ -171,6 +179,43 @@ export class AttentionTracker {
   }
 }
 
+/**
+ * Transition detector for a repeatable state such as "workflow is paused".
+ * Like {@link AttentionTracker}, each source's first snapshot seeds silently;
+ * unlike claim-once attention items, leaving the active set re-arms an id so a
+ * later re-entry is a new transition.
+ */
+export class ActiveTransitionTracker {
+  private readonly activeBySource = new Map<string, Set<string>>();
+
+  /** Returns ids that entered the active set since this source's last snapshot. */
+  next(source: string, ids: readonly string[]): string[] {
+    const current = new Set(ids);
+    const previous = this.activeBySource.get(source);
+    this.activeBySource.set(source, current);
+    if (!previous) return [];
+    return ids.filter((id) => !previous.has(id));
+  }
+}
+
+/** Stable notification identity for one workflow's pause state. */
+export function workflowPauseAttentionId(workflow: Pick<Workflow, "id">): string {
+  return `w:${workflow.id}`;
+}
+
+/** Budget/stall pauses need the operator; explicit user holds do not. */
+export function automaticWorkflowPauseIds(
+  workflows: readonly Pick<Workflow, "id" | "status" | "pausedBy">[],
+): string[] {
+  return workflows
+    .filter(
+      (workflow) =>
+        workflow.status === "paused" &&
+        (workflow.pausedBy === "budget" || workflow.pausedBy === "stall"),
+    )
+    .map(workflowPauseAttentionId);
+}
+
 /* ------------------------------------------------------- *
  * Run summary + traffic lights (cards, tab dots, rail dot) *
  * ------------------------------------------------------- */
@@ -188,6 +233,46 @@ export interface RunAttention {
   light: TrafficLight;
 }
 
+type RunAttentionLane = "running" | "failure" | "review" | "reviewFailed" | null;
+
+function runAttentionLane(
+  run: AttentionRun,
+  recovered: ReadonlySet<string>,
+): RunAttentionLane {
+  if (run.status === "running" || run.status === "queued") return "running";
+  if (run.status === "cancelled") return null;
+  if (isUnrecoveredFailure(run, recovered)) return "failure";
+  if (!run.endedAt) return null;
+  return run.status === "failed" ? "reviewFailed" : "review";
+}
+
+export interface SettledRunReviews<T extends AttentionRun = AttentionRun> {
+  /** Successfully settled runs that are ready to review. */
+  review: T[];
+  /** Failed settled runs not currently held in the recoverable-failure lane. */
+  reviewFailed: T[];
+}
+
+/**
+ * Itemized form of the review lanes, without acknowledgement (`seenAt`)
+ * filtering. Notification tracking supplies its own claim-once lifecycle, so
+ * a run that settles while its workspace is focused is still observable and
+ * can then be suppressed only when that exact run is already on screen.
+ */
+export function settledRunReviews<T extends AttentionRun>(
+  runs: readonly T[],
+): SettledRunReviews<T> {
+  const recovered = recoveredRunIds(runs);
+  const review: T[] = [];
+  const reviewFailed: T[] = [];
+  for (const run of runs) {
+    const lane = runAttentionLane(run, recovered);
+    if (lane === "review") review.push(run);
+    else if (lane === "reviewFailed") reviewFailed.push(run);
+  }
+  return { review, reviewFailed };
+}
+
 /**
  * Fold a workspace's runs into the two run lanes. Cancellations were
  * user-initiated, so they never surface; an unrecovered recoverable failure is
@@ -203,12 +288,12 @@ export function deriveRunAttention(
   let review = 0;
   let reviewFailed = 0;
   for (const run of runs) {
-    if (run.status === "running" || run.status === "queued") running += 1;
-    else if (run.status === "cancelled") continue;
-    else if (isUnrecoveredFailure(run, recovered)) failures += 1;
+    const lane = runAttentionLane(run, recovered);
+    if (lane === "running") running += 1;
+    else if (lane === "failure") failures += 1;
     else if (run.endedAt && (!seenAt || run.endedAt > seenAt)) {
-      if (run.status === "failed") reviewFailed += 1;
-      else review += 1;
+      if (lane === "reviewFailed") reviewFailed += 1;
+      else if (lane === "review") review += 1;
     }
   }
   const light: TrafficLight =
