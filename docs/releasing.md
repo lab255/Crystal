@@ -67,6 +67,12 @@ gh secret set TAURI_SIGNING_PRIVATE_KEY          --env publish < ~/.crystal/upda
 gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD --env publish < ~/.crystal/updater/password.txt
 ```
 
+> The updater polls `plugins.updater.endpoints` in `tauri.conf.json` —
+> currently `https://github.com/lab255/Crystal/releases/latest/download/latest.json`.
+> If the repo moves again, update that URL: GitHub's transfer redirects keep
+> already-shipped apps updating, but redirects die the moment anyone recreates
+> a repo under the old name, so don't rely on them.
+
 > ⚠️ The pubkey in `tauri.conf.json` is the updater's **trust anchor** — an
 > installed app only ever trusts the key it shipped with. To rotate, run
 > `pnpm --filter @crystal/desktop exec tauri signer generate`, replace the

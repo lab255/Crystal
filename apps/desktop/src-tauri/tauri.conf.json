@@ -51,7 +51,7 @@
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://github.com/eliotlim/crystal/releases/latest/download/latest.json"
+        "https://github.com/lab255/Crystal/releases/latest/download/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEZDRUIwMDEyNTBGQURENTUKUldSVjNmcFFFZ0RyL09TWlQ2b2kwMWE3OVFGY0JhMHNvSTFkSEpTdmJkbDhSbnNCbWYvRG5lVTMK"
     }

@@ -3,6 +3,12 @@
   "private": true,
   "version": "0.25.0",
   "description": "Crystal — a multi-facet IDE for building systems and their software",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lab255/Crystal.git"
+  },
+  "homepage": "https://github.com/lab255/Crystal#readme",
+  "bugs": "https://github.com/lab255/Crystal/issues",
   "scripts": {
     "dev": "pnpm --parallel --filter @crystal/server --filter @crystal/web dev",
     "dev:web": "pnpm --filter @crystal/web dev",
