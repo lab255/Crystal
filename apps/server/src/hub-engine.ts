@@ -166,6 +166,9 @@ export interface HubProjects {
 
 /** Outcome of one dispatch wave (the protocol type lives in core). */
 export type DispatchReport = HubDispatchReport;
+type DispatchItem =
+  | { kind: "dispatched"; value: DispatchReport["dispatched"][number] }
+  | { kind: "skipped"; value: DispatchReport["skipped"][number] };
 
 /**
  * One open question on a project's board, before the hub attributes it to a
@@ -195,6 +198,8 @@ export class HubEngine {
   private sweepTimers = new Map<string, NodeJS.Timeout>();
   /** In-flight sweep per program, so two never race on `questionSets`. */
   private sweepChains = new Map<string, Promise<unknown>>();
+  /** Readiness through persisted dispatch, serialized across the portfolio. */
+  private projectDispatchQueues = new Map<string, Promise<unknown>>();
   private disposeListener: (() => void) | null = null;
 
   constructor(
@@ -251,6 +256,18 @@ export class HubEngine {
     });
   }
 
+  /** One project can host only one orchestrator, even across different programs. */
+  private serializeProjectDispatch<T>(root: string, fn: () => Promise<T>): Promise<T> {
+    const previous = this.projectDispatchQueues.get(root) ?? Promise.resolve();
+    const step = previous.then(fn);
+    const tail = step.catch(() => {});
+    this.projectDispatchQueues.set(root, tail);
+    void tail.finally(() => {
+      if (this.projectDispatchQueues.get(root) === tail) this.projectDispatchQueues.delete(root);
+    });
+    return step;
+  }
+
   /* ---------------- reads ---------------- */
 
   list(): Promise<Program[]> {
@@ -288,6 +305,9 @@ export class HubEngine {
             }),
           ),
         );
+        if (!isDeliveryTerminal(delivery.status) && parts.some((part) => part === null)) {
+          stale = true;
+        }
         const spend = sumDeliverySpend(parts);
         if (spend) byDelivery[delivery.id] = spend;
       }),
@@ -534,89 +554,97 @@ export class HubEngine {
 
   /**
    * Start every ready delivery (or just `deliveryIds`) as a workflow in its own
-   * project. Runs under the mutation lock: opening a workspace and starting a
-   * workflow are slow, but two concurrent dispatch waves would otherwise both
-   * see the same delivery as ready and start it twice.
+   * project. The project-root queue covers readiness through the persisted
+   * delivery mutation, so another program cannot observe the old portfolio.
    */
-  dispatch(programId: string, deliveryIds?: string[]): Promise<DispatchReport> {
-    return this.mutate(programId, async (current) => {
-      const report: DispatchReport = { dispatched: [], skipped: [] };
-      // Every pending delivery is a candidate, not just the ready ones: the
-      // blocked ones are skipped *with their reason*, which is how a caller
-      // (or an agent) learns what the program is waiting on.
-      // The one-orchestrator-per-project rule spans programs, so readiness is
-      // judged against the whole portfolio, not just this program.
-      const others = this.store.all().filter((p) => p.id !== current.id);
-      const wanted = deliveryIds?.length
-        ? deliveryIds.map((id) => {
-            const delivery = deliveryById(current, id);
-            if (!delivery) throw new Error(`Unknown delivery: ${id}`);
-            return delivery;
-          })
-        : current.deliveries.filter((d) => d.status === "pending");
+  async dispatch(programId: string, deliveryIds?: string[]): Promise<DispatchReport> {
+    const initial = await this.get(programId);
+    if (!initial) throw new Error(`Unknown program: ${programId}`);
+    // Every pending delivery is a candidate, not just the ready ones: blocked
+    // deliveries are reported with the reason the caller can act on.
+    const wanted = deliveryIds?.length
+      ? deliveryIds.map((id) => {
+          const delivery = deliveryById(initial, id);
+          if (!delivery) throw new Error(`Unknown delivery: ${id}`);
+          return delivery;
+        })
+      : initial.deliveries.filter((delivery) => delivery.status === "pending");
+    const report: DispatchReport = { dispatched: [], skipped: [] };
 
-      let program = current;
-      for (const target of wanted) {
-        // Re-read against the evolving program: an earlier dispatch in this
-        // same wave may have taken the project (one orchestrator per project).
-        const delivery = deliveryById(program, target.id)!;
-        const readiness = deliveryReadiness(program, delivery, others);
-        if (!readiness.ready) {
-          report.skipped.push({
-            deliveryId: delivery.id,
-            projectName: delivery.projectName,
-            reason: readiness.reason ?? "Not ready.",
-          });
-          continue;
-        }
-        try {
-          const project = await this.projects.open(delivery.projectRoot);
-          const workflow = await this.projects.startWorkflow(project.ws, {
-            name: `${program.name} — ${delivery.projectName}`,
-            goal: deliveryGoalText(program, delivery),
-            templateId: delivery.templateId ?? undefined,
-            budgetUsd: delivery.budgetUsd,
-            runCapUsd: delivery.runCapUsd,
-            // Workflow managers now default to interactive when the workspace
-            // can host a PTY — a dispatched delivery is unattended by
-            // construction, so opt out explicitly (headless stays steerable
-            // and, unlike a TUI, cost-cappable).
-            interactive: false,
-          });
-          program = patchDelivery(program, delivery.id, {
-            ws: project.ws,
-            projectName: project.name,
-            workflowId: workflow.id,
-            status: "running",
-            note: null,
-            dispatchedAt: nowIso(),
-          });
-          const gaps = (workflow.env?.checks ?? []).filter((c) => !c.ok).map((c) => c.label);
-          // The premise check's failed claims ride the report the same way —
-          // the PM learns the brief lied now, not from a stalled delivery.
-          const premiseGaps = (workflow.premise?.checks ?? [])
-            .filter((c) => !c.ok)
-            .map((c) => `${c.raw} — ${c.detail ?? "does not hold"}`);
-          report.dispatched.push({
-            deliveryId: delivery.id,
-            projectName: project.name,
-            ws: project.ws,
-            workflowId: workflow.id,
-            ...(gaps.length ? { envGaps: gaps } : {}),
-            ...(premiseGaps.length ? { premiseGaps } : {}),
-          });
-        } catch (err) {
-          const reason = (err as Error).message;
-          program = patchDelivery(program, delivery.id, { note: `Dispatch failed: ${reason}` });
-          report.skipped.push({
-            deliveryId: delivery.id,
-            projectName: delivery.projectName,
-            reason,
-          });
-        }
-      }
-      return { program, result: report };
-    });
+    for (const target of wanted) {
+      const item = await this.serializeProjectDispatch(target.projectRoot, () =>
+        this.mutate<DispatchItem>(programId, async (program) => {
+          const delivery = deliveryById(program, target.id)!;
+          // Recompute under the portfolio-wide project lock. The preceding
+          // holder has persisted its delivery before this callback can run.
+          const others = this.store.all().filter((candidate) => candidate.id !== program.id);
+          const readiness = deliveryReadiness(program, delivery, others);
+          if (!readiness.ready) {
+            return {
+              program,
+              result: {
+                kind: "skipped" as const,
+                value: {
+                  deliveryId: delivery.id,
+                  projectName: delivery.projectName,
+                  reason: readiness.reason ?? "Not ready.",
+                },
+              },
+            };
+          }
+          try {
+            const project = await this.projects.open(delivery.projectRoot);
+            const workflow = await this.projects.startWorkflow(project.ws, {
+              name: `${program.name} — ${delivery.projectName}`,
+              goal: deliveryGoalText(program, delivery),
+              templateId: delivery.templateId ?? undefined,
+              budgetUsd: delivery.budgetUsd,
+              runCapUsd: delivery.runCapUsd,
+              // A dispatched delivery is unattended by construction.
+              interactive: false,
+            });
+            const next = patchDelivery(program, delivery.id, {
+              ws: project.ws,
+              projectName: project.name,
+              workflowId: workflow.id,
+              status: "running",
+              note: null,
+              dispatchedAt: nowIso(),
+            });
+            const gaps = (workflow.env?.checks ?? []).filter((c) => !c.ok).map((c) => c.label);
+            const premiseGaps = (workflow.premise?.checks ?? [])
+              .filter((c) => !c.ok)
+              .map((c) => `${c.raw} — ${c.detail ?? "does not hold"}`);
+            return {
+              program: next,
+              result: {
+                kind: "dispatched" as const,
+                value: {
+                  deliveryId: delivery.id,
+                  projectName: project.name,
+                  ws: project.ws,
+                  workflowId: workflow.id,
+                  ...(gaps.length ? { envGaps: gaps } : {}),
+                  ...(premiseGaps.length ? { premiseGaps } : {}),
+                },
+              },
+            };
+          } catch (err) {
+            const reason = (err as Error).message;
+            return {
+              program: patchDelivery(program, delivery.id, { note: `Dispatch failed: ${reason}` }),
+              result: {
+                kind: "skipped" as const,
+                value: { deliveryId: delivery.id, projectName: delivery.projectName, reason },
+              },
+            };
+          }
+        }),
+      );
+      if (item.kind === "dispatched") report.dispatched.push(item.value);
+      else report.skipped.push(item.value);
+    }
+    return report;
   }
 
   /**
@@ -888,24 +916,25 @@ export class HubEngine {
 
   /** Cancel the program: every live delivery workflow, plus the manager session. */
   async cancel(programId: string): Promise<Program> {
-    const current = await this.get(programId);
-    if (!current) throw new Error(`Unknown program: ${programId}`);
     this.pendingNotices.clear(programId);
-    for (const delivery of current.deliveries) {
-      if (!delivery.ws || !delivery.workflowId || isDeliveryTerminal(delivery.status)) continue;
-      await this.projects.cancelWorkflow(delivery.ws, delivery.workflowId).catch(() => {
-        // Already gone — nothing to cancel.
-      });
-    }
-    if (this.agents && current.managerRunId) {
-      const tag = programTag(programId);
-      const live = (await this.agents.list()).filter(
-        (r) => r.tags.includes(tag) && (r.status === "running" || r.status === "queued"),
-      );
-      for (const run of live) await this.agents.cancel(run.id).catch(() => {});
-    }
-    const cancelled = await this.mutate(programId, (program) => {
+    const cancelled = await this.mutate(programId, async (program) => {
       if (isProgramTerminal(program.status)) return { program, result: program };
+      // Dispatch holds this same program queue while the workflow is created.
+      // Re-scanning here catches any workflow that appeared after cancel was
+      // requested but before its mutation reached the head of the queue.
+      for (const delivery of program.deliveries) {
+        if (!delivery.ws || !delivery.workflowId || isDeliveryTerminal(delivery.status)) continue;
+        await this.projects.cancelWorkflow(delivery.ws, delivery.workflowId).catch(() => {
+          // Already gone — nothing to cancel.
+        });
+      }
+      if (this.agents && program.managerRunId) {
+        const tag = programTag(programId);
+        const live = (await this.agents.list()).filter(
+          (run) => run.tags.includes(tag) && (run.status === "running" || run.status === "queued"),
+        );
+        for (const run of live) await this.agents.cancel(run.id).catch(() => {});
+      }
       const next: Program = {
         ...program,
         status: "cancelled",
@@ -963,15 +992,15 @@ export class HubEngine {
     agentId: string | null = null,
   ): Promise<AgentRun> {
     if (!this.agents) throw new Error("Program manager sessions are not available on this server.");
-    const program = await this.requireManagerless(programId);
-    const run = await this.agents.start(
-      await this.managerParams(program, model, agentId, buildProgramManagerPrompt),
-    );
-    await this.mutate(programId, (current) => ({
-      program: { ...current, managerRunId: run.id },
-      result: undefined,
-    }));
-    return run;
+    return this.mutate(programId, async (program) => {
+      if (program.managerRunId) {
+        throw new Error(`Program ${programId} already has a manager session.`);
+      }
+      const run = await this.agents!.start(
+        await this.managerParams(program, model, agentId, buildProgramManagerPrompt),
+      );
+      return { program: { ...program, managerRunId: run.id }, result: run };
+    });
   }
 
   /**

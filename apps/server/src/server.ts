@@ -1149,7 +1149,14 @@ export async function startCrystalServer(opts: {
       return;
     }
     if (isMcpRequest(req.url)) {
-      void handleMcpRequest(req, res, registry).catch((err) => {
+      const authorization = req.headers.authorization;
+      const bearer = authorization?.startsWith("Bearer ") ? authorization.slice(7) : null;
+      if (authEnabled && !tokenValid(bearer)) {
+        res.writeHead(401, { "content-type": "text/plain" });
+        res.end("Unauthorized");
+        return;
+      }
+      void handleMcpRequest(req, res, registry, hub).catch((err) => {
         if (!res.headersSent) res.writeHead(500, { "content-type": "application/json" });
         res.end(
           JSON.stringify({

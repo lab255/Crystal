@@ -477,7 +477,7 @@ export function portFree(port: number): Promise<boolean> {
  * Reap a process group orphaned by a crashed server — but only when the pid
  * still looks like our service. Pids recycle; killing whatever now owns this
  * one would be a disaster, so require the `ps` command line to contain the
- * service's command (or its obvious runner) before signalling.
+ * service's full command before signalling.
  */
 export async function reapOrphan(
   pid: number,
@@ -495,11 +495,10 @@ export async function reapOrphan(
       windowsHide: true,
     });
     const line = stdout.trim();
-    // The leader is the shell we spawned: its command line carries the
-    // service command (or at minimum a shell). An unrelated recycled pid
-    // (some GUI app, another user's process) will not match — leave it alone.
-    const head = command.split(/\s+/)[0] ?? command;
-    if (!line.includes(command) && !line.includes(head)) return;
+    // The leader is the shell we spawned, so its command line carries the
+    // configured service command. A generic runner name is not distinctive:
+    // recycled pids commonly belong to an unrelated node/pnpm/python process.
+    if (!line.includes(command)) return;
     process.kill(-pid, "SIGKILL");
   } catch {
     /* ps unavailable or kill refused — do nothing rather than guess */

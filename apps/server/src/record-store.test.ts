@@ -32,13 +32,18 @@ describe("JsonRecordStore", () => {
   });
 
   /** A store over its own subdirectory, plus the changes it announced. */
-  function store(name: string, now = () => "2026-01-01T00:00:00.000Z") {
+  function store(
+    name: string,
+    now = () => "2026-01-01T00:00:00.000Z",
+    writeFile?: typeof fs.writeFile,
+  ) {
     const changed: Rec[] = [];
     const s = new JsonRecordStore<Rec>(
       path.join(dir, name),
       parseRec,
       (r) => changed.push(r),
       now,
+      writeFile,
     );
     return { s, changed, dir: path.join(dir, name) };
   }
@@ -88,6 +93,26 @@ describe("JsonRecordStore", () => {
     // …and by the time the change is announced it is on disk.
     expect(changed.at(-1)).toMatchObject({ name: "renamed", updatedAt: "t1" });
     expect(JSON.parse(await fs.readFile(path.join(d, "a.json"), "utf8")).name).toBe("renamed");
+  });
+
+  it("keeps the previous record in memory and on disk when an atomic write fails", async () => {
+    const { s: seed, dir: d } = store("atomic-failure");
+    await seed.put(rec("a"));
+
+    const failingWrite = (async (file: Parameters<typeof fs.writeFile>[0]) => {
+      // Model a crash/failure after bytes reached the temporary file.
+      await fs.writeFile(file, "{ truncated", "utf8");
+      throw new Error("disk full");
+    }) as typeof fs.writeFile;
+    const { s } = store("atomic-failure", undefined, failingWrite);
+    await expect(
+      s.mutate("a", (record) => ({ record: { ...record, name: "lost" }, result: null })),
+    ).rejects.toThrow(/disk full/);
+
+    expect((await s.get("a"))?.name).toBe("a");
+    const { s: reopened } = store("atomic-failure");
+    expect((await reopened.get("a"))?.name).toBe("a");
+    expect((await fs.readdir(d)).filter((name) => name.endsWith(".tmp"))).toEqual([]);
   });
 
   it("serializes concurrent mutations and survives a failing one", async () => {

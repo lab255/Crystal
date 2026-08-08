@@ -598,7 +598,9 @@ export class McpHubServer {
         // A bound manager owns one program: it neither creates new ones nor
         // reaches other people's.
         return rpcOk(id, {
-          tools: HUB_TOOLS.filter((t) => !this.bound || t.name !== "create_program"),
+          tools: HUB_TOOLS.filter(
+            (tool) => !this.bound || !["create_program", "dispatch_epic"].includes(tool.name),
+          ),
         });
       case "tools/call":
         return this.callTool(id, msg.params);
@@ -628,10 +630,10 @@ export class McpHubServer {
     if (!name || !HUB_TOOLS.some((t) => t.name === name)) {
       return rpcFail(id, McpRpcError.MethodNotFound, `Unknown tool: ${name ?? "(none)"}`);
     }
-    if (this.bound && name === "create_program") {
+    if (this.bound && (name === "create_program" || name === "dispatch_epic")) {
       return toolError(
         id,
-        `This session manages program ${this.bound}. Use add_delivery to extend it instead of creating another program.`,
+        `This session manages program ${this.bound}. Use add_delivery to extend it instead of creating or dispatching another program.`,
       );
     }
     try {

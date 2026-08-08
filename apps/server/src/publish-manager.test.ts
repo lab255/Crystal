@@ -20,14 +20,15 @@ async function waitFor(pred: () => boolean, ms = 5000): Promise<void> {
 async function startFakeRelay() {
   const hosts: { ws: WebSocket; url: string; headers: http.IncomingHttpHeaders }[] = [];
   const configPosts: { url: string; auth: string | undefined; body: unknown }[] = [];
+  let configStatus = 200;
   const server = http.createServer((req, res) => {
     if (req.method === "POST" && req.url?.endsWith("/config")) {
       let body = "";
       req.on("data", (c: Buffer) => (body += c));
       req.on("end", () => {
         configPosts.push({ url: req.url!, auth: req.headers.authorization, body: JSON.parse(body) });
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ ok: true }));
+        res.writeHead(configStatus, { "content-type": "application/json" });
+        res.end(JSON.stringify(configStatus === 200 ? { ok: true } : { error: "relay failed" }));
       });
       return;
     }
@@ -45,6 +46,9 @@ async function startFakeRelay() {
     url: `http://127.0.0.1:${port}`,
     hosts,
     configPosts,
+    setConfigStatus: (status: number) => {
+      configStatus = status;
+    },
     close: () =>
       new Promise<void>((resolve) => {
         for (const h of hosts) h.ws.terminate();
@@ -199,6 +203,52 @@ describe("PublishManager", () => {
     await expect(
       mgr.configure({ enabled: true, relayUrl: relay.url, password: "short" }),
     ).rejects.toThrow(/at least 8/);
+  });
+
+  it("keeps a failed password update pending and does not report it as set", async () => {
+    relay.setConfigStatus(500);
+    mgr = makeManager();
+    await expect(
+      mgr.configure({ enabled: true, relayUrl: relay.url, password: "secret-pw" }),
+    ).rejects.toThrow(/HTTP 500/);
+
+    expect((await mgr.status()).hasPassword).toBe(false);
+    expect(JSON.parse(await fs.readFile(file, "utf8")).hasPassword).toBe(false);
+
+    // A later connection attempt still carries the retry copy.
+    await mgr.configure({});
+    await waitFor(() => relay.hosts.length === 1);
+    expect(relay.hosts[0]!.headers["x-crystal-access-password"]).toBe("secret-pw");
+  });
+
+  it("rejects unsupported relay schemes without changing settings", async () => {
+    mgr = makeManager();
+    await mgr.configure({ relayUrl: relay.url });
+    const before = await fs.readFile(file, "utf8");
+
+    await expect(mgr.configure({ enabled: true, relayUrl: "file:///tmp/relay" })).rejects.toThrow(
+      /must use ws, wss, http, or https/,
+    );
+    expect(await fs.readFile(file, "utf8")).toBe(before);
+    expect((await mgr.status()).relayUrl).toBe(relay.url);
+  });
+
+  it("disables an already-poisoned persisted relay URL on startup", async () => {
+    await fs.writeFile(
+      file,
+      JSON.stringify({
+        enabled: true,
+        relayUrl: "file:///tmp/relay",
+        instanceId: "abcdef123456",
+        hostToken: "a".repeat(48),
+        hasPassword: false,
+      }),
+      "utf8",
+    );
+    mgr = makeManager();
+    await expect(mgr.start()).resolves.toBeUndefined();
+    expect(await mgr.status()).toMatchObject({ enabled: false, relayUrl: null, connected: false });
+    expect(relay.hosts).toHaveLength(0);
   });
 
   it("degrades a corrupt settings file to the disabled default", async () => {

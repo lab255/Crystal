@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createServiceDef, createWatchDef, type ServiceInfo } from "@crystal/core";
 import { ServiceManager, portFree, reapOrphan, type WatchFirePayload } from "./service-manager.js";
 import { WorkspaceStore } from "./workspace-store.js";
@@ -255,5 +255,17 @@ describe.skipIf(process.platform === "win32")("reapOrphan", () => {
     // the ps guard must refuse to signal it.
     await reapOrphan(process.pid, "definitely-not-this-process-cmd-xyz");
     expect(process.pid).toBeGreaterThan(0); // still alive to assert
+  });
+
+  it("does not kill an unrelated process that shares only the command's first token", async () => {
+    const kill = vi.spyOn(process, "kill").mockReturnValue(true);
+    const psExec = vi.fn(async () => ({ stdout: "node something-else.js\n", stderr: "" }));
+    try {
+      await reapOrphan(4242, "node service.js", psExec as never);
+      expect(kill).toHaveBeenCalledWith(4242, 0);
+      expect(kill).not.toHaveBeenCalledWith(-4242, "SIGKILL");
+    } finally {
+      kill.mockRestore();
+    }
   });
 });

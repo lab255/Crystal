@@ -13,6 +13,8 @@ import path from "node:path";
  *  - **Mutations serialize.** Settlement events race user and agent calls, so
  *    read-modify-write goes through one queue; a rejected mutation must leave
  *    the queue usable rather than poisoning every later one.
+ *  - **Disk is the commit point.** A failed write leaves the prior in-memory
+ *    record in place, matching what a restart would load.
  *  - **Persist before announcing.** The change event fires only once the
  *    record is on disk, so a listener that re-reads never sees a stale file.
  */
@@ -37,6 +39,8 @@ export class JsonRecordStore<T extends { id: string; updatedAt: string }> {
     private readonly onChanged: (record: T) => void,
     /** Timestamp source, stamped on every mutation. */
     private readonly now: () => string,
+    /** Test seam for failures after a temporary file has been created. */
+    private readonly writeFile: typeof fs.writeFile = fs.writeFile,
   ) {}
 
   ensureLoaded(): Promise<void> {
@@ -91,8 +95,8 @@ export class JsonRecordStore<T extends { id: string; updatedAt: string }> {
       // Validate before it lands: an invalid record written now is a record
       // that fails to parse on the next boot and vanishes entirely.
       const validated = this.parse(record);
-      this.records.set(validated.id, validated);
       await this.persist(validated);
+      this.records.set(validated.id, validated);
       this.onChanged({ ...validated });
     });
   }
@@ -105,8 +109,8 @@ export class JsonRecordStore<T extends { id: string; updatedAt: string }> {
   remove(id: string): Promise<void> {
     return this.serialize(id, async () => {
       await this.ensureLoaded();
-      this.records.delete(id);
       await fs.rm(path.join(this.dir, `${id}.json`), { force: true });
+      this.records.delete(id);
     });
   }
 
@@ -132,8 +136,8 @@ export class JsonRecordStore<T extends { id: string; updatedAt: string }> {
       if (!this.records.has(id)) return result;
       record.updatedAt = this.now();
       const validated = this.parse(record);
-      this.records.set(validated.id, validated);
       await this.persist(validated);
+      this.records.set(validated.id, validated);
       this.onChanged({ ...validated });
       return result;
     });
@@ -155,10 +159,18 @@ export class JsonRecordStore<T extends { id: string; updatedAt: string }> {
 
   private async persist(record: T): Promise<void> {
     await fs.mkdir(this.dir, { recursive: true });
-    await fs.writeFile(
-      path.join(this.dir, `${record.id}.json`),
-      JSON.stringify(record, null, 2),
-      "utf8",
+    const target = path.join(this.dir, `${record.id}.json`);
+    const temp = path.join(
+      this.dir,
+      `.${record.id}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`,
     );
+    let landed = false;
+    try {
+      await this.writeFile(temp, JSON.stringify(record, null, 2), "utf8");
+      await fs.rename(temp, target);
+      landed = true;
+    } finally {
+      if (!landed) await fs.rm(temp, { force: true }).catch(() => {});
+    }
   }
 }
