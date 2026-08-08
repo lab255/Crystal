@@ -9,6 +9,7 @@ import {
   ReactFlowProvider,
   useNodesState,
   useReactFlow,
+  useUpdateNodeInternals,
   type Edge as RfEdge,
   type Node as RfNode,
 } from "@xyflow/react";
@@ -1682,12 +1683,38 @@ function WorkspaceMapCanvas({
     });
   }, []);
 
-  useEffect(() => {
-    setNodes(scene.nodes);
-  }, [scene, setNodes]);
-
   // Drill targets zoom into view once their node exists (details may lag).
   const { fitView } = useReactFlow();
+
+  // The map renders with onlyRenderVisibleElements, so a swapped-in scene
+  // whose nodes all sit outside the previous viewport culls to a BLANK map
+  // (the worker's first full layout lands after the initial fitView framed a
+  // smaller early scene). Refit whenever the node-id set actually changes;
+  // pure re-poses (drags, detail loads) keep the user's viewport.
+  const lastSceneIdsRef = useRef("");
+  useEffect(() => {
+    setNodes(scene.nodes);
+    const ids = scene.nodes
+      .map((n) => n.id)
+      .sort()
+      .join("|");
+    if (ids === lastSceneIdsRef.current) return;
+    lastSceneIdsRef.current = ids;
+    if (scene.nodes.length === 0) return;
+    const t = setTimeout(() => {
+      void fitView({ padding: 0.2, maxZoom: 1.15 });
+    }, 60);
+    return () => clearTimeout(t);
+  }, [scene, setNodes, fitView]);
+
+  // Same react-flow v12 hazard the architecture canvas documents: swapping
+  // the nodes array while the initial measurement is still flushing drops the
+  // pending internals update and nodes stay hidden. Re-register internals
+  // after every scene swap — cheap and idempotent.
+  const updateNodeInternals = useUpdateNodeInternals();
+  useEffect(() => {
+    updateNodeInternals(scene.nodes.map((n) => n.id));
+  }, [scene, updateNodeInternals]);
 
   // LoD/lens re-poses land as a whole-scene refit (skipped on first render —
   // the initial fitView prop already frames the map).
