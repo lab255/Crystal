@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.27.0 (2026-08-08)
+
+### Features
+
+- diagram export — fitted 2x PNG everywhere, mermaid C4 download/copy ([`d8fa403`](https://github.com/lab255/Crystal/commit/d8fa403))
+- textual diffs end-to-end — Monaco DiffView, walkable changed files, base-branch preset, direction toggle ([`3258cf0`](https://github.com/lab255/Crystal/commit/3258cf0))
+- package-scoped run picker + live job progress; test(relay): envelope lockstep with core publish.ts ([`40d6f44`](https://github.com/lab255/Crystal/commit/40d6f44))
+- capability palette, shortcut cheat-sheet, status legends, public copy-links, unknown-link notices ([`9d6acdb`](https://github.com/lab255/Crystal/commit/9d6acdb))
+- independent loads, truthful coverage + previews, walkable reruns, labeled affordances ([`cfd28b8`](https://github.com/lab255/Crystal/commit/cfd28b8))
+- package-scoped runs, streamed progress, coverage diagnostics, collision-safe test names ([`04c3548`](https://github.com/lab255/Crystal/commit/04c3548))
+- human surfaces for permissions, budgets, deliveries, dead chains ([`fae2c8a`](https://github.com/lab255/Crystal/commit/fae2c8a))
+- canvas edit safety + hidden/stale recovery + honest panels ([`a77e51d`](https://github.com/lab255/Crystal/commit/a77e51d))
+- unsaved-work safety net — dirty-close confirms, conflict-guarded saves, read-only truncated files, external-change refresh ([`52fbd8a`](https://github.com/lab255/Crystal/commit/52fbd8a))
+- conflict-guarded fs.write, git.showFile, typed agent.message outcome, arch.overlayChanged event ([`ebe366c`](https://github.com/lab255/Crystal/commit/ebe366c))
+
+### Bug Fixes
+
+- refit on node-set swaps so onlyRenderVisibleElements can't cull a fresh scene to a blank map ([`2494c56`](https://github.com/lab255/Crystal/commit/2494c56))
+- hub/infra hardening — bearer-gated TCP MCP, per-project dispatch lock, atomic records, honest publish errors, safe orphan reap ([`7b9145d`](https://github.com/lab255/Crystal/commit/7b9145d))
+- orchestration race fixes — close-gated settlement, durable steering, serialized compaction, guarded dispatch, handoff forwarding ([`b13d53c`](https://github.com/lab255/Crystal/commit/b13d53c))
+- scope-epoch guards, durable failed saves, overlay refetch on remote change, prompt close rejection ([`043f7f5`](https://github.com/lab255/Crystal/commit/043f7f5))
+- review-driven rule fixes — dup-dep cycles, unique track branches, C4 slug collisions, exact grant matching, DST-safe daily schedules, loud malformed asserts, portfolio locks, contained file asserts ([`45c4a43`](https://github.com/lab255/Crystal/commit/45c4a43))
+- land on the Overview by default, platform-correct open-dialog placeholder, honest 'App settings…' label ([`2b4aa21`](https://github.com/lab255/Crystal/commit/2b4aa21))
+- honor worktree isolation on the task card's primary Run, loud partial test failures, true shortcut hints, terminal-safe global keys, undeliverable-message truth ([`01748ee`](https://github.com/lab255/Crystal/commit/01748ee))
+
 ## v0.26.0 (2026-08-08)
 
 ### Features
