@@ -6,12 +6,14 @@ import {
   QualityService,
   buildJestArgs,
   buildPlaywrightArgs,
+  buildTestNamePattern,
   buildVitestArgs,
   owningPackageDir,
   parseIstanbulCoverage,
   parseJestJson,
   parseJestishJson,
   parsePlaywrightJson,
+  parseVitestProgressLine,
   parseVitestJson,
   pickSetupForFile,
   planRunJobs,
@@ -301,6 +303,17 @@ describe("arg building", () => {
     expect(posix.slice(-2)).toEqual(["-t", "evil  name"]);
   });
 
+  it("builds an anchored, escaped pattern from the full test name path", () => {
+    const scope = {
+      testName: "value",
+      testNamePath: ["suite (edge)", "nested [case]", "value.one"],
+    };
+    const pattern = "^suite \\(edge\\) nested \\[case\\] value\\.one$";
+    expect(buildTestNamePattern(scope)).toBe(pattern);
+    expect(buildVitestArgs(scope, out, false).slice(-2)).toEqual(["-t", pattern]);
+    expect(buildJestArgs(scope, out, false).slice(-2)).toEqual(["-t", pattern]);
+  });
+
   it("quotes an output file containing spaces on windows", () => {
     const spaced = "C:\\Users\\Some One\\Temp\\out.json";
     expect(buildVitestArgs({}, spaced, true)).toContain(`--outputFile="${spaced}"`);
@@ -573,6 +586,19 @@ describe("planRunJobs", () => {
     ]);
   });
 
+  it("runs only setups from an explicitly scoped package", () => {
+    const plans = planRunJobs(
+      [
+        pkg({ dir: "packages/api" }),
+        pkg({ dir: "packages/web", runner: "jest" }),
+      ],
+      { packageDir: "packages/web" },
+    );
+    expect(plans).toEqual([
+      { dir: "packages/web", mode: "jest", script: null, coverage: false },
+    ]);
+  });
+
   it("falls back to the root for files outside any package", () => {
     const plans = planRunJobs(
       [pkg({ dir: "." }), pkg({ dir: "packages/api" })],
@@ -737,5 +763,213 @@ describe("owningPackageDir", () => {
     );
     expect(owningPackageDir(packages, "packages/api/src/x.test.ts")).toBe("packages/api");
     expect(owningPackageDir(packages, "docs/x.test.ts")).toBe(".");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Spawned run orchestration
+// ---------------------------------------------------------------------------
+
+describe("QualityService.run", () => {
+  const tmpDirs: string[] = [];
+
+  afterAll(async () => {
+    for (const dir of tmpDirs) await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+  });
+
+  async function makeFakeWorkspace(options: {
+    packages: string[];
+    coverageCapable?: boolean;
+  }): Promise<string> {
+    const created = await fs.mkdtemp(path.join(os.tmpdir(), "crystal-quality-run-"));
+    const root = await fs.realpath(created);
+    tmpDirs.push(root);
+    await fs.writeFile(path.join(root, "package.json"), JSON.stringify({ name: "mono" }), "utf8");
+
+    for (const packageDir of options.packages) {
+      const abs = path.join(root, ...packageDir.split("/"));
+      const name = path.posix.basename(packageDir);
+      await fs.mkdir(path.join(abs, "src"), { recursive: true });
+      await fs.writeFile(
+        path.join(abs, "package.json"),
+        JSON.stringify({ name: `@mono/${name}`, devDependencies: { vitest: "^3.0.0" } }),
+        "utf8",
+      );
+      await fs.writeFile(path.join(abs, "src", `${name}.test.ts`), "", "utf8");
+    }
+
+    const binDir = path.join(root, "node_modules", ".bin");
+    await fs.mkdir(binDir, { recursive: true });
+    if (options.coverageCapable) {
+      const providerDir = path.join(root, "node_modules", "@vitest", "coverage-v8");
+      await fs.mkdir(providerDir, { recursive: true });
+      await fs.writeFile(path.join(providerDir, "package.json"), "{}", "utf8");
+    }
+
+    const fakeRunner = [
+      'const fs = require("node:fs");',
+      'const path = require("node:path");',
+      "const cwd = process.cwd();",
+      'const name = path.basename(cwd);',
+      'const outputArg = process.argv.find((arg) => arg.startsWith("--outputFile="));',
+      'const outputFile = outputArg.slice("--outputFile=".length).replace(/^"|"$/g, "");',
+      'fs.writeFileSync(path.join(cwd, "runner-ran"), "yes");',
+      'process.stdout.write(" ✓ src/");',
+      "setTimeout(() => {",
+      '  process.stdout.write(name + ".test.ts (1 test) 5ms\\n");',
+      "  setTimeout(() => {",
+      '    const testFile = path.join(cwd, "src", name + ".test.ts");',
+      "    const now = Date.now();",
+      "    const result = {",
+      "      numTotalTests: 1,",
+      "      testResults: [{",
+      "        name: testFile, status: \"passed\", startTime: now, endTime: now + 5,",
+      "        assertionResults: [{",
+      "          ancestorTitles: [\"suite\"], title: \"works\",",
+      "          fullName: \"suite works\", status: \"passed\", duration: 5",
+      "        }]",
+      "      }]",
+      "    };",
+      '    fs.writeFileSync(outputFile, JSON.stringify(result), "utf8");',
+      "  }, 40);",
+      "}, 10);",
+    ].join("\n");
+    await fs.writeFile(path.join(binDir, "fake-vitest.cjs"), fakeRunner, "utf8");
+    await fs.writeFile(
+      path.join(binDir, "vitest"),
+      '#!/bin/sh\nexec node "$(dirname "$0")/fake-vitest.cjs" "$@"\n',
+      { encoding: "utf8", mode: 0o755 },
+    );
+    await fs.writeFile(
+      path.join(binDir, "vitest.cmd"),
+      '@node "%~dp0fake-vitest.cjs" %*\r\n',
+      "utf8",
+    );
+    return root;
+  }
+
+  function settledRun(service: QualityService) {
+    return new Promise<Awaited<ReturnType<QualityService["run"]>>["run"]>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        off();
+        reject(new Error("Timed out waiting for quality run"));
+      }, 3000);
+      const off = service.events.on("runChanged", ({ run }) => {
+        if (run.status === "running") return;
+        clearTimeout(timer);
+        off();
+        resolve(run);
+      });
+    });
+  }
+
+  it("executes exactly the selected package and rejects unknown package directories", async () => {
+    const root = await makeFakeWorkspace({ packages: ["packages/api", "packages/web"] });
+    const service = new QualityService(root);
+    try {
+      const settled = settledRun(service);
+      const { run } = await service.run({ packageDir: "packages/web" });
+      expect(run.scope.packageDir).toBe("packages/web");
+      expect((await settled).status).toBe("passed");
+      await expect(fs.stat(path.join(root, "packages/web/runner-ran"))).resolves.toBeDefined();
+      await expect(fs.stat(path.join(root, "packages/api/runner-ran"))).rejects.toThrow();
+      await expect(service.run({ packageDir: "packages/missing" })).rejects.toThrow(
+        "Unknown test package directory: packages/missing",
+      );
+    } finally {
+      service.dispose();
+    }
+  });
+
+  it("streams package and per-file progress before reporter JSON lands", async () => {
+    const root = await makeFakeWorkspace({ packages: ["packages/api"] });
+    const service = new QualityService(root);
+    const events: Array<Awaited<ReturnType<QualityService["run"]>>["run"]> = [];
+    const off = service.events.on("runChanged", ({ run }) => events.push(run));
+    try {
+      const settled = settledRun(service);
+      await service.run({ packageDir: "packages/api" });
+      const final = await settled;
+      expect(final.files[0]).toMatchObject({
+        file: "packages/api/src/api.test.ts",
+        status: "pass",
+      });
+      expect(final.files[0]!.tests).toHaveLength(1);
+
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          status: "running",
+          progress: { packageDir: "packages/api", jobIndex: 1, jobCount: 1 },
+        }),
+      );
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          status: "running",
+          files: [
+            {
+              file: "packages/api/src/api.test.ts",
+              status: "pass",
+              tests: [],
+            },
+          ],
+        }),
+      );
+    } finally {
+      off();
+      service.dispose();
+    }
+  });
+
+  it("marks a completed coverage run when none of its probed paths produced data", async () => {
+    const root = await makeFakeWorkspace({
+      packages: ["packages/api"],
+      coverageCapable: true,
+    });
+    const source = path.join(root, "packages/api/src/value.ts");
+    const coverageDir = path.join(root, "packages/api/coverage");
+    await fs.mkdir(coverageDir, { recursive: true });
+    await fs.writeFile(
+      path.join(coverageDir, "coverage-final.json"),
+      JSON.stringify({
+        [source]: {
+          path: source,
+          statementMap: { "0": { start: { line: 1 } } },
+          s: { "0": 1 },
+          fnMap: {},
+          f: {},
+          branchMap: {},
+          b: {},
+        },
+      }),
+      "utf8",
+    );
+    const service = new QualityService(root);
+    try {
+      const settled = settledRun(service);
+      const started = await service.run({ packageDir: "packages/api", coverage: true });
+      expect(started.run.withCoverage).toBe(true);
+      const final = await settled;
+      expect(final).toMatchObject({
+        status: "passed",
+        coverageMissing: true,
+        coveragePathsProbed: ["packages/api/coverage/coverage-final.json"],
+      });
+    } finally {
+      service.dispose();
+    }
+  });
+});
+
+describe("parseVitestProgressLine", () => {
+  it("accepts only completed default-reporter file rows", () => {
+    expect(parseVitestProgressLine(green(" ✓ src/a.test.ts (2 tests) 4ms"))).toEqual({
+      file: "src/a.test.ts",
+      status: "pass",
+    });
+    expect(parseVitestProgressLine(" ❯ |unit| src/b.spec.ts (1 test | 1 failed) 3ms")).toEqual({
+      file: "src/b.spec.ts",
+      status: "fail",
+    });
+    expect(parseVitestProgressLine(" ❯ src/a.test.ts:12:3")).toBeNull();
   });
 });
