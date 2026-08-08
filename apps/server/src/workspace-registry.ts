@@ -19,6 +19,7 @@ import {
   workflowIdOfRun,
   type AgentProfileOverlay,
   type ModelPreset,
+  type ProfileResolutionInput,
 } from "@crystal/core";
 import { AgentLibrary, GlobalAgentStore } from "./agent-library.js";
 import { ALLOWED_RUN_TOOLS, AgentManager } from "./agent-manager.js";
@@ -126,7 +127,7 @@ export class WorkspaceRuntime {
     );
     // The single resolution path: dispatch-by-agentId (workers, resumed
     // chain turns) resolves through the merged project+library view.
-    this.agents.profileResolver = (agentId) => this.resolveProfile(agentId);
+    this.agents.profileResolver = (agentId, input) => this.resolveProfile(agentId, input);
     this.agents.presetResolver = () => this.resolvePreset();
     // Workspace consent for dangerously-skip-permissions runs (roster flag) —
     // read per spawn, so flipping the toggle applies to the next run.
@@ -291,17 +292,20 @@ export class WorkspaceRuntime {
    * skills, standing prompt, tool policy, the `agent:<id>` tag. The one
    * resolution path every handler and engine goes through (design A3).
    */
-  async resolveProfile(agentId?: string | null): Promise<AgentProfileOverlay | null> {
+  async resolveProfile(
+    agentId?: string | null,
+    input?: ProfileResolutionInput | null,
+  ): Promise<AgentProfileOverlay | null> {
     if (!agentId) return null;
     const profile = await this.agentLibrary.get(agentId);
     if (!profile) return null;
-    // The roster's preset resolves "auto" profile models — here, at the one
-    // resolution path, so every dispatch sees a concrete model.
+    // The roster's preset resolves "auto" model/provider pairs — here, at the
+    // one resolution path, so every dispatch sees a CLI-compatible pair.
     const roster = await this.agentLibrary.roster();
-    return profileOverlay(profile, presetById(roster.preset));
+    return profileOverlay(profile, presetById(roster.preset), input);
   }
 
-  /** The workspace's model preset (roster `preset` field, default Balanced). */
+  /** The workspace's model preset (roster `preset` field, default Delegated). */
   async resolvePreset(): Promise<ModelPreset> {
     const roster = await this.agentLibrary.roster();
     return presetById(roster.preset);

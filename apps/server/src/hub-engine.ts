@@ -30,8 +30,10 @@ import {
   applyProfileOverlay,
   presetById,
   profileOverlay,
+  resolvePresetModel,
   type AgentProfile,
   type AgentProfileOverlay,
+  type AgentProvider,
   type AgentRun,
   type DeliveryInit,
   type DeliverySpend,
@@ -988,7 +990,7 @@ export class HubEngine {
     if (agentId && this.profiles) {
       const profile = await this.profiles.get(agentId);
       if (!profile) throw new Error(`Unknown agent profile: ${agentId}`);
-      overlay = profileOverlay(profile, presetById(null), "manager");
+      overlay = profileOverlay(profile, presetById(null), { role: "manager" });
     }
     const params = applyProfileOverlay(
       {
@@ -996,6 +998,7 @@ export class HubEngine {
         role: "manager" as const,
         purpose: "manage" as const,
         tags: [programTag(program.id)],
+        provider: null as AgentProvider | null,
         model,
         agentId: overlay?.agentId ?? null,
       },
@@ -1004,7 +1007,11 @@ export class HubEngine {
     // The hub sits above any one project's roster, so the default preset
     // (not a project's) names its orchestrator model; an explicit `model`
     // on hub.startManager still wins above.
-    params.model ??= presetById(null).manager;
+    if (!params.model) {
+      const resolved = resolvePresetModel(presetById(null), "manager");
+      params.model = resolved.model;
+      params.provider ??= resolved.provider;
+    }
     // A manager coordinates in place — a profile's worktree default is for
     // workers, and the hub's own directory is not even a repo.
     (params as { isolation?: unknown }).isolation = undefined;
@@ -1499,4 +1506,3 @@ export class HubEngine {
     }
   }
 }
-

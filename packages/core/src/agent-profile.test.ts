@@ -3,6 +3,8 @@ import {
   AUTO_MODEL,
   AgentProfileSchema,
   AgentRosterSchema,
+  CODEX_MODEL_HINTS,
+  DEFAULT_CODEX_MODEL,
   DEFAULT_PRESET_ID,
   applyProfileOverlay,
   createDefaultRoster,
@@ -235,12 +237,101 @@ describe("model presets", () => {
 
   it("gives managers the preset's manager model whatever profile they run as", () => {
     const generic = AgentProfileSchema.parse({ id: "g", name: "G", kind: "generic" });
-    expect(resolveProfileModel(generic, presetById("balanced"), "manager")).toBe("opus");
-    expect(resolveProfileModel(generic, presetById("frontier"), "manager")).toBe("fable");
-    expect(profileOverlay(generic, presetById("frontier"), "manager").model).toBe("fable");
+    expect(resolveProfileModel(generic, presetById("balanced"), { role: "manager" })).toBe("opus");
+    expect(resolveProfileModel(generic, presetById("frontier"), { role: "manager" })).toBe("fable");
+    expect(profileOverlay(generic, presetById("frontier"), { role: "manager" }).model).toBe("fable");
+  });
+
+  it("resolves the delegated provider/model matrix without changing old presets", () => {
+    const generic = AgentProfileSchema.parse({ id: "g", name: "G", kind: "generic" });
+    const specialist = AgentProfileSchema.parse({ id: "s", name: "S", kind: "specialist" });
+    const pinned = AgentProfileSchema.parse({
+      id: "p",
+      name: "P",
+      kind: "specialist",
+      provider: "codex",
+      model: "gpt-pinned",
+    });
+    const codexAuto = AgentProfileSchema.parse({
+      id: "c",
+      name: "C",
+      kind: "generic",
+      provider: "codex",
+    });
+    const mergeDefault = AgentProfileSchema.parse({
+      id: "m",
+      name: "M",
+      kind: "generic",
+      defaults: { purpose: "merge" },
+    });
+    const delegated = presetById("delegated");
+
+    expect(profileOverlay(generic, delegated, { role: "manager" })).toMatchObject({
+      model: "fable",
+      provider: "claude",
+    });
+    expect(profileOverlay(codexAuto, delegated, { role: "manager" })).toMatchObject({
+      model: "fable",
+      provider: "claude",
+    });
+    expect(profileOverlay(generic, delegated)).toMatchObject({
+      model: "gpt-5.6-sol",
+      provider: "codex",
+    });
+    expect(profileOverlay(specialist, delegated)).toMatchObject({
+      model: "gpt-5.6-sol",
+      provider: "codex",
+    });
+    expect(profileOverlay(generic, delegated, { purpose: "merge" })).toMatchObject({
+      model: "sonnet",
+      provider: "claude",
+    });
+    expect(profileOverlay(codexAuto, delegated, { purpose: "merge" })).toMatchObject({
+      model: "sonnet",
+      provider: "claude",
+    });
+    expect(profileOverlay(mergeDefault, delegated)).toMatchObject({
+      model: "sonnet",
+      provider: "claude",
+    });
+    expect(profileOverlay(pinned, delegated, { purpose: "merge" })).toMatchObject({
+      model: "gpt-pinned",
+      provider: "codex",
+    });
+    expect(profileOverlay(codexAuto, presetById("balanced"))).toMatchObject({
+      model: DEFAULT_CODEX_MODEL,
+      provider: "codex",
+    });
+
+    expect(profileOverlay(generic, presetById("balanced"))).toMatchObject({
+      model: "sonnet",
+      provider: "claude",
+    });
+    expect(profileOverlay(specialist, presetById("balanced"))).toMatchObject({
+      model: "opus",
+      provider: "claude",
+    });
+    expect(profileOverlay(generic, presetById("frontier"))).toMatchObject({
+      model: "opus",
+      provider: "claude",
+    });
+    expect(profileOverlay(specialist, presetById("frontier"))).toMatchObject({
+      model: "fable",
+      provider: "claude",
+    });
+    expect(profileOverlay(generic, presetById("balanced"), { purpose: "merge" })).toMatchObject({
+      model: "sonnet",
+      provider: "claude",
+    });
+    expect(profileOverlay(generic, presetById("frontier"), { purpose: "merge" })).toMatchObject({
+      model: "opus",
+      provider: "claude",
+    });
+    expect(CODEX_MODEL_HINTS).toContain("gpt-5.6-sol");
   });
 
   it("falls back to the default preset on unknown ids and renders resolved models", () => {
+    expect(DEFAULT_PRESET_ID).toBe("delegated");
     expect(presetById("no-such-preset").id).toBe(DEFAULT_PRESET_ID);
     expect(presetById(null).id).toBe(DEFAULT_PRESET_ID);
     // An overlay never leaks the "auto" sentinel to a spawn.

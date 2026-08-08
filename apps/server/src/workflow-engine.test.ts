@@ -143,8 +143,9 @@ describe("WorkflowEngine", () => {
     expect(workflow.managerRunId).toBe(run.id);
     expect((await engine.list()).map((w) => w.id)).toContain(workflow.id);
     expect(agents.started).toHaveLength(1);
-    // The manager defaults to the heavyweight model when no profile overrides.
-    expect(agents.started[0]!.model).toBe("opus");
+    // The manager defaults to the default preset's manager model when no
+    // profile overrides (Delegated: fable orchestration).
+    expect(agents.started[0]!.model).toBe("fable");
   });
 
   async function makeRepo(): Promise<string> {
