@@ -3,10 +3,12 @@ import {
   canonicalSystemIds,
   composeArchitecture,
   deriveArchGraph,
+  deriveC4Model,
   extractOverlay,
   reconcileOverlay,
   type ArchOverlay,
   type ArchitectureGraph,
+  type C4Model,
   type CodeMapSummary,
   type ScreenApiCall,
   type ScreenSurface,
@@ -45,6 +47,12 @@ export function useCanonicalArchitecture(options?: {
   overviewData: SystemOverview | null;
   codeSummary: CodeMapSummary | null;
   derived: ArchitectureGraph | null;
+  /**
+   * The C4 tier over the same derivation (containers, persons, external
+   * split) — the architecture view's projection input. Derived here so its
+   * aggregate ids count as known during overlay reconciliation.
+   */
+  c4Model: C4Model | null;
   reconciled: ArchOverlay | null;
   /**
    * Composed + auto-laid-out at reserved LOD footprints; nodes with explicit
@@ -108,11 +116,34 @@ export function useCanonicalArchitecture(options?: {
         : null,
     [overviewData, codeSummary, surfaces],
   );
+  const c4Model = useMemo(
+    () =>
+      overviewData && codeSummary
+        ? deriveC4Model({
+            overview: overviewData,
+            externals: codeSummary.externals ?? [],
+            modules: codeSummary.modules,
+            deps: codeSummary.deps,
+            screens: surfaces?.screens ?? null,
+          })
+        : null,
+    [overviewData, codeSummary, surfaces],
+  );
   // Fold the fresh derivation through the overlay (drops dead positional
-  // overrides, keeps semantic ones as stale).
+  // overrides, keeps semantic ones as stale). The C4 aggregates count as
+  // known ids so per-level pins and renamed containers survive.
   const reconciled = useMemo(
-    () => (overlay && derived ? reconcileOverlay(overlay, derived).overlay : null),
-    [overlay, derived],
+    () =>
+      overlay && derived
+        ? reconcileOverlay(
+            overlay,
+            derived,
+            c4Model
+              ? ["c4:system", "person:user", ...c4Model.containers.map((c) => c.id)]
+              : undefined,
+          ).overlay
+        : null,
+    [overlay, derived, c4Model],
   );
   const rendered = useMemo(() => {
     if (!derived || !reconciled) return null;
@@ -157,5 +188,5 @@ export function useCanonicalArchitecture(options?: {
     [derived, rendered, reconciled, updateArchOverlay],
   );
 
-  return { overviewData, codeSummary, derived, reconciled, rendered, commitEdited };
+  return { overviewData, codeSummary, derived, c4Model, reconciled, rendered, commitEdited };
 }

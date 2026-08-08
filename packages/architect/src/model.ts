@@ -15,6 +15,7 @@ import {
 import {
   AppWindow,
   Boxes,
+  Container,
   Database,
   Folder,
   GitBranch,
@@ -24,6 +25,7 @@ import {
   Rows3,
   Server,
   StickyNote,
+  UserRound,
   Waypoints,
   Zap,
   type LucideIcon,
@@ -60,6 +62,8 @@ export const KIND_META: Record<ArchNodeKind, KindMeta> = {
   external: { label: "External", icon: Globe, defaultAccent: "slate" },
   endpoint: { label: "Endpoint", icon: Waypoints, defaultAccent: "blue" },
   note: { label: "Note", icon: StickyNote, defaultAccent: "amber" },
+  person: { label: "Person", icon: UserRound, defaultAccent: "blue" },
+  container: { label: "Container", icon: Container, defaultAccent: "cyan" },
 };
 
 export const ACCENT_CSS: Record<AccentName, string> = {
@@ -119,6 +123,12 @@ export type ArchRfNode = RfNode<{
   hlRef?: HighlightRef;
   /** Ref-review mark (vs <ref>) — added/removed/changed tint, ghost render. */
   diff?: DiffMark;
+  /**
+   * C4 element type line from the active projection ("Container · Web
+   * application") — rendered bracketed under the label, C4-notation style.
+   * Absent outside the C4 architecture view.
+   */
+  c4Type?: string;
 }>;
 export type ArchRfEdge = RfEdge<{ kind: ArchEdgeKind; lane?: number }>;
 
@@ -141,12 +151,19 @@ export function toRfNodes(
   slots?: ReadonlyMap<string, { width: number; height: number }>,
   marks?: DiffMarks | null,
 ): ArchRfNode[] {
+  const childCount = new Map<string, number>();
+  for (const n of graph.nodes) {
+    if (n.parentId) childCount.set(n.parentId, (childCount.get(n.parentId) ?? 0) + 1);
+  }
   return topoOrderNodes(graph).map((n) => {
-    const container = isContainerKind(n.kind);
+    // A container kind with neither children nor an explicit size renders as
+    // a card, not an empty pen — the C4 context level's one-box system.
+    const container =
+      isContainerKind(n.kind) && ((childCount.get(n.id) ?? 0) > 0 || n.size != null);
     const mark = marks?.[n.id];
     const node: ArchRfNode = {
       id: n.id,
-      type: rfTypeFor(n.kind),
+      type: container ? "container" : n.kind === "note" ? "note" : "leaf",
       position: { ...n.position },
       data: { arch: n, ...(mark ? { diff: mark } : {}) },
       selected: selectedIds.has(n.id),

@@ -27,6 +27,12 @@ export const ARCH_NODE_KINDS = [
   "external",
   "endpoint",
   "note",
+  // C4 vocabulary (c4.ts): an actor at the context level, and a deployable
+  // unit at the container level. `person` never derives — manual or the
+  // synthesized default user only; `container` is the C4 projection's card
+  // kind (and a palette kind for planned apps).
+  "person",
+  "container",
 ] as const;
 
 export const ArchNodeKindSchema = z.enum(ARCH_NODE_KINDS);
@@ -57,6 +63,8 @@ export const DEFAULT_LAYER_OF_KIND: Partial<Record<ArchNodeKind, ArchLayer>> = {
   datastore: "data",
   cache: "data",
   queue: "data",
+  person: "entry",
+  container: "service",
 };
 
 /** A deployment environment the architecture runs in (dev/staging/prod…). */

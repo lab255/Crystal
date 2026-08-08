@@ -304,6 +304,27 @@ build/sign (+notarize on macOS) → signed updater `latest.json`).
 - The architect mode is exactly three views — `architecture`, `codebase`, `infra`
   (legacy `systems`/`diagrams`/`codemap` ids are permanent parse aliases in
   `deeplink.ts`; `?system=` focuses a node and settles into `sel`). The
+  architecture view is organized around the **C4 model** (`core/c4.ts`): one
+  canvas with three altitudes — System Context / Containers / Components
+  (`level` + `scope` deep-link params, default `containers`) — where
+  `deriveC4Model` finds the container tier (deployable-signal seeds: serves
+  HTTP, owns screens, top of the module import graph; library systems pool
+  into `ctr:shared`; single-package repos fall back to layer containers),
+  splits detected externals into owned infrastructure (database/cache/queue/
+  storage/search/realtime → containers inside the boundary) vs external
+  systems, and synthesizes the default `person:user` when screens exist.
+  `projectC4` renders one level as a plain `ArchitectureGraph` with
+  cross-boundary edges aggregated (`c4rel:` ids) and reports `nodeRollup`/
+  `edgeRollup` so diff marks (`rollupC4Marks`) and journey flows
+  (`remapFlowProjection` in the architect package) survive every altitude.
+  C4-level edits never go through `extractOverlay` — `applyC4Edit`
+  (architect `c4-view.ts`) translates them to targeted overlay ops: drags
+  pin per level in `overlay.c4Layouts[c4ViewKey]`, field edits become
+  `overrides` (aggregate ids count as known via `reconcileOverlay`'s
+  `extraKnownIds`), deleting an aggregate is a deliberate no-op. Drafts and
+  the surfaces-embedded `ArchPane` still edit the flat composed graph. The
+  infra view is presented as the C4 Deployment diagram (view id stays
+  `infra`). The
   architecture is ONE canonical graph per workspace, **derived** from
   `codemap.overview` + detected external services (`core/arch-derive.ts` — stable
   canonical ids `sys:`/`ext:<svc>[:<instance>]`/`link:`/`extlink:`/`screen:`/`flow:`;

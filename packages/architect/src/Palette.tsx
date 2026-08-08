@@ -5,7 +5,9 @@ import { KIND_META } from "./model.js";
 export const DRAG_MIME = "application/crystal-node-kind";
 
 export const PALETTE_KINDS: ArchNodeKind[] = [
+  "person",
   "system",
+  "container",
   "group",
   "service",
   "gateway",

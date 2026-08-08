@@ -70,6 +70,17 @@ export const ArchOverlaySchema = z.object({
   journeys: z.array(JourneySchema).default([]),
   facets: z.array(ArchFacetSchema).default([]),
   viewport: z.object({ x: z.number(), y: z.number(), zoom: z.number() }).nullish(),
+  /**
+   * Manual node positions per C4 view, keyed by `c4ViewKey` ("context",
+   * "containers", "components:<ctr>") then node id. A node dragged at one
+   * altitude stays put there without disturbing the auto-layout of the
+   * others — C4 projections re-arrange the same ids per level, so a single
+   * shared position cannot serve them all. Positional-only by construction:
+   * entries vanish silently with their node/view (see `reconcileOverlay`).
+   */
+  c4Layouts: z
+    .record(z.record(z.object({ x: z.number(), y: z.number() })))
+    .default({}),
 });
 export type ArchOverlay = z.infer<typeof ArchOverlaySchema>;
 
@@ -188,13 +199,20 @@ export interface OverlayReconciliation {
  * semantic overrides on vanished ids are kept but reported as stale, and
  * facet member ids are left alone (`facetVisibleIds` already ignores
  * dangling members).
+ *
+ * `extraKnownIds` names ids that exist only above the derivation — the C4
+ * tier's aggregates (`ctr:…`, `c4:system`, `person:user`) — so per-level
+ * positions and semantic overrides keyed on them survive without reading as
+ * stale customizations.
  */
 export function reconcileOverlay(
   overlay: ArchOverlay,
   derived: ArchitectureGraph,
+  extraKnownIds?: Iterable<string>,
 ): OverlayReconciliation {
   const known = new Set(derived.nodes.map((n) => n.id));
   for (const manual of overlay.manualNodes) known.add(manual.id);
+  for (const id of extraKnownIds ?? []) known.add(id);
 
   const overrides: Record<string, ArchNodeOverride> = {};
   const staleIds: string[] = [];
@@ -209,7 +227,16 @@ export function reconcileOverlay(
   const hiddenIds = overlay.hiddenIds.filter((id) => known.has(id));
   const derivedEdgeIds = new Set(derived.edges.map((e) => e.id));
   const hiddenEdgeIds = overlay.hiddenEdgeIds.filter((id) => derivedEdgeIds.has(id));
-  return { overlay: { ...overlay, overrides, hiddenIds, hiddenEdgeIds }, staleIds };
+  // Per-level positions are positional-only by construction — entries whose
+  // node vanished from the model drop silently.
+  const c4Layouts: ArchOverlay["c4Layouts"] = {};
+  for (const [viewKey, positions] of Object.entries(overlay.c4Layouts)) {
+    const kept = Object.fromEntries(
+      Object.entries(positions).filter(([id]) => known.has(id)),
+    );
+    if (Object.keys(kept).length > 0) c4Layouts[viewKey] = kept;
+  }
+  return { overlay: { ...overlay, overrides, hiddenIds, hiddenEdgeIds, c4Layouts }, staleIds };
 }
 
 /* ------------------------------------------------------------------ */
@@ -340,5 +367,28 @@ export function extractOverlay(args: {
     journeys: edited.journeys,
     facets: edited.facets,
     viewport: edited.viewport ?? prev.viewport ?? null,
+    // Per-level C4 positions are edited by the C4 canvas directly
+    // (`setC4Position`) — a full-graph extraction never touches them.
+    c4Layouts: prev.c4Layouts,
   };
+}
+
+/**
+ * Pin (or unpin, `position: null`) one node's manual position at one C4 view.
+ * The C4 canvas's drag-commit path — everything else about a C4 edit goes
+ * through targeted overlay ops on canonical ids.
+ */
+export function setC4Position(
+  overlay: ArchOverlay,
+  viewKey: string,
+  nodeId: string,
+  position: { x: number; y: number } | null,
+): ArchOverlay {
+  const level = { ...overlay.c4Layouts[viewKey] };
+  if (position) level[nodeId] = position;
+  else delete level[nodeId];
+  const c4Layouts = { ...overlay.c4Layouts };
+  if (Object.keys(level).length > 0) c4Layouts[viewKey] = level;
+  else delete c4Layouts[viewKey];
+  return { ...overlay, c4Layouts };
 }

@@ -50,9 +50,10 @@ import {
 } from "./simulation.js";
 
 /**
- * Infrastructure view — the same architecture projected per environment:
- * deployment targets become containers, components sit where they run, and
- * the logical edges connect them across targets (a lightweight service map).
+ * Deployment view — the C4 deployment diagram: the same architecture
+ * projected per environment, with deployment nodes (targets) as boxes,
+ * container/component instances sitting where they run, and the logical
+ * edges connecting them across nodes (a lightweight service map).
  * Placement is drag-and-drop: drag components between targets, drag unplaced
  * components in from the sidebar, drop on empty canvas to name a new target.
  */
@@ -60,9 +61,10 @@ import {
 /** dataTransfer type for dragging an unplaced component from the sidebar. */
 const INFRA_DRAG_MIME = "application/x-crystal-infra-node";
 
-/** Palette kinds that can actually be placed — containers and notes are logical-only. */
+/** Palette kinds that can actually be placed — grouping kinds, notes and
+ *  persons are logical-only (people don't deploy anywhere). */
 const INFRA_PALETTE_KINDS = PALETTE_KINDS.filter(
-  (k) => !isContainerKind(k) && k !== "note",
+  (k) => !isContainerKind(k) && k !== "note" && k !== "person",
 );
 
 interface GroupData extends Record<string, unknown> {
@@ -95,6 +97,9 @@ const InfraGroupNode = memo(function InfraGroupNode({ data }: NodeProps<GroupRfN
       <div className="flex items-center gap-1.5 border-b border-dashed border-edge px-2.5 py-1.5">
         <Icon className={cn("h-3 w-3 shrink-0", allDead ? "text-danger" : "text-crystal-300")} />
         <span className="truncate text-[10.5px] font-semibold text-ink">{data.target}</span>
+        <span className="shrink-0 text-[9px] text-ink-faint">
+          {data.detected ? "[External]" : "[Deployment Node]"}
+        </span>
         <span className="ml-auto shrink-0 rounded-full bg-surface-3 px-1.5 text-[9px] leading-4 text-ink-faint">
           {data.count}
         </span>

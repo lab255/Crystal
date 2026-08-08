@@ -1,0 +1,200 @@
+import { describe, expect, it } from "vitest";
+import {
+  createArchOverlay,
+  type ArchNode,
+  type ArchitectureGraph,
+  type C4Projection,
+} from "@crystal/core";
+import { applyAggregateOverrides, applyC4Edit, remapFlowProjection } from "./c4-view.js";
+import type { FlowProjection } from "./dataflow.js";
+
+function node(id: string, over: Partial<ArchNode> = {}): ArchNode {
+  return {
+    id,
+    kind: "service",
+    label: id,
+    description: "",
+    parentId: null,
+    position: { x: 0, y: 0 },
+    size: null,
+    tech: [],
+    placements: {},
+    layer: null,
+    ...over,
+  };
+}
+
+function graph(nodes: ArchNode[], edges: ArchitectureGraph["edges"] = []): ArchitectureGraph {
+  return {
+    id: "g",
+    name: "g",
+    description: "",
+    nodes,
+    edges,
+    environments: [],
+    journeys: [],
+    facets: [],
+  };
+}
+
+const DERIVED = graph(
+  [node("sys:api"), node("sys:model")],
+  [{ id: "link:sys:api->sys:model", source: "sys:api", target: "sys:model", kind: "dependency", label: "" }],
+);
+
+/** What the C4 containers level showed: boundary + two container cards. */
+const PROJECTED = graph(
+  [
+    node("c4:system", { kind: "system", size: { width: 640, height: 420 } }),
+    node("ctr:apps-server", { kind: "container", parentId: "c4:system", position: { x: 10, y: 40 } }),
+    node("sys:api", { parentId: "ctr:apps-server", position: { x: 20, y: 60 } }),
+  ],
+  [],
+);
+
+describe("applyC4Edit", () => {
+  it("records drags as per-level pins", () => {
+    const edited = {
+      ...PROJECTED,
+      nodes: PROJECTED.nodes.map((n) =>
+        n.id === "ctr:apps-server" ? { ...n, position: { x: 100, y: 90 } } : n,
+      ),
+    };
+    const out = applyC4Edit({
+      overlay: createArchOverlay(),
+      derived: DERIVED,
+      projected: PROJECTED,
+      edited,
+      viewKey: "containers",
+    });
+    expect(out.c4Layouts).toEqual({ containers: { "ctr:apps-server": { x: 100, y: 90 } } });
+    expect(out.overrides).toEqual({});
+  });
+
+  it("renames aggregates via overrides and derived nodes too", () => {
+    const edited = {
+      ...PROJECTED,
+      nodes: PROJECTED.nodes.map((n) =>
+        n.id === "ctr:apps-server" ? { ...n, label: "Bridge server" } : n,
+      ),
+    };
+    const out = applyC4Edit({
+      overlay: createArchOverlay(),
+      derived: DERIVED,
+      projected: PROJECTED,
+      edited,
+      viewKey: "containers",
+    });
+    expect(out.overrides["ctr:apps-server"]).toEqual({ label: "Bridge server" });
+  });
+
+  it("hides deleted derived nodes, ignores deleted aggregates", () => {
+    const edited = {
+      ...PROJECTED,
+      nodes: PROJECTED.nodes.filter((n) => n.id !== "sys:api" && n.id !== "ctr:apps-server"),
+    };
+    const out = applyC4Edit({
+      overlay: createArchOverlay(),
+      derived: DERIVED,
+      projected: PROJECTED,
+      edited,
+      viewKey: "containers",
+    });
+    expect(out.hiddenIds).toEqual(["sys:api"]);
+    expect(out.manualNodes).toEqual([]);
+  });
+
+  it("adds manual nodes pinned where dropped, parent only when canonical", () => {
+    const person = node("node:p1", { kind: "person", parentId: "c4:system", position: { x: 5, y: 6 } });
+    const edited = { ...PROJECTED, nodes: [...PROJECTED.nodes, person] };
+    const out = applyC4Edit({
+      overlay: createArchOverlay(),
+      derived: DERIVED,
+      projected: PROJECTED,
+      edited,
+      viewKey: "containers",
+    });
+    expect(out.manualNodes).toHaveLength(1);
+    // The aggregate parent is display-only — the durable record is unparented.
+    expect(out.manualNodes[0]).toMatchObject({ id: "node:p1", parentId: null });
+    expect(out.c4Layouts.containers?.["node:p1"]).toEqual({ x: 5, y: 6 });
+  });
+
+  it("keeps drawn edges (aggregate endpoints allowed) and removes deleted manual ones", () => {
+    const overlay = {
+      ...createArchOverlay(),
+      manualEdges: [
+        { id: "e-old", source: "sys:api", target: "c4:system", kind: "sync" as const, label: "" },
+      ],
+    };
+    const projectedWithEdge = {
+      ...PROJECTED,
+      edges: [{ id: "e-old", source: "sys:api", target: "c4:system", kind: "sync" as const, label: "" }],
+    };
+    const edited = {
+      ...projectedWithEdge,
+      edges: [
+        { id: "e-new", source: "node:p1", target: "ctr:apps-server", kind: "sync" as const, label: "Uses" },
+      ],
+    };
+    const out = applyC4Edit({
+      overlay,
+      derived: DERIVED,
+      projected: projectedWithEdge,
+      edited,
+      viewKey: "containers",
+    });
+    expect(out.manualEdges.map((e) => e.id)).toEqual(["e-new"]);
+  });
+});
+
+describe("applyAggregateOverrides", () => {
+  it("decorates aggregates but never double-applies to canonical ids", () => {
+    const overrides = {
+      "ctr:apps-server": { label: "Bridge" },
+      "sys:api": { label: "SHOULD NOT APPLY" },
+    };
+    const out = applyAggregateOverrides(PROJECTED, overrides, new Set(["sys:api", "sys:model"]));
+    const byId = new Map(out.nodes.map((n) => [n.id, n]));
+    expect(byId.get("ctr:apps-server")?.label).toBe("Bridge");
+    expect(byId.get("sys:api")?.label).toBe("sys:api");
+  });
+});
+
+describe("remapFlowProjection", () => {
+  it("follows roll-ups and folds internal hops away", () => {
+    const projection: C4Projection = {
+      graph: graph(
+        [node("ctr:apps-server", { kind: "container" }), node("ctr:shared", { kind: "container" })],
+        [{ id: "c4rel:ctr:apps-server->ctr:shared", source: "ctr:apps-server", target: "ctr:shared", kind: "dependency", label: "" }],
+      ),
+      typeLines: {},
+      nodeRollup: { "sys:api": "ctr:apps-server", "sys:auth": "ctr:apps-server", "sys:model": "ctr:shared" },
+      edgeRollup: { "link:sys:api->sys:model": "c4rel:ctr:apps-server->ctr:shared" },
+      drill: {},
+      view: { level: "containers" },
+    };
+    const flow: FlowProjection = {
+      nodeOrder: [
+        { nodeId: "sys:api", firstStep: 0 },
+        { nodeId: "sys:auth", firstStep: 1 },
+        { nodeId: "sys:model", firstStep: 2 },
+      ],
+      edgeSteps: new Map([["link:sys:api->sys:model", [2]]]),
+      ghostHops: [
+        { source: "sys:api", target: "sys:auth", step: 1 }, // internal — folds away
+        { source: "sys:auth", target: "sys:model", step: 2 },
+      ],
+      unmappedSteps: [],
+      stepNodeIds: new Map([["a.ts#f", "sys:api"]]),
+    };
+    const out = remapFlowProjection(flow, projection);
+    expect(out.nodeOrder).toEqual([
+      { nodeId: "ctr:apps-server", firstStep: 0 },
+      { nodeId: "ctr:shared", firstStep: 2 },
+    ]);
+    expect([...out.edgeSteps.keys()]).toEqual(["c4rel:ctr:apps-server->ctr:shared"]);
+    expect(out.ghostHops).toEqual([{ source: "ctr:apps-server", target: "ctr:shared", step: 2 }]);
+    expect(out.stepNodeIds.get("a.ts#f")).toBe("ctr:apps-server");
+  });
+});

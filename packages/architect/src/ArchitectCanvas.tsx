@@ -57,6 +57,7 @@ import {
   type ArchEdgeKind,
   type ArchNodeKind,
   type ArchitectureGraph,
+  type C4View,
   type CodeFileDetail,
   type CodeLodLevel,
   type CodeMapSummary,
@@ -248,6 +249,18 @@ export interface ArchitectCanvasProps {
    * ghost nodes into `graph` itself (they need layout like everything else).
    */
   diffMarks?: DiffMarks | null;
+  /**
+   * C4 mode (the architecture view's projection): element type lines per
+   * node, and drill-down targets — double-clicking a node with a drill entry
+   * descends a C4 level instead of toggling live code. Absent everywhere
+   * else (drafts, the surfaces embed, infra), where the canvas behaves as
+   * before.
+   */
+  c4?: {
+    typeLines: Record<string, string>;
+    drill: Record<string, C4View>;
+    onDrill: (view: C4View) => void;
+  } | null;
 }
 
 const GHOST_STROKE = "var(--color-crystal-400)";
@@ -417,6 +430,7 @@ function CanvasInner({
   extraNodeEntries,
   onOpenContract,
   diffMarks,
+  c4,
 }: ArchitectCanvasProps) {
   const [selectedNodes, setSelectedNodes] = useState<ReadonlySet<string>>(new Set());
   const [selectedEdges, setSelectedEdges] = useState<ReadonlySet<string>>(new Set());
@@ -990,6 +1004,12 @@ function CanvasInner({
       const hlRef = nodeHlRefs.get(n.id);
       return hlRef ? ({ ...n, data: { ...n.data, hlRef } } as ArchRfNode) : n;
     });
+    if (c4) {
+      nodes = nodes.map((n) => {
+        const c4Type = c4.typeLines[n.id];
+        return c4Type ? ({ ...n, data: { ...n.data, c4Type } } as ArchRfNode) : n;
+      });
+    }
     if (overlay) {
       nodes = nodes.map((n) => {
         const code = overlay.nodeBadges.get(n.id);
@@ -1085,7 +1105,7 @@ function CanvasInner({
       });
     }
     return nodes;
-  }, [viewGraph, selectedNodes, slotSizes, diffMarks, overlay, systemCards, blockPreviews, flow, expanded, codeContent, partsExpanded, partsContent, dragOverrides, displacements, dragActive, nodeHlRefs]);
+  }, [viewGraph, selectedNodes, slotSizes, diffMarks, c4, overlay, systemCards, blockPreviews, flow, expanded, codeContent, partsExpanded, partsContent, dragOverrides, displacements, dragActive, nodeHlRefs]);
 
   const rfEdges = useMemo(() => {
     let edges = [...toRfEdges(viewGraph, selectedEdges, diffMarks), ...(codeContent.edges as ArchRfEdge[])];
@@ -1816,6 +1836,16 @@ function CanvasInner({
     return () => clearTimeout(timer);
   }, [activeFacetId, fitView]);
 
+  // Changing C4 altitude swaps in a differently-shaped diagram (the projected
+  // graph's id carries the view key) — reframe around it, same as facets.
+  const lastGraphId = useRef(graph.id);
+  useEffect(() => {
+    if (!c4 || lastGraphId.current === graph.id) return;
+    lastGraphId.current = graph.id;
+    const timer = setTimeout(() => void fitView({ padding: 0.15, duration: 300 }), 60);
+    return () => clearTimeout(timer);
+  }, [graph.id, c4, fitView]);
+
   const runAutoLayout = useCallback(
     (mode: "flow" | "layers" = "flow") => {
       // Nodes are laid out at their reserved LOD footprints (`slotSizes`) —
@@ -1845,6 +1875,14 @@ function CanvasInner({
 
   const onNodeDoubleClick = useCallback(
     (_evt: unknown, node: RfNode) => {
+      // C4 drill-down first: the system descends into containers, a
+      // container into its components. Code expansion stays a double-click
+      // away on everything without a drill target.
+      const drillView = c4?.drill[node.id];
+      if (drillView) {
+        c4?.onDrill(drillView);
+        return;
+      }
       if (isCodeChildId(node.id)) {
         const data = node.data as MapNodeData;
         if (data.nodeKind === "file" && !data.planned) toggleFile(data.path);
@@ -1858,7 +1896,7 @@ function CanvasInner({
       }
       toggleNodeCode(node.id);
     },
-    [codeRefForNode, toggleFile, toggleCode, toggleNodeCode],
+    [c4, codeRefForNode, toggleFile, toggleCode, toggleNodeCode],
   );
 
   const duplicateNode = useCallback(

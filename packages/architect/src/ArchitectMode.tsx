@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import {
   ARCH_OVERLAY_FILE,
+  c4ViewKey,
   canonicalSystemIds,
   countMarks,
   createArchDraft as newArchDraft,
@@ -37,9 +38,12 @@ import {
   matchAgent,
   mergeDiagramIntoOverlay,
   mergeGraphs,
+  projectC4,
+  rollupC4Marks,
   suggestFacets,
   type ArchDraft,
   type ArchitectureGraph,
+  type C4View,
   type CodeIndex,
   type CodeMapSummary,
   type CodeTrace,
@@ -97,11 +101,20 @@ import { JourneyProfilePanel } from "./ProfilePanel.js";
 import { useRefactorIntents } from "./refactor-intents.js";
 import { buildHoistPrompt } from "./refactor-prompts.js";
 import { ApplyRefactorsDialog, RefactorChip, useIntentProblems } from "./RefactorPanel.js";
-import { autoLayout } from "./layout.js";
+import { autoLayout, autoLayoutFitted } from "./layout.js";
 import { ReviewView } from "./ReviewView.js";
 import { SurveySection } from "./SurveyPanel.js";
 import { useCanonicalArchitecture } from "./use-canonical-architecture.js";
 import { ROLE_META } from "./systems/role-meta.js";
+import {
+  applyAggregateOverrides,
+  applyC4Edit,
+  c4Reserve,
+  remapFlowProjection,
+} from "./c4-view.js";
+import { C4Bar } from "./C4Bar.js";
+import { estimateModuleFootprint } from "./live-code.js";
+import { buildSystemCardFacts, maxSlot, systemCardSlot } from "./system-card.js";
 
 const EMPTY_DRAFTS: never[] = [];
 const EMPTY_REFACTORS: never[] = [];
@@ -245,7 +258,8 @@ export function ArchitectMode() {
               <span className="rounded-full bg-ok/15 px-1.5 text-[9px] text-ok">live</span>
             </>,
           )}
-          {tab("infra", <Globe2 className="h-3.5 w-3.5" />, "Infrastructure")}
+          {/* The C4 deployment diagram; the view id stays "infra" so deep links hold. */}
+          {tab("infra", <Globe2 className="h-3.5 w-3.5" />, "Deployment")}
         </div>
       </header>
       <div className="min-h-0 flex-1">
@@ -380,8 +394,31 @@ function DiagramsView({
     () => (screensOn && screensData ? { ...screensData, endpoints: endpointsOn } : null),
     [screensOn, screensData, endpointsOn],
   );
-  const { overviewData, codeSummary, reconciled, rendered, commitEdited } =
+  const { overviewData, codeSummary, derived, c4Model, reconciled, rendered, commitEdited } =
     useCanonicalArchitecture({ surfaces: surfacesInput });
+
+  /* ---- C4 altitude: level + scope live in the deep-linkable nav store ---- */
+
+  const level = useNav((l) => l.architect?.level) ?? "containers";
+  const scope = useNav((l) => l.architect?.scope) ?? null;
+  const setC4View = useCallback(
+    (v: C4View) =>
+      nav({
+        architect: {
+          level: v.level,
+          scope: v.level === "components" ? (v.scope ?? null) : null,
+        },
+      }),
+    [nav],
+  );
+  // A components link without a resolvable container falls back one level —
+  // never a blank canvas from a stale scope.
+  useEffect(() => {
+    if (level !== "components" || !c4Model) return;
+    if (!scope || !c4Model.containers.some((c) => c.id === scope)) {
+      setC4View({ level: "containers" });
+    }
+  }, [level, scope, c4Model, setC4View]);
 
   /* ---- ref review: "vs <ref>" on the canonical architecture ---- */
 
@@ -589,6 +626,101 @@ function DiagramsView({
     [activeDraft, updateArchDraft, commitCanonical],
   );
 
+  /* ---- the C4 projection: what the architecture canvas actually shows ---- */
+
+  // Drafts edit the full flat graph (their merge/rebase semantics depend on
+  // it); the C4 altitudes drive the canonical canvas only.
+  const c4Enabled = variant === "architecture" && !activeDraft;
+  const viewKeyStr = c4ViewKey({ level, scope });
+
+  // Reserved footprints for member system cards — same convention as the
+  // canonical layout, so zoom-into-code fills pre-allocated space at the
+  // components level too.
+  const sysReserve = useMemo(() => {
+    const reserve = new Map<string, { width: number; height: number }>();
+    if (!overviewData) return reserve;
+    const idOfRaw = canonicalSystemIds(overviewData.systems);
+    const cards = buildSystemCardFacts(overviewData);
+    for (const s of overviewData.systems) {
+      const id = idOfRaw.get(s.id) ?? s.id;
+      const footprint = s.fileCount > 0 ? estimateModuleFootprint(s.fileCount) : undefined;
+      const card = cards.get(id);
+      const slot = card ? maxSlot(footprint, systemCardSlot(card)) : footprint;
+      if (slot) reserve.set(id, slot);
+    }
+    return reserve;
+  }, [overviewData]);
+
+  // Project the display graph (ghosts merged, view filters applied) to the
+  // active C4 level, then lay the level out and pin its manual positions.
+  const c4Projection = useMemo(
+    () =>
+      c4Enabled && displayGraph && c4Model
+        ? projectC4({
+            graph: displayGraph,
+            model: c4Model,
+            view: { level, scope },
+            manualEdges: reconciled?.manualEdges,
+          })
+        : null,
+    [c4Enabled, displayGraph, c4Model, level, scope, reconciled],
+  );
+  const c4Laid = useMemo(() => {
+    if (!c4Projection || !reconciled || !rendered) return null;
+    const canonicalIds = new Set(rendered.nodes.map((n) => n.id));
+    const withOverrides = applyAggregateOverrides(
+      c4Projection.graph,
+      reconciled.overrides,
+      canonicalIds,
+    );
+    const laid = autoLayoutFitted(withOverrides, {
+      mode: "flow",
+      reserve: c4Reserve(withOverrides, sysReserve),
+    });
+    const pins = reconciled.c4Layouts[viewKeyStr] ?? {};
+    if (Object.keys(pins).length === 0) return laid;
+    return {
+      ...laid,
+      nodes: laid.nodes.map((n) => {
+        const pin = pins[n.id];
+        return pin ? { ...n, position: { ...pin } } : n;
+      }),
+    };
+  }, [c4Projection, reconciled, rendered, sysReserve, viewKeyStr]);
+  const c4Marks = useMemo(
+    () => (archDiff && c4Projection ? rollupC4Marks(archDiff.marks, c4Projection) : null),
+    [archDiff, c4Projection],
+  );
+
+  /** A C4-level canvas edit → targeted overlay ops (never a full extraction). */
+  const commitC4 = useCallback(
+    (edited: ArchitectureGraph) => {
+      if (!c4Laid || !reconciled || !derived) return;
+      updateArchOverlay(
+        applyC4Edit({ overlay: reconciled, derived, projected: c4Laid, edited, viewKey: viewKeyStr }),
+      );
+    },
+    [c4Laid, reconciled, derived, viewKeyStr, updateArchOverlay],
+  );
+
+  // "Zoom into this module" from the codebase view: land on the components
+  // level of the owning container, then let the canvas expand the node.
+  const c4ExpandRequest = useMemo(() => {
+    if (!c4Enabled || !expandRequest || !c4Model) return expandRequest;
+    const ctr = c4Model.containerOfModule[expandRequest.module] ?? null;
+    if (!ctr) return expandRequest;
+    return level === "components" && scope === ctr ? expandRequest : null;
+  }, [c4Enabled, expandRequest, c4Model, level, scope]);
+  useEffect(() => {
+    if (!c4Enabled || !expandRequest || !c4Model) return;
+    const ctr = c4Model.containerOfModule[expandRequest.module] ?? null;
+    if (ctr && !(level === "components" && scope === ctr)) {
+      setC4View({ level: "components", scope: ctr });
+    }
+    // Re-run only when a new request arrives, not on every level change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [expandRequest?.nonce, c4Model, c4Enabled]);
+
   /* ---- facets: named lenses over the selected diagram ---- */
   const activeFacetId = useNav((l) => l.architect?.facet) ?? null;
   const setActiveFacetId = useCallback(
@@ -659,6 +791,13 @@ function DiagramsView({
         : null,
     [activeJourney, journeyTrace, codeSummary, effectiveGraph],
   );
+  // At a C4 altitude the journey lens follows the roll-ups: hops between two
+  // components of one container fold into it, cross-container hops light the
+  // aggregated relationship.
+  const activeFlow = useMemo(
+    () => (flow && c4Enabled && c4Projection ? remapFlowProjection(flow, c4Projection) : flow),
+    [flow, c4Enabled, c4Projection],
+  );
 
   // Clicking a flamegraph frame / trace step points at the component it
   // belongs to on the canvas (selects it, pans to it, pulses it).
@@ -669,22 +808,30 @@ function DiagramsView({
   } | null>(null);
   const highlightStep = useCallback(
     (step: CodeTraceStep) => {
-      const nodeId = flow?.stepNodeIds.get(stepKeyOf(step));
+      const nodeId = activeFlow?.stepNodeIds.get(stepKeyOf(step));
       if (nodeId) setHighlightRequest({ nodeId, nonce: ++highlightNonce.current });
     },
-    [flow],
+    [activeFlow],
   );
 
   // `?system=` links (surfaces "show on architecture", hub menus, old
   // systems-overview URLs) focus that system's node and settle into the
-  // durable `sel` selection.
+  // durable `sel` selection — descending to the components level of the
+  // owning container first, where the system is actually visible.
   const systemParam = useNav((l) => l.architect?.system) ?? null;
   useEffect(() => {
-    if (!systemParam || !overviewData || !rendered) return;
+    if (!systemParam || !overviewData || !rendered || !c4Model) return;
     const canonical = canonicalSystemIds(overviewData.systems).get(systemParam) ?? systemParam;
+    const ctr = c4Model.containerOfSystem[canonical] ?? null;
     setHighlightRequest({ nodeId: canonical, nonce: ++highlightNonce.current });
-    nav({ architect: { system: null, sel: `node:${canonical}` } });
-  }, [systemParam, overviewData, rendered, nav]);
+    nav({
+      architect: {
+        system: null,
+        sel: `node:${canonical}`,
+        ...(ctr ? { level: "components" as const, scope: ctr } : {}),
+      },
+    });
+  }, [systemParam, overviewData, rendered, c4Model, nav]);
 
 
   const draftRefactors = activeDraft?.draft.refactors ?? EMPTY_REFACTORS;
@@ -769,9 +916,15 @@ function DiagramsView({
     (rawId: string) => {
       if (!overviewData) return;
       const canonical = canonicalSystemIds(overviewData.systems).get(rawId) ?? rawId;
+      // At a coarser C4 altitude the system itself is hidden — descend into
+      // its container's components first.
+      const ctr = c4Model?.containerOfSystem[canonical] ?? null;
+      if (c4Enabled && ctr && !(level === "components" && scope === ctr)) {
+        setC4View({ level: "components", scope: ctr });
+      }
       setHighlightRequest({ nodeId: canonical, nonce: ++highlightNonce.current });
     },
-    [overviewData],
+    [overviewData, c4Model, c4Enabled, level, scope, setC4View],
   );
 
   useEffect(() => {
@@ -1172,21 +1325,31 @@ function DiagramsView({
               ) : (
                 <ArchitectCanvas
                   key={activeDraft ? activeDraft.path : "canonical"}
-                  graph={activeDraft ? activeDraft.draft.graph : (displayGraph ?? rendered)}
-                  diffMarks={activeDraft ? null : (archDiff?.marks ?? null)}
-                  onChange={commitGraph}
+                  graph={
+                    activeDraft
+                      ? activeDraft.draft.graph
+                      : ((c4Enabled ? c4Laid : null) ?? displayGraph ?? rendered)
+                  }
+                  diffMarks={
+                    activeDraft
+                      ? null
+                      : c4Enabled && c4Laid
+                        ? (c4Marks ?? null)
+                        : (archDiff?.marks ?? null)
+                  }
+                  onChange={c4Enabled && c4Laid ? commitC4 : commitGraph}
                   codeSummary={codeSummary}
                   overview={activeDraft ? null : overviewData}
                   overlayOn={overlayOn}
                   onToggleOverlay={setOverlayOn}
                   draftMode={!!activeDraft}
-                  flow={flow}
+                  flow={activeFlow}
                   moves={moves}
                   onStartJourney={onStartJourney}
                   onRecordMove={(payload, target) => void recordMove(payload, target)}
                   onRecordFileMove={(fromFile, toModule) => void recordFileMove(fromFile, toModule)}
                   onOpenWorkspacesMap={onOpenWorkspacesMap}
-                  expandRequest={expandRequest}
+                  expandRequest={c4Enabled ? c4ExpandRequest : expandRequest}
                   highlightRequest={highlightRequest}
                   showDuplicates={showDuplicates}
                   onToggleDuplicates={setShowDuplicates}
@@ -1204,8 +1367,22 @@ function DiagramsView({
                   onToggleEndpoints={setEndpointsOn}
                   extraNodeEntries={extraNodeEntries}
                   onOpenContract={activeDraft ? undefined : openContractForEdge}
+                  c4={
+                    c4Enabled && c4Laid && c4Projection
+                      ? {
+                          typeLines: c4Projection.typeLines,
+                          drill: c4Projection.drill,
+                          onDrill: setC4View,
+                        }
+                      : null
+                  }
                 />
               )}
+              {c4Enabled && c4Model && !reviewOn ? (
+                <div className="absolute left-1/2 top-3 z-10 -translate-x-1/2">
+                  <C4Bar view={{ level, scope }} model={c4Model} onNavigate={setC4View} />
+                </div>
+              ) : null}
               {activeDraft ? (
                 <DraftBar
                   draft={activeDraft.draft}

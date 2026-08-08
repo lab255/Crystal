@@ -6,6 +6,7 @@ export * from "./arch-derive.js";
 export * from "./arch-diff.js";
 export * from "./arch-migrate.js";
 export * from "./arch-overlay.js";
+export * from "./c4.js";
 export * from "./arch-review.js";
 export * from "./diagram-diff.js";
 export * from "./code-map-diff.js";

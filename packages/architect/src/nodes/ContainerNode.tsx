@@ -26,7 +26,8 @@ export const ContainerNode = memo(function ContainerNode({
       )}
       style={{
         background: `color-mix(in srgb, ${accent} 4%, var(--color-surface-1) 60%)`,
-        borderStyle: arch.kind === "group" ? "dashed" : "solid",
+        // C4 draws system/container boundaries dashed; groups always were.
+        borderStyle: arch.kind === "group" || (data.c4Type && arch.kind === "system") ? "dashed" : "solid",
         ...(selected ? {} : diffBorderStyle(data.diff)),
       }}
     >
@@ -81,8 +82,13 @@ export const ContainerNode = memo(function ContainerNode({
             {data.code.module} · {data.code.fileCount}f
           </span>
         ) : null}
-        <span className="ml-auto text-[10px] uppercase tracking-wider text-ink-faint">
-          {KIND_META[arch.kind].label}
+        <span
+          className={cn(
+            "ml-auto text-[10px] text-ink-faint",
+            !data.c4Type && "uppercase tracking-wider",
+          )}
+        >
+          {data.c4Type ? `[${data.c4Type}]` : KIND_META[arch.kind].label}
         </span>
       </div>
       <Handle type="source" position={Position.Bottom} className="!h-2 !w-2 !border-none !bg-edge-strong" />

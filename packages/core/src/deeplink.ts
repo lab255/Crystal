@@ -14,6 +14,7 @@
  * sync) and anything that wants to mint a link.
  */
 
+import { C4_LEVELS, type C4Level } from "./c4.js";
 import { CODE_LOD_LEVELS, type CodeLodLevel } from "./codemap.js";
 import type { HubViewId } from "./hub.js";
 import { INSIGHT_PERIODS } from "./insights.js";
@@ -152,6 +153,13 @@ export interface ArchitectLink {
    * Unset renders the module/system altitude only.
    */
   layers?: string;
+  /**
+   * C4 altitude of the architecture view (unset = "containers", the level
+   * closest to the classic canvas and the C4 diagram most teams live on).
+   */
+  level?: C4Level;
+  /** Scoped container id at the components level ("ctr:apps-server"). */
+  scope?: string;
 }
 
 export interface OrchestrateLink {
@@ -322,6 +330,9 @@ export function formatDeepLink(link: DeepLink): string {
     const view = a.view ?? "architecture";
     path += `/${view}`;
     if (view === "architecture") {
+      // Default must match what DiagramsView renders when unset ("containers").
+      if (a.level && a.level !== "containers") add("level", a.level);
+      if (a.level === "components" && a.scope) add("scope", a.scope);
       if (a.system) add("system", a.system);
       if (link.lens && a.lensCtx) add("lensctx", "1");
       if (a.edge) add("edge", a.edge);
@@ -509,6 +520,10 @@ export function parseDeepLink(hash: string): DeepLink {
     // architecture view.
     else if (view === "codemap") a.view = "codebase";
     else if (view === "diagrams" || view === "systems") a.view = "architecture";
+    const level = params.get("level");
+    if (level && (C4_LEVELS as readonly string[]).includes(level)) a.level = level as C4Level;
+    const scope = params.get("scope");
+    if (scope) a.scope = scope;
     const system = params.get("system");
     if (system) a.system = system;
     const diagram = params.get("diagram");

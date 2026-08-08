@@ -146,7 +146,10 @@ export const LeafNode = memo(function LeafNode({ data, selected }: NodeProps<Arc
   // user-picked accent still wins (it is overlay data, not a derivation).
   const accent = arch.accent ? ACCENT_CSS[arch.accent] : (roleMeta?.accent ?? accentOf(arch));
   const Icon = roleMeta?.icon ?? meta.icon;
-  const kindLabel = roleMeta?.label ?? meta.label;
+  // The C4 projection's element type reads "[Container · Web application]",
+  // C4-notation style; outside the C4 view the kind/role label stands.
+  const kindLabel = data.c4Type ? `[${data.c4Type}]` : (roleMeta?.label ?? meta.label);
+  const person = arch.kind === "person";
   const slot = data.slot;
   const preview = data.preview;
   const minTextPx = useLodConfig((s) => s.minTextPx);
@@ -225,7 +228,12 @@ export const LeafNode = memo(function LeafNode({ data, selected }: NodeProps<Arc
               >
                 {arch.label}
               </span>
-              <span className="shrink-0 text-[10px] uppercase tracking-wider text-ink-faint">
+              <span
+                className={cn(
+                  "shrink-0 text-[10px] text-ink-faint",
+                  !data.c4Type && "uppercase tracking-wider",
+                )}
+              >
                 {kindLabel}
               </span>
             </div>
@@ -298,7 +306,10 @@ export const LeafNode = memo(function LeafNode({ data, selected }: NodeProps<Arc
                 {arch.label}
               </span>
             </div>
-            <div className="uppercase tracking-wider text-ink-faint" style={{ fontSize: subPx * 0.85 }}>
+            <div
+              className={cn("text-ink-faint", !data.c4Type && "uppercase tracking-wider")}
+              style={{ fontSize: subPx * 0.85 }}
+            >
               {kindLabel}
               {facts ? (
                 <span className="normal-case tracking-normal">
@@ -378,28 +389,56 @@ export const LeafNode = memo(function LeafNode({ data, selected }: NodeProps<Arc
     <div
       {...hlAttrs}
       className={cn(
-        "relative min-w-40 max-w-56 rounded-lg border bg-surface-2/95 px-3 py-2 shadow-md shadow-black/30",
+        "relative min-w-40 max-w-56 border bg-surface-2/95 px-3 py-2 shadow-md shadow-black/30",
         "transition-shadow",
+        // The C4 person silhouette: a rounded head-and-shoulders card.
+        person ? "rounded-t-[26px] rounded-b-lg" : "rounded-lg",
         selected ? "border-crystal-400 shadow-lg shadow-crystal-500/20" : "border-edge-strong",
         data.flow?.step === null && "opacity-30",
         diffNodeClass(data.diff),
       )}
       style={{
-        borderLeftWidth: 3,
-        borderLeftColor: accent,
+        ...(person ? {} : { borderLeftWidth: 3, borderLeftColor: accent }),
         ...(selected ? {} : diffBorderStyle(data.diff)),
       }}
     >
       {data.diff ? <DiffCornerBadge mark={data.diff} /> : null}
       {flowBadge}
       <Handle type="target" position={Position.Top} className="!h-2 !w-2 !border-none !bg-edge-strong" />
-      <div className="flex items-center gap-2">
-        <Icon className="h-3.5 w-3.5 shrink-0" style={{ color: accent }} />
-        <div className="truncate text-xs font-semibold text-ink">{arch.label}</div>
+      {person ? (
+        <div className="flex flex-col items-center gap-0.5 pt-1">
+          <span
+            className="flex h-8 w-8 items-center justify-center rounded-full"
+            style={{ background: `color-mix(in srgb, ${accent} 18%, transparent)` }}
+          >
+            <Icon className="h-4.5 w-4.5" style={{ color: accent }} />
+          </span>
+          <div className="max-w-full truncate text-xs font-semibold text-ink">{arch.label}</div>
+        </div>
+      ) : (
+        <div className="flex items-center gap-2">
+          <Icon className="h-3.5 w-3.5 shrink-0" style={{ color: accent }} />
+          <div className="truncate text-xs font-semibold text-ink">{arch.label}</div>
+        </div>
+      )}
+      <div
+        className={cn(
+          "mt-0.5 text-[10px] text-ink-faint",
+          !data.c4Type && "uppercase tracking-wider",
+          person && "text-center",
+        )}
+      >
+        {kindLabel}
       </div>
-      <div className="mt-0.5 text-[10px] uppercase tracking-wider text-ink-faint">{kindLabel}</div>
       {arch.description ? (
-        <div className="mt-1 line-clamp-2 text-[11px] leading-snug text-ink-muted">{arch.description}</div>
+        <div
+          className={cn(
+            "mt-1 line-clamp-2 text-[11px] leading-snug text-ink-muted",
+            person && "text-center",
+          )}
+        >
+          {arch.description}
+        </div>
       ) : null}
       {arch.tech.length > 0 ? (
         <div className="mt-1.5 flex flex-wrap gap-1">
