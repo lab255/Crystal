@@ -113,9 +113,8 @@ export const MODE_SUBSECTIONS: Partial<
       { id: "screens", label: "Screens" },
       { id: "components", label: "Components" },
       { id: "stories", label: "Stories" },
-      { id: "apis", label: "APIs" },
+      { id: "apis", label: "API surface" },
       { id: "schemas", label: "Schemas" },
-      { id: "client", label: "API client" },
     ],
   },
   orchestrate: {

@@ -8,7 +8,7 @@ import type { SystemEndpoint, SystemOverview } from "./system-overview.js";
  * map and invalidated by the same watcher (`codemap.changed`).
  */
 
-export type SurfaceViewId = "screens" | "components" | "stories" | "apis" | "schemas" | "client";
+export type SurfaceViewId = "screens" | "components" | "stories" | "apis" | "schemas";
 
 /** How a screen was detected — drives the badge and the route semantics. */
 export type ScreenSource = "next-app" | "next-pages" | "react-router" | "convention";

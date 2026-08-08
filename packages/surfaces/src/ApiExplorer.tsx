@@ -5,14 +5,21 @@ import {
   ChevronDown,
   Copy,
   ExternalLink,
+  Globe2,
   ListFilter,
+  Plus,
+  Send,
+  Settings2,
   ShieldCheck,
   TerminalSquare,
   Webhook,
   X,
 } from "lucide-react";
 import {
+  createApiRequestDef,
   endpointKey,
+  type ApiEnvConfig,
+  type ApiRequestDef,
   type EndpointValidation,
   type SystemEndpoint,
   type SystemModule,
@@ -26,7 +33,16 @@ import {
   useSymbolMenu,
   useWorkspaces,
 } from "@crystal/client";
-import { EmptyState, Pane as SplitPane, Split, Spinner, Tooltip, cn, useContextMenu } from "@crystal/ui";
+import {
+  EmptyState,
+  Pane as SplitPane,
+  Select,
+  Split,
+  Spinner,
+  Tooltip,
+  cn,
+  useContextMenu,
+} from "@crystal/ui";
 import { ROLE_META } from "@crystal/architect";
 import {
   DetailSection,
@@ -38,6 +54,7 @@ import {
   useSurfacesLens,
 } from "./common.js";
 import { TraceSection, useEndpointTrace } from "./trace.js";
+import { EnvConfigPanel, RequestEditor, useApiClient } from "./ApiRequestWorkbench.js";
 
 /**
  * API explorer — every served route in the workspace, one selection away from
@@ -78,6 +95,7 @@ export function MethodChip({ method, className }: { method: string; className?: 
 }
 
 const apiKeyOf = endpointKey;
+const EMPTY_REQUESTS: ApiRequestDef[] = [];
 
 /** Kind badge palette for validation chips — semantic accents only. */
 const VALIDATION_KIND_CLASS: Record<EndpointValidation["kind"], string> = {
@@ -112,15 +130,19 @@ export function ApiExplorer({ appUrl }: { appUrl: string | null }) {
   const nav = useNavUpdate();
   const arch = useArchHighlight();
   const selectedKey = useNav((l) => l.surfaces?.api ?? null);
+  const selectedRequestId = useNav((l) => l.surfaces?.request ?? null);
   const systemFilter = useNav((l) => l.surfaces?.system ?? null);
   const find = (useNav((l) => l.surfaces?.find) ?? "").trim().toLowerCase();
   const menu = useContextMenu();
   const symbolMenu = useSymbolMenu();
   const lens = useSurfacesLens();
+  const apiClient = useApiClient();
 
   const [overview, setOverview] = useState<SystemOverview | null>(null);
   const [loading, setLoading] = useState(true);
   const [generation, setGeneration] = useState(0);
+  const [envPanelOpen, setEnvPanelOpen] = useState(false);
+  const [savedCollapsed, setSavedCollapsed] = useState<boolean | null>(null);
 
   useEffect(() => {
     if (!activeWs) return;
@@ -158,6 +180,9 @@ export function ApiExplorer({ appUrl }: { appUrl: string | null }) {
     }
     return out;
   }, [overview]);
+  const activeSystemFilter = rows.some((row) => row.system.id === systemFilter)
+    ? systemFilter
+    : null;
 
   /** Lens members (null when no lens dims) — non-member rows render dimmed. */
   const lensMembers = useMemo(
@@ -167,7 +192,7 @@ export function ApiExplorer({ appUrl }: { appUrl: string | null }) {
 
   const visible = useMemo(() => {
     return rows.filter((r) => {
-      if (systemFilter && r.system.id !== systemFilter) return false;
+      if (activeSystemFilter && r.system.id !== activeSystemFilter) return false;
       if (!find) return true;
       return (
         r.key.toLowerCase().includes(find) ||
@@ -175,7 +200,7 @@ export function ApiExplorer({ appUrl }: { appUrl: string | null }) {
         r.system.name.toLowerCase().includes(find)
       );
     });
-  }, [rows, systemFilter, find]);
+  }, [activeSystemFilter, rows, find]);
 
   /** Grouped for the list: serving system → its routes. */
   const groups = useMemo(() => {
@@ -190,33 +215,56 @@ export function ApiExplorer({ appUrl }: { appUrl: string | null }) {
     );
   }, [visible]);
 
-  // The system disambiguates when two systems serve the same method+path.
-  const selected =
-    rows.find((r) => r.key === selectedKey && (!systemFilter || r.system.id === systemFilter)) ??
-    rows.find((r) => r.key === selectedKey) ??
-    null;
+  const savedRequests = apiClient.state?.requests ?? EMPTY_REQUESTS;
+  const visibleRequests = useMemo(
+    () =>
+      savedRequests.filter(
+        (request) =>
+          !find ||
+          request.name.toLowerCase().includes(find) ||
+          request.method.toLowerCase().includes(find) ||
+          request.url.toLowerCase().includes(find),
+      ),
+    [find, savedRequests],
+  );
+  const selectedRequest =
+    savedRequests.find((request) => request.id === selectedRequestId) ?? null;
 
-  const filterName = systemFilter
-    ? (overview?.systems.find((s) => s.id === systemFilter)?.name ?? systemFilter)
+  // The system disambiguates when two systems serve the same method+path.
+  const selected = selectedRequest
+    ? null
+    : (rows.find(
+        (r) =>
+          r.key === selectedKey &&
+          (!activeSystemFilter || r.system.id === activeSystemFilter),
+      ) ??
+      rows.find((r) => r.key === selectedKey) ??
+      null);
+
+  const filterName = activeSystemFilter
+    ? (overview?.systems.find((s) => s.id === activeSystemFilter)?.name ?? activeSystemFilter)
     : null;
 
-  if (loading && !overview) {
+  const requestCfg = useMemo<ApiEnvConfig>(
+    () =>
+      apiClient.activeCfg.baseUrl || !appUrl
+        ? apiClient.activeCfg
+        : { ...apiClient.activeCfg, baseUrl: appUrl },
+    [apiClient.activeCfg, appUrl],
+  );
+
+  const addSavedRequest = (over: Partial<ApiRequestDef> = {}) => {
+    const request = apiClient.addRequest(over);
+    if (request) nav({ surfaces: { request: request.id, api: null } });
+  };
+
+  if ((loading && !overview) || !apiClient.state) {
     return (
       <div className="flex h-full items-center justify-center">
         <Spinner />
       </div>
     );
   }
-  if (rows.length === 0) {
-    return (
-      <EmptyState icon={Webhook} title="No served routes detected">
-        Routes appear when the analyzer sees registrations (`app.get("/x", h)`, `*Router.post`,
-        Next route files…). API calls without a matching server in this workspace show up on the
-        architecture view as external traffic instead.
-      </EmptyState>
-    );
-  }
-
   const rowMenu = (r: EndpointRow): Parameters<typeof menu.open>[1] => [
     { type: "heading", label: r.key },
     {
@@ -235,10 +283,10 @@ export function ApiExplorer({ appUrl }: { appUrl: string | null }) {
     },
     {
       type: "item",
-      label: systemFilter === r.system.id ? "Clear system filter" : "Filter to this system",
+      label: activeSystemFilter === r.system.id ? "Clear system filter" : "Filter to this system",
       icon: ListFilter,
       onSelect: () =>
-        nav({ surfaces: { system: systemFilter === r.system.id ? null : r.system.id } }),
+        nav({ surfaces: { system: activeSystemFilter === r.system.id ? null : r.system.id } }),
     },
     // The shared cross-view block for the registration site (its "Open in
     // editor" jumps to the registration's file:line).
@@ -259,9 +307,11 @@ export function ApiExplorer({ appUrl }: { appUrl: string | null }) {
       type: "item",
       label: "Copy as curl",
       icon: TerminalSquare,
-      onSelect: () => copyText(curlOf(r.ep, appUrl)),
+      onSelect: () => copyText(curlOf(r.ep, requestCfg.baseUrl ?? appUrl)),
     },
   ];
+
+  const savedSectionCollapsed = savedCollapsed ?? savedRequests.length === 0;
 
   return (
     <Split storageKey="surfaces:apis" direction="horizontal">
@@ -288,9 +338,115 @@ export function ApiExplorer({ appUrl }: { appUrl: string | null }) {
                   <X className="h-3 w-3 text-ink-faint hover:text-ink" />
                 </button>
               </span>
-            ) : null}
+            ) : (
+              <span className="ml-auto" />
+            )}
+            <Tooltip content="Environment base URL and variables">
+              <button
+                type="button"
+                onClick={() => setEnvPanelOpen((open) => !open)}
+                aria-label="Configure API environments"
+                aria-pressed={envPanelOpen}
+                className={cn(
+                  "rounded p-1",
+                  envPanelOpen
+                    ? "bg-crystal-500/20 text-crystal-300"
+                    : "text-ink-faint hover:bg-surface-3 hover:text-ink",
+                )}
+              >
+                <Settings2 className="h-3.5 w-3.5" />
+              </button>
+            </Tooltip>
+            <Tooltip content="New saved request">
+              <button
+                type="button"
+                onClick={() => addSavedRequest()}
+                disabled={!apiClient.state}
+                aria-label="New saved request"
+                className="rounded p-1 text-ink-faint hover:bg-surface-3 hover:text-ink disabled:opacity-40"
+              >
+                <Plus className="h-3.5 w-3.5" />
+              </button>
+            </Tooltip>
           </div>
+          <div className="flex shrink-0 items-center gap-1.5 border-y border-edge px-2 py-1.5">
+            <Globe2 className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
+            {apiClient.environments.length > 0 ? (
+              <Select
+                size="sm"
+                value={apiClient.activeEnvId ?? ""}
+                onChange={(e) => apiClient.setActiveEnvId(e.target.value || null)}
+                options={apiClient.environments.map((env) => ({ value: env.id, label: env.name }))}
+                aria-label="Active API environment"
+                className="min-w-0 max-w-32"
+              />
+            ) : (
+              <span className="text-[10px] text-ink-faint">No environments</span>
+            )}
+            <span
+              className="min-w-0 flex-1 truncate font-mono text-[9.5px] text-ink-faint"
+              title={requestCfg.baseUrl ?? undefined}
+            >
+              {requestCfg.baseUrl ?? "no base URL"}
+            </span>
+          </div>
+          {envPanelOpen && apiClient.activeEnvId ? (
+            <EnvConfigPanel cfg={apiClient.activeCfg} onChange={apiClient.setActiveCfg} />
+          ) : null}
           <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2">
+            <div className="mb-1.5 border-b border-edge/60 pb-1.5">
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => setSavedCollapsed(!savedSectionCollapsed)}
+                  aria-expanded={!savedSectionCollapsed}
+                  className="flex min-w-0 flex-1 items-center gap-1.5 px-1.5 py-1 text-left"
+                >
+                  <ChevronDown
+                    className={cn(
+                      "h-3 w-3 shrink-0 text-ink-faint transition-transform",
+                      savedSectionCollapsed && "-rotate-90",
+                    )}
+                  />
+                  <Send className="h-3 w-3 shrink-0 text-accent-violet" />
+                  <span className="min-w-0 truncate text-[11px] font-semibold text-ink">
+                    Saved requests
+                  </span>
+                  <span className="text-[9px] text-ink-faint">{savedRequests.length}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => addSavedRequest()}
+                  disabled={!apiClient.state}
+                  aria-label="New saved request"
+                  className="rounded p-1 text-ink-faint hover:bg-surface-3 hover:text-ink disabled:opacity-40"
+                >
+                  <Plus className="h-3 w-3" />
+                </button>
+              </div>
+              {!savedSectionCollapsed
+                ? visibleRequests.map((request) => (
+                    <button
+                      key={request.id}
+                      type="button"
+                      onClick={() =>
+                        nav({ surfaces: { request: request.id, api: null } })
+                      }
+                      className={cn(
+                        "flex w-full items-center gap-1.5 rounded-lg px-2 py-1 text-left",
+                        selectedRequest?.id === request.id
+                          ? "bg-crystal-500/15 text-ink"
+                          : "text-ink-muted hover:bg-surface-2 hover:text-ink",
+                      )}
+                    >
+                      <MethodChip method={request.method} />
+                      <span className="min-w-0 flex-1 truncate text-[11px]">
+                        {request.name}
+                      </span>
+                    </button>
+                  ))
+                : null}
+            </div>
             {groups.map((group) => {
               const system = group[0]!.system;
               const meta = ROLE_META[system.role];
@@ -300,7 +456,11 @@ export function ApiExplorer({ appUrl }: { appUrl: string | null }) {
                   <button
                     type="button"
                     onClick={() =>
-                      nav({ surfaces: { system: systemFilter === system.id ? null : system.id } })
+                      nav({
+                        surfaces: {
+                          system: activeSystemFilter === system.id ? null : system.id,
+                        },
+                      })
                     }
                     className="flex w-full items-center gap-1.5 px-1.5 py-1 text-left"
                     title="Filter to this system"
@@ -315,7 +475,11 @@ export function ApiExplorer({ appUrl }: { appUrl: string | null }) {
                     <button
                       key={`${r.system.id}|${r.key}|${r.ep.file}`}
                       type="button"
-                      onClick={() => nav({ surfaces: { api: r.key, system: r.system.id } })}
+                      onClick={() =>
+                        nav({
+                          surfaces: { api: r.key, system: r.system.id, request: null },
+                        })
+                      }
                       onContextMenu={(e) => menu.open(e, rowMenu(r))}
                       className={cn(
                         "flex w-full items-center gap-1.5 rounded-lg px-2 py-1 text-left",
@@ -341,7 +505,9 @@ export function ApiExplorer({ appUrl }: { appUrl: string | null }) {
             })}
             {visible.length === 0 ? (
               <div className="px-3 py-6 text-center text-[11px] text-ink-faint">
-                Nothing matches the current filter.
+                {rows.length === 0
+                  ? "No served routes detected — create a saved request to call any URL."
+                  : "Nothing matches the current filter."}
               </div>
             ) : null}
           </div>
@@ -349,17 +515,38 @@ export function ApiExplorer({ appUrl }: { appUrl: string | null }) {
       </SplitPane>
 
       <SplitPane minSize="40%">
-        {selected && overview ? (
+        {selectedRequest ? (
+          <RequestEditor
+            key={selectedRequest.id}
+            request={selectedRequest}
+            cfg={requestCfg}
+            onChange={(patch) => apiClient.updateRequest(selectedRequest.id, patch)}
+            onDelete={() => {
+              apiClient.deleteRequest(selectedRequest.id);
+              nav({ surfaces: { request: null } });
+            }}
+          />
+        ) : selected && overview ? (
           <ApiDetail
             key={`${selected.system.id}|${selected.key}|${selected.ep.file}`}
             row={selected}
             overview={overview}
             appUrl={appUrl}
+            cfg={requestCfg}
+            onSaveRequest={(request) => {
+              addSavedRequest({
+                name: request.name,
+                method: request.method,
+                url: request.url,
+                headers: request.headers,
+                body: request.body,
+              });
+            }}
           />
         ) : (
-          <EmptyState icon={Webhook} title="Pick a route">
-            Definition, call signature, an interactive trace of everything it reaches, and every
-            caller — one route at a time.
+          <EmptyState icon={Webhook} title="Pick a route or saved request">
+            Inspect a detected endpoint and try it, or open a saved request against the active
+            environment.
           </EmptyState>
         )}
       </SplitPane>
@@ -450,10 +637,14 @@ function ApiDetail({
   row,
   overview,
   appUrl,
+  cfg,
+  onSaveRequest,
 }: {
   row: EndpointRow;
   overview: SystemOverview;
   appUrl: string | null;
+  cfg: ApiEnvConfig;
+  onSaveRequest: (request: ApiRequestDef) => void;
 }) {
   const { client } = useCrystal();
   const nav = useNavUpdate();
@@ -466,6 +657,14 @@ function ApiDetail({
   >(null);
   const [snippetOpen, setSnippetOpen] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [tryOpen, setTryOpen] = useState(false);
+  const [tryRequest, setTryRequest] = useState<ApiRequestDef>(() =>
+    createApiRequestDef({
+      name: `${ep.method} ${ep.path}`,
+      method: ep.method === "ALL" ? "GET" : ep.method,
+      url: ep.path,
+    }),
+  );
 
   // Handler resolution + static call graph — shared with the system map's
   // endpoint inspector (trace.tsx).
@@ -539,7 +738,7 @@ function ApiDetail({
             <button
               type="button"
               onClick={() => {
-                copyText(curlOf(ep, appUrl));
+                copyText(curlOf(ep, cfg.baseUrl ?? appUrl));
                 setCopied(true);
               }}
               className={cn(
@@ -623,6 +822,48 @@ function ApiDetail({
 
       {/* validation — what the registration actually enforces on requests. */}
       <ValidationSection ep={ep} />
+
+      <DetailSection
+        title="Try it"
+        hint={cfg.baseUrl ? `against ${cfg.baseUrl}` : "configure an environment base URL"}
+        actions={
+          <button
+            type="button"
+            onClick={() => setTryOpen((open) => !open)}
+            aria-expanded={tryOpen}
+            className="flex items-center gap-1 text-[10px] text-ink-faint hover:text-ink"
+          >
+            <ChevronDown
+              className={cn("h-3 w-3 transition-transform", tryOpen && "rotate-180")}
+            />
+            {tryOpen ? "Collapse" : "Open runner"}
+          </button>
+        }
+      >
+        {tryOpen ? (
+          <RequestEditor
+            request={tryRequest}
+            cfg={cfg}
+            onChange={(patch) =>
+              setTryRequest((request) => ({ ...request, ...patch }))
+            }
+            onSave={() => onSaveRequest(tryRequest)}
+            embedded
+          />
+        ) : (
+          <button
+            type="button"
+            onClick={() => setTryOpen(true)}
+            className="flex w-full items-center gap-2 rounded-lg border border-edge bg-surface-1 px-2.5 py-2 text-left text-ink-muted hover:bg-surface-2 hover:text-ink"
+          >
+            <MethodChip method={tryRequest.method} />
+            <span className="min-w-0 flex-1 truncate font-mono text-[10.5px]">
+              {cfg.baseUrl ? `${cfg.baseUrl.replace(/\/$/, "")}${ep.path}` : ep.path}
+            </span>
+            <span className="text-[10px] text-crystal-300">Edit and send</span>
+          </button>
+        )}
+      </DetailSection>
 
       {/* trace — single click highlights the owning system in the
           architecture pane; double click opens the code. */}

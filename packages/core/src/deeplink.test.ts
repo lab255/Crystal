@@ -196,6 +196,19 @@ describe("round trips", () => {
     expect(roundTrip(link)).toEqual(link);
   });
 
+  it("saved API requests round-trip in apis and legacy client links normalize", () => {
+    const link: DeepLink = {
+      ws: "abc",
+      mode: "surfaces",
+      surfaces: { view: "apis", request: "req_123" },
+    };
+    expect(roundTrip(link)).toEqual(link);
+    expect(parseDeepLink("#/surfaces/client?ws=abc&request=req_123")).toEqual(link);
+    expect(formatDeepLink(parseDeepLink("#/surfaces/client?request=req_123"))).toBe(
+      "#/surfaces/apis?request=req_123",
+    );
+  });
+
   it("legacy architect/apis links redirect to the surfaces API explorer", () => {
     const link = parseDeepLink(
       "#/architect/apis?ws=abc&system=sys%3Asubmission&api=POST%20/api/v3/forms/%3AformId",
@@ -476,7 +489,11 @@ describe("round trips", () => {
     const schemas: DeepLink = {
       ws: "abc",
       mode: "surfaces",
-      surfaces: { view: "schemas", schema: "src/models/form.ts#FormSchema" },
+      surfaces: {
+        view: "schemas",
+        system: "sys:data",
+        schema: "src/models/form.ts#FormSchema",
+      },
     };
     expect(roundTrip(schemas)).toEqual(schemas);
   });

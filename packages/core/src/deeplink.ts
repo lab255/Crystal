@@ -220,11 +220,11 @@ export interface SurfacesLink {
   story?: string;
   /** Selected endpoint in the APIs view, "METHOD /path". */
   api?: string;
-  /** System filter / disambiguator for the APIs view (system id). */
+  /** Focused system/project for the APIs or schemas view. */
   system?: string;
   /** Selected schema id (`SchemaSurface.id`). */
   schema?: string;
-  /** Selected saved request id in the API client view. */
+  /** Selected saved request in the API surface view. */
   request?: string;
   /** Live demo pane open (screens + stories views). */
   demo?: boolean;
@@ -411,10 +411,10 @@ export function formatDeepLink(link: DeepLink): string {
     } else if (view === "apis") {
       if (s.system) add("system", s.system);
       if (s.api) add("api", s.api);
-    } else if (view === "schemas") {
-      if (s.schema) add("schema", s.schema);
-    } else if (view === "client") {
       if (s.request) add("request", s.request);
+    } else if (view === "schemas") {
+      if (s.system) add("system", s.system);
+      if (s.schema) add("schema", s.schema);
     }
     if (s.arch) add("arch", "1");
     if (s.find) add("find", s.find);
@@ -629,13 +629,13 @@ export function parseDeepLink(hash: string): DeepLink {
     link.mode = "surfaces";
     const s: SurfacesLink = {};
     const view = segments[1];
-    if (
+    if (view === "client") s.view = "apis";
+    else if (
       view === "screens" ||
       view === "components" ||
       view === "stories" ||
       view === "apis" ||
-      view === "schemas" ||
-      view === "client"
+      view === "schemas"
     )
       s.view = view;
     const screen = params.get("screen");
@@ -720,9 +720,8 @@ const SURFACES_VIEW_FIELDS: Record<SurfaceViewId, readonly (keyof SurfacesLink)[
   screens: ["view", "screen", "demo", "arch", "find"],
   components: ["view", "component", "arch", "find"],
   stories: ["view", "story", "demo", "arch", "find"],
-  apis: ["view", "api", "system", "arch", "find"],
-  schemas: ["view", "schema", "arch", "find"],
-  client: ["view", "request", "arch", "find"],
+  apis: ["view", "api", "request", "system", "arch", "find"],
+  schemas: ["view", "schema", "system", "arch", "find"],
 };
 
 const QUALITY_VIEW_FIELDS: Record<QualityViewId, readonly (keyof QualityLink)[]> = {
