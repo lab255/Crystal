@@ -124,6 +124,11 @@ export { chainOf } from "./chain.js";
 export { ChainTurns } from "./chain-turns.js";
 export { MessageComposer, type ComposerSendResult } from "./message-composer.js";
 export {
+  QuestionCard,
+  type QuestionCardOption,
+  type QuestionCardProps,
+} from "./question-card.js";
+export {
   RunSurface,
   branchNameError,
   useRunSurface,

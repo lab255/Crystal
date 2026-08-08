@@ -271,9 +271,12 @@ export class WorkspaceRuntime {
   private async fileQuestion(runId: string, text: string): Promise<void> {
     try {
       const run = await this.agents.get(runId);
-      if (!run?.taskId) return;
+      if (!run) return;
       const projectPath = await this.orchestration.projectPathForRun(run);
-      await this.orchestration.addQuestion(projectPath, run.taskId, text, runId);
+      const workflow = await this.workflows.workflowForRun(run).catch(() => null);
+      await this.orchestration.addQuestionForRun(projectPath, run, text, undefined, {
+        epicId: workflow?.epicId ?? null,
+      });
     } catch {
       // A question that can't be filed must not take down the event stream.
     }

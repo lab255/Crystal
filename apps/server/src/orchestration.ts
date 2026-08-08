@@ -265,6 +265,61 @@ export class OrchestrationService {
   }
 
   /**
+   * File a run's question, minting a lightweight board task when the run was
+   * launched without one. The task's runIds backlink is also the durable
+   * association used by later asks from the same still-taskless run, while
+   * the question's runId keeps answer delivery on the normal resume chain.
+   */
+  addQuestionForRun(
+    projectPath: string,
+    run: Pick<AgentRun, "id" | "taskId" | "purpose">,
+    text: string,
+    opts?: AskOptions,
+    attach?: { epicId?: string | null },
+  ): Promise<
+    | { ok: true; taskId: string; questionId: string; taskCreated: boolean }
+    | { ok: false; reason: string }
+  > {
+    return this.mutate(projectPath, (project) => {
+      let task = run.taskId
+        ? project.tasks.find((candidate) => candidate.id === run.taskId)
+        : project.tasks.find((candidate) => candidate.runIds.includes(run.id));
+      if (run.taskId && !task) {
+        return { ok: false as const, reason: `Unknown task: ${run.taskId}` };
+      }
+
+      const taskCreated = task == null;
+      if (!task) {
+        task = createTask(questionTaskTitle(run.purpose, text));
+        task.description =
+          `Auto-created for input requested by ${run.purpose ?? "an agent"} run ${run.id}.`;
+        task.epicId = attach?.epicId ?? null;
+        task.runIds.push(run.id);
+        project.tasks.push(task);
+      }
+
+      const existing = task.questions.find((q) => q.runId === run.id && q.text === text);
+      if (existing) {
+        return {
+          ok: true as const,
+          taskId: task.id,
+          questionId: existing.id,
+          taskCreated,
+        };
+      }
+      const question = createTaskQuestion(text, run.id, opts);
+      task.questions.push(question);
+      task.updatedAt = nowIso();
+      return {
+        ok: true as const,
+        taskId: task.id,
+        questionId: question.id,
+        taskCreated,
+      };
+    });
+  }
+
+  /**
    * One question's answer, read outside the write queue (same read path as
    * `snapshot`). `null` while the question is open — the permission broker
    * polls this on board changes; `undefined` when the task/question is gone.
@@ -536,4 +591,12 @@ export class OrchestrationService {
     }
     return lines.join("\n");
   }
+}
+
+/** A compact, readable board title for an automatically filed decision. */
+function questionTaskTitle(purpose: AgentRun["purpose"], text: string): string {
+  const summary = text.replace(/\s+/g, " ").trim();
+  const clipped = summary.length > 72 ? `${summary.slice(0, 69).trimEnd()}…` : summary;
+  const label = purpose ? purpose.replaceAll("-", " ") : "agent question";
+  return `${label}: ${clipped || "Input needed"}`;
 }

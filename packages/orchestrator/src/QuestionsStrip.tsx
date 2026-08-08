@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ChevronDown, ChevronRight, CircleHelp, Send } from "lucide-react";
+import { ChevronDown, ChevronRight, CircleHelp } from "lucide-react";
 import {
   nowIso,
   openQuestions,
@@ -7,8 +7,7 @@ import {
   type TaskItem,
   type TaskQuestion,
 } from "@crystal/core";
-import { enterKeyAction, useCrystal, useSettings } from "@crystal/client";
-import { Button, Textarea, cn } from "@crystal/ui";
+import { QuestionCard, useCrystal } from "@crystal/client";
 
 /**
  * The board's questions inbox: every unanswered agent question on this
@@ -63,7 +62,6 @@ export function QuestionsStrip({
               onProjectChange={onProjectChange}
               onOpenTask={onOpenTask}
               onOpenRun={onOpenRun}
-              soloOpen={waiting.length === 1}
             />
           ))}
         </div>
@@ -80,7 +78,6 @@ function StripQuestion({
   onProjectChange,
   onOpenTask,
   onOpenRun,
-  soloOpen,
 }: {
   task: TaskItem;
   question: TaskQuestion;
@@ -89,14 +86,8 @@ function StripQuestion({
   onProjectChange: (project: Project) => void;
   onOpenTask: (taskId: string) => void;
   onOpenRun: (runId: string) => void;
-  soloOpen: boolean;
 }) {
   const { client } = useCrystal();
-  const [answering, setAnswering] = useState(soloOpen);
-  const [text, setText] = useState("");
-  const [busy, setBusy] = useState(false);
-  const enterToSend = useSettings((s) => s.enterToSend);
-  const [error, setError] = useState<string | null>(null);
 
   /**
    * Same contract as TaskDetail's answer path: record server-side, then patch
@@ -104,89 +95,59 @@ function StripQuestion({
    * `workspace.changed`, and a later whole-project save from a stale snapshot
    * would silently reopen the question (newest-updatedAt merge).
    */
-  async function send() {
-    const answer = text.trim();
-    if (!answer || busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const result = await client.request("task.answer", {
-        path: projectPath,
-        taskId: task.id,
-        questionId: question.id,
-        answer,
-      });
-      if (!result.ok) throw new Error(result.reason);
-      onProjectChange({
-        ...project,
-        tasks: project.tasks.map((t) =>
-          t.id === task.id
-            ? {
-                ...t,
-                questions: t.questions.map((q) =>
-                  q.id === question.id ? { ...q, answer, answeredAt: nowIso() } : q,
-                ),
-                updatedAt: nowIso(),
-              }
-            : t,
-        ),
-      });
-      setText("");
-      if (result.resumedRunId) onOpenRun(result.resumedRunId);
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setBusy(false);
-    }
+  async function send(answer: string): Promise<void> {
+    const result = await client.request("task.answer", {
+      path: projectPath,
+      taskId: task.id,
+      questionId: question.id,
+      answer,
+    });
+    if (!result.ok) throw new Error(result.reason);
+    onProjectChange({
+      ...project,
+      tasks: project.tasks.map((t) =>
+        t.id === task.id
+          ? {
+              ...t,
+              questions: t.questions.map((q) =>
+                q.id === question.id ? { ...q, answer, answeredAt: nowIso() } : q,
+              ),
+              updatedAt: nowIso(),
+            }
+          : t,
+      ),
+    });
+    if (result.resumedRunId) onOpenRun(result.resumedRunId);
   }
 
   return (
-    <div className="rounded-lg border border-edge bg-surface-1/80 p-2">
-      <div className="flex items-start gap-2">
-        <span className="min-w-0 flex-1 whitespace-pre-wrap text-[11px] leading-snug text-ink">
-          {question.text}
-        </span>
-        <button
-          type="button"
-          onClick={() => onOpenTask(task.id)}
-          title="Open the task"
-          className="max-w-40 shrink-0 truncate text-[10px] text-ink-faint hover:text-ink hover:underline"
-        >
-          {task.title}
-        </button>
-      </div>
-      {answering ? (
-        <div className="mt-1.5 flex items-end gap-2">
-          <Textarea
-            autoFocus={!soloOpen}
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            onKeyDown={(e) => {
-              if (enterKeyAction(e, enterToSend) === "send") {
-                e.preventDefault();
-                void send();
-              }
-              if (e.key === "Escape") setAnswering(false);
-            }}
-            rows={2}
-            placeholder="Your answer — it resumes the run that stopped for it"
-            aria-label={`Answer the question on ${task.title}`}
-            className="min-h-0 flex-1"
-          />
-          <Button variant="primary" size="sm" disabled={busy || !text.trim()} onClick={() => void send()}>
-            <Send className="h-3 w-3" /> Answer
-          </Button>
+    <QuestionCard
+      context={
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className="truncate font-semibold text-ink">{project.name}</span>
+          <span className="text-ink-faint">/</span>
+          <button
+            type="button"
+            onClick={() => onOpenTask(task.id)}
+            title="Open the task"
+            className="truncate text-ink-muted hover:text-ink hover:underline"
+          >
+            {task.title}
+          </button>
+          {question.runId ? (
+            <>
+              <span className="text-ink-faint">/</span>
+              <span className="shrink-0 font-mono text-ink-faint">{question.runId.slice(0, 12)}</span>
+            </>
+          ) : null}
         </div>
-      ) : (
-        <button
-          type="button"
-          onClick={() => setAnswering(true)}
-          className={cn("mt-1 text-[10px] text-warn hover:underline")}
-        >
-          Answer…
-        </button>
-      )}
-      {error ? <p className="mt-1 text-[10px] text-danger">{error}</p> : null}
-    </div>
+      }
+      question={question.text}
+      options={question.options.map((option) => ({ value: option, label: option }))}
+      recommended={question.recommended}
+      onAnswer={send}
+      answerLabel={`Answer the question on ${task.title}`}
+      className="bg-surface-1/80"
+    />
   );
 }

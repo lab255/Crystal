@@ -1,11 +1,12 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createAgentRun } from "@crystal/core";
 import { browseDirs } from "./browse.js";
 import { packageNameOf, type CrossSurface } from "./code-map.js";
 import type { TerminalSeed } from "./terminal-manager.js";
-import { WorkspaceRegistry, computeCrossEdges } from "./workspace-registry.js";
+import { WorkspaceRegistry, WorkspaceRuntime, computeCrossEdges } from "./workspace-registry.js";
 
 function surface(partial: Partial<CrossSurface>): CrossSurface {
   return { packages: new Map(), externalImports: [], fileTotal: 0, ...partial };
@@ -91,6 +92,48 @@ describe("computeCrossEdges", () => {
       ["wsB", surface({ packages: new Map([["@b/sdk", "."]]) })],
     ]);
     expect(computeCrossEdges(surfaces)).toEqual([]);
+  });
+});
+
+describe("WorkspaceRuntime question filing", () => {
+  it("routes a taskless CRYSTAL_QUESTION marker through task auto-creation", async () => {
+    const run = {
+      ...createAgentRun({
+        prompt: "review the design",
+        purpose: "code-review",
+        tags: ["workflow:wf_1"],
+      }),
+      id: "run_marker",
+    };
+    const addQuestionForRun = vi.fn(async () => ({
+      ok: true as const,
+      taskId: "task_auto",
+      questionId: "q_auto",
+      taskCreated: true,
+    }));
+    const runtime = {
+      agents: { get: async () => run },
+      orchestration: {
+        projectPathForRun: async () => ".crystal/projects/general.json",
+        addQuestionForRun,
+      },
+      workflows: { workflowForRun: async () => ({ epicId: "epic_1" }) },
+    };
+    const fileQuestion = (
+      WorkspaceRuntime.prototype as unknown as {
+        fileQuestion(this: typeof runtime, runId: string, text: string): Promise<void>;
+      }
+    ).fileQuestion;
+
+    await fileQuestion.call(runtime, run.id, "Approve the dependency change?");
+
+    expect(addQuestionForRun).toHaveBeenCalledWith(
+      ".crystal/projects/general.json",
+      run,
+      "Approve the dependency change?",
+      undefined,
+      { epicId: "epic_1" },
+    );
   });
 });
 

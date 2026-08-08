@@ -317,6 +317,61 @@ describe("OrchestrationService", () => {
     ).toBe("Yes.");
   });
 
+  it("creates a task for a taskless ask and routes its answer back to the run", async () => {
+    const asker = createAgentRun({ prompt: "choose the contract", purpose: "design" });
+    runs.push(asker);
+    const epic = await svc.createEpicOn(projectPath, "Contract decisions");
+
+    const filed = await svc.addQuestionForRun(
+      projectPath,
+      asker,
+      "Which payload format should we ship?",
+      { options: ["JSON", "MessagePack"], recommended: "JSON" },
+      { epicId: epic.id },
+    );
+    expect(filed).toMatchObject({ ok: true, taskCreated: true });
+    if (!filed.ok) throw new Error(filed.reason);
+
+    const created = (await loadProject()).tasks.find((task) => task.id === filed.taskId)!;
+    expect(created.title).toBe("design: Which payload format should we ship?");
+    expect(created.epicId).toBe(epic.id);
+    expect(created.runIds).toContain(asker.id);
+    expect(created.questions).toHaveLength(1);
+    expect(created.questions[0]).toMatchObject({
+      id: filed.questionId,
+      runId: asker.id,
+      options: ["JSON", "MessagePack"],
+      recommended: "JSON",
+    });
+    expect(created.questions[0]!.answer).toBeUndefined();
+
+    // A retry from the same taskless run reuses its task backlink and the
+    // existing question rather than minting duplicate board records.
+    const retried = await svc.addQuestionForRun(
+      projectPath,
+      asker,
+      "Which payload format should we ship?",
+      { options: ["JSON", "MessagePack"], recommended: "JSON" },
+      { epicId: epic.id },
+    );
+    expect(retried).toEqual({
+      ok: true,
+      taskId: filed.taskId,
+      questionId: filed.questionId,
+      taskCreated: false,
+    });
+
+    const deliveredBefore = delivered.length;
+    const resumed = createAgentRun({ prompt: "continue", resumedFromRunId: asker.id });
+    deliverResult = resumed;
+    await expect(
+      svc.answerQuestion(projectPath, filed.taskId, filed.questionId, "JSON"),
+    ).resolves.toEqual({ ok: true, resumedRunId: resumed.id });
+    expect(delivered).toHaveLength(deliveredBefore + 1);
+    expect(delivered.at(-1)).toMatchObject({ runId: asker.id });
+    expect(delivered.at(-1)!.prompt).toContain("JSON");
+  });
+
   it("refuses to answer an unknown task or question", async () => {
     await expect(
       svc.answerQuestion(projectPath, "task_nope", "q_1", "x"),
