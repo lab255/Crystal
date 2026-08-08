@@ -94,6 +94,12 @@ export {
   type GrantsStore,
 } from "./grants-store.js";
 export {
+  EMPTY_PENDING_PERMISSIONS,
+  createPermissionsStore,
+  type PermissionsState,
+  type PermissionsStore,
+} from "./permissions-store.js";
+export {
   EMPTY_HUB_EVENTS,
   EMPTY_HUB_PROJECTS,
   EMPTY_HUB_QUESTIONS,
@@ -192,6 +198,7 @@ export {
   useFleet,
   useFleetConnections,
   useGrants,
+  usePermissions,
   useHighlight,
   useHighlightUpdate,
   useHub,

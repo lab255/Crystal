@@ -59,13 +59,36 @@ import { overviewSourcesAtRef, surfacesSnapshotAtRef } from "./ref-snapshot.js";
 import { pasteInput } from "./terminal-manager.js";
 import { PublishManager } from "./publish-manager.js";
 import { sendApiRequest } from "./api-client-store.js";
-import { WorkspaceRegistry } from "./workspace-registry.js";
+import { WorkspaceRegistry, type WorkspaceRuntime } from "./workspace-registry.js";
 
 type Handlers = {
   [M in BridgeMethodName]: (
     params: BridgeMethods[M]["params"],
   ) => Promise<BridgeMethods[M]["result"]>;
 };
+
+/** Handler core kept separate so the grant/resolve race is unit-testable. */
+export async function decidePendingPermission(
+  rt: Pick<WorkspaceRuntime, "permissions" | "grants">,
+  id: string,
+  decision: "allow" | "deny",
+  alwaysAllow = false,
+): Promise<{ ok: boolean }> {
+  const pending = rt.permissions.listPending().find((entry) => entry.id === id);
+  if (!pending) return { ok: false };
+
+  if (decision === "allow" && alwaysAllow) {
+    // Persist first so "Always allow" cannot quietly degrade to a one-off
+    // allow if the ledger write fails. grants.changed may resolve this entry
+    // through the ordinary recheck before the direct resolve below; either
+    // path fulfilled the still-current request, so this RPC succeeds.
+    const tools = await rt.grants.allowedTools();
+    await rt.grants.setTools([...tools, pending.tool]);
+    rt.permissions.resolve(id, "allow");
+    return { ok: true };
+  }
+  return rt.permissions.resolve(id, decision);
+}
 
 /** Trailing debounce for instance-file rewrites (a burst of opens collapses to one write). */
 const INSTANCE_REWRITE_DEBOUNCE_MS = 100;
@@ -242,6 +265,27 @@ export async function startCrystalServer(opts: {
   // /health and /mcp — no console, no WS upgrade.
   let registryRef: WorkspaceRegistry | null = null;
   let hubRef: HubEngine | null = null;
+  const permissionBroadcastDisposers = new Map<string, () => void>();
+
+  /** Follow runtime open/close so broker-local changes become bridge pushes. */
+  function syncPermissionBroadcasts(): void {
+    if (!registryRef) return;
+    const live = new Set(registryRef.list().map((workspace) => workspace.id));
+    for (const [ws, dispose] of permissionBroadcastDisposers) {
+      if (live.has(ws)) continue;
+      dispose();
+      permissionBroadcastDisposers.delete(ws);
+    }
+    for (const ws of live) {
+      if (permissionBroadcastDisposers.has(ws)) continue;
+      const permissions = registryRef.get(ws).permissions;
+      permissionBroadcastDisposers.set(
+        ws,
+        permissions.events.on("changed", () => broadcast("permissions.changed", { ws })),
+      );
+    }
+  }
+
   const mcpServer = http.createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     if (url.pathname === "/health") {
@@ -291,6 +335,7 @@ export async function startCrystalServer(opts: {
         const { ws } = payload as BridgeEvents["workspace.changed"];
         hubRef?.scheduleQuestionSweep(ws);
       }
+      if (event === "workspaces.changed") syncPermissionBroadcasts();
       // Interactive program managers run on workspace PTYs but their runs live
       // in the hub's agent host — no runtime would settle them on exit.
       if (event === "terminal.changed") {
@@ -531,6 +576,13 @@ export async function startCrystalServer(opts: {
     "grants.setTools": async ({ ws, tools }) => ({
       ledger: await registry.get(ws).grants.setTools(tools),
     }),
+    "permissions.pending": async ({ ws }) => ({
+      pending: registry.get(ws).permissions.listPending(),
+    }),
+    "permissions.decide": async ({ ws, id, decision, alwaysAllow }) => {
+      const rt = registry.get(ws);
+      return decidePendingPermission(rt, id, decision, alwaysAllow);
+    },
     "facets.get": async ({ ws }) => ({ facets: await registry.get(ws).store.loadFacets() }),
     "facets.save": async ({ ws, facets }) => {
       await registry.get(ws).store.saveFacets(facets);
@@ -1343,6 +1395,8 @@ export async function startCrystalServer(opts: {
       publish?.stop();
       hub?.dispose();
       await registry.closeAll();
+      for (const dispose of permissionBroadcastDisposers.values()) dispose();
+      permissionBroadcastDisposers.clear();
       await instanceWrites;
       if (instanceFile) await removeInstanceFile(instanceFile);
       // Server .close() waits for open connections — drop live clients first

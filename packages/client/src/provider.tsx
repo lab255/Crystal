@@ -38,6 +38,11 @@ import {
   type HighlightStore,
 } from "./highlight-store.js";
 import { createGrantsStore, type GrantsState, type GrantsStore } from "./grants-store.js";
+import {
+  createPermissionsStore,
+  type PermissionsState,
+  type PermissionsStore,
+} from "./permissions-store.js";
 import { createHubStore, type HubState, type HubStore } from "./hub-store.js";
 import { createLensStore, type LensState, type LensStore } from "./lens-store.js";
 import { createNavStore, type NavPatch, type NavStore } from "./nav-store.js";
@@ -95,6 +100,8 @@ export interface CrystalContextValue {
   workflowStore: WorkflowStore;
   /** The active workspace's tool grants + permission-denial ledger. */
   grantsStore: GrantsStore;
+  /** The active workspace's tool calls parked on an owner decision. */
+  permissionsStore: PermissionsStore;
   /**
    * The ACTIVE server's hub bundle (fleet v1): `~/.crystal/hub/programs` is
    * machine-shared, so per-server rendering is correct for local servers and
@@ -186,6 +193,7 @@ interface ServerBundle {
   agentStore: AgentStore;
   workflowStore: WorkflowStore;
   grantsStore: GrantsStore;
+  permissionsStore: PermissionsStore;
   hubStore: HubStore;
   lensStore: LensStore;
   dispose: () => void;
@@ -245,6 +253,7 @@ function createFleetRuntime(defaultTarget: string | BridgeTransportFactory): Fle
     const agentStore = createAgentStore(client);
     const workflowStore = createWorkflowStore(client);
     const grantsStore = createGrantsStore(client);
+    const permissionsStore = createPermissionsStore(client);
     const hubStore = createHubStore(client);
     const lensStore = createLensStore(client);
 
@@ -258,6 +267,7 @@ function createFleetRuntime(defaultTarget: string | BridgeTransportFactory): Fle
       void agentStore.getState().refresh();
       void workflowStore.getState().refresh();
       void grantsStore.getState().refresh();
+      void permissionsStore.getState().refresh();
     };
 
     const refreshFleetSlice = () => {
@@ -360,6 +370,7 @@ function createFleetRuntime(defaultTarget: string | BridgeTransportFactory): Fle
       agentStore,
       workflowStore,
       grantsStore,
+      permissionsStore,
       hubStore,
       lensStore,
       dispose: () => {
@@ -421,6 +432,7 @@ function createFleetRuntime(defaultTarget: string | BridgeTransportFactory): Fle
         terminalsStore,
         workflowStore: bundle.workflowStore,
         grantsStore: bundle.grantsStore,
+        permissionsStore: bundle.permissionsStore,
         hubStore: bundle.hubStore,
         navStore,
         highlightStore,
@@ -550,6 +562,12 @@ export function useWorkflows<T>(selector: (s: WorkflowState) => T): T {
 export function useGrants<T>(selector: (s: GrantsState) => T): T {
   const { grantsStore } = useCrystal();
   return useStore(grantsStore, selector);
+}
+
+/** Tool calls in the active workspace currently waiting for Allow/Deny. */
+export function usePermissions<T>(selector: (s: PermissionsState) => T): T {
+  const { permissionsStore } = useCrystal();
+  return useStore(permissionsStore, selector);
 }
 
 /**

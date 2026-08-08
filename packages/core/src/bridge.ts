@@ -79,6 +79,17 @@ export interface WsScope {
   ws?: string;
 }
 
+/** One headless tool call parked while it waits for an explicit owner decision. */
+export interface PendingPermission {
+  id: string;
+  runId: string;
+  /** Tool name as the CLI reported it (for example `Bash` or `WebFetch`). */
+  tool: string;
+  /** Bounded one-line call description, including the primary argument when available. */
+  summary: string;
+  requestedAt: string;
+}
+
 /** Live progress for one workspace's full code-map analysis pass. */
 export interface CodeMapProgress {
   ws: string;
@@ -366,6 +377,20 @@ export interface BridgeMethods {
   "grants.setTools": {
     params: WsScope & { tools: string[] };
     result: { ledger: GrantsLedger };
+  };
+  /** Tool calls currently parked on an owner decision in this workspace. */
+  "permissions.pending": {
+    params: WsScope;
+    result: { pending: PendingPermission[] };
+  };
+  /** Resolve one parked call; `alwaysAllow` also grants its tool workspace-wide. */
+  "permissions.decide": {
+    params: WsScope & {
+      id: string;
+      decision: "allow" | "deny";
+      alwaysAllow?: boolean;
+    };
+    result: { ok: boolean };
   };
   "fs.list": { params: WsScope & { path: string }; result: { entries: FileEntry[] } };
   "fs.read": { params: WsScope & { path: string }; result: { content: string; truncated: boolean } };
@@ -1259,6 +1284,8 @@ export interface BridgeEvents {
   "agents.changed": { ws: string; roster: AgentRoster };
   /** The grants ledger changed (tools edited, or a denial was recorded). */
   "grants.changed": { ws: string; ledger: GrantsLedger };
+  /** The workspace's set of parked tool-permission requests changed. */
+  "permissions.changed": { ws: string };
   /** Terminal output/echo chunk (sequenced per terminal). */
   "terminal.data": { ws: string; chunk: TerminalChunk };
   /** A terminal was created, resized, exited or killed. */
