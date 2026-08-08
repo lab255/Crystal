@@ -1,3 +1,4 @@
+import { Fragment } from "react";
 import type { ArchNodeKind } from "@crystal/core";
 import { Tooltip, cn } from "@crystal/ui";
 import { KIND_META } from "./model.js";
@@ -22,40 +23,59 @@ export const PALETTE_KINDS: ArchNodeKind[] = [
   "note",
 ];
 
+export interface PaletteGroup {
+  label: string;
+  kinds: readonly ArchNodeKind[];
+}
+
 export function Palette({
   onAdd,
   kinds = PALETTE_KINDS,
+  groups,
 }: {
   onAdd: (kind: ArchNodeKind) => void;
-  /** Subset offered — the infra view drops container kinds and notes. */
+  /** Subset offered when `groups` is not supplied. */
   kinds?: readonly ArchNodeKind[];
+  /** Optional labeled sections for views with distinct vocabularies. */
+  groups?: readonly PaletteGroup[];
 }) {
+  const sections = groups ?? [{ label: "", kinds }];
   return (
     <div className="flex flex-col gap-0.5 rounded-xl border border-edge bg-surface-2/95 p-1 shadow-xl shadow-black/30 backdrop-blur">
-      {kinds.map((kind) => {
-        const meta = KIND_META[kind];
-        const Icon = meta.icon;
-        return (
-          <Tooltip key={kind} content={`${meta.label} — click or drag onto canvas`} side="right">
-            <button
-              type="button"
-              draggable
-              onDragStart={(e) => {
-                e.dataTransfer.setData(DRAG_MIME, kind);
-                e.dataTransfer.effectAllowed = "move";
-              }}
-              onClick={() => onAdd(kind)}
-              className={cn(
-                "flex h-8 w-8 cursor-grab items-center justify-center rounded-lg text-ink-muted",
-                "transition-colors hover:bg-surface-active hover:text-ink active:cursor-grabbing",
-              )}
-              aria-label={`Add ${meta.label}`}
-            >
-              <Icon className="h-4 w-4" />
-            </button>
-          </Tooltip>
-        );
-      })}
+      {sections.map((section, sectionIndex) => (
+        <Fragment key={section.label || "palette"}>
+          {sectionIndex > 0 ? <div className="my-0.5 h-px bg-edge" /> : null}
+          {section.label ? (
+            <div className="px-1 py-0.5 text-center text-[8px] font-semibold uppercase tracking-wider text-ink-faint">
+              {section.label}
+            </div>
+          ) : null}
+          {section.kinds.map((kind) => {
+            const meta = KIND_META[kind];
+            const Icon = meta.icon;
+            return (
+              <Tooltip key={kind} content={`${meta.label} — click or drag onto canvas`} side="right">
+                <button
+                  type="button"
+                  draggable
+                  onDragStart={(e) => {
+                    e.dataTransfer.setData(DRAG_MIME, kind);
+                    e.dataTransfer.effectAllowed = "move";
+                  }}
+                  onClick={() => onAdd(kind)}
+                  className={cn(
+                    "flex h-8 w-8 cursor-grab items-center justify-center rounded-lg text-ink-muted",
+                    "transition-colors hover:bg-surface-active hover:text-ink active:cursor-grabbing",
+                  )}
+                  aria-label={`Add ${meta.label}`}
+                >
+                  <Icon className="h-4 w-4" />
+                </button>
+              </Tooltip>
+            );
+          })}
+        </Fragment>
+      ))}
     </div>
   );
 }

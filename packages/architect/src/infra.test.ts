@@ -26,6 +26,9 @@ describe("infraGroups", () => {
       node("web", "frontend", { prod: vercel }),
       node("db", "datastore"),
       node("grp", "group"), // containers never appear
+      node("vpc", "vpc"), // deployment zones never appear as components
+      node("subnet", "subnet"),
+      node("sg", "securitygroup"),
       node("memo", "note"), // notes never appear
     ]);
     const { groups, unplaced } = infraGroups(g, "prod");
