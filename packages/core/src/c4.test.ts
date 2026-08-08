@@ -203,6 +203,8 @@ describe("projectC4 · containers", () => {
     expect(projection.typeLines["ext:postgres"]).toBe("Container · PostgreSQL");
     expect(projection.typeLines["ext:stripe"]).toBe("External System · payments");
     expect(projection.drill["ctr:apps-web"]).toEqual({ level: "components", scope: "ctr:apps-web" });
+    // The open boundary drills back out.
+    expect(projection.drill[C4_SYSTEM_ID]).toEqual({ level: "context" });
   });
 });
 
@@ -227,6 +229,12 @@ describe("projectC4 · components", () => {
     expect(byId.has("ext:postgres")).toBe(true);
     expect(byId.has("ext:stripe")).toBe(true);
     expect(projection.typeLines["sys:api"]).toBe("Component");
+    // Boundary drills up; the neighbour container drills into itself.
+    expect(projection.drill["ctr:apps-server"]).toEqual({ level: "containers" });
+    expect(projection.drill[C4_SHARED_CONTAINER_ID]).toEqual({
+      level: "components",
+      scope: C4_SHARED_CONTAINER_ID,
+    });
   });
 
   it("keeps the user attached to web containers", () => {

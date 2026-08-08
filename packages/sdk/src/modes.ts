@@ -96,11 +96,17 @@ export const MODE_SUBSECTIONS: Partial<
   architect: {
     section: "architect",
     key: "view",
-    default: "architecture",
+    default: "architecture:containers",
+    // The C4 ladder, top to bottom: Context → Containers → Components →
+    // Code (the codebase view) → Deployment (the infra view). The
+    // `architecture:<level>` ids are resolved by ProjectNav's architect
+    // case — the deep-link view id stays "architecture" with a `level`.
     items: [
-      { id: "architecture", label: "Architecture" },
+      { id: "architecture:context", label: "System Context" },
+      { id: "architecture:containers", label: "Containers" },
+      { id: "architecture:components", label: "Components" },
       { id: "codebase", label: "Codebase" },
-      { id: "infra", label: "Infrastructure" },
+      { id: "infra", label: "Deployment" },
     ],
   },
   surfaces: {

@@ -28,7 +28,7 @@ import type { FlowProjection } from "./dataflow.js";
  *                   components inside it instead.
  */
 
-const OVERRIDABLE = ["label", "kind", "description", "tech", "accent", "href"] as const;
+const OVERRIDABLE = ["label", "kind", "description", "tech", "accent", "href", "layer", "sim"] as const;
 
 const sameJson = (a: unknown, b: unknown): boolean =>
   JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
@@ -42,6 +42,11 @@ export function applyC4Edit(args: {
   /** What the canvas reports after the edit. */
   edited: ArchitectureGraph;
   viewKey: string;
+  /**
+   * The projection's node roll-up — lets a facet removal of an aggregate
+   * also release the canonical members that rolled into it.
+   */
+  nodeRollup?: Record<string, string>;
 }): ArchOverlay {
   const { derived, projected, edited, viewKey } = args;
   let overlay = args.overlay;
@@ -161,13 +166,73 @@ export function applyC4Edit(args: {
     }
   }
 
+  // Facets: the canvas edits *translated* copies (members mapped through the
+  // roll-up), so membership changes apply as deltas against what was shown —
+  // adding a container card records the aggregate id (meaningful at C4
+  // levels, harmlessly dangling on the flat graph), removing one also
+  // releases the canonical members that rolled into it.
+  const rollupInto = args.nodeRollup ?? {};
+  const projFacetById = new Map(projected.facets.map((f) => [f.id, f]));
+  let facets = overlay.facets;
+  let facetsChanged = false;
+  for (const ef of edited.facets) {
+    const pf = projFacetById.get(ef.id);
+    if (!pf) {
+      facets = [...facets, ef];
+      facetsChanged = true;
+      continue;
+    }
+    const before = new Set(pf.nodeIds);
+    const after = new Set(ef.nodeIds);
+    const added = [...after].filter((id) => !before.has(id));
+    const removed = [...before].filter((id) => !after.has(id));
+    if (added.length === 0 && removed.length === 0) continue;
+    facetsChanged = true;
+    facets = facets.map((f) => {
+      if (f.id !== ef.id) return f;
+      const ids = f.nodeIds.filter(
+        (id) => !removed.some((r) => id === r || rollupInto[id] === r),
+      );
+      return { ...f, nodeIds: [...new Set([...ids, ...added])] };
+    });
+  }
+
   return {
     ...overlay,
     ...(manualNodesChanged ? { manualNodes } : {}),
     ...(manualEdgesChanged ? { manualEdges } : {}),
     ...(hiddenChanged ? { hiddenIds: [...hiddenIds] } : {}),
     ...(hiddenEdgesChanged ? { hiddenEdgeIds: [...hiddenEdgeIds] } : {}),
+    ...(facetsChanged ? { facets } : {}),
   };
+}
+
+/**
+ * Facet membership mapped through a projection so a lens keeps meaning at
+ * every altitude: a member hidden at this level is represented by whatever
+ * it rolled up into. A facet whose members have no representative here is
+ * left untranslated — its dangling ids show the whole level, the same
+ * grace `facetVisibleIds` already gives dangling members.
+ */
+export function projectFacets(
+  facets: ArchitectureGraph["facets"],
+  projection: C4Projection,
+): ArchitectureGraph["facets"] {
+  const visible = new Set(projection.graph.nodes.map((n) => n.id));
+  return facets.map((f) => {
+    if (f.nodeIds.length === 0) return f;
+    const mapped = [
+      ...new Set(
+        f.nodeIds
+          .map((id) => (visible.has(id) ? id : projection.nodeRollup[id]))
+          .filter((id): id is string => id != null),
+      ),
+    ];
+    if (mapped.length === 0) return f; // nothing represented here — leave untranslated
+    if (mapped.length === f.nodeIds.length && mapped.every((id, i) => id === f.nodeIds[i]))
+      return f;
+    return { ...f, nodeIds: mapped };
+  });
 }
 
 /**
@@ -194,6 +259,8 @@ export function applyAggregateOverrides(
     if (o.tech !== undefined) out.tech = o.tech;
     if (o.accent !== undefined) out.accent = o.accent;
     if (o.href !== undefined) out.href = o.href;
+    if (o.layer !== undefined) out.layer = o.layer;
+    if (o.sim !== undefined) out.sim = o.sim;
     return out;
   });
   return touched ? { ...graph, nodes } : graph;

@@ -2125,8 +2125,33 @@ function CanvasInner({
           : []),
       ];
 
+      // C4 aggregates (containers, the system, the derived user) re-derive on
+      // every projection — deleting or duplicating one is meaningless, and
+      // their first affordance is navigation between altitudes.
+      const drillView = c4?.drill[node.id];
+      const c4Aggregate =
+        c4 != null &&
+        (node.id.startsWith("ctr:") || node.id === "c4:system" || node.id === "person:user");
+      const drillEntries: MenuEntry[] = drillView
+        ? [
+            {
+              type: "item",
+              label:
+                drillView.level === "components"
+                  ? "Open components"
+                  : drillView.level === "containers"
+                    ? "View containers"
+                    : "View system context",
+              icon: drillView.level === "context" ? Shrink : Expand,
+              hint: "double-click",
+              onSelect: () => c4?.onDrill(drillView),
+            },
+          ]
+        : [];
+
       return [
         { type: "heading", label: node.label },
+        ...drillEntries,
         ...(extraNodeEntries?.(node) ?? []),
         {
           type: "item",
@@ -2134,7 +2159,13 @@ function CanvasInner({
           icon: Pencil,
           onSelect: () => setRenaming({ x: menu.x, y: menu.y, id: node.id }),
         },
-        { type: "item", label: "Duplicate", icon: Copy, onSelect: () => duplicateNode(node.id) },
+        {
+          type: "item",
+          label: "Duplicate",
+          icon: Copy,
+          disabled: c4Aggregate,
+          onSelect: () => duplicateNode(node.id),
+        },
         ...facetEntries,
         { type: "separator" },
         ...traversalEntries,
@@ -2229,6 +2260,8 @@ function CanvasInner({
           label: isContainerKind(node.kind) ? "Delete container + contents" : "Delete",
           icon: Trash2,
           danger: true,
+          disabled: c4Aggregate,
+          hint: c4Aggregate ? "derived — hide its components instead" : undefined,
           onSelect: () => {
             commit(deleteNodes(graphRef.current, [node.id]));
             setSelectedNodes(new Set());
@@ -2343,6 +2376,10 @@ function CanvasInner({
     const edge = g.edges.find((e) => e.id === menu.id);
     if (!edge) return [];
     const endpointName = (id: string) => g.nodes.find((n) => n.id === id)?.label ?? "?";
+    // A `c4rel:` edge aggregates the level's underlying links — it re-derives,
+    // so kind/delete are meaningless; the contract drill (routed to the
+    // heaviest member boundary by the host) is its real affordance.
+    const c4Rel = edge.id.startsWith("c4rel:");
     return [
       { type: "heading", label: edge.label || "Connection" },
       {
@@ -2359,7 +2396,7 @@ function CanvasInner({
         hint: "target",
         onSelect: () => focusNode(edge.target),
       },
-      ...(onOpenContract && edge.id.startsWith("link:")
+      ...(onOpenContract && (edge.id.startsWith("link:") || c4Rel)
         ? [
             {
               type: "item",
@@ -2369,29 +2406,33 @@ function CanvasInner({
             } satisfies MenuEntry,
           ]
         : []),
-      { type: "separator" },
-      {
-        type: "submenu",
-        label: "Connection kind",
-        icon: Pencil,
-        entries: ARCH_EDGE_KINDS.map<MenuEntry>((kind) => ({
-          type: "item",
-          label: EDGE_KIND_STYLE[kind].label,
-          checked: edge.kind === kind,
-          onSelect: () => commit(updateEdge(graphRef.current, edge.id, { kind })),
-        })),
-      },
-      { type: "separator" },
-      {
-        type: "item",
-        label: "Delete connection",
-        icon: Trash2,
-        danger: true,
-        onSelect: () => {
-          commit(deleteEdges(graphRef.current, [edge.id]));
-          setSelectedEdges(new Set());
-        },
-      },
+      ...(c4Rel
+        ? []
+        : ([
+            { type: "separator" },
+            {
+              type: "submenu",
+              label: "Connection kind",
+              icon: Pencil,
+              entries: ARCH_EDGE_KINDS.map<MenuEntry>((kind) => ({
+                type: "item",
+                label: EDGE_KIND_STYLE[kind].label,
+                checked: edge.kind === kind,
+                onSelect: () => commit(updateEdge(graphRef.current, edge.id, { kind })),
+              })),
+            },
+            { type: "separator" },
+            {
+              type: "item",
+              label: "Delete connection",
+              icon: Trash2,
+              danger: true,
+              onSelect: () => {
+                commit(deleteEdges(graphRef.current, [edge.id]));
+                setSelectedEdges(new Set());
+              },
+            },
+          ] satisfies MenuEntry[])),
     ];
   }, [
     menu,
@@ -2429,6 +2470,7 @@ function CanvasInner({
     partSystems,
     partsOpen,
     toggleNodeParts,
+    c4,
   ]);
 
   const mapActions = useMemo<MapActions>(

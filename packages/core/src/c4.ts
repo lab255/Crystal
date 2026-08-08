@@ -724,6 +724,8 @@ export function projectC4(input: C4ProjectInput): C4Projection {
       }),
     );
     typeLines[C4_SYSTEM_ID] = "Software System";
+    // The open boundary drills UP — double-click zooms back out to context.
+    drill[C4_SYSTEM_ID] = { level: "context" };
 
     for (const c of model.containers) nodes.push(containerCard(c, C4_SYSTEM_ID));
 
@@ -797,6 +799,8 @@ export function projectC4(input: C4ProjectInput): C4Projection {
       }),
     );
     typeLines[scopeId] = scope ? `Container · ${C4_VARIANT_LABELS[scope.variant]}` : "Container";
+    // The open container boundary drills UP to the containers level.
+    drill[scopeId] = { level: "containers" };
 
     const memberIds = new Set<string>();
     for (const n of graph.nodes) {

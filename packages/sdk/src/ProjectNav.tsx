@@ -53,6 +53,7 @@ export function ProjectNav({
   const menu = useContextMenu();
   // Primitive selectors only — object literals would re-render every nav tick.
   const archView = useNav((l) => l.architect?.view);
+  const archLevel = useNav((l) => l.architect?.level);
   const surfView = useNav((l) => l.surfaces?.view);
   const orchTab = useNav((l) => l.orchestrate?.tab);
   const qualView = useNav((l) => l.quality?.view);
@@ -64,16 +65,40 @@ export function ProjectNav({
   const activeSubview = (m: CrystalMode): string | undefined => {
     const spec = MODE_SUBSECTIONS[m];
     if (!spec) return undefined;
+    // The architecture view splits into its C4 altitudes in the nav.
     const current =
-      m === "architect" ? archView : m === "surfaces" ? surfView : m === "orchestrate" ? orchTab : qualView;
+      m === "architect"
+        ? archView === "architecture" || archView == null
+          ? `architecture:${archLevel ?? "containers"}`
+          : archView
+        : m === "surfaces"
+          ? surfView
+          : m === "orchestrate"
+            ? orchTab
+            : qualView;
     return current ?? spec.default;
   };
 
   function openSubview(m: CrystalMode, id: string): void {
     switch (m) {
-      case "architect":
-        updateNav({ mode: m, architect: { view: id as ArchitectViewId } });
+      case "architect": {
+        const level = /^architecture:(\w+)$/.exec(id)?.[1];
+        if (level) {
+          // Scope cleared on purpose: the view lands on its own default
+          // (components picks the biggest container).
+          updateNav({
+            mode: m,
+            architect: {
+              view: "architecture",
+              level: level as "context" | "containers" | "components",
+              scope: null,
+            },
+          });
+        } else {
+          updateNav({ mode: m, architect: { view: id as ArchitectViewId } });
+        }
         break;
+      }
       case "surfaces":
         updateNav({ mode: m, surfaces: { view: id as SurfaceViewId } });
         break;

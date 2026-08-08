@@ -110,6 +110,7 @@ import {
   applyAggregateOverrides,
   applyC4Edit,
   c4Reserve,
+  projectFacets,
   remapFlowProjection,
 } from "./c4-view.js";
 import { C4Bar } from "./C4Bar.js";
@@ -411,12 +412,15 @@ function DiagramsView({
       }),
     [nav],
   );
-  // A components link without a resolvable container falls back one level —
-  // never a blank canvas from a stale scope.
+  // A components link without a resolvable container lands on the biggest
+  // container (the nav's bare "Components" entry, a stale scope) rather than
+  // a blank canvas; no containers at all falls back a level.
   useEffect(() => {
     if (level !== "components" || !c4Model) return;
     if (!scope || !c4Model.containers.some((c) => c.id === scope)) {
-      setC4View({ level: "containers" });
+      const biggest = [...c4Model.containers].sort((a, b) => b.fileCount - a.fileCount)[0];
+      if (biggest) setC4View({ level: "components", scope: biggest.id });
+      else setC4View({ level: "containers" });
     }
   }, [level, scope, c4Model, setC4View]);
 
@@ -565,34 +569,6 @@ function DiagramsView({
     [rendered, ghostIds, viewFilteredIds, commitEdited],
   );
 
-  /** Focus-filter entries prepended to system nodes' context menus. */
-  const extraNodeEntries = useCallback(
-    (node: ArchNode): MenuEntry[] => {
-      if (!roleOfCanonical.has(node.id)) return [];
-      const inFocus = focusIds.has(node.id);
-      const entries: MenuEntry[] = [
-        {
-          type: "item",
-          label:
-            focusIds.size === 0 ? "Focus" : inFocus ? "Remove from focus" : "Add to focus",
-          icon: Crosshair,
-          onSelect: () =>
-            nav({ architect: { focus: toggleIdInList(focusParam, node.id) } }),
-        },
-      ];
-      if (focusIds.size > 0) {
-        entries.push({
-          type: "item",
-          label: "Clear focus filter",
-          icon: X,
-          onSelect: () => nav({ architect: { focus: null, focusSolo: false } }),
-        });
-      }
-      return entries;
-    },
-    [roleOfCanonical, focusIds, focusParam, nav],
-  );
-
   // Old `?diagram=` deep links resolve to the facet their diagram migrated to.
   const diagramParam = useNav((l) => l.architect?.diagram) ?? null;
   useEffect(() => {
@@ -669,7 +645,7 @@ function DiagramsView({
     if (!c4Projection || !reconciled || !rendered) return null;
     const canonicalIds = new Set(rendered.nodes.map((n) => n.id));
     const withOverrides = applyAggregateOverrides(
-      c4Projection.graph,
+      { ...c4Projection.graph, facets: projectFacets(c4Projection.graph.facets, c4Projection) },
       reconciled.overrides,
       canonicalIds,
     );
@@ -695,12 +671,19 @@ function DiagramsView({
   /** A C4-level canvas edit → targeted overlay ops (never a full extraction). */
   const commitC4 = useCallback(
     (edited: ArchitectureGraph) => {
-      if (!c4Laid || !reconciled || !derived) return;
+      if (!c4Laid || !reconciled || !derived || !c4Projection) return;
       updateArchOverlay(
-        applyC4Edit({ overlay: reconciled, derived, projected: c4Laid, edited, viewKey: viewKeyStr }),
+        applyC4Edit({
+          overlay: reconciled,
+          derived,
+          projected: c4Laid,
+          edited,
+          viewKey: viewKeyStr,
+          nodeRollup: c4Projection.nodeRollup,
+        }),
       );
     },
-    [c4Laid, reconciled, derived, viewKeyStr, updateArchOverlay],
+    [c4Laid, reconciled, derived, c4Projection, viewKeyStr, updateArchOverlay],
   );
 
   // "Zoom into this module" from the codebase view: land on the components
@@ -814,6 +797,46 @@ function DiagramsView({
     [activeFlow],
   );
 
+  /** Focus-filter + C4-navigation entries prepended to node context menus. */
+  const extraNodeEntries = useCallback(
+    (node: ArchNode): MenuEntry[] => {
+      const entries: MenuEntry[] = [];
+      // A component knows its container — jump up an altitude with it lit.
+      const ctr = c4Model?.containerOfSystem[node.id];
+      if (c4Enabled && level === "components" && ctr) {
+        entries.push({
+          type: "item",
+          label: "View in Containers",
+          icon: Boxes,
+          onSelect: () => {
+            setC4View({ level: "containers" });
+            setHighlightRequest({ nodeId: ctr, nonce: ++highlightNonce.current });
+          },
+        });
+      }
+      if (!roleOfCanonical.has(node.id)) return entries;
+      const inFocus = focusIds.has(node.id);
+      entries.push({
+        type: "item",
+        label:
+          focusIds.size === 0 ? "Focus" : inFocus ? "Remove from focus" : "Add to focus",
+        icon: Crosshair,
+        onSelect: () =>
+          nav({ architect: { focus: toggleIdInList(focusParam, node.id) } }),
+      });
+      if (focusIds.size > 0) {
+        entries.push({
+          type: "item",
+          label: "Clear focus filter",
+          icon: X,
+          onSelect: () => nav({ architect: { focus: null, focusSolo: false } }),
+        });
+      }
+      return entries;
+    },
+    [roleOfCanonical, focusIds, focusParam, nav, c4Model, c4Enabled, level, setC4View],
+  );
+
   // `?system=` links (surfaces "show on architecture", hub menus, old
   // systems-overview URLs) focus that system's node and settle into the
   // durable `sel` selection — descending to the components level of the
@@ -900,15 +923,42 @@ function DiagramsView({
       m.set(linkEdgeId(idOf(l.source), idOf(l.target)), `${l.source}->${l.target}`);
     return m;
   }, [overviewData]);
+  /**
+   * A `c4rel:` aggregate rolls up several boundaries — clicking it opens the
+   * heaviest member's contract, which is where the conversation about that
+   * arrow actually lives.
+   */
+  const c4ContractByAgg = useMemo(() => {
+    const m = new Map<string, string>();
+    if (!c4Projection || !overviewData) return m;
+    const idOfRaw = canonicalSystemIds(overviewData.systems);
+    const idOf = (raw: string) => idOfRaw.get(raw) ?? raw;
+    const weightOf = new Map<string, number>();
+    for (const l of overviewData.links)
+      weightOf.set(linkEdgeId(idOf(l.source), idOf(l.target)), l.weight);
+    const best = new Map<string, number>();
+    for (const [member, agg] of Object.entries(c4Projection.edgeRollup)) {
+      if (!member.startsWith("link:")) continue;
+      const key = contractKeyByEdgeId.get(member);
+      if (!key) continue;
+      const w = weightOf.get(member) ?? 0;
+      if (!m.has(agg) || w > (best.get(agg) ?? -1)) {
+        m.set(agg, key);
+        best.set(agg, w);
+      }
+    }
+    return m;
+  }, [c4Projection, overviewData, contractKeyByEdgeId]);
   const openContractForEdge = useCallback(
     (edgeId: string): boolean => {
       // Part-split edges are `<aggregateId>#<i>` — the contract belongs to
-      // the aggregate boundary.
-      const key = contractKeyByEdgeId.get(edgeId.replace(/#\d+$/, ""));
+      // the aggregate boundary; `c4rel:` edges route to their heaviest member.
+      const key =
+        contractKeyByEdgeId.get(edgeId.replace(/#\d+$/, "")) ?? c4ContractByAgg.get(edgeId);
       if (key) setActiveEdgeKey(key);
       return key != null;
     },
-    [contractKeyByEdgeId, setActiveEdgeKey],
+    [contractKeyByEdgeId, c4ContractByAgg, setActiveEdgeKey],
   );
 
   /** Focus a system on the canvas by its RAW overview id (panels speak raw ids). */

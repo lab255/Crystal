@@ -5,7 +5,12 @@ import {
   type ArchitectureGraph,
   type C4Projection,
 } from "@crystal/core";
-import { applyAggregateOverrides, applyC4Edit, remapFlowProjection } from "./c4-view.js";
+import {
+  applyAggregateOverrides,
+  applyC4Edit,
+  projectFacets,
+  remapFlowProjection,
+} from "./c4-view.js";
 import type { FlowProjection } from "./dataflow.js";
 
 function node(id: string, over: Partial<ArchNode> = {}): ArchNode {
@@ -145,6 +150,65 @@ describe("applyC4Edit", () => {
       viewKey: "containers",
     });
     expect(out.manualEdges.map((e) => e.id)).toEqual(["e-new"]);
+  });
+});
+
+describe("applyC4Edit · facets", () => {
+  const FACET = { id: "f1", name: "Auth", description: "", nodeIds: ["sys:api", "sys:model"] };
+
+  it("applies membership deltas against the translated view, releasing rolled members", () => {
+    const overlay = { ...createArchOverlay(), facets: [FACET] };
+    // At containers level the facet showed as its roll-up: the container card.
+    const projected = { ...PROJECTED, facets: [{ ...FACET, nodeIds: ["ctr:apps-server"] }] };
+    // The user removed the container from the facet and added the boundary.
+    const edited = { ...projected, facets: [{ ...FACET, nodeIds: ["c4:system"] }] };
+    const out = applyC4Edit({
+      overlay,
+      derived: DERIVED,
+      projected,
+      edited,
+      viewKey: "containers",
+      nodeRollup: { "sys:api": "ctr:apps-server", "sys:model": "ctr:shared" },
+    });
+    // sys:api rolled into the removed container → released; sys:model kept.
+    expect(out.facets[0]?.nodeIds).toEqual(["sys:model", "c4:system"]);
+  });
+
+  it("adopts facets created on the C4 canvas", () => {
+    const edited = {
+      ...PROJECTED,
+      facets: [{ id: "f2", name: "New", description: "", nodeIds: ["ctr:apps-server"] }],
+    };
+    const out = applyC4Edit({
+      overlay: createArchOverlay(),
+      derived: DERIVED,
+      projected: PROJECTED,
+      edited,
+      viewKey: "containers",
+    });
+    expect(out.facets.map((f) => f.id)).toEqual(["f2"]);
+  });
+});
+
+describe("projectFacets", () => {
+  it("maps members through the roll-up and leaves unrepresented facets alone", () => {
+    const projection: C4Projection = {
+      graph: graph([node("ctr:apps-server", { kind: "container" })]),
+      typeLines: {},
+      nodeRollup: { "sys:api": "ctr:apps-server" },
+      edgeRollup: {},
+      drill: {},
+      view: { level: "containers" },
+    };
+    const [mapped, untouched] = projectFacets(
+      [
+        { id: "f1", name: "A", description: "", nodeIds: ["sys:api", "sys:gone"] },
+        { id: "f2", name: "B", description: "", nodeIds: ["sys:gone"] },
+      ],
+      projection,
+    );
+    expect(mapped?.nodeIds).toEqual(["ctr:apps-server"]);
+    expect(untouched?.nodeIds).toEqual(["sys:gone"]);
   });
 });
 
