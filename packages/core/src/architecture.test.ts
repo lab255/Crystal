@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  ArchitectureGraphSchema,
   createArchitectureGraph,
   createArchNode,
   descendantsOf,
   topoOrderNodes,
+  updateEnvironmentTargetLayout,
   wouldCreateCycle,
 } from "./architecture.js";
 
@@ -39,5 +41,55 @@ describe("architecture helpers", () => {
     expect(ordered.indexOf(sys.id)).toBeLessThan(ordered.indexOf(grp.id));
     expect(ordered.indexOf(grp.id)).toBeLessThan(ordered.indexOf(svc.id));
     expect(ordered).toHaveLength(graph.nodes.length);
+  });
+
+  it("parses old environments without target layout", () => {
+    const parsed = ArchitectureGraphSchema.parse({
+      id: "arch",
+      name: "Old graph",
+      environments: [{ id: "prod", name: "Production", kind: "cloud" }],
+    });
+    expect(parsed.environments[0]?.layout).toBeUndefined();
+  });
+
+  it("round-trips target pins and zone assignments", () => {
+    const graph = createArchitectureGraph("deployment");
+    graph.environments = [
+      {
+        id: "prod",
+        name: "Production",
+        kind: "cloud",
+        layout: {
+          "aws / ecs": { x: 48, y: 72, zone: "subnet:private" },
+          vercel: { x: 680, y: 120 },
+        },
+      },
+    ];
+    const parsed = ArchitectureGraphSchema.parse(JSON.parse(JSON.stringify(graph)));
+    expect(parsed.environments[0]?.layout).toEqual(graph.environments[0]?.layout);
+  });
+
+  it("updates and clears one target layout without disturbing other environments", () => {
+    const graph = createArchitectureGraph("deployment");
+    graph.environments = [
+      { id: "prod", name: "Production", kind: "cloud" },
+      { id: "stage", name: "Staging", kind: "cloud", layout: { ecs: { x: 1, y: 2 } } },
+    ];
+
+    const pinned = updateEnvironmentTargetLayout(graph, "prod", "ecs", {
+      x: 100,
+      y: 140,
+      zone: "vpc:main",
+    });
+    expect(pinned.environments[0]?.layout?.ecs).toEqual({
+      x: 100,
+      y: 140,
+      zone: "vpc:main",
+    });
+    expect(pinned.environments[1]).toBe(graph.environments[1]);
+
+    const cleared = updateEnvironmentTargetLayout(pinned, "prod", "ecs", null);
+    expect(cleared.environments[0]?.layout).toBeUndefined();
+    expect(cleared.environments[1]?.layout?.ecs).toEqual({ x: 1, y: 2 });
   });
 });

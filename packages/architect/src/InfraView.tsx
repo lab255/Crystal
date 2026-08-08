@@ -4,6 +4,7 @@ import {
   Controls,
   Handle,
   MarkerType,
+  NodeResizer,
   Panel,
   Position,
   ReactFlow,
@@ -12,15 +13,42 @@ import {
   useReactFlow,
   type Edge as RfEdge,
   type Node as RfNode,
+  type NodeChange,
   type NodeProps,
 } from "@xyflow/react";
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
-import { Cloud, Gauge, Globe2, GripVertical, Laptop, MapPin, Play, Plus, Server, Skull, Unplug, Waypoints, X } from "lucide-react";
+import {
+  createContext,
+  memo,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type DragEvent,
+} from "react";
+import {
+  Cloud,
+  Gauge,
+  Globe2,
+  GripVertical,
+  Laptop,
+  MapPin,
+  Play,
+  Plus,
+  Server,
+  Skull,
+  Unplug,
+  Waypoints,
+  X,
+} from "lucide-react";
 import {
   ARCH_KIND_OF_CATEGORY,
   createLocalEnvironment,
   isContainerKind,
+  topoOrderNodes,
   uid,
+  updateEnvironmentTargetLayout,
   updateNodePlacement,
   type ArchEnvironment,
   type ArchNode,
@@ -33,7 +61,7 @@ import { useNav } from "@crystal/client";
 import { Badge, Button, EmptyState, Input, Tooltip, cn } from "@crystal/ui";
 import { CodeNode, type CodeNodeData, type CodeRfNode } from "./codemap/CodeNode.js";
 import { InlineRename } from "./ContextMenu.js";
-import { addNode as opAddNode, updateNode } from "./graph-ops.js";
+import { absolutePosition as graphAbsolutePosition, addNode as opAddNode, updateNode } from "./graph-ops.js";
 import { DRAG_MIME, PALETTE_KINDS, Palette } from "./Palette.js";
 import { infraGroups, knownTargets, layerBands, placedEdges } from "./infra.js";
 import { detectedExternals, detectedInternalEdges, externalNodeId } from "./infra-deps.js";
@@ -61,11 +89,26 @@ import {
 /** dataTransfer type for dragging an unplaced component from the sidebar. */
 const INFRA_DRAG_MIME = "application/x-crystal-infra-node";
 
-/** Palette kinds that can actually be placed — grouping kinds, notes and
- *  persons are logical-only (people don't deploy anywhere). */
-const INFRA_PALETTE_KINDS = PALETTE_KINDS.filter(
+const ZONE_KINDS = ["vpc", "subnet", "securitygroup"] as const satisfies readonly ArchNodeKind[];
+type ZoneKind = (typeof ZONE_KINDS)[number];
+
+function isZoneKind(kind: ArchNodeKind): kind is ZoneKind {
+  return (ZONE_KINDS as readonly ArchNodeKind[]).includes(kind);
+}
+
+/** Palette components that can actually be placed — logical containers,
+ * notes and people do not deploy to targets. */
+const INFRA_COMPONENT_KINDS = PALETTE_KINDS.filter(
   (k) => !isContainerKind(k) && k !== "note" && k !== "person",
 );
+const INFRA_PALETTE_KINDS: readonly ArchNodeKind[] = [
+  ...INFRA_COMPONENT_KINDS,
+  ...ZONE_KINDS,
+];
+const INFRA_PALETTE_GROUPS = [
+  { label: "Components", kinds: INFRA_COMPONENT_KINDS },
+  { label: "Zones", kinds: ZONE_KINDS },
+] as const;
 
 interface GroupData extends Record<string, unknown> {
   target: string;
@@ -94,7 +137,7 @@ const InfraGroupNode = memo(function InfraGroupNode({ data }: NodeProps<GroupRfN
         allDead ? "border-danger/50" : "border-edge-strong",
       )}
     >
-      <div className="flex items-center gap-1.5 border-b border-dashed border-edge px-2.5 py-1.5">
+      <div className="infra-target-header flex cursor-grab items-center gap-1.5 border-b border-dashed border-edge px-2.5 py-1.5 active:cursor-grabbing">
         <Icon className={cn("h-3 w-3 shrink-0", allDead ? "text-danger" : "text-crystal-300")} />
         <span className="truncate text-[10.5px] font-semibold text-ink">{data.target}</span>
         <span className="shrink-0 text-[9px] text-ink-faint">
@@ -140,6 +183,80 @@ const InfraGroupNode = memo(function InfraGroupNode({ data }: NodeProps<GroupRfN
   );
 });
 
+interface ZoneData extends Record<string, unknown> {
+  zoneId: string;
+  kind: ZoneKind;
+  label: string;
+  accent: string;
+}
+type ZoneRfNode = RfNode<ZoneData>;
+
+interface ZoneActions {
+  resize: (
+    id: string,
+    position: { x: number; y: number },
+    size: { width: number; height: number },
+  ) => void;
+  remove: (id: string) => void;
+}
+
+const ZoneActionsContext = createContext<ZoneActions | null>(null);
+
+const ZoneNode = memo(function ZoneNode({ data, selected }: NodeProps<ZoneRfNode>) {
+  const actions = useContext(ZoneActionsContext);
+  const meta = KIND_META[data.kind];
+  const Icon = meta.icon;
+  return (
+    <div
+      className={cn(
+        "relative h-full w-full rounded-xl border-[1.5px] bg-surface-1/45",
+        selected ? "border-crystal-400" : "border-edge-strong",
+      )}
+      style={{
+        background: `color-mix(in srgb, ${data.accent} ${data.kind === "securitygroup" ? 9 : 5}%, var(--color-surface-1) 55%)`,
+        borderColor: selected ? undefined : `color-mix(in srgb, ${data.accent} 55%, var(--color-edge-strong))`,
+        borderStyle: data.kind === "securitygroup" ? "dotted" : "dashed",
+      }}
+    >
+      <NodeResizer
+        isVisible={selected}
+        minWidth={300}
+        minHeight={200}
+        lineClassName="!border-crystal-400/60"
+        handleClassName="!h-2 !w-2 !rounded-sm !border-none !bg-crystal-400"
+        onResizeEnd={(_event, params) =>
+          actions?.resize(
+            data.zoneId,
+            { x: params.x, y: params.y },
+            { width: params.width, height: params.height },
+          )
+        }
+      />
+      <div
+        className="infra-zone-header flex cursor-grab items-center gap-1.5 rounded-t-[11px] border-b border-dashed border-edge px-2.5 py-1.5 active:cursor-grabbing"
+        style={{ background: `color-mix(in srgb, ${data.accent} 11%, transparent)` }}
+      >
+        <Icon className="h-3.5 w-3.5 shrink-0" style={{ color: data.accent }} />
+        <span className="truncate text-xs font-semibold text-ink">{data.label}</span>
+        <span className="ml-auto shrink-0 text-[9px] uppercase tracking-wider text-ink-faint">
+          {meta.label}
+        </span>
+        <button
+          type="button"
+          className="nodrag flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-ink-faint hover:bg-surface-active hover:text-danger"
+          onClick={(event) => {
+            event.stopPropagation();
+            actions?.remove(data.zoneId);
+          }}
+          aria-label={`Delete zone ${data.label}`}
+        >
+          <X className="h-3 w-3" />
+        </button>
+      </div>
+    </div>
+  );
+});
+
 interface BandLabelData extends Record<string, unknown> {
   label: string;
 }
@@ -153,8 +270,13 @@ const BandLabelNode = memo(function BandLabelNode({ data }: NodeProps<BandLabelR
   );
 });
 
-const nodeTypes = { infragroup: InfraGroupNode, code: CodeNode, bandlabel: BandLabelNode };
-type InfraRfNode = GroupRfNode | CodeRfNode | BandLabelRfNode;
+const nodeTypes = {
+  zone: ZoneNode,
+  infragroup: InfraGroupNode,
+  code: CodeNode,
+  bandlabel: BandLabelNode,
+};
+type InfraRfNode = ZoneRfNode | GroupRfNode | CodeRfNode | BandLabelRfNode;
 
 const CELL_W = 190;
 const CELL_H = 58;
@@ -167,14 +289,102 @@ const SIM_TICK_MS = 600;
 const SIM_HISTORY_TICKS = 48;
 const GROUP_PAD = 14;
 const GROUP_HEADER = 32;
-const GROUPS_PER_ROW = 3;
 const GROUP_GAP = 56;
+const BAND_GAP = 104;
+const LAYOUT_TOP = 96;
+
+function zoneSize(kind: ZoneKind): { width: number; height: number } {
+  if (kind === "vpc") return { width: 760, height: 520 };
+  if (kind === "subnet") return { width: 560, height: 360 };
+  return { width: 500, height: 300 };
+}
+
+/** Absolute flow-space position for a live react-flow node at any nesting depth. */
+function rfAbsolutePosition(nodes: readonly RfNode[], nodeId: string): { x: number; y: number } {
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const seen = new Set<string>();
+  let node = byId.get(nodeId);
+  let x = 0;
+  let y = 0;
+  while (node && !seen.has(node.id)) {
+    seen.add(node.id);
+    x += node.position.x;
+    y += node.position.y;
+    node = node.parentId ? byId.get(node.parentId) : undefined;
+  }
+  return { x, y };
+}
+
+function rfNestingDepth(nodes: readonly RfNode[], nodeId: string): number {
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const seen = new Set<string>();
+  let node = byId.get(nodeId);
+  let depth = 0;
+  while (node?.parentId && !seen.has(node.id)) {
+    seen.add(node.id);
+    depth++;
+    node = byId.get(node.parentId);
+  }
+  return depth;
+}
+
+function canNestZone(child: ZoneKind, parent: ZoneKind): boolean {
+  return child === "subnet"
+    ? parent === "vpc"
+    : child === "securitygroup"
+      ? parent === "vpc" || parent === "subnet"
+      : false;
+}
+
+function adaptiveColumns(
+  count: number,
+  canvas: { width: number; height: number },
+  bandCount: number,
+  average: { width: number; height: number },
+): number {
+  if (count <= 1) return 1;
+  const usableWidth = Math.max(680, canvas.width - 220);
+  const bandHeight = Math.max(320, (canvas.height - LAYOUT_TOP) / Math.max(1, bandCount));
+  const aspect = usableWidth / bandHeight;
+  const target = Math.round(Math.sqrt(count * aspect * (average.height / average.width)));
+  return Math.max(1, Math.min(count, target));
+}
 
 /** Keep a pinned card inside its container — clear of the left edge and header. */
 function clampPin(at: { x: number; y: number }): { x: number; y: number } {
   return {
     x: Math.round(Math.max(4, at.x)),
     y: Math.round(Math.max(GROUP_HEADER + 4, at.y)),
+  };
+}
+
+/** Remove only the zone itself, preserving nested zones and assigned targets at root. */
+function deleteZoneFromGraph(graph: ArchitectureGraph, zoneId: string): ArchitectureGraph {
+  const zone = graph.nodes.find((node) => node.id === zoneId && isZoneKind(node.kind));
+  if (!zone) return graph;
+  const zoneAbs = graphAbsolutePosition(graph, zoneId);
+  return {
+    ...graph,
+    nodes: graph.nodes
+      .filter((node) => node.id !== zoneId)
+      .map((node) =>
+        node.parentId === zoneId
+          ? { ...node, parentId: null, position: graphAbsolutePosition(graph, node.id) }
+          : node,
+      ),
+    edges: graph.edges.filter((edge) => edge.source !== zoneId && edge.target !== zoneId),
+    environments: graph.environments.map((environment) => {
+      if (!environment.layout) return environment;
+      let changed = false;
+      const layout = Object.fromEntries(
+        Object.entries(environment.layout).map(([target, pin]) => {
+          if (pin.zone !== zoneId) return [target, pin];
+          changed = true;
+          return [target, { x: zoneAbs.x + pin.x, y: zoneAbs.y + pin.y }];
+        }),
+      );
+      return changed ? { ...environment, layout } : environment;
+    }),
   };
 }
 
@@ -219,10 +429,47 @@ function InfraInner({
   const [newEnvKind, setNewEnvKind] = useState<ArchEnvironment["kind"]>("cloud");
   const [targetPrompt, setTargetPrompt] = useState<TargetPrompt | null>(null);
   const { screenToFlowPosition } = useReactFlow();
+  const canvasRef = useRef<HTMLDivElement>(null);
+  const [canvasSize, setCanvasSize] = useState({ width: 1200, height: 760 });
+
+  useEffect(() => {
+    const element = canvasRef.current;
+    if (!element) return;
+    const measure = () => {
+      const rect = element.getBoundingClientRect();
+      setCanvasSize({ width: Math.round(rect.width), height: Math.round(rect.height) });
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [graph.environments.length]);
 
   // Keep a ref of the latest graph so the sim tick always reads fresh state.
   const graphRef = useRef(graph);
   graphRef.current = graph;
+
+  const resizeZone = useCallback(
+    (
+      id: string,
+      position: { x: number; y: number },
+      size: { width: number; height: number },
+    ) => {
+      onChange(updateNode(graphRef.current, id, { position, size }));
+    },
+    [onChange],
+  );
+  const removeZone = useCallback(
+    (id: string) => {
+      onChange(deleteZoneFromGraph(graphRef.current, id));
+      setSelectedId((selected) => (selected === id ? null : selected));
+    },
+    [onChange],
+  );
+  const zoneActions = useMemo(
+    () => ({ resize: resizeZone, remove: removeZone }),
+    [resizeZone, removeZone],
+  );
 
   /* ---- traffic simulation (runs over the whole logical graph; the map
      decorates whatever is placed in the active environment) ---- */
@@ -295,6 +542,11 @@ function InfraInner({
     graph.environments[0] ??
     null;
 
+  const zones = useMemo(
+    () => topoOrderNodes(graph).filter((node) => isZoneKind(node.kind)),
+    [graph],
+  );
+
   const { groups, unplaced } = useMemo(
     () => infraGroups(graph, activeEnv?.id ?? ""),
     [graph, activeEnv?.id],
@@ -364,109 +616,194 @@ function InfraInner({
   const scene = useMemo(() => {
     if (!activeEnv) return { nodes: [] as InfraRfNode[], edges: [] as RfEdge[] };
 
-    const nodes: InfraRfNode[] = [];
+    const zoneNodes: ZoneRfNode[] = [];
+    const bandNodes: BandLabelRfNode[] = [];
+    const targetNodes: GroupRfNode[] = [];
+    const componentNodes: CodeRfNode[] = [];
     const isLocal = activeEnv.kind === "local";
     const cellH = simOn ? CELL_H_SIM : CELL_H;
-    let bandY = 0;
+    const targetLayout = activeEnv.layout ?? {};
+    const zoneIds = new Set(zones.map((zone) => zone.id));
+    let rootBottom = LAYOUT_TOP;
 
-    // Targets stack in the same top-down traffic bands as the layered layout.
-    for (const band of layerBands(groups)) {
-      nodes.push({
-        id: `band:${band.layer ?? "other"}`,
-        type: "bandlabel",
-        position: { x: -110, y: bandY + 6 },
-        draggable: false,
-        selectable: false,
-        data: { label: band.layer ?? "other" },
+    // Deployment zones are manual architecture nodes. The core topological
+    // order keeps parents before nested subnet/security-group children.
+    for (const zone of zones) {
+      if (!isZoneKind(zone.kind)) continue;
+      const parentId = zone.parentId && zoneIds.has(zone.parentId) ? zone.parentId : undefined;
+      const size = zone.size ?? zoneSize(zone.kind);
+      const position = parentId ? zone.position : graphAbsolutePosition(graph, zone.id);
+      zoneNodes.push({
+        id: zone.id,
+        type: "zone",
+        ...(parentId ? { parentId } : {}),
+        position,
+        width: size.width,
+        height: size.height,
+        zIndex: -2,
+        dragHandle: ".infra-zone-header",
+        selected: selectedId === zone.id,
+        data: {
+          zoneId: zone.id,
+          kind: zone.kind,
+          label: zone.label,
+          accent: accentOf(zone),
+        },
       });
-
-      let cursorX = 0;
-      let cursorY = bandY;
-      let rowMaxH = 0;
-      band.groups.forEach((group, i) => {
-        const n = group.nodes.length;
-        // Cards the user dragged carry a pinned position on the placement;
-        // the rest grid-pack. The container stretches to hold the pins.
-        const members = group.nodes.map((node) => {
-          const p = node.placements[activeEnv.id];
-          const pinned = p?.x != null && p?.y != null ? { x: p.x, y: p.y } : null;
-          return { node, pinned };
-        });
-        const packedCount = members.filter((m) => !m.pinned).length;
-        const cols = Math.max(1, Math.min(3, Math.ceil(Math.sqrt(Math.max(packedCount, 1)))));
-        const rows = Math.ceil(packedCount / cols);
-        let width = GROUP_PAD * 2 + cols * CELL_W + (cols - 1) * CELL_GAP;
-        let height =
-          GROUP_HEADER + GROUP_PAD + rows * cellH + Math.max(rows - 1, 0) * CELL_GAP + GROUP_PAD;
-        for (const m of members) {
-          if (!m.pinned) continue;
-          width = Math.max(width, m.pinned.x + CELL_W + GROUP_PAD);
-          height = Math.max(height, m.pinned.y + cellH + GROUP_PAD);
-        }
-
-        if (i > 0 && i % GROUPS_PER_ROW === 0) {
-          cursorX = 0;
-          cursorY += rowMaxH + GROUP_GAP;
-          rowMaxH = 0;
-        }
-        const groupId = `target:${group.target}`;
-        nodes.push({
-          id: groupId,
-          type: "infragroup",
-          position: { x: cursorX, y: cursorY },
-          width,
-          height,
-          zIndex: -1,
-          draggable: false,
-          selectable: false,
-          data: {
-            target: group.target,
-            count: n,
-            local: isLocal,
-            memberIds: group.nodes.map((node) => node.id),
-            simActive: simOn,
-            deadCount: 0,
-          },
-        });
-        let slot = 0;
-        members.forEach(({ node, pinned }) => {
-          const col = slot % cols;
-          const row = Math.floor(slot / cols);
-          if (!pinned) slot++;
-          nodes.push({
-            id: node.id,
-            type: "code",
-            parentId: groupId,
-            draggable: true,
-            position: pinned ?? {
-              x: GROUP_PAD + col * (CELL_W + CELL_GAP),
-              y: GROUP_HEADER + GROUP_PAD + row * (cellH + CELL_GAP),
-            },
-            selected: node.id === selectedId,
-            data: {
-              title: node.label,
-              subtitle: node.placements[activeEnv.id]?.runtime || KIND_META[node.kind].label,
-              accent: accentOf(node),
-              icon: KIND_META[node.kind].icon,
-              diff: diffMarks?.[node.id],
-            },
-          });
-        });
-        cursorX += width + GROUP_GAP;
-        rowMaxH = Math.max(rowMaxH, height);
-      });
-      bandY = cursorY + rowMaxH + GROUP_GAP + 8;
+      const abs = graphAbsolutePosition(graph, zone.id);
+      rootBottom = Math.max(rootBottom, abs.y + size.height);
     }
 
-    // Detected external services sit in their own synthetic band at the
-    // bottom — where the traffic ends up, past the data tier.
-    if (detected.externals.length > 0) {
-      nodes.push({
-        id: "band:external",
+    type SceneGroup = (typeof groups)[number];
+    const geometryFor = (group: SceneGroup) => {
+      // Cards the user dragged carry a pinned position on the placement;
+      // the rest grid-pack. The container stretches to hold the pins.
+      const members = group.nodes.map((node) => {
+        const p = node.placements[activeEnv.id];
+        const pinned = p?.x != null && p?.y != null ? { x: p.x, y: p.y } : null;
+        return { node, pinned };
+      });
+      const packedCount = members.filter((m) => !m.pinned).length;
+      const cols = Math.max(1, Math.min(3, Math.ceil(Math.sqrt(Math.max(packedCount, 1)))));
+      const rows = Math.ceil(packedCount / cols);
+      let width = GROUP_PAD * 2 + cols * CELL_W + (cols - 1) * CELL_GAP;
+      let height =
+        GROUP_HEADER + GROUP_PAD + rows * cellH + Math.max(rows - 1, 0) * CELL_GAP + GROUP_PAD;
+      for (const m of members) {
+        if (!m.pinned) continue;
+        width = Math.max(width, m.pinned.x + CELL_W + GROUP_PAD);
+        height = Math.max(height, m.pinned.y + cellH + GROUP_PAD);
+      }
+      return { group, members, cols, width, height };
+    };
+
+    const appendTarget = (
+      geometry: ReturnType<typeof geometryFor>,
+      position: { x: number; y: number },
+      parentId?: string,
+    ) => {
+      const { group, members, cols, width, height } = geometry;
+      const groupId = `target:${group.target}`;
+      targetNodes.push({
+        id: groupId,
+        type: "infragroup",
+        ...(parentId ? { parentId } : {}),
+        position,
+        width,
+        height,
+        zIndex: -1,
+        draggable: true,
+        selectable: false,
+        deletable: false,
+        dragHandle: ".infra-target-header",
+        data: {
+          target: group.target,
+          count: group.nodes.length,
+          local: isLocal,
+          memberIds: group.nodes.map((node) => node.id),
+          simActive: simOn,
+          deadCount: 0,
+        },
+      });
+      const parentAbs = parentId
+        ? graphAbsolutePosition(graph, parentId)
+        : { x: 0, y: 0 };
+      rootBottom = Math.max(rootBottom, parentAbs.y + position.y + height);
+      let slot = 0;
+      for (const { node, pinned } of members) {
+        const col = slot % cols;
+        const row = Math.floor(slot / cols);
+        if (!pinned) slot++;
+        componentNodes.push({
+          id: node.id,
+          type: "code",
+          parentId: groupId,
+          draggable: true,
+          deletable: false,
+          position: pinned ?? {
+            x: GROUP_PAD + col * (CELL_W + CELL_GAP),
+            y: GROUP_HEADER + GROUP_PAD + row * (cellH + CELL_GAP),
+          },
+          selected: node.id === selectedId,
+          data: {
+            title: node.label,
+            subtitle: node.placements[activeEnv.id]?.runtime || KIND_META[node.kind].label,
+            accent: accentOf(node),
+            icon: KIND_META[node.kind].icon,
+            diff: diffMarks?.[node.id],
+          },
+        });
+      }
+    };
+
+    // A pin opts a target out of fallback packing. Its coordinates are
+    // parent-relative when it names a live zone.
+    for (const group of groups) {
+      const pin = targetLayout[group.target];
+      if (!pin) continue;
+      const parentId = pin.zone && zoneIds.has(pin.zone) ? pin.zone : undefined;
+      appendTarget(geometryFor(group), { x: pin.x, y: pin.y }, parentId);
+    }
+
+    // Unpinned targets retain deterministic band/grid packing, with the
+    // column count derived from the measured canvas aspect instead of fixed.
+    const fallbackBands = layerBands(groups)
+      .map((band) => ({
+        ...band,
+        groups: band.groups.filter((group) => !targetLayout[group.target]),
+      }))
+      .filter((band) => band.groups.length > 0);
+    const usableWidth = Math.max(680, canvasSize.width - 220);
+    let bandY = LAYOUT_TOP;
+    for (const band of fallbackBands) {
+      const geometries = band.groups.map(geometryFor);
+      const average = {
+        width: geometries.reduce((sum, item) => sum + item.width, 0) / geometries.length,
+        height: geometries.reduce((sum, item) => sum + item.height, 0) / geometries.length,
+      };
+      const columns = adaptiveColumns(
+        geometries.length,
+        canvasSize,
+        fallbackBands.length,
+        average,
+      );
+      bandNodes.push({
+        id: `band:${band.layer ?? "other"}`,
         type: "bandlabel",
-        position: { x: -110, y: bandY + 6 },
+        position: { x: 24, y: bandY - 24 },
         draggable: false,
         selectable: false,
+        deletable: false,
+        data: { label: band.layer ?? "other" },
+      });
+      let cursorY = bandY;
+      for (let rowStart = 0; rowStart < geometries.length; rowStart += columns) {
+        const row = geometries.slice(rowStart, rowStart + columns);
+        const rowWidth =
+          row.reduce((sum, item) => sum + item.width, 0) +
+          Math.max(0, row.length - 1) * GROUP_GAP;
+        const rowHeight = Math.max(...row.map((item) => item.height));
+        let cursorX = Math.max(48, (usableWidth - rowWidth) / 2);
+        for (const geometry of row) {
+          appendTarget(geometry, { x: Math.round(cursorX), y: Math.round(cursorY) });
+          cursorX += geometry.width + GROUP_GAP;
+        }
+        cursorY += rowHeight + GROUP_GAP;
+      }
+      bandY = cursorY - GROUP_GAP + BAND_GAP;
+    }
+
+    // Detected external services follow every real root/zone arrangement so
+    // they never cover a user pin.
+    if (detected.externals.length > 0) {
+      const externalY = Math.max(bandY, rootBottom + BAND_GAP);
+      bandNodes.push({
+        id: "band:external",
+        type: "bandlabel",
+        position: { x: 24, y: externalY - 24 },
+        draggable: false,
+        selectable: false,
+        deletable: false,
         data: { label: "external" },
       });
       const n = detected.externals.length;
@@ -475,15 +812,16 @@ function InfraInner({
       const width = GROUP_PAD * 2 + cols * CELL_W + (cols - 1) * CELL_GAP;
       const height = GROUP_HEADER + GROUP_PAD + rows * CELL_H + (rows - 1) * CELL_GAP + GROUP_PAD;
       const groupId = "target:__detected__";
-      nodes.push({
+      targetNodes.push({
         id: groupId,
         type: "infragroup",
-        position: { x: 0, y: bandY },
+        position: { x: Math.max(48, (usableWidth - width) / 2), y: externalY },
         width,
         height,
         zIndex: -1,
         draggable: false,
         selectable: false,
+        deletable: false,
         data: {
           target: "Detected from code",
           count: n,
@@ -497,12 +835,13 @@ function InfraInner({
       detected.externals.forEach(({ dep }, j) => {
         const kind = ARCH_KIND_OF_CATEGORY[dep.category];
         const meta = KIND_META[kind];
-        nodes.push({
+        componentNodes.push({
           id: externalNodeId(dep),
           type: "code",
           parentId: groupId,
           draggable: false,
           selectable: false,
+          deletable: false,
           position: {
             x: GROUP_PAD + (j % cols) * (CELL_W + CELL_GAP),
             y: GROUP_HEADER + GROUP_PAD + Math.floor(j / cols) * (CELL_H + CELL_GAP),
@@ -519,6 +858,14 @@ function InfraInner({
         });
       });
     }
+
+    // React-flow requires every parent before its children.
+    const nodes: InfraRfNode[] = [
+      ...zoneNodes,
+      ...bandNodes,
+      ...targetNodes,
+      ...componentNodes,
+    ];
 
     const edges: RfEdge[] = placedEdges(graph, activeEnv.id).map((e) => {
       const style = EDGE_KIND_STYLE[e.kind];
@@ -581,12 +928,31 @@ function InfraInner({
       }
     }
     return { nodes, edges };
-  }, [graph, groups, activeEnv, selectedId, simOn, detected]);
+  }, [graph, groups, zones, activeEnv, selectedId, simOn, detected, diffMarks, canvasSize]);
 
   // Drag needs live node state; the derived scene resets it (drop snaps back
   // unless the placement actually changed, in which case the scene moves it).
-  const [nodes, setNodes, onNodesChange] = useNodesState<InfraRfNode>(scene.nodes);
+  const [nodes, setNodes, applyNodesChange] = useNodesState<InfraRfNode>(scene.nodes);
   useEffect(() => setNodes(scene.nodes), [scene, setNodes]);
+
+  const onNodesChange = useCallback(
+    (changes: NodeChange<InfraRfNode>[]) => {
+      applyNodesChange(changes);
+      const removedZoneIds = changes
+        .filter((change) => change.type === "remove")
+        .map((change) => change.id)
+        .filter((id) => {
+          const node = graphRef.current.nodes.find((candidate) => candidate.id === id);
+          return node != null && isZoneKind(node.kind);
+        });
+      if (removedZoneIds.length === 0) return;
+      let next = graphRef.current;
+      for (const id of removedZoneIds) next = deleteZoneFromGraph(next, id);
+      onChange(next);
+      setSelectedId((selected) => (selected && removedZoneIds.includes(selected) ? null : selected));
+    },
+    [applyNodesChange, onChange],
+  );
 
   // Sim decorations merge into live node state (never a scene rebuild), so a
   // tick landing mid-drag doesn't snap the dragged card back.
@@ -663,13 +1029,14 @@ function InfraInner({
       for (const n of nodes) {
         if (n.type !== "infragroup") continue;
         if ((n.data as GroupData).detected) continue; // not a real deployment target
+        const abs = rfAbsolutePosition(nodes, n.id);
         const w = n.width ?? 0;
         const h = n.height ?? 0;
         if (
-          point.x >= n.position.x &&
-          point.x <= n.position.x + w &&
-          point.y >= n.position.y &&
-          point.y <= n.position.y + h
+          point.x >= abs.x &&
+          point.x <= abs.x + w &&
+          point.y >= abs.y &&
+          point.y <= abs.y + h
         ) {
           return n as GroupRfNode;
         }
@@ -679,14 +1046,95 @@ function InfraInner({
     [nodes],
   );
 
+  /** Deepest eligible deployment zone whose absolute rect contains a point. */
+  const zoneAtPoint = useCallback(
+    (
+      point: { x: number; y: number },
+      childKind?: ZoneKind,
+      excludeId?: string,
+    ): ZoneRfNode | null => {
+      let best: ZoneRfNode | null = null;
+      let bestDepth = -1;
+      for (const candidate of nodes) {
+        if (candidate.type !== "zone" || candidate.id === excludeId) continue;
+        const data = candidate.data as ZoneData;
+        if (childKind && !canNestZone(childKind, data.kind)) continue;
+        if (excludeId) {
+          let parentId = candidate.parentId;
+          let excludedDescendant = false;
+          while (parentId) {
+            if (parentId === excludeId) {
+              excludedDescendant = true;
+              break;
+            }
+            parentId = nodes.find((node) => node.id === parentId)?.parentId;
+          }
+          if (excludedDescendant) continue;
+        }
+        const abs = rfAbsolutePosition(nodes, candidate.id);
+        const width = candidate.measured?.width ?? candidate.width ?? 0;
+        const height = candidate.measured?.height ?? candidate.height ?? 0;
+        if (
+          point.x < abs.x ||
+          point.x > abs.x + width ||
+          point.y < abs.y ||
+          point.y > abs.y + height
+        ) {
+          continue;
+        }
+        const depth = rfNestingDepth(nodes, candidate.id);
+        if (depth > bestDepth) {
+          best = candidate as ZoneRfNode;
+          bestDepth = depth;
+        }
+      }
+      return best;
+    },
+    [nodes],
+  );
+
   const onNodeDragStop = useCallback(
     (evt: MouseEvent | globalThis.TouchEvent, node: RfNode) => {
+      if (node.type === "zone") {
+        const arch = graphRef.current.nodes.find((candidate) => candidate.id === node.id);
+        if (!arch || !isZoneKind(arch.kind)) return;
+        const abs = rfAbsolutePosition(nodes, node.id);
+        const center = {
+          x: abs.x + (node.measured?.width ?? node.width ?? zoneSize(arch.kind).width) / 2,
+          y: abs.y + (node.measured?.height ?? node.height ?? zoneSize(arch.kind).height) / 2,
+        };
+        const parent = zoneAtPoint(center, arch.kind, node.id);
+        const parentAbs = parent ? rfAbsolutePosition(nodes, parent.id) : { x: 0, y: 0 };
+        onChange(
+          updateNode(graphRef.current, node.id, {
+            parentId: parent?.id ?? null,
+            position: { x: abs.x - parentAbs.x, y: abs.y - parentAbs.y },
+          }),
+        );
+        return;
+      }
+      if (node.type === "infragroup") {
+        const data = node.data as GroupData;
+        if (data.detected || !activeEnv) return;
+        const abs = rfAbsolutePosition(nodes, node.id);
+        const center = {
+          x: abs.x + (node.measured?.width ?? node.width ?? CELL_W) / 2,
+          y: abs.y + (node.measured?.height ?? node.height ?? CELL_H) / 2,
+        };
+        const zone = zoneAtPoint(center);
+        const zoneAbs = zone ? rfAbsolutePosition(nodes, zone.id) : { x: 0, y: 0 };
+        onChange(
+          updateEnvironmentTargetLayout(graphRef.current, activeEnv.id, data.target, {
+            x: Math.round(abs.x - zoneAbs.x),
+            y: Math.round(abs.y - zoneAbs.y),
+            ...(zone ? { zone: zone.id } : {}),
+          }),
+        );
+        return;
+      }
       if (node.type !== "code") return;
       const parent = nodes.find((n) => n.id === node.parentId);
-      const abs = {
-        x: (parent?.position.x ?? 0) + node.position.x,
-        y: (parent?.position.y ?? 0) + node.position.y,
-      };
+      const abs = rfAbsolutePosition(nodes, node.id);
       const center = {
         x: abs.x + (node.measured?.width ?? node.width ?? CELL_W) / 2,
         y: abs.y + (node.measured?.height ?? node.height ?? CELL_H) / 2,
@@ -696,7 +1144,8 @@ function InfraInner({
       const current = parent ? (parent.data as GroupData).target : null;
       if (target && hit && target !== current) {
         // Crossed into another target — re-place, pinned where it landed.
-        placeOn(node.id, target, { x: abs.x - hit.position.x, y: abs.y - hit.position.y });
+        const hitAbs = rfAbsolutePosition(nodes, hit.id);
+        placeOn(node.id, target, { x: abs.x - hitAbs.x, y: abs.y - hitAbs.y });
         return;
       }
       if (target && target === current) {
@@ -712,7 +1161,7 @@ function InfraInner({
       // Nothing changed — snap back to the derived layout.
       setNodes(scene.nodes);
     },
-    [nodes, scene, setNodes, groupAtPoint, placeOn],
+    [nodes, scene, setNodes, groupAtPoint, zoneAtPoint, placeOn, activeEnv, onChange],
   );
 
   /* ---- HTML5 drops: the "Unplaced" sidebar (existing node id) and the
@@ -737,12 +1186,53 @@ function InfraInner({
     [graph, onChange],
   );
 
+  const addZoneAt = useCallback(
+    (kind: ZoneKind, point: { x: number; y: number }, parent?: ZoneRfNode | null): string => {
+      const size = zoneSize(kind);
+      const parentAbs = parent ? rfAbsolutePosition(nodes, parent.id) : { x: 0, y: 0 };
+      const position = {
+        x: Math.round(point.x - size.width / 2 - parentAbs.x),
+        y: Math.round(point.y - GROUP_HEADER - parentAbs.y),
+      };
+      const { graph: withNode, node } = opAddNode(
+        graph,
+        kind,
+        `New ${KIND_META[kind].label.toLowerCase()}`,
+        position,
+        parent?.id ?? null,
+      );
+      onChange(updateNode(withNode, node.id, { size }));
+      setSelectedId(node.id);
+      return node.id;
+    },
+    [graph, nodes, onChange],
+  );
+
+  const onPaletteAdd = useCallback(
+    (kind: ArchNodeKind) => {
+      if (!isZoneKind(kind)) {
+        addComponent(kind);
+        return;
+      }
+      const rect = canvasRef.current?.getBoundingClientRect();
+      const point = rect
+        ? screenToFlowPosition({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 })
+        : { x: 0, y: 0 };
+      addZoneAt(kind, point);
+    },
+    [addComponent, addZoneAt, screenToFlowPosition],
+  );
+
   const onCanvasDrop = useCallback(
     (evt: DragEvent) => {
       const point = screenToFlowPosition({ x: evt.clientX, y: evt.clientY });
       const hit = groupAtPoint(point);
+      const hitAbs = hit ? rfAbsolutePosition(nodes, hit.id) : null;
       const cardAt = hit
-        ? { x: point.x - hit.position.x - CELL_W / 2, y: point.y - hit.position.y - CELL_H / 2 }
+        ? {
+            x: point.x - (hitAbs?.x ?? 0) - CELL_W / 2,
+            y: point.y - (hitAbs?.y ?? 0) - CELL_H / 2,
+          }
         : undefined;
       const nodeId = evt.dataTransfer.getData(INFRA_DRAG_MIME);
       if (nodeId) {
@@ -754,6 +1244,10 @@ function InfraInner({
       const kind = evt.dataTransfer.getData(DRAG_MIME) as ArchNodeKind;
       if (!kind || !INFRA_PALETTE_KINDS.includes(kind) || !activeEnv) return;
       evt.preventDefault();
+      if (isZoneKind(kind)) {
+        addZoneAt(kind, point, zoneAtPoint(point, kind));
+        return;
+      }
       // Create + place in ONE graph change so undo/persistence see a single edit.
       const { graph: next, node } = opAddNode(
         graph,
@@ -777,25 +1271,18 @@ function InfraInner({
         setTargetPrompt({ x: evt.clientX, y: evt.clientY, nodeId: node.id });
       }
     },
-    [screenToFlowPosition, groupAtPoint, placeOn, graph, onChange, activeEnv],
+    [
+      screenToFlowPosition,
+      groupAtPoint,
+      nodes,
+      placeOn,
+      graph,
+      onChange,
+      activeEnv,
+      addZoneAt,
+      zoneAtPoint,
+    ],
   );
-
-  /** Drop zone used by the empty states (no groups yet → first target). */
-  const emptyDropProps = {
-    onDragOver: (e: DragEvent) => {
-      if (!acceptsCanvasDrag(e)) return;
-      e.preventDefault();
-      e.dataTransfer.dropEffect = "move";
-    },
-    onDrop: (e: DragEvent) => {
-      const existing = e.dataTransfer.getData(INFRA_DRAG_MIME);
-      const kind = e.dataTransfer.getData(DRAG_MIME) as ArchNodeKind;
-      const nodeId = existing || (kind && INFRA_PALETTE_KINDS.includes(kind) ? addComponent(kind) : "");
-      if (!nodeId) return;
-      e.preventDefault();
-      setTargetPrompt({ x: e.clientX, y: e.clientY, nodeId });
-    },
-  };
 
   const selectedNode = graph.nodes.find((n) => n.id === selectedId) ?? null;
 
@@ -835,7 +1322,7 @@ function InfraInner({
   return (
     <SimActionsContext.Provider value={simActions}>
     <div className="flex h-full min-h-0">
-      <div className="relative min-w-0 flex-1">
+      <div ref={canvasRef} className="relative min-w-0 flex-1">
         {/* Environment switcher */}
         <div className="absolute left-3 top-3 z-10 flex max-w-[calc(100%-1.5rem)] flex-wrap items-center gap-1 rounded-xl border border-edge bg-surface-2/95 p-1 text-xs shadow-xl shadow-black/30 backdrop-blur">
           {graph.environments.map((env) => (
@@ -954,17 +1441,10 @@ function InfraInner({
         {/* Palette — new components drag onto a target (or click to add, then
             place from the sidebar). Outside the flow so the empty state has it too. */}
         <div className="absolute left-3 top-1/2 z-10 -translate-y-1/2">
-          <Palette kinds={INFRA_PALETTE_KINDS} onAdd={addComponent} />
+          <Palette groups={INFRA_PALETTE_GROUPS} onAdd={onPaletteAdd} />
         </div>
 
-        {groups.length === 0 ? (
-          <div className="h-full" {...emptyDropProps}>
-            <EmptyState icon={Server} title={`Nothing placed in ${activeEnv?.name ?? "this environment"}`}>
-              Drag a component in from the right (or drop it here to name its first deployment
-              target) to start the service map.
-            </EmptyState>
-          </div>
-        ) : (
+        <ZoneActionsContext.Provider value={zoneActions}>
           <ReactFlow
             key={activeEnv?.id}
             nodes={nodes}
@@ -973,7 +1453,7 @@ function InfraInner({
             onNodesChange={onNodesChange}
             onNodeDragStop={onNodeDragStop}
             onNodeClick={(_e, n) => {
-              if (n.type === "code") setSelectedId(n.id);
+              if (n.type === "code" || n.type === "zone") setSelectedId(n.id);
             }}
             onPaneClick={() => setSelectedId(null)}
             onDrop={onCanvasDrop}
@@ -991,7 +1471,12 @@ function InfraInner({
             proOptions={{ hideAttribution: true }}
             className="bg-surface-0"
           >
-            <Background variant={BackgroundVariant.Dots} gap={22} size={1.25} color="var(--color-edge-strong)" />
+            <Background
+              variant={BackgroundVariant.Dots}
+              gap={22}
+              size={1.25}
+              color="var(--color-edge-strong)"
+            />
             <Controls
               position="bottom-left"
               showInteractive={false}
@@ -1013,7 +1498,16 @@ function InfraInner({
               </Panel>
             ) : null}
           </ReactFlow>
-        )}
+        </ZoneActionsContext.Provider>
+
+        {groups.length === 0 && zones.length === 0 ? (
+          <div className="pointer-events-none absolute inset-0 z-[5]">
+            <EmptyState icon={Server} title={`Nothing placed in ${activeEnv?.name ?? "this environment"}`}>
+              Drag a component or zone onto the canvas. Components dropped on empty space can
+              name their first deployment target.
+            </EmptyState>
+          </div>
+        ) : null}
 
         {targetPrompt ? (
           <InlineRename
@@ -1032,7 +1526,7 @@ function InfraInner({
       </div>
 
       <aside className="flex w-72 shrink-0 flex-col border-l border-edge bg-surface-1">
-        {selectedNode && activeEnv ? (
+        {selectedNode && activeEnv && !isZoneKind(selectedNode.kind) ? (
           <PlacementEditor
             key={`${selectedNode.id}:${activeEnv.id}`}
             node={selectedNode}

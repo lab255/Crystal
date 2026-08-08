@@ -82,12 +82,24 @@ export const DEFAULT_LAYER_OF_KIND: Partial<Record<ArchNodeKind, ArchLayer>> = {
   container: "service",
 };
 
+/** Persisted placement of one deployment target on the infrastructure canvas. */
+export const ArchTargetLayoutSchema = z.object({
+  /** Root-canvas coordinates, or parent-relative coordinates when `zone` is set. */
+  x: z.number(),
+  y: z.number(),
+  /** Manual VPC/subnet/security-group node containing this target. */
+  zone: z.string().optional(),
+});
+export type ArchTargetLayout = z.infer<typeof ArchTargetLayoutSchema>;
+
 /** A deployment environment the architecture runs in (dev/staging/prod…). */
 export const ArchEnvironmentSchema = z.object({
   id: z.string(),
   name: z.string(),
   /** Local development vs deployed cloud infrastructure. */
   kind: z.enum(["local", "cloud"]).default("local"),
+  /** Target name → free-arrangement pin in this environment's deployment view. */
+  layout: z.record(ArchTargetLayoutSchema).optional(),
 });
 export type ArchEnvironment = z.infer<typeof ArchEnvironmentSchema>;
 
@@ -386,6 +398,27 @@ export function updateNodePlacement(
         return { ...n, placements: rest };
       }
       return { ...n, placements: { ...n.placements, [envId]: placement } };
+    }),
+  };
+}
+
+/** Pin, move, zone, or unpin one deployment target in one environment. */
+export function updateEnvironmentTargetLayout(
+  graph: ArchitectureGraph,
+  envId: string,
+  target: string,
+  layout: ArchTargetLayout | null,
+): ArchitectureGraph {
+  return {
+    ...graph,
+    environments: graph.environments.map((environment) => {
+      if (environment.id !== envId) return environment;
+      const nextLayout = { ...(environment.layout ?? {}) };
+      if (layout) nextLayout[target] = layout;
+      else delete nextLayout[target];
+      if (Object.keys(nextLayout).length > 0) return { ...environment, layout: nextLayout };
+      const { layout: _, ...withoutLayout } = environment;
+      return withoutLayout;
     }),
   };
 }
