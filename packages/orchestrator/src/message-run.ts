@@ -18,7 +18,12 @@ export async function messageRun(
   client: BridgeClient,
   run: AgentRun,
   text: string,
-): Promise<{ queued: boolean; runId?: string | null }> {
+): Promise<{
+  queued: boolean;
+  /** Generic route only: the delivery truth — `recorded` = NOT delivered. */
+  status?: "resumed" | "queued" | "recorded";
+  runId?: string | null;
+}> {
   const workflowId = workflowIdOfRun(run);
   if (workflowId) {
     const { queued } = await client.request("workflow.message", { workflowId, text });
@@ -29,6 +34,6 @@ export async function messageRun(
     const { queued } = await client.request("hub.message", { programId, text });
     return { queued };
   }
-  const { queued, runId } = await client.request("agent.message", { runId: run.id, text });
-  return { queued, runId };
+  const { status, runId } = await client.request("agent.message", { runId: run.id, text });
+  return { queued: status === "queued", status, runId };
 }

@@ -145,13 +145,14 @@ export async function changedFilesStatus(
   ref: string,
 ): Promise<{ path: string; status: "added" | "modified" | "deleted" }[]> {
   const cwd = resolveInRoot(root, repoRel || ".");
+  await gitResolveRef(cwd, ref); // loud on a typo'd/unfetched ref — see changedFiles
   let target = ref;
   try {
     target = (await runGit(cwd, ["merge-base", ref, "HEAD"])).trim() || ref;
   } catch {
     /* no merge-base — diff against the ref itself */
   }
-  const out = await runGit(cwd, ["diff", "--name-status", "-M", target]).catch(() => "");
+  const out = await runGit(cwd, ["diff", "--name-status", "-M", target]);
   const files: { path: string; status: "added" | "modified" | "deleted" }[] = [];
   for (const line of out.split("\n")) {
     if (!line.trim()) continue;
@@ -175,23 +176,29 @@ export async function changedFiles(
   ref?: string,
   ofRef?: string,
 ): Promise<{ files: string[]; base: string | null }> {
+  // User-supplied refs resolve FIRST and failures propagate: a typo'd branch
+  // must error like the vs review does, never read as "no changes" — an empty
+  // diff lens is indistinguishable from a clean branch and gets reviews
+  // approved on false evidence.
   if (ofRef) {
     // The committed changes `ofRef` itself introduced since forking from
     // HEAD — three-dot, so files only the main line touched stay out. This
     // is "what would this track branch merge", the other diffs' opposite.
     const cwd = resolveInRoot(root, repoRel || ".");
-    const out = await runGit(cwd, ["diff", "--name-only", `HEAD...${ofRef}`]).catch(() => "");
+    await gitResolveRef(cwd, ofRef);
+    const out = await runGit(cwd, ["diff", "--name-only", `HEAD...${ofRef}`]);
     return { files: out.split("\n").filter(Boolean), base: ofRef };
   }
   if (ref) {
     const cwd = resolveInRoot(root, repoRel || ".");
+    await gitResolveRef(cwd, ref);
     let target = ref;
     try {
       target = (await runGit(cwd, ["merge-base", ref, "HEAD"])).trim() || ref;
     } catch {
       /* no merge-base — diff against the ref itself */
     }
-    const out = await runGit(cwd, ["diff", "--name-only", target]).catch(() => "");
+    const out = await runGit(cwd, ["diff", "--name-only", target]);
     return { files: out.split("\n").filter(Boolean), base: ref };
   }
   if (scope === "worktree") {
@@ -217,7 +224,7 @@ export async function changedFiles(
     }
   }
   if (!base) return { files: [], base: null };
-  const out = await runGit(cwd, ["diff", "--name-only", `${base}...HEAD`]).catch(() => "");
+  const out = await runGit(cwd, ["diff", "--name-only", `${base}...HEAD`]);
   return { files: out.split("\n").filter(Boolean), base };
 }
 
@@ -345,6 +352,35 @@ export async function gitResolveRef(cwd: string, ref: string): Promise<string> {
   } catch {
     throw new Error(`Unknown git ref: ${ref}`);
   }
+}
+
+/**
+ * One file's content at a ref — the base side of a textual diff (and the only
+ * way to read what a review ghost contained). `content: null` with
+ * `truncated: false` means the path doesn't exist at that ref; with
+ * `truncated: true` the blob exists but is over the byte cap. Throws on an
+ * unknown ref (same loud contract as `changedFiles`) and on binary content.
+ */
+export async function showFileAtRef(
+  root: string,
+  repoRel: string,
+  ref: string,
+  filePath: string,
+): Promise<{ content: string | null; truncated: boolean }> {
+  const cwd = resolveInRoot(root, repoRel || ".");
+  await gitResolveRef(cwd, ref);
+  let size: number;
+  try {
+    size = Number((await runGit(cwd, ["cat-file", "-s", `${ref}:${filePath}`])).trim());
+  } catch {
+    return { content: null, truncated: false }; // path absent at this ref
+  }
+  if (!Number.isFinite(size) || size > CAT_FILE_MAX_BYTES) {
+    return { content: null, truncated: true };
+  }
+  const content = await runGit(cwd, ["show", `${ref}:${filePath}`], CAT_FILE_MAX_BYTES + 1024 * 1024);
+  if (content.includes("\0")) throw new Error(`Binary file at ${ref}: ${filePath}`);
+  return { content, truncated: false };
 }
 
 /** All blob paths in the tree at `ref` (forward-slash, repo-relative). */

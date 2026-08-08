@@ -393,8 +393,20 @@ export interface BridgeMethods {
     result: { ok: boolean };
   };
   "fs.list": { params: WsScope & { path: string }; result: { entries: FileEntry[] } };
-  "fs.read": { params: WsScope & { path: string }; result: { content: string; truncated: boolean } };
-  "fs.write": { params: WsScope & { path: string; content: string }; result: { ok: true } };
+  /** `sha` identifies the whole on-disk file — hand it back to `fs.write` as `baseSha`. */
+  "fs.read": {
+    params: WsScope & { path: string };
+    result: { content: string; truncated: boolean; sha: string };
+  };
+  /**
+   * `baseSha` (from the `fs.read` that loaded the buffer) makes the write
+   * conflict-guarded: if the file changed on disk since, the write fails
+   * loudly instead of clobbering the newer content. Omit for unguarded writes.
+   */
+  "fs.write": {
+    params: WsScope & { path: string; content: string; baseSha?: string };
+    result: { ok: true };
+  };
   "fs.mkdir": { params: WsScope & { path: string }; result: { ok: true } };
   "fs.rename": { params: WsScope & { from: string; to: string }; result: { ok: true } };
   "fs.delete": { params: WsScope & { path: string }; result: { ok: true } };
@@ -423,6 +435,16 @@ export interface BridgeMethods {
       ofRef?: string;
     };
     result: { files: string[]; base: string | null };
+  };
+  /**
+   * One file's content at a ref — the base side of a textual diff, and the
+   * only way to inspect what a deleted (ghost) file contained. `content: null`
+   * means absent at that ref (`truncated: false`) or over the size cap
+   * (`truncated: true`). Throws on unknown refs and binary files.
+   */
+  "git.showFile": {
+    params: WsScope & { repoPath?: string; path: string; ref: string };
+    result: { content: string | null; truncated: boolean };
   };
   /** Branches / tags / worktrees of a repo — powers ref pickers and the branch switcher. */
   "git.refs": { params: WsScope & { repoPath?: string }; result: GitRefsResult };
@@ -522,10 +544,14 @@ export interface BridgeMethods {
     params: WsScope & { runId: string; text: string };
     /**
      * `runId` is the run now carrying the conversation: the freshly resumed
-     * turn, or the live interactive run the text was typed into. Null only
-     * when the message was queued (chain mid-turn) — flushed on settlement.
+     * turn, or the live interactive run the text was typed into (null
+     * otherwise). `status` is the delivery truth surfaces must not collapse:
+     * `resumed` = delivered now, `queued` = held server-side and flushed on
+     * the next settlement, `recorded` = this chain can never receive it
+     * (cancelled, or no session ever materialized) — the text was NOT
+     * delivered and the caller must say so.
      */
-    result: { queued: boolean; runId: string | null };
+    result: { status: "resumed" | "queued" | "recorded"; runId: string | null };
   };
   "agent.cancel": { params: WsScope & { runId: string }; result: { ok: true } };
   /** All runs plus the instance-wide login-health flag (see `agent.authChanged`). */
@@ -1278,6 +1304,12 @@ export interface BridgeEvents {
   "agent.authChanged": { ws: string; broken: boolean; detail: string | null };
   "fs.changed": { ws: string; paths: string[] };
   "workspace.changed": { ws: string };
+  /**
+   * The architecture overlay was saved (any client, any window). Listeners
+   * refetch via `arch.getOverlay` — without this, a second window's stale
+   * full-document save silently clobbers everything authored elsewhere.
+   */
+  "arch.overlayChanged": { ws: string };
   /** A workspace's todo list was saved (payload carries the new list). */
   "todos.changed": { ws: string; todos: TodoList };
   /** A workspace's agent roster was saved (payload carries the new roster). */

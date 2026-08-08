@@ -54,6 +54,7 @@ import {
   gitRefs,
   gitStatus,
   gitSync,
+  showFileAtRef,
 } from "./git.js";
 import { HUB_MCP_ID, handleMcpRequest, isMcpRequest } from "./mcp/http.js";
 import { INTERACTIVE_PROMPT_DELAY_MS, launchInteractiveRun } from "./interactive.js";
@@ -539,7 +540,11 @@ export async function startCrystalServer(opts: {
       return { overlay };
     },
     "arch.saveOverlay": async ({ ws, overlay }) => {
-      await registry.get(ws).store.saveArchOverlay(overlay);
+      const rt = registry.get(ws);
+      await rt.store.saveArchOverlay(overlay);
+      // Announce like agents.changed does: another window holding a stale
+      // overlay must refetch before its next debounced save clobbers this one.
+      broadcast("arch.overlayChanged", { ws: rt.id });
       return { ok: true };
     },
     "archdraft.create": ({ ws, draft }) => registry.get(ws).store.createArchDraft(draft),
@@ -615,8 +620,8 @@ export async function startCrystalServer(opts: {
       entries: await listDir(registry.get(ws).root, p),
     }),
     "fs.read": ({ ws, path: p }) => readFileCapped(registry.get(ws).root, p),
-    "fs.write": async ({ ws, path: p, content }) => {
-      await writeFileAt(registry.get(ws).root, p, content);
+    "fs.write": async ({ ws, path: p, content, baseSha }) => {
+      await writeFileAt(registry.get(ws).root, p, content, baseSha);
       return { ok: true };
     },
     "fs.mkdir": async ({ ws, path: p }) => {
@@ -635,6 +640,8 @@ export async function startCrystalServer(opts: {
     "git.log": ({ ws, repoPath, limit }) => gitLog(registry.get(ws).root, repoPath ?? ".", limit),
     "git.changedFiles": ({ ws, repoPath, scope, ref, ofRef }) =>
       changedFiles(registry.get(ws).root, repoPath ?? ".", scope, ref, ofRef),
+    "git.showFile": ({ ws, repoPath, path: p, ref }) =>
+      showFileAtRef(registry.get(ws).root, repoPath ?? ".", ref, p),
     "git.refs": ({ ws, repoPath }) => gitRefs(registry.get(ws).root, repoPath ?? "."),
     "git.checkout": ({ ws, repoPath, ref }) =>
       gitCheckout(registry.get(ws).root, repoPath ?? ".", ref),
@@ -662,10 +669,13 @@ export async function startCrystalServer(opts: {
       // An unknown id would queue the text against a chain that can never
       // exist — refuse it instead of losing the message silently.
       if (!(await rt.agents.get(runId))) throw new Error(`Unknown run: ${runId}`);
-      // Verbatim delivery: deliver() types into a live TUI, resumes an idle
-      // chain, or queues for the next settlement — never a board-keeping tail.
-      const run = await rt.agents.deliver(runId, text);
-      return { queued: run == null, runId: run?.id ?? null };
+      // Verbatim delivery: deliverToChain types into a live TUI, resumes an
+      // idle chain, or queues for the next settlement — never a board-keeping
+      // tail. The typed status rides to the client: "recorded" means the text
+      // could NOT be delivered, and collapsing that into "queued" is how
+      // steering silently vanished (the composer promised delivery).
+      const { run, status } = await rt.agents.deliverToChain(runId, text);
+      return { status, runId: run?.id ?? null };
     },
     "agent.dispatchWorker": async ({ ws, managerRunId, spec }) => {
       const run = await registry.get(ws).agents.dispatchWorker(managerRunId, spec);
