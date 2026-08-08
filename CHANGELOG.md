@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.22.0 (2026-08-08)
+
+### Features
+
+- C4 deep-linking, context menus and navigation polish ([`ffdc20d`](https://github.com/lab255/Crystal/commit/ffdc20d))
+
 ## v0.21.0 (2026-08-08)
 
 ### Features
