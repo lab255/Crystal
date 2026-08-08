@@ -9,7 +9,7 @@ const run = (id: string, status: "running" | "completed" | "failed" | "cancelled
 describe("SettledRuns", () => {
   it("claims a settled run exactly once", () => {
     const settled = new SettledRuns();
-    // A run emits several terminal events — result, then process close.
+    // Lifecycle adapters may surface the same terminal run more than once.
     expect(settled.claim(run("run_1", "completed"))).toBe(true);
     expect(settled.claim(run("run_1", "completed"))).toBe(false);
     expect(settled.claim(run("run_1", "failed"))).toBe(false);

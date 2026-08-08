@@ -1,7 +1,8 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { createAgentRun } from "@crystal/core";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   AgentManager,
   claudeInteractiveArgs,
@@ -234,6 +235,7 @@ describe("runsWithTag", () => {
   let tmp: string | null = null;
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     if (tmp) await fs.rm(tmp, { recursive: true, force: true });
     tmp = null;
   });
@@ -261,6 +263,43 @@ describe("runsWithTag", () => {
     const reloaded = new AgentManager(root, data, missing);
     const again = await reloaded.runsWithTag("workflow:wf_1");
     expect(again.map((r) => r.id).sort()).toEqual([a.id, b.id].sort());
+  });
+
+  it("makes concurrent readers wait for the same history load", async () => {
+    tmp = await fs.mkdtemp(path.join(os.tmpdir(), "crystal-load-test-"));
+    const root = path.join(tmp, "root");
+    const data = path.join(tmp, "data");
+    const runsDir = path.join(data, "runs");
+    await fs.mkdir(root, { recursive: true });
+    await fs.mkdir(runsDir, { recursive: true });
+    const persisted = createAgentRun({ prompt: "from history", tags: ["workflow:wf_slow"] });
+    persisted.status = "completed";
+    persisted.endedAt = new Date().toISOString();
+    await fs.writeFile(path.join(runsDir, `${persisted.id}.json`), JSON.stringify(persisted));
+
+    const readdir = fs.readdir.bind(fs);
+    let release!: () => void;
+    let entered!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const loading = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    vi.spyOn(fs, "readdir").mockImplementationOnce(async (...args) => {
+      entered();
+      await gate;
+      return readdir(...args as Parameters<typeof fs.readdir>);
+    });
+
+    const mgr = new AgentManager(root, data, path.join(tmp, "missing.exe"));
+    const first = mgr.list();
+    await loading;
+    const second = mgr.runsWithTag("workflow:wf_slow");
+    release();
+    const [all, tagged] = await Promise.all([first, second]);
+    expect(all.map((run) => run.id)).toEqual([persisted.id]);
+    expect(tagged.map((run) => run.id)).toEqual([persisted.id]);
   });
 });
 
@@ -312,6 +351,23 @@ describe("dispatchWorker agent profiles", () => {
       model: "opus",
     });
     expect(explicit!.model).toBe("opus"); // spec's explicit model beats the profile's
+  });
+
+  it("rechecks the workflow guard after slow dispatch resolution", async () => {
+    tmp = await fs.mkdtemp(path.join(os.tmpdir(), "crystal-dispatch-guard-"));
+    const root = path.join(tmp, "root");
+    await fs.mkdir(root, { recursive: true });
+    const mgr = new AgentManager(root, path.join(tmp, "data"), path.join(tmp, "missing.exe"));
+    const manager = await mgr.start({ prompt: "coordinate", role: "manager" });
+    await mgr.waitForSettled(manager.id);
+    let checks = 0;
+    mgr.dispatchGuard = async () => (++checks === 1 ? null : "Workflow was cancelled");
+
+    await expect(mgr.dispatchWorker(manager.id, { prompt: "paid work" })).rejects.toThrow(
+      /cancelled/,
+    );
+    expect(checks).toBe(2);
+    expect(await mgr.list()).toHaveLength(1);
   });
 });
 
@@ -579,16 +635,12 @@ describe.skipIf(process.platform === "win32")("recoverable failures and handoff"
     const settled = await mgr.waitForSettled(run.id);
     expect(settled.status).toBe("failed");
     expect(settled.failure?.kind).toBe("context_overflow");
-    // The terminal status event carries the recovery hint. waitForSettled
-    // resolves on the result event — finish() (and its status event) lands on
-    // process close, a tick later, so poll.
-    await expect
-      .poll(async () =>
-        (await mgr.eventsFor(run.id)).some(
-          (e) => e.event.type === "status" && /hand off/i.test(e.event.message ?? ""),
-        ),
-      )
-      .toBe(true);
+    // The terminal status and its recovery hint are published together on close.
+    expect(
+      (await mgr.eventsFor(run.id)).some(
+        (e) => e.event.type === "status" && /hand off/i.test(e.event.message ?? ""),
+      ),
+    ).toBe(true);
   });
 
   it("classifies a dead login from stderr when there is no result line", async () => {
@@ -701,9 +753,8 @@ describe.skipIf(process.platform === "win32")("recoverable failures and handoff"
     await fs.writeFile(bin, okScript, { mode: 0o755 });
     const healer = await mgr.start({ prompt: "Healthy again" });
     await mgr.waitForSettled(healer.id);
-    // The clear runs in finish() on process close — a tick after the result
-    // event settles the run — so poll rather than assert immediately.
-    await expect.poll(() => mgr.authState().broken).toBe(false);
+    // Successful process close clears the flag and releases the parked queue.
+    expect(mgr.authState().broken).toBe(false);
     await expect
       .poll(async () =>
         (await mgr.list()).some(
@@ -746,6 +797,39 @@ describe.skipIf(process.platform === "win32")("recoverable failures and handoff"
     await mgr.waitForSettled(resumed.id);
   });
 
+  it("holds queued delivery until a result-emitting process actually closes", async () => {
+    tmp = await fs.mkdtemp(path.join(os.tmpdir(), "crystal-agent-close-"));
+    const root = path.join(tmp, "root");
+    const release = path.join(tmp, "release");
+    const bin = path.join(tmp, "result-then-wait.sh");
+    await fs.mkdir(root, { recursive: true });
+    await fs.writeFile(
+      bin,
+      [
+        "#!/bin/sh",
+        "cat > /dev/null",
+        `echo '${INIT_LINE}'`,
+        `echo '{"type":"result","subtype":"success","is_error":false,"result":"done","session_id":"sess_fake","total_cost_usd":0.01,"num_turns":1,"duration_ms":5}'`,
+        `while [ ! -f '${release}' ]; do sleep 0.02; done`,
+        "exit 0",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+    const mgr = new AgentManager(root, path.join(tmp, "data"), bin);
+    const run = await mgr.start({ prompt: "coordinate", role: "manager" });
+    await expect.poll(async () => (await mgr.get(run.id))?.resultText).toBe("done");
+
+    const delivery = await mgr.messageRun(run.id, "wait for close");
+    expect(delivery.status).toBe("queued");
+    expect(await mgr.list()).toHaveLength(1);
+
+    await fs.writeFile(release, "go");
+    await expect.poll(async () => (await mgr.list()).length).toBe(2);
+    const resumed = (await mgr.list()).find((candidate) => candidate.resumedFromRunId === run.id);
+    expect(resumed?.prompt).toContain("wait for close");
+    if (resumed) await mgr.waitForSettled(resumed.id);
+  });
+
   it("hands off to a fresh session: summarizer runs, continuation carries the note", async () => {
     // Every spawn (the failed run, the summarizer, the continuation) uses the
     // same fake CLI, which succeeds with a canned result text.
@@ -769,6 +853,46 @@ describe.skipIf(process.platform === "win32")("recoverable failures and handoff"
     // Lineage is visible in the run list: original ← summarizer + continuation.
     const runs = await mgr.list();
     expect(runs.some((r) => r.purpose === "manage")).toBe(true); // the summarizer
+  });
+
+  it("forwards an old worker's settlement to the handoff continuation", async () => {
+    tmp = await fs.mkdtemp(path.join(os.tmpdir(), "crystal-agent-handoff-worker-"));
+    const root = path.join(tmp, "root");
+    const counter = path.join(tmp, "counter");
+    const release = path.join(tmp, "release-worker");
+    const bin = path.join(tmp, "handoff-worker.sh");
+    await fs.mkdir(root, { recursive: true });
+    await fs.writeFile(
+      bin,
+      [
+        "#!/bin/sh",
+        "cat > /dev/null",
+        `n=$(($(cat '${counter}' 2>/dev/null || echo 0) + 1))`,
+        `echo "$n" > '${counter}'`,
+        'echo "{\\"type\\":\\"system\\",\\"subtype\\":\\"init\\",\\"session_id\\":\\"sess_$n\\",\\"model\\":\\"fake-model\\",\\"cwd\\":\\".\\",\\"tools\\":[]}"',
+        `if [ "$n" = "2" ]; then while [ ! -f '${release}' ]; do sleep 0.02; done; fi`,
+        'echo "{\\"type\\":\\"result\\",\\"subtype\\":\\"success\\",\\"is_error\\":false,\\"result\\":\\"SUMMARY NOTE: done $n\\",\\"session_id\\":\\"sess_$n\\",\\"total_cost_usd\\":0.01,\\"num_turns\\":1,\\"duration_ms\\":5}"',
+        "exit 0",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+    const mgr = new AgentManager(root, path.join(tmp, "data"), bin);
+    const manager = await mgr.start({ prompt: "coordinate", role: "manager" });
+    await mgr.waitForSettled(manager.id);
+    const worker = await mgr.dispatchWorker(manager.id, { prompt: "slow worker" });
+    expect(worker).not.toBeNull();
+    await expect.poll(async () => (await mgr.get(worker!.id))?.sessionId).toBe("sess_2");
+
+    const continuation = await mgr.handoff(manager.id);
+    await mgr.waitForSettled(continuation.id);
+    await fs.writeFile(release, "go");
+    await expect.poll(async () => (await mgr.list()).length).toBeGreaterThanOrEqual(5);
+
+    const runs = await mgr.list();
+    const notice = runs.find((run) => run.prompt.includes(`Worker ${worker!.id} settled`));
+    expect(notice?.resumedFromRunId).toBe(continuation.id);
+    expect(runs.some((run) => run.resumedFromRunId === manager.id)).toBe(false);
+    if (notice) await mgr.waitForSettled(notice.id);
   });
 });
 

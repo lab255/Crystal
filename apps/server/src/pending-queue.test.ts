@@ -55,4 +55,14 @@ describe("PendingQueue", () => {
     expect(q.size("a")).toBe(0);
     expect(q.size("b")).toBe(1);
   });
+
+  it("moves queued items ahead of anything already waiting on the continuation", () => {
+    const q = new PendingQueue<string>();
+    q.push("retired", "old-1");
+    q.push("retired", "old-2");
+    q.push("continuation", "new");
+    q.move("retired", "continuation");
+    expect(q.items("retired")).toEqual([]);
+    expect(q.items("continuation")).toEqual(["old-1", "old-2", "new"]);
+  });
 });

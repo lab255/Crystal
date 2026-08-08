@@ -26,6 +26,11 @@ export class PendingQueue<T> {
     return this.queues.get(key)?.length ?? 0;
   }
 
+  /** A snapshot for durable mirrors; mutating it cannot alter the queue. */
+  items(key: string): readonly T[] {
+    return [...(this.queues.get(key) ?? [])];
+  }
+
   /** Every key with something queued (a heal event re-attempts them all). */
   keys(): string[] {
     return [...this.queues.keys()];
@@ -34,6 +39,16 @@ export class PendingQueue<T> {
   /** Abandon everything queued for `key` (e.g. a cancelled manager stays dead). */
   clear(key: string): void {
     this.queues.delete(key);
+  }
+
+  /** Redirect queued work when a fresh-session handoff retires a chain. */
+  move(from: string, to: string): void {
+    if (from === to) return;
+    const queued = this.queues.get(from);
+    if (!queued?.length) return;
+    const target = this.queues.get(to);
+    this.queues.set(to, target ? [...queued, ...target] : [...queued]);
+    this.queues.delete(from);
   }
 
   /**

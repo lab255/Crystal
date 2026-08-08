@@ -82,6 +82,35 @@ const WORKFLOW_INTERACTIVE_NOTE =
   "board copy with resolve_question (same taskId). Worker settlements and owner messages " +
   "are typed into this session as they happen.";
 
+interface PendingWorkflowMessage {
+  text: string;
+  at: string;
+}
+
+interface PendingWorkflowMessages {
+  id: string;
+  messages: PendingWorkflowMessage[];
+  updatedAt: string;
+}
+
+function parsePendingWorkflowMessages(raw: unknown): PendingWorkflowMessages {
+  if (!raw || typeof raw !== "object") throw new Error("pending workflow messages must be an object");
+  const record = raw as Record<string, unknown>;
+  if (typeof record.id !== "string" || typeof record.updatedAt !== "string") {
+    throw new Error("pending workflow messages need id and updatedAt");
+  }
+  if (!Array.isArray(record.messages)) throw new Error("pending workflow messages need an array");
+  const messages = record.messages.map((item) => {
+    if (!item || typeof item !== "object") throw new Error("invalid pending workflow message");
+    const message = item as Record<string, unknown>;
+    if (typeof message.text !== "string" || typeof message.at !== "string") {
+      throw new Error("pending workflow message needs text and at");
+    }
+    return { text: message.text, at: message.at };
+  });
+  return { id: record.id, updatedAt: record.updatedAt, messages };
+}
+
 export class WorkflowEngine {
   readonly events = new Emitter<{
     changed: { workflow: Workflow };
@@ -114,10 +143,16 @@ export class WorkflowEngine {
 
   /** Persisted workflows, with the serialized read-modify-write (see JsonRecordStore). */
   private readonly records: JsonRecordStore<Workflow>;
+  /** Durable accepted steering, kept outside the core-owned workflow schema. */
+  private readonly pendingRecords: JsonRecordStore<PendingWorkflowMessages>;
   /** Built-in + global + this project's templates (see TemplateLibrary). */
   private readonly library: TemplateLibrary;
-  /** User messages waiting for the manager chain to go idle, per workflow. */
-  private pendingMessages = new PendingQueue<string>();
+  /** Restored durable messages waiting for the manager chain to go idle. */
+  private pendingMessages = new PendingQueue<PendingWorkflowMessage>();
+  /** Workflow-local lifecycle serialization (compact, wake delivery, completion). */
+  private workflowLocks = new Map<string, Promise<unknown>>();
+  /** Record and pending-message restoration share one in-flight load. */
+  private loading: Promise<void> | null = null;
   /** Runs whose settlement was already handled (see SettledRuns). */
   private readonly settledRuns = new SettledRuns();
   private readonly disposeListener: () => void;
@@ -138,6 +173,12 @@ export class WorkflowEngine {
       path.join(dataDir, "workflows"),
       (raw) => WorkflowSchema.parse(raw),
       (workflow) => this.events.emit("changed", { workflow }),
+      nowIso,
+    );
+    this.pendingRecords = new JsonRecordStore<PendingWorkflowMessages>(
+      path.join(dataDir, "workflow-pending-messages"),
+      parsePendingWorkflowMessages,
+      () => {},
       nowIso,
     );
     this.library = new TemplateLibrary(path.join(dataDir, "workflows", "templates"), globalTemplates);
@@ -181,8 +222,15 @@ export class WorkflowEngine {
     if (this.agents.onHandoff != null) this.agents.onHandoff = null;
   }
 
-  private async ensureLoaded(): Promise<void> {
-    await this.records.ensureLoaded();
+  private ensureLoaded(): Promise<void> {
+    return (this.loading ??= this.loadRecords());
+  }
+
+  private async loadRecords(): Promise<void> {
+    await Promise.all([this.records.ensureLoaded(), this.pendingRecords.ensureLoaded()]);
+    for (const record of this.pendingRecords.all()) {
+      for (const message of record.messages) this.pendingMessages.push(record.id, message);
+    }
   }
 
   /** Serialize one read-modify-write against a workflow record. */
@@ -194,6 +242,52 @@ export class WorkflowEngine {
       const { workflow, result } = await fn(record);
       return { record: workflow, result };
     });
+  }
+
+  /** Serialize lifecycle operations whose liveness checks must stay adjacent to their spawn. */
+  private serializeWorkflow<T>(workflowId: string, fn: () => Promise<T>): Promise<T> {
+    const step = (this.workflowLocks.get(workflowId) ?? Promise.resolve()).then(fn);
+    this.workflowLocks.set(workflowId, step.catch(() => {}));
+    return step;
+  }
+
+  /** Persist before exposing a queued receipt. Caller holds the workflow lock. */
+  private async queueMessageLocked(workflowId: string, text: string): Promise<void> {
+    const message = { text, at: nowIso() };
+    const current = this.pendingRecords.peek(workflowId);
+    if (current) {
+      await this.pendingRecords.mutate(workflowId, (record) => ({
+        record: { ...record, messages: [...record.messages, message] },
+        result: undefined,
+      }));
+    } else {
+      await this.pendingRecords.put({ id: workflowId, messages: [message], updatedAt: message.at });
+    }
+    this.pendingMessages.push(workflowId, message);
+  }
+
+  private queueMessage(workflowId: string, text: string): Promise<void> {
+    return this.serializeWorkflow(workflowId, () => this.queueMessageLocked(workflowId, text));
+  }
+
+  /** The delivery has spawned; remove exactly the snapshot it carried. */
+  private async acknowledgeMessagesLocked(workflowId: string, count: number): Promise<void> {
+    const current = this.pendingRecords.peek(workflowId);
+    if (!current) return;
+    const messages = current.messages.slice(count);
+    if (!messages.length) {
+      await this.pendingRecords.remove(workflowId);
+      return;
+    }
+    await this.pendingRecords.mutate(workflowId, (record) => ({
+      record: { ...record, messages },
+      result: undefined,
+    }));
+  }
+
+  private async clearMessagesLocked(workflowId: string): Promise<void> {
+    this.pendingMessages.clear(workflowId);
+    if (this.pendingRecords.peek(workflowId)) await this.pendingRecords.remove(workflowId);
   }
 
   list(): Promise<Workflow[]> {
@@ -302,6 +396,11 @@ export class WorkflowEngine {
       managerModel: init.managerModel ?? null,
     });
 
+    // Settlement hooks must be able to find the workflow even when the first
+    // manager exits synchronously inside start(). The later manager-id patch
+    // is a mutation so it cannot overwrite work the settle hook recorded.
+    await this.records.put(workflow);
+
     let run: AgentRun;
     // Interactive is the default wherever it is possible: the launcher is
     // wired only when the workspace can host a PTY. Only an explicit
@@ -322,9 +421,11 @@ export class WorkflowEngine {
         prompt: buildWorkflowManagerPrompt(workflow, roster.agents, preset),
       });
     }
-    workflow.managerRunId = run.id;
-    await this.records.put(workflow);
-    return { workflow: { ...workflow }, run };
+    const stored = await this.mutate(workflow.id, (current) => {
+      const next = { ...current, managerRunId: run.id };
+      return { workflow: next, result: next };
+    });
+    return { workflow: stored, run };
   }
 
   /**
@@ -392,37 +493,39 @@ export class WorkflowEngine {
    */
   async compact(workflowId: string): Promise<{ workflow: Workflow; run: AgentRun }> {
     await this.ensureLoaded();
-    const wf = this.records.peek(workflowId);
-    if (!wf) throw new Error(`Unknown workflow: ${workflowId}`);
-    if (wf.status !== "running" && wf.status !== "paused") {
-      throw new Error(`Workflow is ${wf.status} — nothing to compact.`);
-    }
-    const live = (await this.agents.runsWithTag(workflowTag(workflowId))).filter(
-      (r) => r.status === "running" || r.status === "queued",
-    );
-    if (live.length) {
-      throw new Error(
-        `Workflow has ${live.length} live run(s) — compact between waves, after everything settles.`,
+    return this.serializeWorkflow(workflowId, async () => {
+      const wf = this.records.peek(workflowId);
+      if (!wf) throw new Error(`Unknown workflow: ${workflowId}`);
+      if (wf.status !== "running" && wf.status !== "paused") {
+        throw new Error(`Workflow is ${wf.status} — nothing to compact.`);
+      }
+      const live = (await this.agents.runsWithTag(workflowTag(workflowId))).filter(
+        (r) => r.status === "running" || r.status === "queued",
       );
-    }
-    const { params, roster, preset } = await this.managerParams(wf, { agentId: wf.agentId });
-    const status = workflowStatusText(wf, await this.spend(workflowId));
-    const prompt =
-      buildWorkflowManagerPrompt(wf, roster.agents, preset) +
-      "\n\nCOMPACTED SESSION: you are a fresh manager session taking over this workflow mid-flight — " +
-      "your predecessor's transcript was retired to cut resume cost. The status below and the board " +
-      "are the durable memory; read board_status before acting, and do NOT redo settled stages.\n\n" +
-      status;
-    const run = await this.agents.start({
-      ...params,
-      costCapUsd: wf.runCapUsd ?? null,
-      prompt,
+      if (live.length) {
+        throw new Error(
+          `Workflow has ${live.length} live run(s) — compact between waves, after everything settles.`,
+        );
+      }
+      const { params, roster, preset } = await this.managerParams(wf, { agentId: wf.agentId });
+      const status = workflowStatusText(wf, await this.spend(workflowId));
+      const prompt =
+        buildWorkflowManagerPrompt(wf, roster.agents, preset) +
+        "\n\nCOMPACTED SESSION: you are a fresh manager session taking over this workflow mid-flight — " +
+        "your predecessor's transcript was retired to cut resume cost. The status below and the board " +
+        "are the durable memory; read board_status before acting, and do NOT redo settled stages.\n\n" +
+        status;
+      const run = await this.agents.start({
+        ...params,
+        costCapUsd: wf.runCapUsd ?? null,
+        prompt,
+      });
+      const workflow = await this.mutate(workflowId, (current) => {
+        const next: Workflow = { ...current, managerRunId: run.id };
+        return { workflow: next, result: next };
+      });
+      return { workflow, run };
     });
-    const workflow = await this.mutate(workflowId, (current) => {
-      const next: Workflow = { ...current, managerRunId: run.id };
-      return { workflow: next, result: next };
-    });
-    return { workflow, run };
   }
 
   /**
@@ -441,27 +544,42 @@ export class WorkflowEngine {
     opts: { wake?: boolean } = {},
   ): Promise<{ run: AgentRun | null; queued: boolean } & SteerReceipt> {
     await this.ensureLoaded();
-    const workflow = this.records.peek(workflowId);
-    if (!workflow) throw new Error(`Unknown workflow: ${workflowId}`);
-    if (!workflow.managerRunId) throw new Error(`Workflow ${workflowId} has no manager session`);
-    // An interactive manager takes the message in its terminal, mid-turn or
-    // not — the TUI queues input itself, so this can never fork the session.
-    const interactive = await this.agents
-      .deliverInteractive(workflow.managerRunId, formatUserMessage(text))
-      .catch(() => null);
-    if (interactive) return { run: interactive, queued: false, mode: "interactive", wakeExpected: true };
-    if (opts.wake === false) {
-      this.pendingMessages.push(workflowId, formatUserMessage(text));
-      return { run: null, queued: true, mode: "queued", wakeExpected: await this.wakeExpected(workflowId) };
-    }
-    // resumeChain serializes attempts per chain and re-checks liveness inside
-    // its lock — a null (turn live, or no session yet) means queue-and-retry.
-    const run = await this.agents.resumeChain(workflow.managerRunId, formatUserMessage(text));
-    if (!run) {
-      this.pendingMessages.push(workflowId, formatUserMessage(text));
-      return { run: null, queued: true, mode: "queued", wakeExpected: await this.wakeExpected(workflowId) };
-    }
-    return { run, queued: false, mode: "resumed", wakeExpected: true };
+    return this.serializeWorkflow(workflowId, async () => {
+      const workflow = this.records.peek(workflowId);
+      if (!workflow) throw new Error(`Unknown workflow: ${workflowId}`);
+      if (!workflow.managerRunId) throw new Error(`Workflow ${workflowId} has no manager session`);
+      const framed = formatUserMessage(text);
+      // An interactive manager takes the message in its terminal, mid-turn or
+      // not — the TUI queues input itself, so this can never fork the session.
+      const interactive = await this.agents
+        .deliverInteractive(workflow.managerRunId, framed)
+        .catch(() => null);
+      if (interactive) {
+        return { run: interactive, queued: false, mode: "interactive" as const, wakeExpected: true };
+      }
+      if (opts.wake === false) {
+        await this.queueMessageLocked(workflowId, framed);
+        return {
+          run: null,
+          queued: true,
+          mode: "queued" as const,
+          wakeExpected: await this.wakeExpected(workflowId),
+        };
+      }
+      // The workflow lock keeps a compaction from retiring this chain between
+      // the manager-id read and the resume attempt.
+      const run = await this.agents.resumeChain(workflow.managerRunId, framed);
+      if (!run) {
+        await this.queueMessageLocked(workflowId, framed);
+        return {
+          run: null,
+          queued: true,
+          mode: "queued" as const,
+          wakeExpected: await this.wakeExpected(workflowId),
+        };
+      }
+      return { run, queued: false, mode: "resumed" as const, wakeExpected: true };
+    });
   }
 
   /** Is any run of the workflow live — i.e. will a settlement flush the queue? */
@@ -522,29 +640,31 @@ export class WorkflowEngine {
   /** Cancel: kill every live run of the workflow and mark it cancelled. */
   async cancel(workflowId: string): Promise<Workflow> {
     await this.ensureLoaded();
-    const wf = this.records.peek(workflowId);
-    if (!wf) throw new Error(`Unknown workflow: ${workflowId}`);
-    this.pendingMessages.clear(workflowId);
-    const tag = workflowTag(workflowId);
-    const live = (await this.agents.runsWithTag(tag)).filter(
-      (r) => r.status === "running" || r.status === "queued",
-    );
-    for (const run of live) {
-      await this.agents.cancel(run.id).catch(() => {
-        // A run that settled while we iterated is already dead — fine.
+    return this.serializeWorkflow(workflowId, async () => {
+      const wf = this.records.peek(workflowId);
+      if (!wf) throw new Error(`Unknown workflow: ${workflowId}`);
+      await this.clearMessagesLocked(workflowId);
+      const tag = workflowTag(workflowId);
+      const live = (await this.agents.runsWithTag(tag)).filter(
+        (r) => r.status === "running" || r.status === "queued",
+      );
+      for (const run of live) {
+        await this.agents.cancel(run.id).catch(() => {
+          // A run that settled while we iterated is already dead — fine.
+        });
+      }
+      return this.mutate(workflowId, (current) => {
+        // Idempotent under the queue: a workflow that reached another terminal
+        // state while we were killing runs keeps that state.
+        const terminal =
+          current.status === "completed" ||
+          current.status === "failed" ||
+          current.status === "cancelled";
+        const workflow: Workflow = terminal
+          ? current
+          : { ...current, status: "cancelled", pausedBy: null, pausedReason: null };
+        return { workflow, result: workflow };
       });
-    }
-    return this.mutate(workflowId, (current) => {
-      // Idempotent under the queue: a workflow that reached another terminal
-      // state while we were killing runs keeps that state.
-      const terminal =
-        current.status === "completed" ||
-        current.status === "failed" ||
-        current.status === "cancelled";
-      const workflow: Workflow = terminal
-        ? current
-        : { ...current, status: "cancelled", pausedBy: null, pausedReason: null };
-      return { workflow, result: workflow };
     });
   }
 
@@ -665,16 +785,40 @@ export class WorkflowEngine {
   }
 
   /** The manager declares the workflow finished (or genuinely stuck). */
-  complete(workflowId: string, outcome: "completed" | "failed", summary: string): Promise<Workflow> {
-    return this.mutate(workflowId, (wf) => {
-      const workflow: Workflow = {
-        ...wf,
-        status: outcome,
-        summary,
-        pausedBy: null,
-        pausedReason: null,
-      };
-      return { workflow, result: workflow };
+  async complete(
+    workflowId: string,
+    outcome: "completed" | "failed",
+    summary: string,
+  ): Promise<Workflow> {
+    await this.ensureLoaded();
+    return this.serializeWorkflow(workflowId, async () => {
+      const current = this.records.peek(workflowId);
+      if (!current) throw new Error(`Unknown workflow: ${workflowId}`);
+      const managerIds = new Set(
+        current.managerRunId
+          ? (await this.agents.chainRuns(current.managerRunId)).map((run) => run.id)
+          : [],
+      );
+      const liveWorkers = (await this.agents.runsWithTag(workflowTag(workflowId))).filter(
+        (run) =>
+          (run.status === "running" || run.status === "queued") && !managerIds.has(run.id),
+      );
+      if (liveWorkers.length) {
+        throw new Error(
+          `Workflow has ${liveWorkers.length} live worker run(s). Wait for them to settle or cancel ` +
+          `the workers before completing it.`,
+        );
+      }
+      return this.mutate(workflowId, (wf) => {
+        const workflow: Workflow = {
+          ...wf,
+          status: outcome,
+          summary,
+          pausedBy: null,
+          pausedReason: null,
+        };
+        return { workflow, result: workflow };
+      });
     });
   }
 
@@ -736,7 +880,7 @@ export class WorkflowEngine {
             if (wf.budgetWarnedAt || wf.budgetUsd == null) return { workflow: wf, result: false };
             return { workflow: { ...wf, budgetWarnedAt: nowIso() }, result: true };
           });
-          if (warned) this.pendingMessages.push(id, budgetWarningText(budget));
+          if (warned) await this.queueMessage(id, budgetWarningText(budget));
         }
       }
       // Typed turn outcomes: a settled MANAGER turn must have changed
@@ -823,16 +967,21 @@ export class WorkflowEngine {
    * as words the owner never said.
    */
   private async flushMessages(workflowId: string): Promise<void> {
-    const workflow = this.records.peek(workflowId);
-    if (!workflow?.managerRunId) return;
-    const managerRunId = workflow.managerRunId;
-    await this.pendingMessages.drain(workflowId, (pending) => {
-      const text =
-        pending.length === 1
-          ? pending[0]!
-          : `${pending.length} messages arrived while you were working.\n\n` +
-            pending.join("\n\n---\n\n");
-      return this.agents.resumeChain(managerRunId, text);
+    await this.serializeWorkflow(workflowId, async () => {
+      const workflow = this.records.peek(workflowId);
+      if (!workflow?.managerRunId) return;
+      const managerRunId = workflow.managerRunId;
+      await this.pendingMessages.drain(workflowId, async (pending) => {
+        const text =
+          pending.length === 1
+            ? pending[0]!.text
+            : `${pending.length} messages arrived while you were working.\n\n` +
+              pending.map((message) => message.text).join("\n\n---\n\n");
+        const run = await this.agents.resumeChain(managerRunId, text);
+        if (!run) return null;
+        await this.acknowledgeMessagesLocked(workflowId, pending.length);
+        return run;
+      });
     });
   }
 }
