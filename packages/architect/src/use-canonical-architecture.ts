@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   canonicalSystemIds,
   composeArchitecture,
@@ -10,6 +10,7 @@ import {
   type ArchOverlay,
   type ArchitectureGraph,
   type C4Model,
+  type CodeMapProgress,
   type CodeMapSummary,
   type ScreenApiCall,
   type SchemaSurface,
@@ -24,6 +25,10 @@ import {
 } from "@crystal/client";
 import { autoLayoutFitted } from "./layout.js";
 import { buildSystemCardFacts, systemCardSlot } from "./system-card.js";
+
+const DERIVE_TIMEOUT_MS = 180_000;
+const MAX_AUTO_RETRIES = 3;
+const RETRY_BASE_DELAY_MS = 1_000;
 
 /**
  * The one canonical architecture, as a hook: fetches the overview + code map
@@ -69,6 +74,14 @@ export function useCanonicalArchitecture(options?: {
    * `rendered` baseline `extractOverlay` diffs drags against.
    */
   rendered: ArchitectureGraph | null;
+  /** True while the overview/code-map inputs are being fetched or retried. */
+  loading: boolean;
+  /** Last derive-input request failure; cleared by the next attempt. */
+  error: string | null;
+  /** Latest server-side full-pass progress for the active workspace. */
+  progress: CodeMapProgress | null;
+  /** Immediately retry a failed derive-input request. */
+  retry: () => void;
   /**
    * Persist a canvas edit. The edit must be free of anything that is not the
    * user's (review ghosts, view-filtered nodes re-injected) — callers with
@@ -92,27 +105,120 @@ export function useCanonicalArchitecture(options?: {
 
   const [codeSummary, setCodeSummary] = useState<CodeMapSummary | null>(null);
   const [overviewData, setOverviewData] = useState<SystemOverview | null>(null);
-  const fetchDeriveInputs = useCallback(async () => {
-    try {
-      const [summary, overview] = await Promise.all([
-        client.request("codemap.get", {}),
-        client.request("codemap.overview", {}),
-      ]);
-      setCodeSummary(summary);
-      setOverviewData(overview);
-    } catch {
-      // No analyzable code yet — the canvas stays empty until it appears.
-    }
-  }, [client]);
-  useEffect(() => {
-    if (connection === "open") void fetchDeriveInputs();
-  }, [fetchDeriveInputs, connection]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [progress, setProgress] = useState<CodeMapProgress | null>(null);
+  const activeWsRef = useRef(activeWs);
+  const connectionRef = useRef(connection);
+  const dataWsRef = useRef<string | null>(null);
+  const requestIdRef = useRef(0);
+  const inFlightRef = useRef<{ ws: string; requestId: number } | null>(null);
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  activeWsRef.current = activeWs;
+  connectionRef.current = connection;
+
+  const clearRetryTimer = useCallback(() => {
+    if (!retryTimerRef.current) return;
+    clearTimeout(retryTimerRef.current);
+    retryTimerRef.current = null;
+  }, []);
+
+  const fetchDeriveInputs = useCallback(
+    async function fetchDeriveInputs(ws: string, attempt = 0): Promise<void> {
+      if (connectionRef.current !== "open" || activeWsRef.current !== ws) return;
+      if (inFlightRef.current?.ws === ws) return;
+      clearRetryTimer();
+      const requestId = ++requestIdRef.current;
+      inFlightRef.current = { ws, requestId };
+      setLoading(true);
+      setError(null);
+      try {
+        const [summary, overview] = await Promise.all([
+          client.request("codemap.get", { ws }, { timeoutMs: DERIVE_TIMEOUT_MS }),
+          client.request("codemap.overview", { ws }, { timeoutMs: DERIVE_TIMEOUT_MS }),
+        ]);
+        if (
+          requestIdRef.current !== requestId ||
+          activeWsRef.current !== ws ||
+          connectionRef.current !== "open"
+        )
+          return;
+        dataWsRef.current = ws;
+        setCodeSummary(summary);
+        setOverviewData(overview);
+        setLoading(false);
+      } catch (err) {
+        if (requestIdRef.current !== requestId || activeWsRef.current !== ws) return;
+        if (connectionRef.current !== "open") {
+          setLoading(false);
+          return;
+        }
+        const message = (err as Error).message || "Architecture analysis failed";
+        console.warn(`[crystal] architecture inputs failed for ${ws}:`, message);
+        setLoading(false);
+        setError(message);
+        if (attempt < MAX_AUTO_RETRIES) {
+          const delay = RETRY_BASE_DELAY_MS * 2 ** attempt;
+          retryTimerRef.current = setTimeout(() => {
+            retryTimerRef.current = null;
+            void fetchDeriveInputs(ws, attempt + 1);
+          }, delay);
+        }
+      } finally {
+        if (inFlightRef.current?.requestId === requestId) inFlightRef.current = null;
+      }
+    },
+    [client, clearRetryTimer],
+  );
+
+  const retry = useCallback(() => {
+    const ws = activeWsRef.current;
+    if (!ws || connectionRef.current !== "open") return;
+    clearRetryTimer();
+    void fetchDeriveInputs(ws);
+  }, [clearRetryTimer, fetchDeriveInputs]);
+
+  useEffect(
+    () =>
+      client.events.on("codemap.progress", (update) => {
+        if (update.ws !== activeWsRef.current) return;
+        setProgress(update);
+        if (update.phase !== "done" && dataWsRef.current !== update.ws) setLoading(true);
+      }),
+    [client],
+  );
   useEffect(
     () =>
       client.events.on("codemap.changed", ({ ws }) => {
-        if (!activeWs || ws === activeWs) void fetchDeriveInputs();
+        if (ws === activeWsRef.current) void fetchDeriveInputs(ws);
       }),
-    [client, fetchDeriveInputs, activeWs],
+    [client, fetchDeriveInputs],
+  );
+  useEffect(() => {
+    clearRetryTimer();
+    requestIdRef.current += 1;
+    inFlightRef.current = null;
+    if (dataWsRef.current !== activeWs) {
+      dataWsRef.current = null;
+      setCodeSummary(null);
+      setOverviewData(null);
+      setError(null);
+      setProgress(null);
+    }
+    if (connection !== "open" || !activeWs) {
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    void fetchDeriveInputs(activeWs);
+  }, [activeWs, connection, clearRetryTimer, fetchDeriveInputs]);
+  useEffect(
+    () => () => {
+      clearRetryTimer();
+      requestIdRef.current += 1;
+      inFlightRef.current = null;
+    },
+    [clearRetryTimer],
   );
 
   const derived = useMemo(
@@ -214,5 +320,17 @@ export function useCanonicalArchitecture(options?: {
     [derived, rendered, reconciled, updateArchOverlay],
   );
 
-  return { overviewData, codeSummary, derived, c4Model, reconciled, rendered, commitEdited };
+  return {
+    overviewData,
+    codeSummary,
+    derived,
+    c4Model,
+    reconciled,
+    rendered,
+    loading,
+    error,
+    progress,
+    retry,
+    commitEdited,
+  };
 }

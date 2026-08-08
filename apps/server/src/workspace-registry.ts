@@ -145,7 +145,7 @@ export class WorkspaceRuntime {
         });
     };
     this.terminals = new TerminalManager(root);
-    this.analysis = new AnalysisBackend(root);
+    this.analysis = new AnalysisBackend(root, this.id);
     this.codemap = createCodeMapFacade(this.analysis);
     this.codeindex = new CodeIndexService(root, this.codemap);
     this.quality = new QualityService(root);
@@ -312,6 +312,13 @@ export class WorkspaceRuntime {
   start(broadcast: Broadcast): void {
     this.notifyWorkspaceChanged = () => broadcast("workspace.changed", { ws: this.id });
     this.disposeAgentListeners = [
+      this.codemap.onProgress((progress) => {
+        // A stale overview may have rebuilt the semantic index from the old
+        // snapshot. Drop it before announcing the completed fresh pass.
+        if (progress.phase === "done") this.codeindex.invalidate();
+        broadcast("codemap.progress", progress);
+        if (progress.phase === "done") broadcast("codemap.changed", { ws: this.id });
+      }),
       this.agents.events.on("event", (payload) => {
         broadcast("agent.event", payload);
         // File CRYSTAL_QUESTION lines on the run's task server-side — a

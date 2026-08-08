@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import type { CodeMapProgress } from "@crystal/core";
 import {
   buildCallGraph,
   callKey,
@@ -1650,6 +1651,57 @@ describe("single-package directory modules (analyzer)", () => {
     expect(summary.modules.find((m) => m.path === "src/core")).toMatchObject({ fileCount: 1 });
     expect(summary.deps).toContainEqual({ source: "src", target: "src/core", weight: 1 });
     expect(summary.deps).toContainEqual({ source: "src/ui", target: "src/core", weight: 1 });
+  });
+});
+
+describe("CodeMapAnalyzer refresh lifecycle", () => {
+  it("emits phase and file-count progress for a full pass", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "crystal-progress-"));
+    try {
+      await fs.writeFile(path.join(root, "a.ts"), "export const a = 1;\n");
+      await fs.writeFile(path.join(root, "b.ts"), "export const b = 2;\n");
+      const progress: Omit<CodeMapProgress, "ws">[] = [];
+      const analyzer = new CodeMapAnalyzer(root, (update) => progress.push(update));
+
+      await analyzer.summary();
+
+      expect(progress.map((update) => update.phase)).toEqual(
+        expect.arrayContaining(["discovering", "parsing", "resolving", "done"]),
+      );
+      expect(progress.find((update) => update.phase === "parsing")).toMatchObject({
+        done: 0,
+        total: 2,
+      });
+      expect(progress.at(-1)).toEqual({ phase: "done", done: 2, total: 2 });
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("serves a completed stale summary while one shared refresh runs", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "crystal-stale-map-"));
+    try {
+      await fs.writeFile(path.join(root, "a.ts"), "export const a = 1;\n");
+      let waitForRefresh = false;
+      let resolveRefresh!: () => void;
+      const refreshed = new Promise<void>((resolve) => {
+        resolveRefresh = resolve;
+      });
+      const analyzer = new CodeMapAnalyzer(root, (update) => {
+        if (waitForRefresh && update.phase === "done") resolveRefresh();
+      });
+      expect((await analyzer.summary()).fileTotal).toBe(1);
+
+      await fs.writeFile(path.join(root, "b.ts"), "export const b = 2;\n");
+      waitForRefresh = true;
+      analyzer.invalidate();
+      expect((await analyzer.summary()).fileTotal).toBe(1);
+
+      await refreshed;
+      expect((await analyzer.summary()).fileTotal).toBe(2);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 });
 
