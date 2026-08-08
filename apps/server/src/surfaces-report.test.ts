@@ -2,16 +2,19 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import type { SchemaSurface } from "@crystal/core";
 import { CodeMapAnalyzer } from "./code-map.js";
 import {
   demoTargetsFromScripts,
   extractRouterScreens,
   extractSourceSchemas,
+  inferSchemaReferences,
   parseSqlSchemas,
   nextAppRoute,
   nextPagesRoute,
   parsePrismaSchema,
   parseStoryFile,
+  schemaPackageRoot,
 } from "./surfaces-report.js";
 
 describe("nextAppRoute", () => {
@@ -268,6 +271,83 @@ interface Hidden { x: number }`;
 
   it("never throws on malformed sources", () => {
     expect(extractSourceSchemas("x.ts", "import { z } from 'zod'; const ((( =")).toEqual([]);
+  });
+});
+
+describe("schema package grouping", () => {
+  it("uses real analyzer modules and keeps a plain repository in one group", () => {
+    const modules = [
+      { path: "." },
+      { path: "packages/core" },
+      { path: "examples/demo" },
+    ];
+    expect(schemaPackageRoot("packages/core/prisma/schema.prisma", modules)).toBe(
+      "packages/core",
+    );
+    expect(schemaPackageRoot("examples/demo/db/schema.sql", modules)).toBe("examples/demo");
+    expect(
+      schemaPackageRoot("src/models/user.ts", [
+        { path: "." },
+        { path: "src", synthetic: true },
+      ]),
+    ).toBe(".");
+    expect(schemaPackageRoot("apps/api/db/schema.sql", modules)).toBe("apps/api");
+  });
+
+  it("infers ER references only within a package and preserves explicit references", () => {
+    const schemas: SchemaSurface[] = [
+      {
+        id: "apps/a/src/models/post.ts#Post",
+        name: "Post",
+        file: "apps/a/src/models/post.ts",
+        line: 1,
+        kind: "interface",
+        usedBy: 0,
+        fields: [
+          { name: "author", type: "User" },
+          { name: "owner", type: "Account", references: "ExternalAccount" },
+        ],
+      },
+      {
+        id: "apps/a/src/models/user.ts#User",
+        name: "User",
+        file: "apps/a/src/models/user.ts",
+        line: 1,
+        kind: "interface",
+        usedBy: 0,
+        fields: [],
+      },
+      {
+        id: "apps/b/src/models/comment.ts#Comment",
+        name: "Comment",
+        file: "apps/b/src/models/comment.ts",
+        line: 1,
+        kind: "interface",
+        usedBy: 0,
+        fields: [{ name: "author", type: "User" }],
+      },
+      {
+        id: "apps/b/src/models/user.ts#User",
+        name: "User",
+        file: "apps/b/src/models/user.ts",
+        line: 1,
+        kind: "interface",
+        usedBy: 0,
+        fields: [],
+      },
+    ];
+    const modules = [{ path: "." }, { path: "apps/a" }, { path: "apps/b" }];
+    inferSchemaReferences(schemas, modules);
+    expect(schemas[0]!.fields).toEqual([
+      { name: "author", type: "User", references: "User" },
+      { name: "owner", type: "Account", references: "ExternalAccount" },
+    ]);
+    expect(schemas[2]!.fields[0]).toEqual({ name: "author", type: "User", references: "User" });
+
+    schemas[3]!.name = "Member";
+    delete schemas[2]!.fields[0]!.references;
+    inferSchemaReferences(schemas, modules);
+    expect(schemas[2]!.fields[0]!.references).toBeUndefined();
   });
 });
 

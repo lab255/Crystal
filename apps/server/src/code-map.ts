@@ -2691,7 +2691,12 @@ export class CodeMapAnalyzer {
    */
   async surfaces(): Promise<SurfacesReport> {
     await this.ensureFresh();
-    this.surfacesMemo ??= buildSurfacesReport(this.root, this.records, this.importedBy);
+    this.surfacesMemo ??= buildSurfacesReport(
+      this.root,
+      this.records,
+      this.importedBy,
+      this.modules,
+    );
     return this.surfacesMemo;
   }
 

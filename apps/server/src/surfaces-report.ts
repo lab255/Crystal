@@ -1051,6 +1051,76 @@ const SCHEMA_WALK_MAX_DEPTH = 5;
 const MAX_PRISMA_FILES = 5;
 const MAX_SQL_FILES = 40;
 
+export interface SchemaPackageModule {
+  path: string;
+  /** Synthetic directory modules are structure inside one package, not packages. */
+  synthetic?: boolean;
+}
+
+const PACKAGE_COLLECTION_DIRS = new Set([
+  "apps",
+  "examples",
+  "libs",
+  "modules",
+  "packages",
+  "services",
+]);
+
+/**
+ * Package root owning a schema file. Real analyzer modules win by longest
+ * ancestor match. When analyzer metadata is unavailable, conventional
+ * monorepo collection directories fall back to their top-level pair; a
+ * single-package analyzer (only `.` plus synthetic modules) stays one group.
+ */
+export function schemaPackageRoot(
+  file: string,
+  modules?: readonly SchemaPackageModule[],
+): string {
+  const rel = file.replace(/\\/g, "/").replace(/^\.\//, "");
+  const realModules = modules
+    ?.filter((m) => !m.synthetic && m.path !== ".")
+    .map((m) => m.path.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/$/, ""))
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length || a.localeCompare(b));
+  const discovered = realModules?.find((m) => rel === m || rel.startsWith(`${m}/`));
+  if (discovered) return discovered;
+  if (modules && realModules?.length === 0) return ".";
+
+  const segments = rel.split("/");
+  return segments.length >= 3 && PACKAGE_COLLECTION_DIRS.has(segments[0]!)
+    ? `${segments[0]}/${segments[1]}`
+    : ".";
+}
+
+/** Infer type-name ER references within one analyzer package at a time. */
+export function inferSchemaReferences(
+  schemas: readonly SchemaSurface[],
+  modules?: readonly SchemaPackageModule[],
+): void {
+  const byPackage = new Map<string, Map<string, SchemaSurface>>();
+  for (const schema of schemas) {
+    const root = schemaPackageRoot(schema.file, modules);
+    const byName = byPackage.get(root) ?? new Map<string, SchemaSurface>();
+    if (/^[A-Z]/.test(schema.name) && schema.name.length >= 3 && !byName.has(schema.name)) {
+      byName.set(schema.name, schema);
+    }
+    byPackage.set(root, byName);
+  }
+  for (const schema of schemas) {
+    const byName = byPackage.get(schemaPackageRoot(schema.file, modules));
+    if (!byName) continue;
+    for (const field of schema.fields) {
+      if (field.references || !field.type) continue;
+      for (const token of field.type.match(/[A-Za-z_$][\w$]*/g) ?? []) {
+        if (token !== schema.name && byName.has(token)) {
+          field.references = token;
+          break;
+        }
+      }
+    }
+  }
+}
+
 /**
  * Workspace-relative `.prisma` and `.sql` files (shallow walk, ignored dirs
  * skipped, capped) — the schema sources that live outside the analyzer's
@@ -1095,6 +1165,7 @@ export async function buildSurfacesReport(
   root: string,
   records: ReadonlyMap<string, SurfaceSourceRecord>,
   importedBy: ReadonlyMap<string, ReadonlySet<string>>,
+  modules?: readonly SchemaPackageModule[],
 ): Promise<SurfacesReport> {
   const paths = [...records.keys()].sort();
   const usedByOf = (p: string): number => importedBy.get(p)?.size ?? 0;
@@ -1349,27 +1420,9 @@ export async function buildSurfacesReport(
     if (rel.endsWith(".prisma")) schemas.push(...parsePrismaSchema(rel, text));
     else schemas.push(...parseSqlSchemas(rel, text));
   }
-  // ER inference across every flavour: a field whose type text names another
-  // schema references it (interfaces composing models, zod objects nesting
-  // other zod objects). Explicit references (SQL/mongoose/drizzle/typeorm/
-  // prisma) always win; the inferred edge only fills the gap.
-  {
-    const byName = new Map<string, SchemaSurface>();
-    for (const s of schemas) {
-      if (/^[A-Z]/.test(s.name) && s.name.length >= 3 && !byName.has(s.name)) byName.set(s.name, s);
-    }
-    for (const s of schemas) {
-      for (const field of s.fields) {
-        if (field.references || !field.type) continue;
-        for (const token of field.type.match(/[A-Za-z_$][\w$]*/g) ?? []) {
-          if (token !== s.name && byName.has(token)) {
-            field.references = token;
-            break;
-          }
-        }
-      }
-    }
-  }
+  // Type-name inference stays inside the owning package. Explicit references
+  // (SQL/mongoose/drizzle/typeorm/prisma) are already set and remain intact.
+  inferSchemaReferences(schemas, modules);
   schemas.sort((a, b) => b.usedBy - a.usedBy || a.name.localeCompare(b.name));
 
   /* ---------------- demo ---------------- */

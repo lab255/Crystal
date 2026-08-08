@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { Copy, Database, KeyRound, MoveRight, Network, Table2 } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Copy, Database, KeyRound, ListFilter, MoveRight, Network, Table2 } from "lucide-react";
 import type { SchemaKind, SchemaSurface } from "@crystal/core";
 import { SchemaDiagram } from "./SchemaDiagram.js";
 import { useNav, useNavUpdate, useSymbolMenu } from "@crystal/client";
@@ -64,6 +64,22 @@ const KIND_ORDER: SchemaKind[] = [
   "type",
 ];
 
+const PROJECT_DIRS = new Set(["apps", "examples", "libs", "modules", "packages", "services"]);
+
+interface SchemaProjectGroup {
+  id: string;
+  label: string;
+  schemas: SchemaSurface[];
+  usedByWeight: number;
+}
+
+function fallbackProject(file: string): string {
+  const segments = file.replace(/\\/g, "/").replace(/^\.\//, "").split("/");
+  return segments.length >= 3 && PROJECT_DIRS.has(segments[0]!)
+    ? `${segments[0]}/${segments[1]}`
+    : ".";
+}
+
 /** `{ name: string; age?: number }`-style text for the copy menu. */
 function schemaAsText(s: SchemaSurface): string {
   const fields = s.fields
@@ -73,38 +89,78 @@ function schemaAsText(s: SchemaSurface): string {
 }
 
 export function SchemasView() {
-  const { report } = useSurfaces();
+  const { report, systemOfFile } = useSurfaces();
   const nav = useNavUpdate();
   const selectedId = useNav((l) => l.surfaces?.schema ?? null);
+  const systemFilter = useNav((l) => l.surfaces?.system ?? null);
   const find = (useNav((l) => l.surfaces?.find) ?? "").trim().toLowerCase();
   const menu = useContextMenu();
   const symbolMenu = useSymbolMenu();
   const lens = useSurfacesLens();
   const [collapsed, setCollapsed] = useState<ReadonlySet<SchemaKind>>(new Set());
-  // "diagram" = the ER canvas over every visible schema; "fields" = the
-  // selected schema's table. Diagram-clicks select in place; list-clicks
-  // jump straight to the fields.
+  // "diagram" = the ER canvas over the focused project's visible schemas;
+  // "fields" = the selected schema's table. Diagram-clicks select in place;
+  // list-clicks jump straight to the fields.
   const [tab, setTab] = useState<"diagram" | "fields">("diagram");
 
   const schemas = report?.schemas ?? [];
+  const projectGroups = useMemo<SchemaProjectGroup[]>(() => {
+    const byId = new Map<string, SchemaProjectGroup>();
+    for (const schema of schemas) {
+      const system = systemOfFile(schema.file);
+      const fallback = fallbackProject(schema.file);
+      const id = system?.id ?? `project:${fallback}`;
+      const group = byId.get(id) ?? {
+        id,
+        label: system?.name ?? (fallback === "." ? "Workspace" : fallback),
+        schemas: [],
+        usedByWeight: 0,
+      };
+      group.schemas.push(schema);
+      group.usedByWeight += schema.usedBy;
+      byId.set(id, group);
+    }
+    return [...byId.values()].sort(
+      (a, b) =>
+        b.usedByWeight - a.usedByWeight ||
+        b.schemas.length - a.schemas.length ||
+        a.label.localeCompare(b.label),
+    );
+  }, [schemas, systemOfFile]);
+
+  const selectedAnywhere = schemas.find((s) => s.id === selectedId) ?? null;
+  const selectedGroup = selectedAnywhere
+    ? projectGroups.find((group) => group.schemas.some((s) => s.id === selectedAnywhere.id))
+    : null;
+  const focusedGroup =
+    projectGroups.find((group) => group.id === systemFilter) ?? selectedGroup ?? projectGroups[0];
+  const focusedId = focusedGroup?.id ?? null;
+
+  // Persist the computed default so reloads/shared links retain the focused
+  // project. An explicit schema selection wins for old links without system=.
+  useEffect(() => {
+    if (focusedId && focusedId !== systemFilter) nav({ surfaces: { system: focusedId } });
+  }, [focusedId, nav, systemFilter]);
+
+  const focusedSchemas = focusedGroup?.schemas ?? [];
   /** Lens members (null when no lens dims) — non-members render dimmed. */
   const lensMembers = useMemo(
     () =>
       lens.active
-        ? new Set(schemas.filter((s) => lens.matcher.file(s.file)).map((s) => s.id))
+        ? new Set(focusedSchemas.filter((s) => lens.matcher.file(s.file)).map((s) => s.id))
         : null,
-    [lens, schemas],
+    [focusedSchemas, lens],
   );
   const visible = useMemo(
     () =>
-      schemas.filter(
+      focusedSchemas.filter(
         (s) =>
           !find ||
           s.name.toLowerCase().includes(find) ||
           s.file.toLowerCase().includes(find) ||
           s.fields.some((f) => f.name.toLowerCase().includes(find)),
       ),
-    [schemas, find],
+    [focusedSchemas, find],
   );
 
   const groups = useMemo(() => {
@@ -117,7 +173,7 @@ export function SchemasView() {
     return KIND_ORDER.filter((k) => byKind.has(k)).map((k) => ({ kind: k, list: byKind.get(k)! }));
   }, [visible]);
 
-  const selected = schemas.find((s) => s.id === selectedId) ?? null;
+  const selected = focusedSchemas.find((s) => s.id === selectedId) ?? null;
 
   if (schemas.length === 0) {
     return (
@@ -147,9 +203,37 @@ export function SchemasView() {
       <SplitPane defaultSize={320} minSize={240} maxSize={520}>
         <aside className="flex h-full flex-col border-r border-edge bg-surface-1">
           <ListHeader icon={Database} title="Schemas" shown={visible.length} total={schemas.length}>
-            <LensHint lens={lens} matched={lensMembers?.size ?? 0} total={schemas.length} />
+            <LensHint lens={lens} matched={lensMembers?.size ?? 0} total={focusedSchemas.length} />
           </ListHeader>
+          <div className="flex shrink-0 gap-1 overflow-x-auto border-y border-edge px-2 py-1.5">
+            {projectGroups.map((group) => (
+              <button
+                key={group.id}
+                type="button"
+                onClick={() => nav({ surfaces: { system: group.id, schema: null } })}
+                aria-pressed={group.id === focusedId}
+                className={cn(
+                  "flex shrink-0 items-center gap-1 rounded-md border px-2 py-1 text-[10px]",
+                  group.id === focusedId
+                    ? "border-crystal-500/40 bg-crystal-500/15 text-ink"
+                    : "border-edge bg-surface-2 text-ink-muted hover:text-ink",
+                )}
+              >
+                <span className="max-w-32 truncate">{group.label}</span>
+                <span className="text-[9px] text-ink-faint">{group.schemas.length}</span>
+              </button>
+            ))}
+          </div>
           <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2">
+            {focusedGroup ? (
+              <div className="flex items-center gap-1.5 px-1.5 py-1.5">
+                <ListFilter className="h-3 w-3 shrink-0 text-accent-cyan" />
+                <span className="min-w-0 flex-1 truncate text-[11px] font-semibold text-ink">
+                  {focusedGroup.label}
+                </span>
+                <span className="text-[9px] text-ink-faint">{focusedGroup.schemas.length}</span>
+              </div>
+            ) : null}
             {groups.map(({ kind, list }) => (
               <div key={kind} className="mb-1.5">
                 <GroupHeader
