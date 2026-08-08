@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import type { CodeMapProgress } from "@crystal/core";
 import { AnalysisBackend, createCodeMapFacade } from "./analysis-host.js";
 
 const tmpRoots: string[] = [];
@@ -57,5 +58,21 @@ describe("AnalysisBackend", () => {
     // `await facade` must yield the facade itself, not hang on a fake then().
     const awaited = await codemap;
     expect(awaited).toBe(codemap);
+  });
+
+  it("surfaces workspace-keyed progress in worker and fallback modes", async () => {
+    const root = await makeProject();
+    const backend = new AnalysisBackend(root, "ws-progress");
+    backends.push(backend);
+    const codemap = createCodeMapFacade(backend);
+    const progress: CodeMapProgress[] = [];
+    const dispose = codemap.onProgress((update) => progress.push(update));
+
+    await codemap.summary();
+    dispose();
+
+    expect(progress.length).toBeGreaterThan(0);
+    expect(progress.every((update) => update.ws === "ws-progress")).toBe(true);
+    expect(progress.at(-1)?.phase).toBe("done");
   });
 });

@@ -19,6 +19,7 @@ import type {
   CodeFileDetail,
   CodeFileSummary,
   CodeImport,
+  CodeMapProgress,
   CodeMapSummary,
   CodeModule,
   CodeModuleDep,
@@ -101,6 +102,10 @@ const CHANGES_MAX_EXPORTS = 12;
 const CHANGES_MAX_DEPENDENTS = 8;
 /** A trace this shallow isn't a journey worth suggesting. */
 const JOURNEY_MIN_STEPS = 3;
+/** Progress updates are UI telemetry, not a per-file event stream. */
+const ANALYSIS_PROGRESS_INTERVAL_MS = 250;
+
+type AnalyzerProgress = Omit<CodeMapProgress, "ws">;
 
 /** A callee reference found inside a symbol's body. */
 export interface SymbolCall {
@@ -1717,27 +1722,61 @@ export class CodeMapAnalyzer {
   /** Entry files declared by package manifests (bin/main/exports/scripts). */
   private declaredEntries = new Set<string>();
   private analyzing: Promise<void> | null = null;
+  /** Distinguishes a completed empty workspace from the initial cold pass. */
+  private hasAnalyzed = false;
   private dirty = true;
   private callGraphMemo: CallGraph | null = null;
   private surfacesMemo: Promise<SurfacesReport> | null = null;
   private surfaceMapMemo: Promise<SurfaceMapReport> | null = null;
 
-  constructor(private readonly root: string) {}
+  constructor(
+    private readonly root: string,
+    private readonly onProgress?: (progress: AnalyzerProgress) => void,
+  ) {}
 
   invalidate(): void {
     this.dirty = true;
   }
 
-  private async ensureFresh(): Promise<void> {
+  private reportProgress(progress: AnalyzerProgress): void {
+    try {
+      this.onProgress?.(progress);
+    } catch {
+      // Progress is observational; a listener must never break analysis.
+    }
+  }
+
+  private startRefresh(): Promise<void> {
+    this.analyzing ??= this.analyze()
+      .then(() => {
+        this.hasAnalyzed = true;
+      })
+      .catch((err) => {
+        // A failed pass remains retryable instead of looking clean forever.
+        this.dirty = true;
+        throw err;
+      })
+      .finally(() => {
+        this.analyzing = null;
+      });
+    return this.analyzing;
+  }
+
+  private async ensureFresh(serveStale = false): Promise<void> {
     if (!this.dirty && !this.analyzing) return;
-    this.analyzing ??= this.analyze().finally(() => {
-      this.analyzing = null;
-    });
-    await this.analyzing;
+    const refresh = this.startRefresh();
+    if (serveStale && this.hasAnalyzed) {
+      void refresh.catch((err) => {
+        console.warn(`[crystal] background code-map refresh failed:`, (err as Error).message);
+      });
+      return;
+    }
+    await refresh;
   }
 
   /** Full workspace pass (cheap on re-runs thanks to the mtime cache). */
   private async analyze(): Promise<void> {
+    this.reportProgress({ phase: "discovering" });
     this.dirty = false;
     this.packageNameToModule.clear();
     this.declaredEntries.clear();
@@ -1755,48 +1794,64 @@ export class CodeMapAnalyzer {
     }
 
     const records = new Map<string, FileRecord>();
+    let parsedFiles = 0;
+    let lastProgressAt = Date.now();
+    this.reportProgress({ phase: "parsing", done: 0, total: files.length });
     await Promise.all(
       files.map(async ({ rel, module }) => {
-        const abs = resolveInRoot(this.root, rel);
-        let stat;
         try {
-          stat = await fs.stat(abs);
-        } catch {
-          return;
-        }
-        let parsed = this.parseCache.get(rel);
-        if (!parsed || parsed.mtimeMs !== stat.mtimeMs) {
+          const abs = resolveInRoot(this.root, rel);
+          let stat;
           try {
-            const text = await fs.readFile(abs, "utf8");
-            const core = parseSource(rel, text);
-            const serviceInstances = extractServiceInstances(
-              text,
-              core.imports
-                .map((i) => packageNameOf(i.specifier))
-                .filter((p): p is string => p != null),
-            );
-            parsed = {
-              mtimeMs: stat.mtimeMs,
-              hash: fnv1a64(text),
-              ...core,
-              ...(serviceInstances.length > 0 ? { serviceInstances } : {}),
-            };
-            this.parseCache.set(rel, parsed);
+            stat = await fs.stat(abs);
           } catch {
             return;
           }
+          let parsed = this.parseCache.get(rel);
+          if (!parsed || parsed.mtimeMs !== stat.mtimeMs) {
+            try {
+              const text = await fs.readFile(abs, "utf8");
+              const core = parseSource(rel, text);
+              const serviceInstances = extractServiceInstances(
+                text,
+                core.imports
+                  .map((i) => packageNameOf(i.specifier))
+                  .filter((p): p is string => p != null),
+              );
+              parsed = {
+                mtimeMs: stat.mtimeMs,
+                hash: fnv1a64(text),
+                ...core,
+                ...(serviceInstances.length > 0 ? { serviceInstances } : {}),
+              };
+              this.parseCache.set(rel, parsed);
+            } catch {
+              return;
+            }
+          }
+          records.set(rel, {
+            ...parsed,
+            path: rel,
+            module,
+            resolvedImports: [],
+            resolvedMounts: [],
+          });
+        } finally {
+          parsedFiles += 1;
+          const now = Date.now();
+          if (
+            parsedFiles === files.length ||
+            now - lastProgressAt >= ANALYSIS_PROGRESS_INTERVAL_MS
+          ) {
+            lastProgressAt = now;
+            this.reportProgress({ phase: "parsing", done: parsedFiles, total: files.length });
+          }
         }
-        records.set(rel, {
-          ...parsed,
-          path: rel,
-          module,
-          resolvedImports: [],
-          resolvedMounts: [],
-        });
       }),
     );
 
     // Resolve imports now that the full file set is known.
+    this.reportProgress({ phase: "resolving", done: files.length, total: files.length });
     const fileSet = new Set(records.keys());
     const importedBy = new Map<string, Set<string>>();
     for (const record of records.values()) {
@@ -1827,6 +1882,7 @@ export class CodeMapAnalyzer {
       ...m,
       fileCount: [...records.values()].filter((r) => r.module === m.path).length,
     }));
+    this.reportProgress({ phase: "done", done: files.length, total: files.length });
   }
 
   /** package.json dirs (deepest wins for file ownership); "." is always a module. */
@@ -1932,7 +1988,7 @@ export class CodeMapAnalyzer {
   }
 
   async summary(): Promise<CodeMapSummary> {
-    await this.ensureFresh();
+    await this.ensureFresh(true);
     const weights = new Map<string, number>();
     const externalImports: { module: string; pkg: string; instances?: string[] }[] = [];
     // Instance names attach once per (file, service) — a file importing three
@@ -2634,7 +2690,7 @@ export class CodeMapAnalyzer {
 
   /** Per-file inputs for the logical system overview (see core's system-overview.ts). */
   async overviewSourceFiles(): Promise<OverviewSourceFile[]> {
-    await this.ensureFresh();
+    await this.ensureFresh(true);
     const nameOfModule = new Map(this.modules.map((m) => [m.path, m.name]));
     const prefixes = computeMountPrefixes(this.records.values());
     return [...this.records.values()].map((record) => {
@@ -2660,7 +2716,7 @@ export class CodeMapAnalyzer {
 
   /** Per-file inputs for the semantic code index (see core's code-index.ts). */
   async indexSourceFiles(): Promise<IndexSourceFile[]> {
-    await this.ensureFresh();
+    await this.ensureFresh(true);
     const graph = this.callGraph();
     return [...this.records.values()].map((record) => {
       const importerModules = new Set<string>();

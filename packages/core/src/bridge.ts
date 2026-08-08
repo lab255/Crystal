@@ -79,6 +79,14 @@ export interface WsScope {
   ws?: string;
 }
 
+/** Live progress for one workspace's full code-map analysis pass. */
+export interface CodeMapProgress {
+  ws: string;
+  phase: "discovering" | "parsing" | "resolving" | "done";
+  done?: number;
+  total?: number;
+}
+
 /** One open workspace on the bridge server. */
 export interface WorkspaceDescriptor {
   /** Stable id derived from the canonical root path. */
@@ -1256,6 +1264,8 @@ export interface BridgeEvents {
   "standing.changed": { ws: string };
   /** The derived code map was re-analyzed after source changes. */
   "codemap.changed": { ws: string };
+  /** A full code-map pass advanced (file counts are present while parsing). */
+  "codemap.progress": CodeMapProgress;
   /** The code index changed (code re-analyzed or an enrichment file landed). */
   "codeindex.changed": { ws: string };
   /** A dev server started, stopped, or learned its URL from process output. */

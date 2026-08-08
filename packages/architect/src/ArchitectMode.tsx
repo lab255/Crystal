@@ -46,6 +46,7 @@ import {
   type ArchDraft,
   type ArchitectureGraph,
   type C4View,
+  type CodeMapProgress,
   type CodeIndex,
   type CodeMapSummary,
   type CodeTrace,
@@ -82,6 +83,7 @@ import {
   EmptyState,
   Input,
   Pane,
+  ProgressBar,
   Split,
   Spinner,
   Tooltip,
@@ -130,6 +132,13 @@ const DIFF_LEGEND = [
   { swatchClassName: "border border-dashed border-danger/70 bg-danger/15", label: "removed" },
   { swatchClassName: "border border-warn/70 bg-warn/20", label: "changed" },
 ] as const;
+const ANALYSIS_PHASE_LABEL: Record<CodeMapProgress["phase"], string> = {
+  discovering: "Discovering source files",
+  parsing: "Parsing source files",
+  resolving: "Resolving imports",
+  done: "Finishing the architecture",
+};
+const FILE_COUNT_FORMAT = new Intl.NumberFormat();
 
 type ArchitectView = "architecture" | "infra" | "codebase";
 
@@ -403,12 +412,23 @@ function DiagramsView({
     [screensOn, screensData, endpointsOn],
   );
   const schemasData = screensData?.schemas ?? null;
-  const { overviewData, codeSummary, derived, c4Model, reconciled, rendered, commitEdited } =
-    useCanonicalArchitecture({
-      surfaces: surfacesInput,
-      screens: screensData?.screens ?? null,
-      schemas: schemasData,
-    });
+  const {
+    overviewData,
+    codeSummary,
+    derived,
+    c4Model,
+    reconciled,
+    rendered,
+    loading: architectureLoading,
+    error: architectureError,
+    progress: architectureProgress,
+    retry: retryArchitecture,
+    commitEdited,
+  } = useCanonicalArchitecture({
+    surfaces: surfacesInput,
+    screens: screensData?.screens ?? null,
+    schemas: schemasData,
+  });
 
   /* ---- C4 altitude: level + scope live in the deep-linkable nav store ---- */
 
@@ -1453,7 +1473,7 @@ function DiagramsView({
           <div className="flex h-full items-center justify-center">
             <Spinner />
           </div>
-        ) : rendered ? (
+        ) : rendered && rendered.nodes.length > 0 ? (
           <>
           {variant === "infra" ? (
             <InfraView
@@ -1576,11 +1596,52 @@ function DiagramsView({
               </div>
             ) : null}
           </>
+        ) : architectureError ? (
+          <EmptyState
+            icon={Boxes}
+            title="Architecture analysis failed"
+            action={
+              <Button variant="outline" size="sm" onClick={retryArchitecture}>
+                Retry
+              </Button>
+            }
+          >
+            {architectureError}
+          </EmptyState>
+        ) : architectureLoading || !rendered ? (
+          <EmptyState
+            icon={Boxes}
+            title="Deriving the architecture…"
+            action={
+              <div className="flex w-64 flex-col gap-2 text-left">
+                <div className="flex items-center gap-2 text-xs text-ink-muted">
+                  <Spinner className="h-3.5 w-3.5 shrink-0" />
+                  <span>
+                    {ANALYSIS_PHASE_LABEL[architectureProgress?.phase ?? "discovering"]}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between text-[10px] text-ink-faint">
+                  <span>
+                    {architectureProgress?.total != null
+                      ? `${FILE_COUNT_FORMAT.format(architectureProgress.done ?? 0)} / ${FILE_COUNT_FORMAT.format(architectureProgress.total)} files`
+                      : "Scanning workspace…"}
+                  </span>
+                </div>
+                <ProgressBar
+                  value={architectureProgress?.done ?? 0}
+                  max={Math.max(architectureProgress?.total ?? 1, 1)}
+                  label="Code-map analysis progress"
+                />
+              </div>
+            }
+          >
+            The first pass can take a while in a large workspace. It continues on the server
+            while this view stays responsive.
+          </EmptyState>
         ) : (
-          <EmptyState icon={Boxes} title="Deriving the architecture…">
-            The diagram derives itself from your code the moment the code map has
-            analyzable TypeScript/JavaScript. Your edits — positions, groups, added
-            queues and stores — persist in{" "}
+          <EmptyState icon={Boxes} title="No analyzable architecture found">
+            Add TypeScript or JavaScript source files and Crystal will derive this diagram
+            automatically. Manual additions persist in{" "}
             <code className="text-ink">.crystal/architecture/overlay.json</code>.
           </EmptyState>
         )}

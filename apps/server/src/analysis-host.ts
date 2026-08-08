@@ -2,6 +2,7 @@ import fsSync from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
+import type { CodeMapProgress } from "@crystal/core";
 import type { CodeMapAnalyzer } from "./code-map.js";
 
 /**
@@ -14,12 +15,17 @@ import type { CodeMapAnalyzer } from "./code-map.js";
  */
 
 /** The analyzer's methods with every return type promoted to a Promise. */
-export type CodeMapFacade = {
+type AsyncCodeMapMethods = {
   [K in keyof CodeMapAnalyzer as CodeMapAnalyzer[K] extends (...args: never[]) => unknown
     ? K
     : never]: CodeMapAnalyzer[K] extends (...args: infer A) => infer R
     ? (...args: A) => Promise<Awaited<R>>
     : never;
+};
+
+export type CodeMapFacade = AsyncCodeMapMethods & {
+  /** Subscribe to one-way analysis progress for this facade's workspace. */
+  onProgress(listener: (progress: CodeMapProgress) => void): () => void;
 };
 
 interface Pending {
@@ -29,7 +35,10 @@ interface Pending {
   args: unknown[];
 }
 
-type WorkerReply = { type: "ready" } | { id: number; ok: boolean; result?: unknown; error?: string };
+type WorkerReply =
+  | { type: "ready" }
+  | { type: "progress"; progress: CodeMapProgress }
+  | { type: "reply"; id: number; ok: boolean; result?: unknown; error?: string };
 
 /**
  * Locate the worker entry. Order: staged sidecar bundle (Tauri resource dir /
@@ -97,8 +106,12 @@ export class AnalysisBackend {
   private pending = new Map<number, Pending>();
   private nextId = 1;
   private localAnalyzer: CodeMapAnalyzer | null = null;
+  private progressListeners = new Set<(progress: CodeMapProgress) => void>();
 
-  constructor(private readonly root: string) {}
+  constructor(
+    private readonly root: string,
+    private readonly ws: string = root,
+  ) {}
 
   /** How calls are currently served — for logs and tests. */
   get mode(): "worker" | "local" | "idle" {
@@ -118,18 +131,36 @@ export class AnalysisBackend {
     });
   }
 
+  onProgress(listener: (progress: CodeMapProgress) => void): () => void {
+    this.progressListeners.add(listener);
+    return () => this.progressListeners.delete(listener);
+  }
+
   dispose(): void {
     this.disposed = true;
     void this.worker?.terminate();
     this.worker = null;
     for (const p of this.pending.values()) p.reject(new Error("Analysis backend disposed"));
     this.pending.clear();
+    this.progressListeners.clear();
+  }
+
+  private emitProgress(progress: CodeMapProgress): void {
+    for (const listener of [...this.progressListeners]) {
+      try {
+        listener(progress);
+      } catch {
+        // Progress listeners are observational; keep the analysis channel alive.
+      }
+    }
   }
 
   private async callLocal(method: string, args: unknown[]): Promise<unknown> {
     if (!this.localAnalyzer) {
       const { CodeMapAnalyzer } = await import("./code-map.js");
-      this.localAnalyzer ??= new CodeMapAnalyzer(this.root);
+      this.localAnalyzer ??= new CodeMapAnalyzer(this.root, (progress) =>
+        this.emitProgress({ ws: this.ws, ...progress }),
+      );
     }
     const target = this.localAnalyzer as unknown as Record<string, (...a: unknown[]) => unknown>;
     const fn = target[method];
@@ -147,19 +178,26 @@ export class AnalysisBackend {
     let worker: Worker;
     try {
       worker = entry.endsWith(".ts")
-        ? new Worker(tsBootScript(entry), { eval: true, workerData: { root: this.root } })
-        : new Worker(entry, { workerData: { root: this.root } });
+        ? new Worker(tsBootScript(entry), {
+            eval: true,
+            workerData: { root: this.root, ws: this.ws },
+          })
+        : new Worker(entry, { workerData: { root: this.root, ws: this.ws } });
     } catch (err) {
       this.markBroken((err as Error).message);
       return null;
     }
     this.worker = worker;
     worker.on("message", (msg: WorkerReply) => {
-      if ("type" in msg && msg.type === "ready") {
+      if (msg.type === "ready") {
         this.everReady = true;
         return;
       }
-      const reply = msg as Exclude<WorkerReply, { type: "ready" }>;
+      if (msg.type === "progress") {
+        this.emitProgress(msg.progress);
+        return;
+      }
+      const reply = msg;
       const p = this.pending.get(reply.id);
       if (!p) return;
       this.pending.delete(reply.id);
@@ -219,7 +257,7 @@ export class AnalysisBackend {
  * watcher down with it.
  */
 export function createCodeMapFacade(backend: AnalysisBackend): CodeMapFacade {
-  const cache = new Map<string, (...args: unknown[]) => Promise<unknown>>();
+  const cache = new Map<string, (...args: unknown[]) => unknown>();
   return new Proxy({} as CodeMapFacade, {
     get: (_t, prop) => {
       if (typeof prop !== "string") return undefined;
@@ -228,7 +266,10 @@ export function createCodeMapFacade(backend: AnalysisBackend): CodeMapFacade {
       let fn = cache.get(prop);
       if (!fn) {
         fn =
-          prop === "invalidate"
+          prop === "onProgress"
+            ? (listener: unknown) =>
+                backend.onProgress(listener as (progress: CodeMapProgress) => void)
+            : prop === "invalidate"
             ? (...args: unknown[]) => backend.call(prop, args).catch(() => {})
             : (...args: unknown[]) => backend.call(prop, args);
         cache.set(prop, fn);
