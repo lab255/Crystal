@@ -50,6 +50,7 @@ export function ProjectNav({
   const qualView = useNav((l) => l.quality?.view);
   const [manualOpen, setManualOpen] = useState<ReadonlySet<CrystalMode>>(new Set());
   const [dragId, setDragId] = useState<CrystalMode | null>(null);
+  const [dragOverId, setDragOverId] = useState<CrystalMode | null>(null);
 
   const order = orderedFacets(navOrder);
 
@@ -166,19 +167,49 @@ export function ProjectNav({
             m === "orchestrate" ? needsYouCount || runningRuns : m === "jobs" ? runningJobs : 0;
           const badgeWarns = m === "orchestrate" && needsYouCount > 0;
           const sub = activeSubview(m);
+          const dropPosition =
+            dragId && dragId !== m && dragOverId === m
+              ? order.indexOf(dragId) < order.indexOf(m)
+                ? "after"
+                : "before"
+              : null;
           return (
             <div
               key={m}
-              className={cn("px-1.5", dragId === m && "opacity-50")}
+              className={cn(
+                "px-1.5",
+                dragId === m && "opacity-50",
+                dropPosition === "before" && "border-t-2 border-crystal-500",
+                dropPosition === "after" && "border-b-2 border-crystal-500",
+              )}
               onDragOver={(e) => {
-                if (dragId) e.preventDefault();
+                if (!dragId) return;
+                e.preventDefault();
+                e.dataTransfer.dropEffect = "move";
+                setDragOverId(m);
               }}
-              onDrop={() => drop(m)}
+              onDragLeave={(e) => {
+                if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+                  setDragOverId((current) => (current === m ? null : current));
+                }
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                drop(m);
+                setDragOverId(null);
+              }}
             >
               <div
                 draggable
-                onDragStart={() => setDragId(m)}
-                onDragEnd={() => setDragId(null)}
+                onDragStart={(e) => {
+                  e.dataTransfer.setData("text/plain", m);
+                  e.dataTransfer.effectAllowed = "move";
+                  setDragId(m);
+                }}
+                onDragEnd={() => {
+                  setDragId(null);
+                  setDragOverId(null);
+                }}
                 onContextMenu={(e) => sectionMenu(e, m)}
                 className="group/navsec"
               >
