@@ -383,6 +383,12 @@ build/sign (+notarize on macOS) → signed updater `latest.json`).
 
 ## Gotchas
 
+- HTML5 drag-and-drop dies silently in the desktop webview unless Tauri's
+  drag-drop handler is disabled: `dragDropEnabled: false` on the main window in
+  `tauri.conf.json` AND `.disable_drag_drop_handler()` in `new_window` (lib.rs)
+  — keep both in sync. Every in-app drag (nav rearrange, palette drops, infra
+  placement) depends on it; nothing uses Tauri's native onDragDropEvent.
+
 - Agent spawns strip `ANTHROPIC_API_KEY` (`claudeSpawnEnv`) so a leaked key can't
   silently switch a subscription login to per-token billing; `CRYSTAL_ALLOW_API_KEY=1`
   opts back in. Keep any new spawn path on that helper.
