@@ -22,6 +22,7 @@ import {
   touchedFileFromToolUse,
   transcriptUsage,
   applyProfileOverlay,
+  resolvePresetModel,
   type AgentEvent,
   type AgentIsolation,
   type AgentPermissionMode,
@@ -31,6 +32,7 @@ import {
   type AgentRun,
   type AskOptions,
   type ModelPreset,
+  type ProfileResolutionInput,
   type RunEvent,
   type RunPurpose,
   type WorkerSpec,
@@ -569,15 +571,21 @@ export class AgentManager {
    * hub with the global store). It is what lets a manager dispatch workers by
    * `agentId`, and what re-applies a profile's standing prompt / tool policy
    * on every `--resume` turn — flags are per-invocation, so without this the
-   * profile would silently fall off the chain's second turn.
+   * profile would silently fall off the chain's second turn. Resolution input
+   * selects manager/merge preset roles at the spawn seam.
    */
-  profileResolver: ((agentId: string) => Promise<AgentProfileOverlay | null>) | null = null;
+  profileResolver:
+    | ((
+        agentId: string,
+        input?: ProfileResolutionInput | null,
+      ) => Promise<AgentProfileOverlay | null>)
+    | null = null;
   /**
    * Set by the host: the workspace's model preset (roster `preset` field).
-   * It answers only when nothing else named a model — explicit params and
-   * profile overlays always win — and only for orchestration roles: managers
-   * get the preset's manager model, dispatched workers its worker model.
-   * Plain runs (jobs, consoles) keep the CLI's own default, as before.
+   * It answers only when nothing else named a model/provider — explicit
+   * params and profile overlays always win — and only for orchestration roles:
+   * managers, dispatched workers, and merge-purpose runs. Plain runs (jobs,
+   * consoles) keep the CLI's own default, as before.
    */
   presetResolver: (() => Promise<ModelPreset>) | null = null;
   /**
@@ -606,16 +614,28 @@ export class AgentManager {
     return "acceptEdits";
   }
 
-  /** The preset-fallback model for a run with none: managers/workers only. */
+  /** The preset-fallback model/provider for a run with none: managers/workers/merge. */
   private async presetModelFor(params: {
     model?: string | null;
+    provider?: AgentProvider | null;
     role?: string | null;
-  }): Promise<string | null> {
-    if (params.model || !this.presetResolver) return params.model ?? null;
-    if (params.role !== "manager" && params.role !== "worker") return null;
+    purpose?: RunPurpose | null;
+  }): Promise<{ model: string; provider: AgentProvider } | null> {
+    // A direct provider override without a model should use that CLI's own
+    // default; pairing it with another provider's preset model is unsafe.
+    if (params.model || params.provider || !this.presetResolver) return null;
+    const presetRole =
+      params.role === "manager"
+        ? "manager"
+        : params.purpose === "merge"
+          ? "merge"
+          : params.role === "worker"
+            ? "worker"
+            : null;
+    if (!presetRole) return null;
     const preset = await this.presetResolver().catch(() => null);
     if (!preset) return null;
-    return params.role === "manager" ? preset.manager : preset.worker;
+    return resolvePresetModel(preset, presetRole);
   }
 
   /** Absolute workspace root — engines run deterministic git against it. */
@@ -788,7 +808,7 @@ export class AgentManager {
       }
     }
     const presetModel = await this.presetModelFor(params);
-    if (presetModel) params = { ...params, model: presetModel };
+    if (presetModel) params = { ...params, ...presetModel };
     const run = createAgentRun(params);
     // A resumed run's session is known up front — stamping it now (instead of
     // waiting for the init event) makes the fork guard above airtight for
@@ -1012,7 +1032,7 @@ export class AgentManager {
     if (this.disposed) throw new Error("Workspace is closed — no new agent runs.");
     await this.ensureLoaded();
     const presetModel = await this.presetModelFor(params);
-    if (presetModel) params = { ...params, model: presetModel };
+    if (presetModel) params = { ...params, ...presetModel };
     const run = createAgentRun(params);
     const provider = params.provider === "codex" ? "codex" : "claude";
     // A known session id (--session-id) keeps the chain resumable headlessly
@@ -1746,9 +1766,12 @@ export class AgentManager {
     // A spec naming an agentId runs as that profile; anything the spec sets
     // explicitly (model above all) wins over the profile's own values, and
     // the manager's purpose stays the last fallback exactly as before.
-    const overlay = spec.agentId
-      ? ((await this.profileResolver?.(spec.agentId).catch(() => null)) ?? null)
-      : null;
+    const overlay =
+      spec.agentId && this.profileResolver
+        ? await this.profileResolver(spec.agentId, {
+            purpose: spec.purpose ?? null,
+          }).catch(() => null)
+        : null;
     const merged = applyProfileOverlay(
       {
         prompt: spec.prompt,
@@ -1956,17 +1979,26 @@ export class AgentManager {
         `No conflicts after merging ${prep.target} into the worktree — merge normally now.`,
       );
     }
-    const resolver = await this.start({
-      prompt: buildConflictPrompt(prep.target, prep.conflicts),
-      cwd: run.cwd,
-      taskId: run.taskId,
-      projectId: run.projectId,
-      repoId: run.repoId,
-      agentId: run.agentId,
-      purpose: "merge",
-      tags: run.tags,
-      worktreeOfRunId: runId,
-    });
+    const overlay =
+      run.agentId && this.profileResolver
+        ? await this.profileResolver(run.agentId, { purpose: "merge" }).catch(() => null)
+        : null;
+    const resolver = await this.start(
+      applyProfileOverlay(
+        {
+          prompt: buildConflictPrompt(prep.target, prep.conflicts),
+          cwd: run.cwd,
+          taskId: run.taskId,
+          projectId: run.projectId,
+          repoId: run.repoId,
+          agentId: run.agentId,
+          purpose: "merge" as const,
+          tags: run.tags,
+          worktreeOfRunId: runId,
+        },
+        overlay,
+      ),
+    );
     return { run: resolver, conflicts: prep.conflicts };
   }
 

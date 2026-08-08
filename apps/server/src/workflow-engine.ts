@@ -26,7 +26,9 @@ import {
   applyProfileOverlay,
   presetById,
   profileOverlay,
+  resolvePresetModel,
   type AgentPermissionMode,
+  type AgentProvider,
   type AgentRoster,
   type AgentRun,
   type SteerReceipt,
@@ -345,7 +347,7 @@ export class WorkflowEngine {
       ? (roster.agents.find((a) => a.id === managerAgentId) ?? null)
       : null;
     const preset = presetById(roster.preset);
-    const overlay = profile ? profileOverlay(profile, preset, "manager") : null;
+    const overlay = profile ? profileOverlay(profile, preset, { role: "manager" }) : null;
     const params = applyProfileOverlay(
       {
         cwd: workflow.cwd,
@@ -356,14 +358,19 @@ export class WorkflowEngine {
         role: "manager" as const,
         purpose: "manage" as const,
         tags: [workflowTag(workflow.id)],
+        provider: null as AgentProvider | null,
         model: (init.managerModel ?? null) as string | null,
         skills: [] as string[],
       },
       overlay,
     );
     // No explicit model, no profile pin → the project's preset names the
-    // orchestrator model (Balanced: opus; Frontier: fable).
-    params.model ??= preset.manager;
+    // orchestrator model and provider (Delegated: Fable on Claude).
+    if (!params.model) {
+      const resolved = resolvePresetModel(preset, "manager");
+      params.model = resolved.model;
+      params.provider ??= resolved.provider;
+    }
     // The manager coordinates in place — a profile's worktree default is a
     // worker policy, and an isolated manager could not keep the board honest.
     (params as { isolation?: unknown }).isolation = undefined;

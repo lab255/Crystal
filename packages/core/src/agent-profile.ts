@@ -38,11 +38,12 @@ export type AgentProfileKind = z.infer<typeof AgentProfileKindSchema>;
 /* ------------------------------------------------------------------ */
 
 /**
- * A model preset is the project's one cost/capability dial: which model the
- * top-level orchestrators run, and which models `"auto"` profiles resolve to
- * by kind. It rides the existing profile/tag/dispatch machinery — a preset
- * never bypasses profiles, it just answers "auto" — so per-profile pins and
- * per-dispatch `model` overrides keep winning exactly as before.
+ * A model preset is the project's one cost/capability dial: which model and
+ * CLI provider the top-level orchestrators use, and which model/provider
+ * `"auto"` profiles resolve to by kind and purpose. It rides the existing
+ * profile/tag/dispatch machinery — a preset never bypasses profiles, it just
+ * answers "auto" — so per-profile pins and per-dispatch `model` overrides
+ * keep winning exactly as before.
  */
 export interface ModelPreset {
   id: string;
@@ -50,10 +51,20 @@ export interface ModelPreset {
   description: string;
   /** Top-level orchestrators: workflow, program and board managers. */
   manager: string;
+  /** CLI vendor for managers; absent follows the profile provider. */
+  managerProvider?: AgentProvider;
   /** Generic (`kind: "generic"`) profiles left on `"auto"`. */
   worker: string;
+  /** CLI vendor for generic workers; absent follows the profile provider. */
+  workerProvider?: AgentProvider;
   /** Specialist profiles left on `"auto"`. */
   specialist: string;
+  /** CLI vendor for specialists; absent follows the profile provider. */
+  specialistProvider?: AgentProvider;
+  /** Merge/rebase/conflict runs; absent preserves the preset's worker behavior. */
+  merge?: string;
+  /** CLI vendor for merge runs; absent follows the profile provider. */
+  mergeProvider?: AgentProvider;
 }
 
 export const MODEL_PRESETS: readonly ModelPreset[] = [
@@ -73,9 +84,22 @@ export const MODEL_PRESETS: readonly ModelPreset[] = [
     worker: "opus",
     specialist: "fable",
   },
+  {
+    id: "delegated",
+    name: "Delegated",
+    description: "Fable orchestrators · gpt-5.6-sol coding · Sonnet merge/rebase",
+    manager: "fable",
+    managerProvider: "claude",
+    worker: "gpt-5.6-sol",
+    workerProvider: "codex",
+    specialist: "gpt-5.6-sol",
+    specialistProvider: "codex",
+    merge: "sonnet",
+    mergeProvider: "claude",
+  },
 ];
 
-export const DEFAULT_PRESET_ID = "balanced";
+export const DEFAULT_PRESET_ID = "delegated";
 
 /** Preset by id, falling back to the default — an unknown id never crashes a spawn. */
 export function presetById(id?: string | null): ModelPreset {
@@ -98,12 +122,17 @@ export const MODEL_HINTS = [AUTO_MODEL, "fable", "opus", "sonnet", "haiku"] as c
 
 /**
  * Codex counterpart of {@link MODEL_HINTS}. "auto" resolves to
- * {@link DEFAULT_CODEX_MODEL} — the model presets are Claude-tiered and have
- * nothing sensible to say about OpenAI models.
+ * {@link DEFAULT_CODEX_MODEL} when the selected preset role does not name a
+ * Codex model/provider explicitly.
  */
-export const CODEX_MODEL_HINTS = [AUTO_MODEL, "gpt-5.2-codex", "gpt-5.2"] as const;
+export const CODEX_MODEL_HINTS = [
+  AUTO_MODEL,
+  "gpt-5.6-sol",
+  "gpt-5.2-codex",
+  "gpt-5.2",
+] as const;
 
-/** What a codex profile's "auto" resolves to (presets are Claude-only dials). */
+/** What a codex profile's "auto" resolves to for a Claude-tier preset role. */
 export const DEFAULT_CODEX_MODEL = "gpt-5.2-codex";
 
 /** The suggestion list for a provider's model picker. */
@@ -111,24 +140,88 @@ export function modelHintsFor(provider: AgentProvider | null | undefined): reado
   return provider === "codex" ? CODEX_MODEL_HINTS : MODEL_HINTS;
 }
 
+export type ModelPresetRole = "manager" | "worker" | "specialist" | "merge";
+
+export interface ProfileResolutionInput {
+  role?: "manager" | null;
+  purpose?: RunPurpose | null;
+}
+
+export interface ResolvedProfileModel {
+  model: string;
+  provider: AgentProvider;
+}
+
+interface PresetRoleModel {
+  model: string;
+  provider?: AgentProvider;
+}
+
+function presetRoleModel(preset: ModelPreset, role: ModelPresetRole): PresetRoleModel {
+  if (role === "manager") {
+    return { model: preset.manager, provider: preset.managerProvider };
+  }
+  if (role === "specialist") {
+    return { model: preset.specialist, provider: preset.specialistProvider };
+  }
+  if (role === "merge" && preset.merge) {
+    return { model: preset.merge, provider: preset.mergeProvider };
+  }
+  return { model: preset.worker, provider: preset.workerProvider };
+}
+
+/** Resolve one preset role without a profile (server-side fallback spawns). */
+export function resolvePresetModel(
+  preset: ModelPreset,
+  role: ModelPresetRole,
+): ResolvedProfileModel {
+  const selected = presetRoleModel(preset, role);
+  return { model: selected.model, provider: selected.provider ?? "claude" };
+}
+
+function presetRoleFor(
+  profile: AgentProfile,
+  input?: ProfileResolutionInput | null,
+): ModelPresetRole {
+  if (input?.role === "manager") return "manager";
+  if ((input?.purpose ?? profile.defaults?.purpose) === "merge") return "merge";
+  return profile.kind === "specialist" ? "specialist" : "worker";
+}
+
+function resolveProfileModelAndProvider(
+  profile: AgentProfile,
+  preset: ModelPreset,
+  input?: ProfileResolutionInput | null,
+): ResolvedProfileModel {
+  const profileProvider = profile.provider ?? "claude";
+  if (profile.model && profile.model !== AUTO_MODEL) {
+    return { model: profile.model, provider: profileProvider };
+  }
+  const selected = presetRoleModel(preset, presetRoleFor(profile, input));
+  if (selected.provider) {
+    return { model: selected.model, provider: selected.provider };
+  }
+  // A role without an explicit provider is a Claude tier. An explicitly
+  // Codex profile still stays on Codex and uses its safe default instead of
+  // sending a Claude alias to the OpenAI CLI.
+  if (profileProvider === "codex") {
+    return { model: DEFAULT_CODEX_MODEL, provider: "codex" };
+  }
+  return { model: selected.model, provider: "claude" };
+}
+
 /**
  * A profile's concrete `--model` value: its own pin always wins; "auto"
- * resolves by the run's place in the hierarchy — a manager gets the preset's
- * manager model whatever profile it runs as (orchestration is a role, not a
- * kind), everything else resolves by profile kind.
+ * resolves by the run's place in the hierarchy and purpose. Provider-aware
+ * callers should use {@link profileOverlay}, which resolves the model/vendor
+ * pair atomically.
  */
 export function resolveProfileModel(
   profile: AgentProfile,
   preset: ModelPreset,
-  role?: "manager" | null,
+  input?: ProfileResolutionInput | null,
 ): string {
-  if (profile.model && profile.model !== AUTO_MODEL) return profile.model;
-  // Presets are Claude cost/capability tiers — a codex profile on "auto"
-  // resolves to the codex default instead of a Claude alias the OpenAI CLI
-  // would reject (or worse, silently map to something unexpected).
-  if (profile.provider === "codex") return DEFAULT_CODEX_MODEL;
-  if (role === "manager") return preset.manager;
-  return profile.kind === "specialist" ? preset.specialist : preset.worker;
+  return resolveProfileModelAndProvider(profile, preset, input).model;
 }
 
 /**
@@ -174,9 +267,10 @@ export const AgentProfileSchema = z.object({
   provider: AgentProviderSchema.default("claude"),
   /**
    * Model alias or id (`--model`), e.g. "sonnet", "opus", "fable" (claude) or
-   * "gpt-5.2-codex" (codex) — or "auto" to follow the roster's model preset
-   * for this profile's kind (codex profiles resolve "auto" to the codex
-   * default; presets are Claude tiers).
+   * "gpt-5.6-sol" / "gpt-5.2-codex" (codex) — or "auto" to follow the
+   * roster's model preset for this profile's kind and run purpose (a preset
+   * role may also switch the CLI vendor; otherwise codex profiles resolve
+   * "auto" to the codex default rather than receiving a Claude-tier alias).
    */
   model: z.string().default(AUTO_MODEL),
   /** Skill names woven into dispatch prompts (specialists). */
@@ -239,8 +333,8 @@ export function createAgentProfile(
 export function createDefaultRoster(): AgentRoster {
   return AgentRosterSchema.parse({
     agents: [
-      // "auto" models: the roster's preset decides (Balanced out of the box —
-      // Sonnet generalist, Opus specialist; Frontier lifts both a tier).
+      // "auto" models: the roster's preset decides (Delegated out of the box —
+      // Fable orchestration and Codex coding; the older presets remain selectable).
       { id: "agent_generalist", name: "Generalist", kind: "generic", model: AUTO_MODEL },
       { id: "agent_specialist", name: "Specialist", kind: "specialist", model: AUTO_MODEL },
     ],
@@ -299,18 +393,19 @@ export interface AgentProfileOverlay {
 
 /**
  * Flatten a profile into the overlay a dispatch applies. The preset resolves
- * "auto" models here, at the single choke point, so every consumer of an
- * overlay only ever sees a concrete model.
+ * "auto" model/provider pairs here, at the single choke point, so every
+ * consumer of an overlay only ever sees a concrete, CLI-compatible pair.
  */
 export function profileOverlay(
   profile: AgentProfile,
   preset?: ModelPreset,
-  role?: "manager" | null,
+  input?: ProfileResolutionInput | null,
 ): AgentProfileOverlay {
+  const resolved = resolveProfileModelAndProvider(profile, preset ?? presetById(null), input);
   return {
     agentId: profile.id,
-    provider: profile.provider ?? "claude",
-    model: resolveProfileModel(profile, preset ?? presetById(null), role),
+    provider: resolved.provider,
+    model: resolved.model,
     skills: profile.skills,
     appendPrompt: profile.appendPrompt?.trim() || null,
     allowedTools: profile.allowedTools ?? [],
@@ -380,13 +475,14 @@ const ROSTER_STANDING_CHARS = 100;
 export function rosterText(profiles: readonly AgentProfile[], preset?: ModelPreset): string {
   const lines: string[] = [];
   for (const p of profiles) {
+    const resolved = resolveProfileModelAndProvider(p, preset ?? presetById(null));
     const bits = [
       `- ${p.id} "${p.name}"`,
       p.kind,
       // Claude is the unmarked case; a second vendor is worth a manager's
       // attention (no MCP board tools, own sandbox model).
-      p.provider === "codex" ? "codex" : null,
-      `model ${resolveProfileModel(p, preset ?? presetById(null))}`,
+      resolved.provider === "codex" ? "codex" : null,
+      `model ${resolved.model}`,
       p.tags.length ? `tags: ${p.tags.join(", ")}` : null,
       p.skills.length ? `skills: ${p.skills.join(", ")}` : null,
     ].filter(Boolean);
