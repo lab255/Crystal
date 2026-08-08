@@ -392,3 +392,18 @@ export function setC4Position(
   else delete c4Layouts[viewKey];
   return { ...overlay, c4Layouts };
 }
+
+/**
+ * Remove every manual pin at one C4 altitude.
+ *
+ * Auto-layout is a per-view reset: deleting the level in one operation keeps
+ * pins at the other C4 altitudes intact. Preserve identity when the level is
+ * already absent so a no-op toolbar click does not cause an overlay write or
+ * restart layout work downstream.
+ */
+export function clearC4Layout(overlay: ArchOverlay, viewKey: string): ArchOverlay {
+  if (overlay.c4Layouts[viewKey] == null) return overlay;
+  const c4Layouts = { ...overlay.c4Layouts };
+  delete c4Layouts[viewKey];
+  return { ...overlay, c4Layouts };
+}

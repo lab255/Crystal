@@ -406,6 +406,16 @@ build/sign (+notarize on macOS) → signed updater `latest.json`).
   paths crash libuv's recursive watcher if you skip this.
 - react-flow requires parents before children in the node array (`topoOrderNodes`), and
   child positions are parent-relative — same convention as the core model.
+- Replacing react-flow's `nodes` array while its initial measurement is still flushing
+  can drop the pending internals update — nodes stay `visibility: hidden` forever
+  (~1-in-3 loads). Any async layout that swaps node arrays right after mount (the
+  architect's ELK path) must call `updateNodeInternals(ids)` after each swap.
+- elkjs: a hierarchical edge that reaches THROUGH a compound whose `elk.algorithm`
+  differs from the parent's (e.g. a rectpacked scope under layered
+  `INCLUDE_CHILDREN`) crashes ELK with a minified Java exception. `elk-layout.ts`
+  snaps such endpoints to the packed scope's border and drops their routes — keep any
+  new edge-building path on that helper. Component packing is also ignored entirely
+  under `INCLUDE_CHILDREN`, which is why sparse/hub-heavy scopes get rectpacked at all.
 - `finish()` in `agent-manager.ts` must run on process close even when a `result` event
   already settled the run status — it persists the run and emits the terminal event.
   It is also idempotent via `endedAt` (a failed spawn fires both `error` and `close`).

@@ -13,6 +13,7 @@ export function Toolbar({
   defaultEdgeKind,
   onDefaultEdgeKindChange,
   onAutoLayout,
+  singleAutoLayout,
   onFitView,
   onRename,
   lodLevel,
@@ -45,6 +46,8 @@ export function Toolbar({
   defaultEdgeKind: ArchEdgeKind;
   onDefaultEdgeKindChange: (kind: ArchEdgeKind) => void;
   onAutoLayout: (mode: "flow" | "layers") => void;
+  /** C4 has one action: clear pins and reveal its already-solved ELK layout. */
+  singleAutoLayout?: boolean;
   onFitView: () => void;
   onRename: (name: string) => void;
   /** Explicit detail ladder (packages → modules → members) over the whole canvas. */
@@ -143,26 +146,28 @@ export function Toolbar({
         ))}
       </div>
       <div className="h-4 w-px bg-edge" />
-      <Tooltip content="Auto-layout — flow (top to bottom)">
+      <Tooltip content={singleAutoLayout ? "Auto layout" : "Auto-layout — flow (top to bottom)"}>
         <Button
           variant="ghost"
           size="icon-sm"
           onClick={() => onAutoLayout("flow")}
-          aria-label="Auto layout, flow"
+          aria-label={singleAutoLayout ? "Auto layout" : "Auto layout, flow"}
         >
           <LayoutGrid className="h-3.5 w-3.5" />
         </Button>
       </Tooltip>
-      <Tooltip content="Auto-layout — layers by role (controller → service → data; fullstack scopes run left-to-right)">
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          onClick={() => onAutoLayout("layers")}
-          aria-label="Auto layout, layers"
-        >
-          <Rows3 className="h-3.5 w-3.5" />
-        </Button>
-      </Tooltip>
+      {!singleAutoLayout ? (
+        <Tooltip content="Auto-layout — layers by role (controller → service → data; fullstack scopes run left-to-right)">
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            onClick={() => onAutoLayout("layers")}
+            aria-label="Auto layout, layers"
+          >
+            <Rows3 className="h-3.5 w-3.5" />
+          </Button>
+        </Tooltip>
+      ) : null}
       <Tooltip content="Fit view">
         <Button variant="ghost" size="icon-sm" onClick={onFitView} aria-label="Fit view">
           <Maximize2 className="h-3.5 w-3.5" />
