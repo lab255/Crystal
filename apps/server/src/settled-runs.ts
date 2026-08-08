@@ -4,11 +4,11 @@ import type { AgentRun } from "@crystal/core";
  * Settle-once bookkeeping, shared by everything that hangs work off a run
  * reaching a terminal state.
  *
- * A run emits several terminal `runChanged` events — a `result` line settles
- * it, then the process `close` settles it again — so every listener needs the
- * same two rules: react exactly once per run, and don't remember run ids
- * forever (a long-lived server would leak one string per run for its whole
- * life). Three listeners grew their own copy of this before it was extracted:
+ * Terminal `runChanged` events can be observed more than once across lifecycle
+ * adapters, so every listener needs the same two rules: react exactly once per
+ * run, and don't remember run ids forever (a long-lived server would leak one
+ * string per run for its whole life). Three listeners grew their own copy of
+ * this before it was extracted:
  * the workspace runtime (task billing), the workflow engine (budget + message
  * flush) and the hub engine (program-manager wake-ups).
  */

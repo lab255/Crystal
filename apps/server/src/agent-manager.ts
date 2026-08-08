@@ -498,7 +498,10 @@ export class AgentManager {
   /** Trailing debounce per run for non-terminal runChanged broadcasts. */
   private runChangedTimers = new Map<string, NodeJS.Timeout>();
   private procs = new Map<string, ActiveProcess>();
-  private loaded = false;
+  /** Concurrent history readers share the same in-flight load. */
+  private loading: Promise<void> | null = null;
+  /** Terminal status reported by the CLI, applied only when the process closes. */
+  private resultStatuses = new Map<string, Extract<AgentRun["status"], "completed" | "failed">>();
   /** Set by disposeAll (workspace close): no new spawns from this manager. */
   private disposed = false;
   private resolvedBin: string | null = null;
@@ -712,9 +715,11 @@ export class AgentManager {
   }
 
   /** Load persisted run history (metadata + events) once. */
-  private async ensureLoaded(): Promise<void> {
-    if (this.loaded) return;
-    this.loaded = true;
+  private ensureLoaded(): Promise<void> {
+    return (this.loading ??= this.loadHistory());
+  }
+
+  private async loadHistory(): Promise<void> {
     const dir = this.runsDir();
     const names = await fs.readdir(dir).catch(() => [] as string[]);
     for (const name of names) {
@@ -1404,7 +1409,7 @@ export class AgentManager {
    */
   async resumeChain(fromRunId: string, prompt: string): Promise<AgentRun | null> {
     await this.ensureLoaded();
-    const rootId = chainRootId(fromRunId, this.runs);
+    const rootId = this.forwardedChainRoot(chainRootId(fromRunId, this.runs));
     const prev = this.resumeLocks.get(rootId) ?? Promise.resolve();
     const attempt = prev.then(async (): Promise<AgentRun | null> => {
       if (this.chainLive(rootId)) return null;
@@ -1597,6 +1602,11 @@ export class AgentManager {
       // Same tree: uncommitted work survives the generation boundary.
       ...(latest.worktreePath ? { worktreeOfRunId: latest.id } : {}),
     });
+    const continuationRoot = chainRootId(continuation.id, this.runs);
+    this.pendingNotices.move(rootId, continuationRoot);
+    if (this.pendingNotices.size(continuationRoot) && !this.chainLive(continuationRoot)) {
+      void this.flushNotices(continuationRoot);
+    }
     this.onHandoff?.(latest, continuation);
     return continuation;
   }
@@ -1648,7 +1658,7 @@ export class AgentManager {
     text: string,
   ): Promise<{ run: AgentRun | null; status: "resumed" | "queued" | "recorded" }> {
     await this.ensureLoaded();
-    const rootId = chainRootId(fromRunId, this.runs);
+    const rootId = this.forwardedChainRoot(chainRootId(fromRunId, this.runs));
     const chain = this.orderedChain(rootId);
     const latest = chain[chain.length - 1];
     if (
@@ -1793,6 +1803,11 @@ export class AgentManager {
     // The workflow's per-run cap (when one is set) rides every dispatch — a
     // worker is exactly the kind of run the cap exists to bound.
     const costCapUsd = (await this.dispatchCostCap?.(manager).catch(() => null)) ?? null;
+    // Policy can change while profile and cap resolution await (most notably
+    // workflow.cancel). The last asynchronous step before start must re-check
+    // it so a cancelled workflow cannot buy one more worker.
+    const finalVeto = await this.dispatchGuard?.(manager, spec);
+    if (finalVeto) throw new Error(finalVeto);
     const worker = await this.start({
       ...merged,
       isolation: merged.isolation ?? "none",
@@ -2059,8 +2074,8 @@ export class AgentManager {
 
   /**
    * Resolve once the run leaves the live states (an already-settled run
-   * resolves immediately). Settles on the first terminal status — a `result`
-   * event may land before the process closes; `finish()` still runs after.
+   * resolves immediately). A CLI result carries the outcome, but the run is
+   * not settled until the process closes and `finish()` publishes it.
    */
   waitForSettled(runId: string): Promise<AgentRun> {
     const current = this.runs.get(runId);
@@ -2099,7 +2114,7 @@ export class AgentManager {
       run.durationMs = event.durationMs;
       run.resultText = event.resultText;
       run.sessionId = event.sessionId ?? run.sessionId;
-      run.status = event.ok ? "completed" : "failed";
+      this.resultStatuses.set(run.id, event.ok ? "completed" : "failed");
       if (!event.ok) run.failure = classifyRunFailure(event.resultText);
       this.emitRunChanged(run);
     } else if (event.type === "tool_use") {
@@ -2179,9 +2194,10 @@ export class AgentManager {
     this.procs.delete(run.id);
     this.toolNamesByRun.delete(run.id);
     if (run.status === "running" || run.status === "queued") {
-      run.status = status;
+      run.status = this.resultStatuses.get(run.id) ?? status;
       run.resultText = run.resultText ?? message;
     }
+    this.resultStatuses.delete(run.id);
     run.endedAt = nowIso();
     // Recoverable-failure classification: the result text usually carries the
     // provider error, but CLI-level failures (dead login, instant exits) only
@@ -2269,6 +2285,22 @@ export class AgentManager {
     return false;
   }
 
+  /** Follow fresh-session handoffs so retired chains can never be resumed. */
+  private forwardedChainRoot(rootId: string): string {
+    let current = rootId;
+    const seen = new Set<string>();
+    while (!seen.has(current)) {
+      seen.add(current);
+      const ids = this.chainIds(current);
+      const continuation = [...this.runs.values()]
+        .filter((run) => run.handoffFromRunId != null && ids.has(run.handoffFromRunId))
+        .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))[0];
+      if (!continuation) break;
+      current = chainRootId(continuation.id, this.runs);
+    }
+    return current;
+  }
+
   /**
    * Close the delegation loop on settlement. A settling worker queues a
    * result notice for its manager chain; a settling manager turn flushes
@@ -2278,7 +2310,7 @@ export class AgentManager {
    */
   private notifyOnSettle(run: AgentRun): void {
     if (run.role === "worker" && run.parentRunId) {
-      const managerRoot = chainRootId(run.parentRunId, this.runs);
+      const managerRoot = this.forwardedChainRoot(chainRootId(run.parentRunId, this.runs));
       this.pendingNotices.push(managerRoot, { kind: "worker", text: this.workerNotice(run) });
       if (!this.chainLive(managerRoot)) void this.flushNotices(managerRoot);
       // An interactive manager stays live for its whole TUI session, so the

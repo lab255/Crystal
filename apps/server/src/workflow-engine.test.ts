@@ -27,6 +27,7 @@ class FakeAgents {
   started: AgentStartParams[] = [];
   /** mergeTrack runs real git here — tests that use it point this at a repo. */
   workspaceRoot = "";
+  onStart: ((run: AgentRun) => void) | null = null;
 
   async list(): Promise<AgentRun[]> {
     return [...this.runs];
@@ -43,6 +44,7 @@ class FakeAgents {
     run.status = "running";
     run.sessionId = `sess_${this.runs.length}`;
     this.runs.push(run);
+    this.onStart?.(run);
     return run;
   }
 
@@ -146,6 +148,19 @@ describe("WorkflowEngine", () => {
     // The manager defaults to the default preset's manager model when no
     // profile overrides (Delegated: fable orchestration).
     expect(agents.started[0]!.model).toBe("fable");
+  });
+
+  it("persists the workflow before an instantly-settling first manager", async () => {
+    const { agents, engine } = makeEngine();
+    agents.onStart = (run) => agents.settle(run);
+
+    const { workflow, run } = await engine.start({ name: "Instant", goal: "g" });
+    await until(async () =>
+      Boolean((await engine.get(workflow.id))?.turnLog.some((turn) => turn.runId === run.id)),
+    );
+    const stored = (await engine.get(workflow.id))!;
+    expect(stored.managerRunId).toBe(run.id);
+    expect(stored.noProgressTurns).toBe(1);
   });
 
   async function makeRepo(): Promise<string> {
@@ -296,6 +311,30 @@ describe("WorkflowEngine", () => {
     expect(direct.run?.prompt).toContain("and one more thing");
   });
 
+  it("restores an accepted queued message after an engine restart", async () => {
+    const { agents, engine, dataDir, globalDir } = makeEngine();
+    const { workflow, run } = await engine.start({ name: "Durable", goal: "g" });
+    const receipt = await engine.message(workflow.id, "survive restart");
+    expect(receipt.queued).toBe(true);
+    const pendingFile = path.join(dataDir, "workflow-pending-messages", `${workflow.id}.json`);
+    expect(JSON.parse(await fs.readFile(pendingFile, "utf8")).messages[0].text).toContain(
+      "survive restart",
+    );
+
+    engine.dispose();
+    const restarted = new WorkflowEngine(
+      dataDir,
+      agents as unknown as AgentManager,
+      fakeStore,
+      new GlobalTemplateStore(globalDir),
+    );
+    agents.settle(run);
+    await until(() => agents.started.length === 2);
+    expect(agents.started[1]!.prompt).toContain("survive restart");
+    await until(async () => fs.access(pendingFile).then(() => false, () => true));
+    restarted.dispose();
+  });
+
   it("guards dispatches while paused and when the budget is exhausted", async () => {
     const { agents, engine } = makeEngine();
     const { workflow, run } = await engine.start({ name: "W", goal: "g", budgetUsd: 1 });
@@ -362,6 +401,28 @@ describe("WorkflowEngine", () => {
     const status = await engine.statusText(workflow.id);
     expect(status).toContain("refine [done]");
     expect(status).toContain("wf/big-ship/api-layer");
+  });
+
+  it("refuses completion until live workers settle", async () => {
+    const { agents, engine } = makeEngine();
+    const { workflow, run } = await engine.start({ name: "Safe finish", goal: "g" });
+    const worker = await agents.start({
+      prompt: "still editing",
+      parentRunId: run.id,
+      role: "worker",
+      tags: [workflowTag(workflow.id)],
+    });
+
+    await expect(engine.complete(workflow.id, "completed", "too soon")).rejects.toThrow(
+      /wait.*cancel.*workers/i,
+    );
+    expect((await engine.get(workflow.id))?.status).toBe("running");
+
+    agents.settle(worker);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const done = await engine.complete(workflow.id, "completed", "all quiet");
+    expect(done.status).toBe("completed");
+    expect(done.summary).toBe("all quiet");
   });
 
   it("saves, lists, starts from and deletes custom templates; built-ins are read-only", async () => {
@@ -530,6 +591,43 @@ describe("WorkflowEngine", () => {
     expect(fresh.resumedFromRunId ?? null).toBeNull();
     expect(fresh.prompt).toContain("COMPACTED SESSION");
     expect(fresh.prompt).toContain("refine [done]");
+  });
+
+  it("serializes two concurrent compactions so only one fresh manager starts", async () => {
+    const { agents, engine } = makeEngine();
+    const { workflow, run } = await engine.start({ name: "Compact race", goal: "g" });
+    agents.settle(run);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    const results = await Promise.allSettled([
+      engine.compact(workflow.id),
+      engine.compact(workflow.id),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const refusal = results.find((result) => result.status === "rejected");
+    expect(refusal).toMatchObject({ status: "rejected" });
+    if (refusal?.status === "rejected") expect(String(refusal.reason)).toMatch(/live run/);
+    expect(agents.started.filter((params) => params.prompt.includes("COMPACTED SESSION"))).toHaveLength(1);
+  });
+
+  it("serializes wake steering against compaction", async () => {
+    const { agents, engine } = makeEngine();
+    const { workflow, run } = await engine.start({ name: "Wake race", goal: "g" });
+    agents.settle(run);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    const [wake, compact] = await Promise.allSettled([
+      engine.message(workflow.id, "wake the existing chain"),
+      engine.compact(workflow.id),
+    ]);
+    expect(wake.status).toBe("fulfilled");
+    if (wake.status === "fulfilled") expect(wake.value.mode).toBe("resumed");
+    expect(compact.status).toBe("rejected");
+    if (compact.status === "rejected") expect(String(compact.reason)).toMatch(/live run/);
+    expect(agents.started.filter((params) => params.prompt.includes("COMPACTED SESSION"))).toHaveLength(0);
+    expect(
+      agents.runs.filter((candidate) => candidate.status === "running" || candidate.status === "queued"),
+    ).toHaveLength(1);
   });
 
   it("warns the manager once at 80% of budget, re-armed when the budget changes", async () => {
