@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   BookOpenText,
   Component as ComponentIcon,
@@ -10,7 +10,15 @@ import {
 } from "lucide-react";
 import { storybookStorySlug, type StorySurface } from "@crystal/core";
 import { useNav, useNavUpdate, useSymbolMenu } from "@crystal/client";
-import { EmptyState, Pane as SplitPane, Split, Tooltip, cn, useContextMenu } from "@crystal/ui";
+import {
+  EmptyState,
+  Pane as SplitPane,
+  Spinner,
+  Split,
+  Tooltip,
+  cn,
+  useContextMenu,
+} from "@crystal/ui";
 import {
   DetailSection,
   FileLink,
@@ -22,6 +30,7 @@ import {
   useLiveDevUrls,
   useSurfaces,
   useSurfacesLens,
+  type DevServerControl,
 } from "./common.js";
 
 /**
@@ -46,7 +55,9 @@ export function StoriesView() {
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
 
   const stories = report?.stories ?? [];
-  const { storybookUrl } = useLiveDevUrls();
+  const { storybook } = useLiveDevUrls();
+  const storybookUrl =
+    storybook.target?.availability === "live" ? storybook.target.url : null;
 
   /** Lens members (null when no lens dims) — non-members render dimmed. */
   const lensMembers = useMemo(
@@ -212,7 +223,7 @@ export function StoriesView() {
           <StoryDetail
             key={selected.id}
             story={selected}
-            storybookUrl={storybookUrl}
+            storybook={storybook}
             demoOpen={demoOpen}
             onToggleDemo={(open) => nav({ surfaces: { demo: open } })}
           />
@@ -230,18 +241,22 @@ export function StoriesView() {
 
 function StoryDetail({
   story,
-  storybookUrl,
+  storybook,
   demoOpen,
   onToggleDemo,
 }: {
   story: StorySurface;
-  storybookUrl: string | null;
+  storybook: DevServerControl;
   demoOpen: boolean;
   onToggleDemo: (open: boolean) => void;
 }) {
   const nav = useNavUpdate();
   const [frameNonce, setFrameNonce] = useState(0);
+  const [frameFailed, setFrameFailed] = useState(false);
   const slug = storybookStorySlug(story.title, story.name);
+  const live = storybook.target?.availability === "live";
+  const storybookUrl = storybook.target?.url ?? null;
+  useEffect(() => setFrameFailed(false), [storybookUrl, frameNonce]);
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-y-auto bg-surface-0">
@@ -285,17 +300,22 @@ function StoryDetail({
       <DetailSection
         title="Live render"
         hint={
-          storybookUrl
+          live
             ? `Storybook detected at ${storybookUrl}`
-            : "start Storybook to render this story here"
+            : storybookUrl
+              ? `expected at ${storybookUrl} — not responding`
+              : "start Storybook to render this story here"
         }
         actions={
-          storybookUrl ? (
+          live ? (
             <div className="flex items-center gap-2">
               {demoOpen ? (
                 <button
                   type="button"
-                  onClick={() => setFrameNonce((n) => n + 1)}
+                  onClick={() => {
+                    setFrameFailed(false);
+                    setFrameNonce((n) => n + 1);
+                  }}
                   className="flex items-center gap-1 text-[10px] text-ink-faint hover:text-ink"
                 >
                   <RefreshCw className="h-3 w-3" /> reload
@@ -321,10 +341,39 @@ function StoryDetail({
           ) : undefined
         }
       >
-        {!storybookUrl ? (
-          <div className="text-[11px] text-ink-faint">
-            No Storybook script detected in this workspace's package.json. Add one (or run
-            Storybook on its default port) and stories render live here.
+        {!live ? (
+          <div className="space-y-2 text-[11px] text-ink-faint">
+            <div>
+              {storybookUrl ? (
+                <>
+                  Storybook is expected at <code className="text-ink-muted">{storybookUrl}</code>,
+                  but it is not responding. Use <span className="text-ink-muted">Dev servers</span>{" "}
+                  in the workspace rail to inspect its output.
+                </>
+              ) : (
+                <>
+                  No responding Storybook server was found. Open{" "}
+                  <span className="text-ink-muted">Dev servers</span> in the workspace rail to start
+                  or configure one.
+                </>
+              )}
+            </div>
+            {storybook.candidate ? (
+              <button
+                type="button"
+                disabled={storybook.busy}
+                onClick={storybook.launch}
+                className="flex items-center gap-1.5 rounded-lg border border-ok/40 bg-ok/10 px-2.5 py-1.5 text-[11px] font-medium text-ok hover:brightness-110 disabled:opacity-50"
+              >
+                {storybook.busy ? (
+                  <Spinner className="h-3.5 w-3.5" />
+                ) : (
+                  <MonitorPlay className="h-3.5 w-3.5" />
+                )}
+                {storybook.candidate.status === "running" ? "Restart Storybook" : "Start Storybook"}
+              </button>
+            ) : null}
+            {storybook.error ? <div className="text-danger">{storybook.error}</div> : null}
           </div>
         ) : !demoOpen ? (
           <button
@@ -335,13 +384,21 @@ function StoryDetail({
             <MonitorPlay className="h-3.5 w-3.5 text-ok" /> Render {story.name} live
           </button>
         ) : (
-          <iframe
-            key={frameNonce}
-            src={storybookUrlOf(storybookUrl, story)}
-            title={`Storybook render of ${story.title}/${story.name}`}
-            className="h-[28rem] w-full rounded-lg border border-edge bg-white"
-            sandbox="allow-scripts allow-same-origin allow-forms"
-          />
+          frameFailed ? (
+            <div className="flex h-48 flex-col items-center justify-center gap-2 rounded-lg border border-warn/30 bg-warn/[0.05] px-4 text-center text-[11px] text-ink-muted">
+              <MonitorX className="h-5 w-5 text-warn" />
+              Storybook did not load. Check the Dev servers launcher for errors, then reload.
+            </div>
+          ) : (
+            <iframe
+              key={frameNonce}
+              src={storybookUrlOf(storybookUrl!, story)}
+              title={`Storybook render of ${story.title}/${story.name}`}
+              onError={() => setFrameFailed(true)}
+              className="h-[28rem] w-full rounded-lg border border-edge bg-white"
+              sandbox="allow-scripts allow-same-origin allow-forms"
+            />
+          )
         )}
       </DetailSection>
 

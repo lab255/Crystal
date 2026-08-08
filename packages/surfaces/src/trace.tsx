@@ -34,6 +34,55 @@ export interface EndpointTraceState {
   error: string | null;
 }
 
+/** Resolve the route's displayed handler reference to likely declaration symbols. */
+export function endpointHandlerCandidates(
+  ep: SystemEndpoint,
+  fileDetail: CodeFileDetail,
+): { file: string; symbol: string }[] {
+  const out: { file: string; symbol: string }[] = [];
+  if (ep.handler) {
+    const [root, prop] = ep.handler.split(".") as [string, string?];
+    const named = fileDetail.imports.find((entry) => entry.resolved && entry.names.includes(root));
+    if (named?.resolved) {
+      if (prop) out.push({ file: named.resolved, symbol: prop });
+      out.push({
+        file: named.resolved,
+        symbol: named.defaultName === root ? "default" : root,
+      });
+    } else if (prop) {
+      for (const entry of fileDetail.imports) {
+        if (entry.resolved && entry.names.some((name) => name === "*" || name === "default")) {
+          out.push({ file: entry.resolved, symbol: prop });
+        }
+      }
+    }
+    if (prop) out.push({ file: ep.file, symbol: prop });
+    out.push({ file: ep.file, symbol: root });
+  }
+  if (ep.line != null) {
+    const enclosing = fileDetail.symbols.find(
+      (symbol) => ep.line! >= symbol.line && ep.line! <= (symbol.endLine ?? symbol.line),
+    );
+    if (enclosing) out.push({ file: ep.file, symbol: enclosing.name });
+    const above = fileDetail.symbols.filter((symbol) => symbol.line <= ep.line!);
+    if (above.length > 0) out.push({ file: ep.file, symbol: above[above.length - 1]!.name });
+  }
+  const firstFn = fileDetail.symbols.find(
+    (symbol) =>
+      symbol.exported &&
+      (symbol.kind === "function" || symbol.kind === "const" || symbol.kind === "component"),
+  );
+  if (firstFn) out.push({ file: ep.file, symbol: firstFn.name });
+
+  const seen = new Set<string>();
+  return out.filter((candidate) => {
+    const key = `${candidate.file} ${candidate.symbol}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 /**
  * The symbol the definition/trace anchor on — resolved, best first:
  *   1. the registration's handler reference ("Controller.createForm"),
@@ -73,47 +122,7 @@ export function useEndpointTrace(ep: SystemEndpoint | null): EndpointTraceState 
 
   const candidates = useMemo(() => {
     if (!fileDetail || !ep) return [];
-    const out: { file: string; symbol: string }[] = [];
-    if (ep.handler) {
-      const [root, prop] = ep.handler.split(".") as [string, string?];
-      // Named import of the root wins; namespace imports are tried for the
-      // property (`import * as C` … `C.handle` → handle in the resolved file).
-      const named = fileDetail.imports.find((i) => i.resolved && i.names.includes(root));
-      if (named?.resolved) {
-        if (prop) out.push({ file: named.resolved, symbol: prop });
-        // A default-import alias names nothing in the target file — trace its
-        // default export instead (the server resolves the "default" pseudo-symbol).
-        out.push({
-          file: named.resolved,
-          symbol: named.defaultName === root ? "default" : root,
-        });
-      } else if (prop) {
-        for (const i of fileDetail.imports) {
-          if (i.resolved && i.names.some((n) => n === "*" || n === "default"))
-            out.push({ file: i.resolved, symbol: prop });
-        }
-      }
-      if (prop) out.push({ file: ep.file, symbol: prop });
-      out.push({ file: ep.file, symbol: root });
-    }
-    const symbols = fileDetail.symbols;
-    if (ep.line != null) {
-      const enclosing = symbols.find((s) => ep.line! >= s.line && ep.line! <= (s.endLine ?? s.line));
-      if (enclosing) out.push({ file: ep.file, symbol: enclosing.name });
-      const above = symbols.filter((s) => s.line <= ep.line!);
-      if (above.length > 0) out.push({ file: ep.file, symbol: above[above.length - 1]!.name });
-    }
-    const firstFn = symbols.find(
-      (s) => s.exported && (s.kind === "function" || s.kind === "const" || s.kind === "component"),
-    );
-    if (firstFn) out.push({ file: ep.file, symbol: firstFn.name });
-    const seen = new Set<string>();
-    return out.filter((c) => {
-      const key = `${c.file} ${c.symbol}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
+    return endpointHandlerCandidates(ep, fileDetail);
   }, [fileDetail, ep]);
 
   useEffect(() => {

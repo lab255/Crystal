@@ -11,7 +11,15 @@ import {
 import type { CoverageMetric, CoverageReport, FileCoverage } from "@crystal/core";
 import { sumCoverage } from "@crystal/core";
 import { requestOpenFile, useNav, useNavUpdate, useSymbolMenu } from "@crystal/client";
-import { EmptyState, Pane as SplitPane, Split, Tooltip, cn, useContextMenu } from "@crystal/ui";
+import {
+  EmptyState,
+  Pane as SplitPane,
+  Split,
+  Spinner,
+  Tooltip,
+  cn,
+  useContextMenu,
+} from "@crystal/ui";
 import {
   CoverageBar,
   LensHint,
@@ -21,6 +29,7 @@ import {
   useQualityLens,
   type QualityLens,
 } from "./common.js";
+import { coverageFileForPath, latestCoverageRunWithoutData } from "./quality-state.js";
 
 /**
  * Coverage — the latest istanbul report rendered as an expandable directory
@@ -115,7 +124,17 @@ function buildTree(files: FileCoverage[]): CovNode {
 }
 
 export function CoverageView() {
-  const { coverage, info, liveRun, run } = useQuality();
+  const {
+    coverage,
+    info,
+    runs,
+    liveRun,
+    coverageLoading,
+    coverageError,
+    actionError,
+    run,
+    refresh,
+  } = useQuality();
   const nav = useNavUpdate();
   const selectedPath = useNav((l) => l.quality?.covPath ?? null);
   const find = (useNav((l) => l.quality?.find) ?? "").trim().toLowerCase();
@@ -145,14 +164,41 @@ export function CoverageView() {
   }, [tree]);
   const expandedSet = expanded ?? new Set<string>();
 
-  const selectedFile = coverage?.files.find((f) => f.path === selectedPath) ?? null;
+  const selectedFile = coverageFileForPath(coverage, selectedPath);
   const running = liveRun != null;
 
   if (!coverage) {
+    if (coverageLoading) {
+      return (
+        <div className="flex h-full items-center justify-center">
+          <Spinner />
+        </div>
+      );
+    }
+    if (coverageError) {
+      return (
+        <EmptyState
+          icon={Umbrella}
+          title="Could not load coverage data"
+          action={
+            <button
+              type="button"
+              onClick={refresh}
+              className="rounded-lg border border-edge bg-surface-2 px-3 py-1.5 text-[11px] font-medium text-ink-muted hover:text-ink"
+            >
+              Retry
+            </button>
+          }
+        >
+          {coverageError}
+        </EmptyState>
+      );
+    }
+    const emptyCoverageRun = latestCoverageRunWithoutData(runs);
     return (
       <EmptyState
         icon={Umbrella}
-        title="No coverage data yet"
+        title={emptyCoverageRun ? "No coverage data from the last run" : "No coverage data yet"}
         action={
           info?.coverageCapable ? (
             <button
@@ -166,11 +212,21 @@ export function CoverageView() {
           ) : undefined
         }
       >
-        Crystal reads istanbul output from <code>coverage/coverage-final.json</code> — produced by
-        a coverage run here or by your own <code>vitest run --coverage</code>.
+        {emptyCoverageRun ? (
+          <>
+            The run produced no coverage data (runner: {info?.runner ?? "unknown"}) — check the
+            reporter.
+          </>
+        ) : (
+          <>
+            Crystal reads istanbul output from <code>coverage/coverage-final.json</code> — produced
+            by a coverage run here or by your own <code>vitest run --coverage</code>.
+          </>
+        )}
         {info != null && !info.coverageCapable && info.runner === "vitest" ? (
           <> Install <code>@vitest/coverage-v8</code> to run coverage from Crystal.</>
         ) : null}
+        {actionError ? <span className="block text-danger">{actionError}</span> : null}
       </EmptyState>
     );
   }
@@ -239,6 +295,11 @@ export function CoverageView() {
           ) : null}
         </span>
       </div>
+      {coverageError || actionError ? (
+        <div className="border-b border-danger/30 bg-danger/10 px-3 py-1.5 text-[11px] text-danger">
+          {coverageError ? `Coverage refresh failed: ${coverageError}` : actionError}
+        </div>
+      ) : null}
 
       <Split storageKey="quality:coverage" direction="horizontal" className="min-h-0 flex-1">
         <SplitPane defaultSize={420} minSize={280} maxSize={640}>
@@ -282,6 +343,11 @@ export function CoverageView() {
         <SplitPane minSize="35%">
           {selectedFile ? (
             <FileCoverageDetail key={selectedFile.path} file={selectedFile} />
+          ) : selectedPath ? (
+            <EmptyState icon={Umbrella} title={`No coverage recorded for ${selectedPath}`}>
+              This file is not present in the loaded report. Run coverage for the file or suite to
+              record it.
+            </EmptyState>
           ) : (
             <EmptyState icon={Umbrella} title="Pick a file">
               Its four coverage metrics and every uncovered line, one click from the editor.

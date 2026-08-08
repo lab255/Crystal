@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Copy, Database, KeyRound, ListFilter, MoveRight, Network, Table2 } from "lucide-react";
 import type { SchemaKind, SchemaSurface } from "@crystal/core";
 import { SchemaDiagram } from "./SchemaDiagram.js";
+import { schemaLensMemberIds } from "./schema-lens.js";
 import { useNav, useNavUpdate, useSymbolMenu } from "@crystal/client";
 import {
   Badge,
@@ -147,7 +148,7 @@ export function SchemasView() {
   const lensMembers = useMemo(
     () =>
       lens.active
-        ? new Set(focusedSchemas.filter((s) => lens.matcher.file(s.file)).map((s) => s.id))
+        ? schemaLensMemberIds(focusedSchemas, lens.matcher.file)
         : null,
     [focusedSchemas, lens],
   );
@@ -310,6 +311,7 @@ export function SchemasView() {
               <SchemaDiagram
                 schemas={visible}
                 selectedId={selected?.id ?? null}
+                lensMembers={lensMembers}
                 onSelect={(id) => nav({ surfaces: { schema: id } })}
               />
             ) : selected ? (

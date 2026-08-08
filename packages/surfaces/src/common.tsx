@@ -1,9 +1,19 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { ExternalLink, Webhook } from "lucide-react";
 import { endpointKey, formatHighlightSel } from "@crystal/core";
 import type {
   ApiTrace,
   ApiTraceCall,
+  DevServerInfo,
+  DevServerKind,
   LensMatcher,
   SurfaceMapReport,
   SurfacesReport,
@@ -173,43 +183,193 @@ export interface ArchHighlight {
  * port-blind, historically wrong on every monorepo) — the guess is only the
  * fallback so the affordances still render before anything is started.
  */
-export function useLiveDevUrls(): { appUrl: string | null; storybookUrl: string | null } {
+export interface DevUrlTarget {
+  url: string;
+  availability: "live" | "expected";
+}
+
+/** A URL is live only after a probe; unverified process and analyzer guesses stay expectations. */
+export function classifyDevUrl(
+  probedUrl: string | null,
+  responding: boolean,
+  guessedUrl: string | null,
+): DevUrlTarget | null {
+  if (probedUrl && responding) return { url: probedUrl, availability: "live" };
+  const expected = probedUrl ?? guessedUrl;
+  return expected ? { url: expected, availability: "expected" } : null;
+}
+
+async function probeDevUrl(url: string, signal: AbortSignal): Promise<boolean> {
+  try {
+    await fetch(url, { mode: "no-cors", cache: "no-store", signal });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export interface DevServerControl {
+  target: DevUrlTarget | null;
+  candidate: DevServerInfo | null;
+  busy: boolean;
+  error: string | null;
+  /** Start a stopped candidate, or restart one whose process is up but URL is dead. */
+  launch: () => void;
+}
+
+export interface LiveDevUrls {
+  app: DevServerControl;
+  storybook: DevServerControl;
+  /** URL fallback retained for non-preview consumers such as curl defaults. */
+  appUrl: string | null;
+  storybookUrl: string | null;
+}
+
+export function useLiveDevUrls(): LiveDevUrls {
   const { client } = useCrystal();
   const { report } = useSurfaces();
   const activeWs = useWorkspaces((s) => s.activeId);
-  const [live, setLive] = useState<{ app: string | null; storybook: string | null }>({
-    app: null,
-    storybook: null,
-  });
+  const [servers, setServers] = useState<DevServerInfo[]>([]);
+  const [respondingUrls, setRespondingUrls] = useState<ReadonlySet<string>>(new Set());
+  const [busy, setBusy] = useState<ReadonlySet<string>>(new Set());
+  const [launchError, setLaunchError] = useState<string | null>(null);
+  const refreshId = useRef(0);
+  const workspaceEpoch = useRef(0);
+
+  const refresh = useCallback(() => {
+    const id = ++refreshId.current;
+    client
+      .request("devservers.list", {})
+      .then(({ servers: next }) => {
+        if (id === refreshId.current) setServers(next);
+      })
+      .catch(() => {
+        if (id === refreshId.current) setServers([]);
+      });
+  }, [client]);
 
   useEffect(() => {
+    workspaceEpoch.current++;
+    refreshId.current++;
+    setServers([]);
+    setRespondingUrls(new Set());
+    setBusy(new Set());
+    setLaunchError(null);
     if (!activeWs) return;
-    let cancelled = false;
-    const refresh = () => {
-      client
-        .request("devservers.list", {})
-        .then(({ servers }) => {
-          if (cancelled) return;
-          const urlOf = (kinds: string[]) =>
-            servers.find((s) => s.status === "running" && s.url && kinds.includes(s.kind))?.url ??
-            null;
-          setLive({ app: urlOf(["app"]), storybook: urlOf(["storybook"]) });
-        })
-        .catch(() => {});
-    };
     refresh();
     const dispose = client.events.on("devservers.changed", ({ ws }) => {
       if (ws === activeWs) refresh();
     });
-    return () => {
-      cancelled = true;
-      dispose();
+    return dispose;
+  }, [client, activeWs, refresh]);
+
+  const candidateFor = useCallback(
+    (kind: DevServerKind) =>
+      servers.find((server) => server.kind === kind && server.status === "running") ??
+      servers.find((server) => server.kind === kind) ??
+      null,
+    [servers],
+  );
+  const appCandidate = candidateFor("app");
+  const storybookCandidate = candidateFor("storybook");
+  const appExpectedUrl =
+    (appCandidate?.status === "running" ? appCandidate.url : null) ??
+    appCandidate?.urlGuess ??
+    report?.demo.appUrl ??
+    null;
+  const storybookExpectedUrl =
+    (storybookCandidate?.status === "running" ? storybookCandidate.url : null) ??
+    storybookCandidate?.urlGuess ??
+    report?.demo.storybookUrl ??
+    null;
+  const probeUrls = useMemo(
+    () => [...new Set([appExpectedUrl, storybookExpectedUrl].filter((url): url is string => !!url))],
+    [appExpectedUrl, storybookExpectedUrl],
+  );
+  const probeKey = probeUrls.join("\n");
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    setRespondingUrls(new Set());
+    const probeAll = async () => {
+      const results = await Promise.all(
+        probeUrls.map(async (url) => ({ url, responding: await probeDevUrl(url, controller.signal) })),
+      );
+      if (controller.signal.aborted) return;
+      setRespondingUrls(
+        new Set(results.filter((result) => result.responding).map((result) => result.url)),
+      );
+      if (results.some((result) => !result.responding)) {
+        timer = setTimeout(() => void probeAll(), 5_000);
+      }
     };
-  }, [client, activeWs]);
+    if (probeUrls.length > 0) void probeAll();
+    return () => {
+      controller.abort();
+      if (timer) clearTimeout(timer);
+    };
+    // The joined value keeps identical server snapshots from restarting probes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [probeKey]);
+
+  const appTarget = classifyDevUrl(
+    appExpectedUrl,
+    appExpectedUrl ? respondingUrls.has(appExpectedUrl) : false,
+    appExpectedUrl,
+  );
+  const storybookTarget = classifyDevUrl(
+    storybookExpectedUrl,
+    storybookExpectedUrl ? respondingUrls.has(storybookExpectedUrl) : false,
+    storybookExpectedUrl,
+  );
+
+  const launch = useCallback(
+    (candidate: DevServerInfo | null) => {
+      if (!candidate) return;
+      const startedInWorkspace = workspaceEpoch.current;
+      setBusy((current) => new Set(current).add(candidate.id));
+      setLaunchError(null);
+      const request =
+        candidate.status === "running"
+          ? client.request("devservers.restart", { id: candidate.id })
+          : client.request("devservers.start", { id: candidate.id });
+      void request
+        .catch((error: unknown) => {
+          if (startedInWorkspace === workspaceEpoch.current) {
+            setLaunchError(error instanceof Error ? error.message : String(error));
+          }
+        })
+        .finally(() => {
+          if (startedInWorkspace !== workspaceEpoch.current) return;
+          setBusy((current) => {
+            const next = new Set(current);
+            next.delete(candidate.id);
+            return next;
+          });
+          refresh();
+        });
+    },
+    [client, refresh],
+  );
 
   return {
-    appUrl: live.app ?? report?.demo.appUrl ?? null,
-    storybookUrl: live.storybook ?? report?.demo.storybookUrl ?? null,
+    app: {
+      target: appTarget,
+      candidate: appCandidate,
+      busy: appCandidate ? busy.has(appCandidate.id) : false,
+      error: launchError,
+      launch: () => launch(appCandidate),
+    },
+    storybook: {
+      target: storybookTarget,
+      candidate: storybookCandidate,
+      busy: storybookCandidate ? busy.has(storybookCandidate.id) : false,
+      error: launchError,
+      launch: () => launch(storybookCandidate),
+    },
+    appUrl: appTarget?.url ?? null,
+    storybookUrl: storybookTarget?.url ?? null,
   };
 }
 

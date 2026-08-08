@@ -53,7 +53,7 @@ import {
   useSurfaces,
   useSurfacesLens,
 } from "./common.js";
-import { TraceSection, useEndpointTrace } from "./trace.js";
+import { TraceSection, endpointHandlerCandidates, useEndpointTrace } from "./trace.js";
 import { EnvConfigPanel, RequestEditor, useApiClient } from "./ApiRequestWorkbench.js";
 
 /**
@@ -258,6 +258,24 @@ export function ApiExplorer({ appUrl }: { appUrl: string | null }) {
     if (request) nav({ surfaces: { request: request.id, api: null } });
   };
 
+  const openHandler = async (ep: SystemEndpoint): Promise<void> => {
+    try {
+      const detail = await client.request("codemap.file", { path: ep.file });
+      for (const candidate of endpointHandlerCandidates(ep, detail)) {
+        try {
+          const source = await client.request("codemap.symbolSource", candidate);
+          requestOpenFile(source.file, source.startLine);
+          return;
+        } catch {
+          // A syntactic handler reference may not resolve to a top-level symbol.
+        }
+      }
+    } catch {
+      // The registration remains a useful fallback when code indexing is unavailable.
+    }
+    requestOpenFile(ep.file, ep.line);
+  };
+
   if ((loading && !overview) || !apiClient.state) {
     return (
       <div className="flex h-full items-center justify-center">
@@ -288,14 +306,24 @@ export function ApiExplorer({ appUrl }: { appUrl: string | null }) {
       onSelect: () =>
         nav({ surfaces: { system: activeSystemFilter === r.system.id ? null : r.system.id } }),
     },
-    // The shared cross-view block for the registration site (its "Open in
-    // editor" jumps to the registration's file:line).
-    ...symbolMenu({
-      file: r.ep.file,
-      line: r.ep.line,
-      symbol: r.ep.handler,
-      label: r.key,
-    }),
+    {
+      type: "item",
+      label: "Open registration",
+      icon: ExternalLink,
+      hint: r.ep.line != null ? `${r.ep.file}:${r.ep.line}` : r.ep.file,
+      onSelect: () => requestOpenFile(r.ep.file, r.ep.line),
+    },
+    // The shared block describes the handler symbol, so its editor action
+    // resolves that declaration instead of opening the route registration.
+    ...symbolMenu(
+      {
+        file: r.ep.file,
+        line: r.ep.line,
+        symbol: r.ep.handler,
+        label: r.key,
+      },
+      { openFile: () => void openHandler(r.ep) },
+    ),
     {
       type: "item",
       label: "Copy route",
@@ -764,18 +792,20 @@ function ApiDetail({
               {system.name}
             </button>
           </Tooltip>
-          <button
-            type="button"
-            onClick={() => requestOpenFile(ep.file, ep.line)}
-            className="flex min-w-0 items-center gap-1 font-mono text-[10px] text-ink-faint hover:text-ink"
-            title="Open in the editor"
-          >
-            <span className="min-w-0 truncate">
-              {ep.file}
-              {ep.line != null ? `:${ep.line}` : ""}
-            </span>
-            <ExternalLink className="h-3 w-3 shrink-0" />
-          </button>
+          <Tooltip content={`Open route registration at ${ep.file}${ep.line != null ? `:${ep.line}` : ""}`}>
+            <button
+              type="button"
+              onClick={() => requestOpenFile(ep.file, ep.line)}
+              className="flex min-w-0 items-center gap-1 font-mono text-[10px] text-ink-faint hover:text-ink"
+            >
+              <ExternalLink className="h-3 w-3 shrink-0" />
+              <span className="shrink-0 font-sans">registration</span>
+              <span className="min-w-0 truncate">
+                {ep.file}
+                {ep.line != null ? `:${ep.line}` : ""}
+              </span>
+            </button>
+          </Tooltip>
         </div>
       </div>
 
@@ -785,13 +815,15 @@ function ApiDetail({
         hint={signature ?? undefined}
         actions={
           source ? (
-            <button
-              type="button"
-              onClick={() => requestOpenFile(source.file, source.startLine)}
-              className="flex items-center gap-1 text-[10px] text-ink-faint hover:text-ink"
-            >
-              <ExternalLink className="h-3 w-3" /> open
-            </button>
+            <Tooltip content={`Open handler at ${source.file}:${source.startLine}`}>
+              <button
+                type="button"
+                onClick={() => requestOpenFile(source.file, source.startLine)}
+                className="flex items-center gap-1 text-[10px] text-ink-faint hover:text-ink"
+              >
+                <ExternalLink className="h-3 w-3" /> handler
+              </button>
+            </Tooltip>
           ) : undefined
         }
       >

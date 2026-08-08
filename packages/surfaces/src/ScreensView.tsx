@@ -10,7 +10,16 @@ import {
 } from "lucide-react";
 import type { ScreenSource, ScreenSurface } from "@crystal/core";
 import { useNav, useNavUpdate, useSymbolMenu } from "@crystal/client";
-import { Badge, EmptyState, Pane as SplitPane, Split, Tooltip, cn, useContextMenu } from "@crystal/ui";
+import {
+  Badge,
+  EmptyState,
+  Pane as SplitPane,
+  Spinner,
+  Split,
+  Tooltip,
+  cn,
+  useContextMenu,
+} from "@crystal/ui";
 import {
   ApiCallsSection,
   DetailSection,
@@ -23,6 +32,7 @@ import {
   useLiveDevUrls,
   useSurfaces,
   useSurfacesLens,
+  type DevServerControl,
 } from "./common.js";
 
 /**
@@ -53,7 +63,8 @@ export function ScreensView() {
   const [collapsed, setCollapsed] = useState<ReadonlySet<ScreenSource>>(new Set());
 
   const screens = report?.screens ?? [];
-  const { appUrl } = useLiveDevUrls();
+  const { app } = useLiveDevUrls();
+  const appUrl = app.target?.availability === "live" ? app.target.url : null;
 
   /** Lens members (null when no lens dims) — non-members render dimmed. */
   const lensMembers = useMemo(
@@ -222,7 +233,7 @@ export function ScreensView() {
           <ScreenDetail
             key={selected.id}
             screen={selected}
-            appUrl={appUrl}
+            app={app}
             demoOpen={demoOpen}
             onToggleDemo={(open) => nav({ surfaces: { demo: open } })}
           />
@@ -239,21 +250,24 @@ export function ScreensView() {
 
 function ScreenDetail({
   screen,
-  appUrl,
+  app,
   demoOpen,
   onToggleDemo,
 }: {
   screen: ScreenSurface;
-  appUrl: string | null;
+  app: DevServerControl;
   demoOpen: boolean;
   onToggleDemo: (open: boolean) => void;
 }) {
   const nav = useNavUpdate();
   const hasParams = /[:*]/.test(screen.route);
-  const defaultUrl = appUrl ? appUrl + screen.route : null;
+  const live = app.target?.availability === "live";
+  const defaultUrl = app.target ? app.target.url + screen.route : null;
   const [url, setUrl] = useState(defaultUrl ?? "");
   const [frameNonce, setFrameNonce] = useState(0);
+  const [frameFailed, setFrameFailed] = useState(false);
   useEffect(() => setUrl(defaultUrl ?? ""), [defaultUrl]);
+  useEffect(() => setFrameFailed(false), [defaultUrl, frameNonce]);
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-y-auto bg-surface-0">
@@ -292,17 +306,22 @@ function ScreenDetail({
       <DetailSection
         title="Live preview"
         hint={
-          appUrl
-            ? `dev server detected at ${appUrl}`
-            : "start your dev server to embed the running screen here"
+          live
+            ? `dev server detected at ${app.target!.url}`
+            : app.target
+              ? `expected at ${app.target.url} — not responding`
+              : "start your dev server to embed the running screen here"
         }
         actions={
-          appUrl ? (
+          live ? (
             <div className="flex items-center gap-2">
               {demoOpen ? (
                 <button
                   type="button"
-                  onClick={() => setFrameNonce((n) => n + 1)}
+                  onClick={() => {
+                    setFrameFailed(false);
+                    setFrameNonce((n) => n + 1);
+                  }}
                   className="flex items-center gap-1 text-[10px] text-ink-faint hover:text-ink"
                 >
                   <RefreshCw className="h-3 w-3" /> reload
@@ -321,10 +340,34 @@ function ScreenDetail({
           ) : undefined
         }
       >
-        {!appUrl ? (
-          <div className="text-[11px] text-ink-faint">
-            No dev server detected in this workspace's package.json scripts. Run it (e.g.{" "}
-            <code className="text-ink-muted">pnpm dev</code>) and the preview embeds here.
+        {!live ? (
+          <div className="space-y-2 text-[11px] text-ink-faint">
+            <div>
+              {app.target ? (
+                <>
+                  The app is expected at <code className="text-ink-muted">{app.target.url}</code>,
+                  but it is not responding. Use <span className="text-ink-muted">Dev servers</span>{" "}
+                  in the workspace rail to inspect its output.
+                </>
+              ) : (
+                <>
+                  No responding app server was found. Open <span className="text-ink-muted">Dev servers</span>{" "}
+                  in the workspace rail to start or configure one.
+                </>
+              )}
+            </div>
+            {app.candidate ? (
+              <button
+                type="button"
+                disabled={app.busy}
+                onClick={app.launch}
+                className="flex items-center gap-1.5 rounded-lg border border-ok/40 bg-ok/10 px-2.5 py-1.5 text-[11px] font-medium text-ok hover:brightness-110 disabled:opacity-50"
+              >
+                {app.busy ? <Spinner className="h-3.5 w-3.5" /> : <MonitorPlay className="h-3.5 w-3.5" />}
+                {app.candidate.status === "running" ? "Restart dev server" : "Start dev server"}
+              </button>
+            ) : null}
+            {app.error ? <div className="text-danger">{app.error}</div> : null}
           </div>
         ) : !demoOpen ? (
           <button
@@ -341,7 +384,10 @@ function ScreenDetail({
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") setFrameNonce((n) => n + 1);
+                  if (e.key === "Enter") {
+                    setFrameFailed(false);
+                    setFrameNonce((n) => n + 1);
+                  }
                 }}
                 spellCheck={false}
                 aria-label="Preview URL"
@@ -363,13 +409,21 @@ function ScreenDetail({
                 This route has parameters — replace <code>:param</code> segments in the URL above.
               </div>
             ) : null}
-            <iframe
-              key={frameNonce}
-              src={url}
-              title={`Preview of ${screen.route}`}
-              className="h-[28rem] w-full rounded-lg border border-edge bg-white"
-              sandbox="allow-scripts allow-same-origin allow-forms"
-            />
+            {frameFailed ? (
+              <div className="flex h-48 flex-col items-center justify-center gap-2 rounded-lg border border-warn/30 bg-warn/[0.05] px-4 text-center text-[11px] text-ink-muted">
+                <MonitorX className="h-5 w-5 text-warn" />
+                The preview did not load. Check the Dev servers launcher for errors, then reload.
+              </div>
+            ) : (
+              <iframe
+                key={frameNonce}
+                src={url}
+                title={`Preview of ${screen.route}`}
+                onError={() => setFrameFailed(true)}
+                className="h-[28rem] w-full rounded-lg border border-edge bg-white"
+                sandbox="allow-scripts allow-same-origin allow-forms"
+              />
+            )}
           </div>
         )}
       </DetailSection>

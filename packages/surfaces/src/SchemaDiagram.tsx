@@ -137,10 +137,13 @@ function pickDiagramSchemas(schemas: readonly SchemaSurface[]): {
 export function SchemaDiagram({
   schemas,
   selectedId,
+  lensMembers,
   onSelect,
 }: {
   schemas: readonly SchemaSurface[];
   selectedId: string | null;
+  /** Null when no lens dims; otherwise the schema ids whose model files belong. */
+  lensMembers: ReadonlySet<string> | null;
   onSelect: (id: string) => void;
 }) {
   const { nodes, edges, dropped } = useMemo(() => {
@@ -199,15 +202,18 @@ export function SchemaDiagram({
           fields: s.fields.slice(0, MAX_NODE_FIELDS),
           more: Math.max(0, s.fields.length - MAX_NODE_FIELDS),
           selected: s.id === selectedId,
-          // With relations present, unrelated entities recede so the ER
-          // structure reads first; without any, everything is equal.
-          dimmed: anyRelated && !relatedIds.has(s.id) && s.id !== selectedId,
+          // The lens owns emphasis when active; otherwise unrelated entities
+          // recede so the ER structure reads first.
+          dimmed:
+            lensMembers != null
+              ? !lensMembers.has(s.id)
+              : anyRelated && !relatedIds.has(s.id) && s.id !== selectedId,
         },
         draggable: true,
       };
     });
     return { nodes, edges, dropped };
-  }, [schemas, selectedId]);
+  }, [schemas, selectedId, lensMembers]);
 
   const onNodeClick = useCallback(
     (_e: React.MouseEvent, node: Node) => onSelect(node.id),

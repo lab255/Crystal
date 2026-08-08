@@ -128,23 +128,24 @@ function SurfacesShell() {
                 <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
               </button>
             </Tooltip>
-            {(
-              <Tooltip content="Toggle the architecture side pane — callers and integrations highlight there">
+            <div className="ml-auto flex items-center gap-0.5 rounded-lg bg-surface-2 p-0.5">
+              <Tooltip content="Toggle the System Map side pane — callers and integrations highlight there">
                 <button
                   type="button"
                   onClick={() => nav({ surfaces: { arch: archOpen ? null : true } })}
-                  aria-label="Toggle architecture pane"
+                  aria-label="Toggle System Map"
                   aria-pressed={archOpen}
                   className={cn(
-                    "rounded-md p-1 hover:bg-surface-3",
-                    archOpen ? "text-crystal-300" : "text-ink-faint hover:text-ink",
+                    "flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-medium transition-colors",
+                    archOpen
+                      ? "bg-surface-active text-ink"
+                      : "text-ink-muted hover:text-ink",
                   )}
                 >
                   <Boxes className="h-3.5 w-3.5" />
+                  Map
                 </button>
               </Tooltip>
-            )}
-            <div className="ml-auto flex items-center gap-0.5 rounded-lg bg-surface-2 p-0.5">
               {VIEW_META.map(({ id, label, icon: Icon }) => (
                 <button
                   key={id}
@@ -239,7 +240,7 @@ function ArchSidePane() {
       <div className="flex h-10 shrink-0 items-center gap-2 border-b border-edge bg-surface-1 px-2.5">
         <Boxes className="h-3.5 w-3.5 shrink-0 text-crystal-300" />
         <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-faint">
-          Architecture
+          System Map
         </span>
         <span className="ml-auto flex items-center gap-1">
           <Tooltip content="Open the full architecture view (keeps this selection)">
