@@ -58,8 +58,11 @@ export function ProjectMenu({ onOpenSettings }: { onOpenSettings: () => void }) 
         <DropdownMenuLabel className="max-w-72 truncate font-normal text-ink-faint">
           {activeWs.root}
         </DropdownMenuLabel>
+        {/* These are the machine-local app settings (theme, keymap, publish) —
+            calling them "Project settings" sent users here hunting for the
+            roster/grants/services, which live in their own modes. */}
         <DropdownMenuItem onSelect={onOpenSettings} className="gap-2">
-          <Settings2 className="h-3.5 w-3.5 shrink-0 text-ink-faint" /> Project settings…
+          <Settings2 className="h-3.5 w-3.5 shrink-0 text-ink-faint" /> App settings…
         </DropdownMenuItem>
         <DropdownMenuItem
           onSelect={() =>

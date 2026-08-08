@@ -113,7 +113,11 @@ export function OpenWorkspaceDialog({
             autoFocus
             value={path}
             onChange={(e) => onPathChange(e.target.value)}
-            placeholder="C:\Users\me\Workspaces\my-product"
+            placeholder={
+              navigator.platform.startsWith("Win")
+                ? "C:\\Users\\me\\Workspaces\\my-product"
+                : "~/Workspaces/my-product"
+            }
             spellCheck={false}
           />
 

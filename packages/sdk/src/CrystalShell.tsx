@@ -124,10 +124,13 @@ export function CrystalShell({
       ? parseDeepLink(window.location.hash).mode
       : undefined,
   );
-  const fallbackMode = urlMode ?? initialMode ?? "architect";
+  // The Overview is the landing: it has real empty/no-workspace states and
+  // routes a first-run user toward opening a repo — landing on a
+  // workspace-scoped mode with no workspace renders a forever-loading canvas.
+  const fallbackMode = urlMode ?? initialMode ?? "projects";
   const mode = useNav((l) => l.mode) ?? fallbackMode;
   const updateNav = useNavUpdate();
-  useDeepLinks(deepLinking, initialMode ?? "architect");
+  useDeepLinks(deepLinking, initialMode ?? "projects");
 
   const [visited, setVisited] = useState<ReadonlySet<CrystalMode>>(() => new Set([fallbackMode]));
   useEffect(() => {
