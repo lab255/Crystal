@@ -1,4 +1,9 @@
-import { toolAllowedByPatterns, type AgentRun } from "@crystal/core";
+import {
+  Emitter,
+  toolAllowedByPatterns,
+  type AgentRun,
+  type PendingPermission,
+} from "@crystal/core";
 
 /**
  * Pending tool-permission requests for one workspace's headless runs.
@@ -83,6 +88,8 @@ interface PendingRequest {
   runId: string;
   run: AgentRun;
   tool: string;
+  summary: string;
+  requestedAt: string;
   input: unknown;
   /** Profile + baseline patterns, snapshotted at request time (grants re-read live). */
   staticPatterns: string[];
@@ -92,6 +99,7 @@ interface PendingRequest {
 }
 
 export class PermissionBroker {
+  readonly events = new Emitter<{ changed: Record<string, never> }>();
   private pending = new Map<string, PendingRequest>();
   private nextId = 0;
 
@@ -105,6 +113,38 @@ export class PermissionBroker {
   /** Parked request count (UI/introspection; tests assert the bound). */
   get pendingCount(): number {
     return this.pending.size;
+  }
+
+  /** Snapshot of every request the IDE can currently decide, oldest first. */
+  listPending(): PendingPermission[] {
+    return [...this.pending].map(([id, entry]) => ({
+      id,
+      runId: entry.runId,
+      tool: entry.tool,
+      summary: entry.summary,
+      requestedAt: entry.requestedAt,
+    }));
+  }
+
+  /**
+   * Resolve one parked request from the IDE. A stale/unknown id is an expected
+   * race (the timeout, board, or grants path may have won), so it is a no-op.
+   */
+  resolve(id: string, decision: "allow" | "deny"): { ok: boolean } {
+    if (!this.pending.has(id)) return { ok: false };
+    if (decision === "allow") {
+      this.settleEntry(id, { behavior: "allow" }, "allowed in the permissions panel");
+    } else {
+      this.settleEntry(
+        id,
+        {
+          behavior: "deny",
+          message: "The owner declined this tool use in the permissions panel. Proceed another way.",
+        },
+        "denied in the permissions panel",
+      );
+    }
+    return { ok: true };
   }
 
   /**
@@ -145,6 +185,7 @@ export class PermissionBroker {
     // three wake-ups — grants edit, board answer, timeout.
     const id = `perm_${++this.nextId}`;
     const summary = callSummary(tool, input);
+    const requestedAt = new Date().toISOString();
     this.host.note(runId, { tool, state: "pending", detail: summary });
     const board = await this.host
       .fileQuestion(
@@ -161,10 +202,22 @@ export class PermissionBroker {
         runId,
         run,
         tool,
+        summary,
+        requestedAt,
         input,
         staticPatterns,
         board,
-        timer: setTimeout(() => this.settleEntry(id, { behavior: "deny", message: TIMEOUT_MESSAGE }, "timed out"), this.waitMs),
+        // Keep the default-deny timer: unattended runs must never hang forever
+        // waiting for an owner who may not have the IDE open.
+        timer: setTimeout(
+          () =>
+            this.settleEntry(
+              id,
+              { behavior: "deny", message: TIMEOUT_MESSAGE },
+              "timed out",
+            ),
+          this.waitMs,
+        ),
         settle: (decision, note, allowed) => {
           this.host.note(runId, {
             tool,
@@ -183,6 +236,7 @@ export class PermissionBroker {
       };
       entry.timer.unref?.();
       this.pending.set(id, entry);
+      this.events.emit("changed", {});
     });
   }
 
@@ -253,7 +307,12 @@ export class PermissionBroker {
     if (!entry) return; // claim-once: a later wake-up must not double-settle
     this.pending.delete(id);
     clearTimeout(entry.timer);
-    entry.settle(decision, note, decision.behavior === "allow");
+    try {
+      entry.settle(decision, note, decision.behavior === "allow");
+    } finally {
+      // The pending projection changed even if a host-side note hook failed.
+      this.events.emit("changed", {});
+    }
   }
 
   private allowOf(input: unknown): PermissionDecision {

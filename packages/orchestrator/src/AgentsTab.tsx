@@ -4,6 +4,7 @@ import {
   Bot,
   Play,
   Plus,
+  ShieldAlert,
   ShieldCheck,
   Sparkles,
   TerminalSquare,
@@ -36,6 +37,7 @@ import {
   useComposerKeydown,
   useCrystal,
   useGrants,
+  usePermissions,
   useTerminals,
   useWorkflows,
   useWorkspace,
@@ -277,11 +279,120 @@ export function AgentsTab({
             />
           ) : null}
           <DispatchPanel profiles={profiles} onDispatched={onSelectRun} />
+          <PendingPermissionsPanel />
           <GrantsPanel />
         </div>
       </main>
     </div>
   );
+}
+
+/** Loud, actionable unblocker for headless runs parked on a tool prompt. */
+function PendingPermissionsPanel() {
+  const pending = usePermissions((s) => s.pending);
+  const decide = usePermissions((s) => s.decide);
+  const runs = useAgents((s) => s.runs);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const runsById = useMemo(() => new Map(runs.map((run) => [run.id, run])), [runs]);
+
+  if (pending.length === 0) return null;
+
+  async function choose(
+    id: string,
+    decision: "allow" | "deny",
+    alwaysAllow = false,
+  ): Promise<void> {
+    if (busyId) return;
+    setBusyId(id);
+    setError(null);
+    try {
+      const ok = await decide(id, decision, alwaysAllow);
+      if (!ok) setError("That request had already settled or timed out; the list has been refreshed.");
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  return (
+    <section className="rounded-xl border border-warn/50 bg-warn/5 p-3 shadow-sm shadow-warn/10">
+      <div className="mb-2 flex items-center gap-2">
+        <ShieldAlert className="h-4 w-4 animate-pulse text-warn" />
+        <span className="text-[13px] font-semibold text-ink">Needs permission</span>
+        <Badge tone="amber">{pending.length}</Badge>
+        <span className="text-[11px] text-warn">waiting runs are blocked</span>
+      </div>
+      <ul className="space-y-2">
+        {pending.map((request) => {
+          const run = runsById.get(request.runId);
+          const title = run ? permissionRunTitle(run.prompt) : null;
+          return (
+            <li
+              key={request.id}
+              className="rounded-lg border border-warn/30 bg-surface-1 px-2.5 py-2"
+            >
+              <div className="flex min-w-0 items-start gap-2">
+                <span className="shrink-0 rounded bg-surface-3 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-ink">
+                  {request.tool}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-[11px] text-ink-muted" title={request.summary}>
+                  {request.summary}
+                </span>
+                <span className="shrink-0 text-[10px] text-ink-faint">
+                  {new Date(request.requestedAt).toLocaleTimeString()}
+                </span>
+              </div>
+              <div className="mt-1.5 flex items-center gap-2">
+                <span
+                  className="min-w-0 flex-1 truncate text-[10px] text-ink-faint"
+                  title={title ?? request.runId}
+                >
+                  {run ? `${run.purpose ?? "run"} · ${title}` : "unknown run"}
+                  <span className="ml-1 font-mono">{request.runId}</span>
+                </span>
+                <Button
+                  variant="primary"
+                  size="xs"
+                  disabled={busyId != null}
+                  onClick={() => void choose(request.id, "allow")}
+                >
+                  Allow
+                </Button>
+                <Button
+                  variant="outline"
+                  size="xs"
+                  disabled={busyId != null}
+                  title={`Allow this request and add ${request.tool} to workspace tool grants`}
+                  onClick={() => void choose(request.id, "allow", true)}
+                >
+                  Always allow
+                </Button>
+                <Button
+                  variant="danger"
+                  size="xs"
+                  disabled={busyId != null}
+                  onClick={() => void choose(request.id, "deny")}
+                >
+                  Deny
+                </Button>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+      {error ? <p className="mt-2 text-[11px] text-danger">{error}</p> : null}
+    </section>
+  );
+}
+
+function permissionRunTitle(prompt: string): string {
+  const own = prompt.startsWith(MANAGER_PREAMBLE)
+    ? prompt.slice(MANAGER_PREAMBLE.length)
+    : prompt;
+  return own.trimStart().split("\n")[0] || prompt.split("\n")[0] || "untitled run";
 }
 
 /**

@@ -1,11 +1,16 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { AgentRun } from "@crystal/core";
+import { GrantsStore } from "./grants-store.js";
 import {
   PermissionBroker,
   callSummary,
   type BoardQuestionRef,
   type PermissionBrokerHost,
 } from "./permission-broker.js";
+import { decidePendingPermission } from "./server.js";
 
 function fakeRun(over: Partial<AgentRun> = {}): AgentRun {
   return {
@@ -129,6 +134,59 @@ describe("PermissionBroker", () => {
     expect(state.closed.some((n) => n.includes("allowed"))).toBe(true);
   });
 
+  it("lists a parked call, emits changes, and resolves it directly exactly once", async () => {
+    const state = baseState();
+    const broker = new PermissionBroker(makeHost(state), BASELINE, 10_000);
+    let changes = 0;
+    broker.events.on("changed", () => {
+      changes += 1;
+    });
+
+    const waiting = broker.request("run_1", "WebFetch", { url: "https://x" });
+    await new Promise((r) => setTimeout(r, 10));
+    const [parked] = broker.listPending();
+    expect(parked).toMatchObject({
+      id: "perm_1",
+      runId: "run_1",
+      tool: "WebFetch",
+      summary: "WebFetch (https://x)",
+    });
+    expect(Number.isNaN(Date.parse(parked!.requestedAt))).toBe(false);
+    expect(changes).toBe(1);
+
+    expect(broker.resolve(parked!.id, "allow")).toEqual({ ok: true });
+    await expect(waiting).resolves.toEqual({
+      behavior: "allow",
+      updatedInput: { url: "https://x" },
+    });
+    expect(broker.listPending()).toEqual([]);
+    expect(changes).toBe(2);
+    expect(broker.resolve(parked!.id, "deny")).toEqual({ ok: false });
+    expect(changes).toBe(2);
+  });
+
+  it("always-allow resolves the call and appends its tool to workspace grants", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "crystal-permission-grant-"));
+    try {
+      const grants = new GrantsStore(dir);
+      const state = baseState();
+      const host = makeHost(state);
+      host.grantPatterns = () => grants.allowedTools();
+      const broker = new PermissionBroker(host, BASELINE, 10_000);
+      const waiting = broker.request("run_1", "WebFetch", { url: "https://x" });
+      await new Promise((r) => setTimeout(r, 10));
+      const id = broker.listPending()[0]!.id;
+
+      await expect(
+        decidePendingPermission({ permissions: broker, grants }, id, "allow", true),
+      ).resolves.toEqual({ ok: true });
+      await expect(waiting).resolves.toMatchObject({ behavior: "allow" });
+      await expect(grants.allowedTools()).resolves.toEqual(["WebFetch"]);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("allows on an owner board answer starting with Allow", async () => {
     const state = baseState();
     const broker = new PermissionBroker(makeHost(state), BASELINE, 10_000);
@@ -159,11 +217,16 @@ describe("PermissionBroker", () => {
   it("denies on timeout with instructions to proceed differently", async () => {
     const state = baseState();
     const broker = new PermissionBroker(makeHost(state), BASELINE, 20);
+    let changes = 0;
+    broker.events.on("changed", () => {
+      changes += 1;
+    });
     const decision = await broker.request("run_1", "WebFetch", { url: "https://x" });
     expect(decision.behavior).toBe("deny");
     expect((decision as { message: string }).message).toMatch(/ask_question/);
     expect(state.denied).toEqual(["WebFetch"]);
     expect(broker.pendingCount).toBe(0);
+    expect(changes).toBe(2);
   });
 
   it("settles exactly once when several wake-ups race", async () => {
