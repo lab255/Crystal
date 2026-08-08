@@ -13,6 +13,7 @@ import {
   MODE_LABELS,
   MODE_SUBSECTIONS,
   WORKSPACE_FACETS,
+  modeShortcutDigit,
   orderedFacets,
   type CrystalMode,
 } from "./modes.js";
@@ -150,7 +151,7 @@ export function ProjectNav({
     menu.open(e, entries);
   }
 
-  const shortcutFor = (m: CrystalMode) => `Ctrl+${WORKSPACE_FACETS.indexOf(m) + 3}`;
+  const shortcutFor = (m: CrystalMode) => `Ctrl+${modeShortcutDigit(m)}`;
 
   return (
     <nav

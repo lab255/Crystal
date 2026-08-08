@@ -23,6 +23,15 @@ export const CRYSTAL_MODES: CrystalMode[] = [
   "jobs",
 ];
 
+/**
+ * The digit the shell's window-level Ctrl/Cmd+1..N handler binds to a mode
+ * (`CRYSTAL_MODES[digit - 1]`). Every advertised hint MUST derive from this —
+ * a hand-computed offset already shipped hints that were off by two.
+ */
+export function modeShortcutDigit(m: CrystalMode): number {
+  return CRYSTAL_MODES.indexOf(m) + 1;
+}
+
 export const MODE_LABELS: Record<CrystalMode, string> = {
   projects: "Overview",
   architect: "Architecture",

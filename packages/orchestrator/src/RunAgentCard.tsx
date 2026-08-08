@@ -196,15 +196,22 @@ export function RunAgentCard({
         </Select>
         {/* Interactive is the default dispatch: the native TUI in the
             terminal panel, questions answered in place. Headless stays a
-            click away for fire-and-forget runs. */}
+            click away for fire-and-forget runs. Worktree isolation implies
+            headless (an interactive session lives in the repo checkout), so
+            the primary button MUST follow the checkbox — same rule as the
+            Agents-tab dispatch panel. */}
         <Button
           variant="primary"
           size="sm"
           disabled={starting || !effectivePrompt.trim()}
-          onClick={() => void runInteractive()}
-          title="Run as a native interactive Claude session in the terminal panel — answer its questions there (or later from the board, where they are still logged)"
+          onClick={() => void (isolate ? runAgent() : runInteractive())}
+          title={
+            isolate
+              ? "Run headless in an isolated git worktree (interactive sessions can't be isolated — they live in the repo checkout)"
+              : "Run as a native interactive Claude session in the terminal panel — answer its questions there (or later from the board, where they are still logged)"
+          }
         >
-          <TerminalSquare className="h-3 w-3" /> Run
+          <TerminalSquare className="h-3 w-3" /> {isolate ? "Run isolated" : "Run"}
         </Button>
         <Button
           variant="secondary"

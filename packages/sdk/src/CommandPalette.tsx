@@ -56,7 +56,13 @@ import {
   wsKey,
 } from "@crystal/client";
 import { CommandList, Dialog, DialogContent, Kbd } from "@crystal/ui";
-import { CRYSTAL_MODES, MODE_ICONS, MODE_LABELS, type CrystalMode } from "./modes.js";
+import {
+  CRYSTAL_MODES,
+  MODE_ICONS,
+  MODE_LABELS,
+  modeShortcutDigit,
+  type CrystalMode,
+} from "./modes.js";
 
 /** Command-palette icon per orchestrate tab (mirrors the tab strip). */
 const ORCHESTRATE_TAB_ICONS: Record<OrchestratorTabId, LucideIcon> = {
@@ -221,11 +227,11 @@ export function CommandPalette({
       // One entry per mode, straight from the registry — the rail derives its
       // Ctrl+N shortcuts the same way, so inserting a mode can never leave the
       // palette advertising the wrong key.
-      ...CRYSTAL_MODES.map((m, i) => ({
+      ...CRYSTAL_MODES.map((m) => ({
         id: `mode.${m}`,
         title: `Go to ${MODE_LABELS[m]}`,
         icon: MODE_ICONS[m],
-        hint: `Ctrl+${i + 1}`,
+        hint: `Ctrl+${modeShortcutDigit(m)}`,
         run: () => onSwitchMode(m),
       })),
       {

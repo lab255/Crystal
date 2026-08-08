@@ -240,6 +240,16 @@ export function CrystalShell({
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // A focused terminal owns its keystrokes: Ctrl+L (clear), Ctrl+K
+      // (kill-line), Ctrl+[ (ESC) are shell/editor idioms, not shell-of-ours
+      // shortcuts — hijacking them makes the embedded terminal feel
+      // booby-trapped. Only the panel toggle stays reachable so the terminal
+      // can still be dismissed from inside itself.
+      const target = e.target;
+      if (target instanceof HTMLElement && target.closest(".xterm")) {
+        const isPanelToggle = (e.ctrlKey || e.metaKey) && e.key === "`";
+        if (!isPanelToggle) return;
+      }
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "p") {
         e.preventDefault();
         setPaletteOpen(true);

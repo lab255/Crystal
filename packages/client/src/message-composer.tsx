@@ -7,10 +7,14 @@ import { useComposerKeydown, useSettings } from "./settings.js";
  * What a send resolved to. `queued: true` means the message could not be
  * delivered mid-turn and waits for the turn to settle (the server's
  * `deliver` semantics) — the composer surfaces that so the user knows their
- * message landed but hasn't been read yet.
+ * message landed but hasn't been read yet. `status: "recorded"` is the
+ * delivery failure the queued notice must never mask: the target session can
+ * never receive the text (cancelled chain, no session) — the composer keeps
+ * the draft and says so instead of pretending it queued.
  */
 export interface ComposerSendResult {
   queued?: boolean;
+  status?: "resumed" | "queued" | "recorded";
 }
 
 /**
@@ -50,6 +54,15 @@ export function MessageComposer({
     setNotice(null);
     try {
       const result = await onSend(t);
+      if (result && result.status === "recorded") {
+        // NOT delivered and never will be — keep the draft so the user can
+        // take it somewhere that is alive (compact, a fresh session).
+        setNotice({
+          kind: "error",
+          text: "Not delivered — this session has ended and can't receive messages.",
+        });
+        return;
+      }
       setText("");
       if (result && result.queued) {
         setNotice({ kind: "queued", text: "Queued — delivers when the turn settles." });

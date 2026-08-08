@@ -206,6 +206,18 @@ export function TestsView() {
         ) : null}
       </div>
 
+      {/* A "failed" run can carry per-package runner errors (some packages
+          never booted while others passed) — without this strip the counts
+          alone read as a healthy run and a broken package ships unnoticed. */}
+      {shownRun?.status === "failed" && shownRun.error ? (
+        <div className="border-b border-danger/30 bg-danger/10 px-3 py-1.5 text-[11px] text-danger">
+          <span className="font-medium">Some packages failed to run — results are incomplete.</span>
+          <pre className="mt-1 max-h-24 overflow-auto whitespace-pre-wrap font-mono text-[10px] leading-relaxed text-danger/80">
+            {shownRun.error}
+          </pre>
+        </div>
+      ) : null}
+
       <Split storageKey="quality:tests" direction="horizontal" className="min-h-0 flex-1">
         <SplitPane defaultSize={340} minSize={240} maxSize={560}>
           <aside className="flex h-full flex-col border-r border-edge bg-surface-1">
@@ -308,6 +320,9 @@ function RunSummaryChip({ run }: { run: QualityRun }) {
         <span className="text-ok">{s.passed} passed</span>
         {s.failed > 0 ? <span className="text-danger">{s.failed} failed</span> : null}
         {s.skipped > 0 ? <span className="text-ink-faint">{s.skipped} skipped</span> : null}
+        {run.status === "failed" && run.error ? (
+          <span className="font-medium text-danger">incomplete</span>
+        ) : null}
         <span className="text-ink-faint">{fmtDuration(s.durationMs)}</span>
       </span>
     </Tooltip>
