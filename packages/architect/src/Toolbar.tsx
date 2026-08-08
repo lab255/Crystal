@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { AppWindow, ClipboardCheck, Copy, Handshake, History, Layers, LayoutGrid, Lightbulb, Maximize2, Network, Radar, Rows3, TableProperties, Waypoints, X } from "lucide-react";
 import type { ArchEdgeKind, ArchitectureGraph, CodeLodLevel } from "@crystal/core";
 import { Button, Tooltip, cn } from "@crystal/ui";
@@ -38,6 +38,7 @@ export function Toolbar({
   showEndpoints,
   onToggleEndpoints,
   onOpenWorkspacesMap,
+  exportMenu,
 }: {
   graph: ArchitectureGraph;
   /** Active facet lens, when one filters the canvas. */
@@ -76,6 +77,7 @@ export function Toolbar({
   onToggleEndpoints?: (on: boolean) => void;
   /** Open the cross-workspace map (all open workspaces and their imports). */
   onOpenWorkspacesMap?: () => void;
+  exportMenu?: ReactNode;
 }) {
   const [name, setName] = useState(graph.name);
   useEffect(() => setName(graph.name), [graph.id, graph.name]);
@@ -355,6 +357,12 @@ export function Toolbar({
             <Network className="h-3.5 w-3.5" />
           </Button>
         </Tooltip>
+      ) : null}
+      {exportMenu ? (
+        <>
+          <div className="h-4 w-px bg-edge" />
+          {exportMenu}
+        </>
       ) : null}
     </div>
   );

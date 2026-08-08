@@ -1656,6 +1656,7 @@ function DiagramsView({
                   extraNodeEntries={extraNodeEntries}
                   onOpenContract={activeDraft ? undefined : openContractForEdge}
                   onNotice={setNotice}
+                  exportEnabled
                   c4={
                     c4Enabled && c4Laid && c4Projection
                       ? {

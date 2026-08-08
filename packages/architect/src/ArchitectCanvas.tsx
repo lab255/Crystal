@@ -143,6 +143,8 @@ import { estimateGraphDims } from "./card-metrics.js";
 import { PeekPanel } from "./snippets.js";
 import { Palette, DRAG_MIME, PALETTE_KINDS } from "./Palette.js";
 import { Toolbar } from "./Toolbar.js";
+import { ExportMenu } from "./ExportMenu.js";
+import { exportMermaidC4 } from "./export-mermaid.js";
 import { CANVAS_LOD_LEVELS, HUGE_TREE_FILE_LIMIT } from "./lod-config.js";
 import { useViewHighlight } from "./use-highlight.js";
 import {
@@ -292,6 +294,8 @@ export interface ArchitectCanvasProps {
     drill: Record<string, C4View>;
     onDrill: (view: C4View) => void;
   } | null;
+  /** The full architect mode owns export; embedded canvases keep their compact surface. */
+  exportEnabled?: boolean;
 }
 
 const GHOST_STROKE = "var(--color-crystal-400)";
@@ -443,6 +447,7 @@ function CanvasInner({
   onNotice,
   diffMarks,
   c4,
+  exportEnabled = false,
 }: ArchitectCanvasProps) {
   const [selectedNodes, setSelectedNodes] = useState<ReadonlySet<string>>(new Set());
   const [selectedEdges, setSelectedEdges] = useState<ReadonlySet<string>>(new Set());
@@ -455,6 +460,7 @@ function CanvasInner({
   const [renaming, setRenaming] = useState<{ x: number; y: number; id: string } | null>(null);
   const [peek, setPeek] = useState<{ module: string; label: string; file?: string } | null>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
+  const [renderAllForExport, setRenderAllForExport] = useState(false);
   const { screenToFlowPosition, fitView, getNodes } = useReactFlow();
   const nodesInitialized = useNodesInitialized();
   const updateNodeInternals = useUpdateNodeInternals();
@@ -515,6 +521,13 @@ function CanvasInner({
     () => (activeFacet ? filterGraphToFacet(graph, activeFacet) : graph),
     [graph, activeFacet],
   );
+  const mermaid = useMemo(
+    () =>
+      c4
+        ? exportMermaidC4({ graph: viewGraph, typeLines: c4.typeLines, view: c4.view })
+        : null,
+    [c4, viewGraph],
+  );
 
   const updateFacetMembers = useCallback(
     (facetId: string, mutate: (nodeIds: readonly string[]) => string[]) => {
@@ -548,6 +561,9 @@ function CanvasInner({
 
   const { client } = useCrystal();
   const activeWs = useWorkspaces((s) => s.activeId);
+  const workspaceName = useWorkspaces(
+    (s) => s.workspaces.find((workspace) => workspace.id === s.activeId)?.name ?? "workspace",
+  );
 
   /** Diagram node id → module path currently expanded into live code. */
   const [codeExpanded, setCodeExpanded] = useState<ReadonlyMap<string, string>>(() => new Map());
@@ -2482,7 +2498,7 @@ function CanvasInner({
         zoomOnPinch
         // Only viewport-visible nodes mount DOM — at members detail the full
         // scene is thousands of subtrees, fatal in the desktop webview.
-        onlyRenderVisibleElements
+        onlyRenderVisibleElements={!renderAllForExport}
         proOptions={{ hideAttribution: true }}
         className="bg-surface-0"
       >
@@ -2550,6 +2566,19 @@ function CanvasInner({
               showEndpoints={showEndpoints}
               onToggleEndpoints={onToggleEndpoints}
               onOpenWorkspacesMap={onOpenWorkspacesMap}
+              exportMenu={
+                exportEnabled && onNotice ? (
+                  <ExportMenu
+                    canvasRef={wrapperRef}
+                    workspace={workspaceName}
+                    view="architecture"
+                    level={c4?.view.level}
+                    mermaid={mermaid}
+                    onNotice={onNotice}
+                    onRenderAllChange={setRenderAllForExport}
+                  />
+                ) : null
+              }
             />
           </div>
         </Panel>
