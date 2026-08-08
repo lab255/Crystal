@@ -25,6 +25,12 @@ export interface AppSettings {
   enterToSend: EnterBehavior;
   /** Slack-style workspace rail: icon-only (false) or with names (true). */
   railExpanded: boolean;
+  /** Agent questions and recoverable failures that need the operator. */
+  notifyAttention: boolean;
+  /** Agent runs that settle and are ready to review. */
+  notifyRunsSettled: boolean;
+  /** Workflows automatically paused by their budget or stall guard. */
+  notifyWorkflowPaused: boolean;
   /** Project-nav section order (mode ids); missing modes append in default order. */
   navOrder: string[];
 }
@@ -37,6 +43,9 @@ const DEFAULTS: AppSettings = {
   theme: "system",
   enterToSend: "mod-enter",
   railExpanded: false,
+  notifyAttention: true,
+  notifyRunsSettled: true,
+  notifyWorkflowPaused: true,
   navOrder: [],
 };
 
@@ -50,6 +59,9 @@ function load(): AppSettings {
       theme: parsed.theme === "light" || parsed.theme === "dark" ? parsed.theme : "system",
       enterToSend: parsed.enterToSend === "enter" ? "enter" : "mod-enter",
       railExpanded: parsed.railExpanded === true,
+      notifyAttention: parsed.notifyAttention !== false,
+      notifyRunsSettled: parsed.notifyRunsSettled !== false,
+      notifyWorkflowPaused: parsed.notifyWorkflowPaused !== false,
       navOrder: Array.isArray(parsed.navOrder)
         ? parsed.navOrder.filter((m): m is string => typeof m === "string")
         : [],
@@ -63,11 +75,27 @@ export const settingsStore = createStore<SettingsState>((set, get) => ({
   ...load(),
   set: (patch) => {
     set(patch);
-    const { theme, enterToSend, railExpanded, navOrder } = get();
+    const {
+      theme,
+      enterToSend,
+      railExpanded,
+      notifyAttention,
+      notifyRunsSettled,
+      notifyWorkflowPaused,
+      navOrder,
+    } = get();
     try {
       localStorage.setItem(
         SETTINGS_KEY,
-        JSON.stringify({ theme, enterToSend, railExpanded, navOrder } satisfies AppSettings),
+        JSON.stringify({
+          theme,
+          enterToSend,
+          railExpanded,
+          notifyAttention,
+          notifyRunsSettled,
+          notifyWorkflowPaused,
+          navOrder,
+        } satisfies AppSettings),
       );
     } catch {
       /* storage blocked — the session keeps its settings anyway */

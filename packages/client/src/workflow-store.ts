@@ -13,6 +13,8 @@ import type { BridgeClient } from "./bridge-client.js";
  */
 export interface WorkflowState {
   workflows: Workflow[];
+  /** Workspace whose first workflow snapshot has landed (`null` while unread). */
+  workflowsReadForWs: string | null;
   /** Selectable templates: built-ins first, then global library, then project. */
   templates: WorkflowTemplate[];
 
@@ -76,14 +78,20 @@ export function createWorkflowStore(client: BridgeClient): WorkflowStore {
 
   const store = createStore<WorkflowState>((set) => ({
     workflows: [],
+    workflowsReadForWs: null,
     templates: [],
 
     async refresh() {
+      const ws = client.scope;
+      set({ workflowsReadForWs: null });
       const [{ workflows }, { templates }] = await Promise.all([
         client.request("workflow.list", {}),
         client.request("workflow.templates", {}),
       ]);
-      set({ workflows, templates });
+      // A slower request for the prior workspace must not mark the new scope
+      // as read or seed its pause tracker from the wrong workflow list.
+      if (client.scope !== ws) return;
+      set({ workflows, workflowsReadForWs: ws, templates });
     },
 
     async start(input) {

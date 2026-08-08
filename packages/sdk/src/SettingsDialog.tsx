@@ -25,6 +25,9 @@ export function SettingsDialog({
 }) {
   const theme = useSettings((s) => s.theme);
   const enterToSend = useSettings((s) => s.enterToSend);
+  const notifyAttention = useSettings((s) => s.notifyAttention);
+  const notifyRunsSettled = useSettings((s) => s.notifyRunsSettled);
+  const notifyWorkflowPaused = useSettings((s) => s.notifyWorkflowPaused);
   const set = useSettings((s) => s.set);
 
   return (
@@ -57,6 +60,29 @@ export function SettingsDialog({
             />
           </Section>
 
+          <Section label="Notifications">
+            <div className="flex flex-col divide-y divide-edge rounded-lg border border-edge bg-surface-1 px-2.5">
+              <NotificationSwitchRow
+                label="Questions and failures"
+                description="Agent questions and recoverable failures that need you."
+                checked={notifyAttention}
+                onChange={(checked) => set({ notifyAttention: checked })}
+              />
+              <NotificationSwitchRow
+                label="Runs ready for review"
+                description="Agent runs that finish and are ready to inspect."
+                checked={notifyRunsSettled}
+                onChange={(checked) => set({ notifyRunsSettled: checked })}
+              />
+              <NotificationSwitchRow
+                label="Workflow pauses"
+                description="Budget and stall pauses; user-initiated holds stay quiet."
+                checked={notifyWorkflowPaused}
+                onChange={(checked) => set({ notifyWorkflowPaused: checked })}
+              />
+            </div>
+          </Section>
+
           <Section label="Updates">
             <UpdateRow />
           </Section>
@@ -87,6 +113,28 @@ function Section({
       <div className="text-[11px] font-medium uppercase tracking-wide text-ink-faint">{label}</div>
       {children}
       {hint ? <div className="text-[11px] text-ink-faint">{hint}</div> : null}
+    </div>
+  );
+}
+
+function NotificationSwitchRow({
+  label,
+  description,
+  checked,
+  onChange,
+}: {
+  label: string;
+  description: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <div className="flex items-center gap-3 py-2">
+      <div className="min-w-0 flex-1">
+        <div className="text-xs text-ink">{label}</div>
+        <div className="text-[11px] text-ink-faint">{description}</div>
+      </div>
+      <Switch checked={checked} onChange={onChange} aria-label={label} />
     </div>
   );
 }

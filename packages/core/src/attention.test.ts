@@ -1,14 +1,19 @@
 import { describe, expect, it } from "vitest";
 import {
+  ActiveTransitionTracker,
   AttentionTracker,
   attentionLight,
+  automaticWorkflowPauseIds,
   countOpenQuestions,
   countUnrecoveredFailures,
   deriveNeedsYou,
   deriveRunAttention,
   failureAttentionId,
   questionAttentionId,
+  runAttentionId,
+  settledRunReviews,
   unrecoveredFailures,
+  workflowPauseAttentionId,
   workspaceLight,
   type AttentionRun,
   type ProjectEntry,
@@ -148,11 +153,74 @@ describe("AttentionTracker", () => {
     expect(tracker.next("ws2:failures", ["f:b"])).toEqual([]);
   });
 
+  it("claims a run once across failure and review sources", () => {
+    const tracker = new AttentionTracker();
+    tracker.next("ws1:failures", []);
+    tracker.next("ws1:reviews", []);
+    expect(tracker.next("ws1:failures", ["f:run"])).toEqual(["f:run"]);
+    expect(tracker.next("ws1:reviews", ["f:run"])).toEqual([]);
+  });
+
   it("attention ids are namespaced so a question and a run cannot collide", () => {
     const project = projectWithQuestions("a", [{ text: "Q" }]);
     const q = deriveNeedsYou([project], []).questions[0]!;
     const run = failedRun(q.question.id, OVERFLOW); // pathological same raw id
     expect(questionAttentionId(q.question)).not.toBe(failureAttentionId(run));
+    expect(failureAttentionId(run)).toBe(runAttentionId(run));
+  });
+});
+
+describe("ActiveTransitionTracker", () => {
+  it("seeds silently, reports entries, and re-arms ids that leave", () => {
+    const tracker = new ActiveTransitionTracker();
+    expect(tracker.next("ws1:workflow-pauses", ["w:existing"])).toEqual([]);
+    expect(tracker.next("ws1:workflow-pauses", ["w:existing", "w:new"])).toEqual(["w:new"]);
+    expect(tracker.next("ws1:workflow-pauses", ["w:existing", "w:new"])).toEqual([]);
+    expect(tracker.next("ws1:workflow-pauses", [])).toEqual([]);
+    expect(tracker.next("ws1:workflow-pauses", ["w:new"])).toEqual(["w:new"]);
+    // Another workspace still seeds independently.
+    expect(tracker.next("ws2:workflow-pauses", ["w:new"])).toEqual([]);
+  });
+});
+
+describe("automatic workflow pauses", () => {
+  it("includes budget/stall pauses but not user holds or running workflows", () => {
+    const workflows = [
+      { id: "budget", status: "paused" as const, pausedBy: "budget" as const },
+      { id: "stall", status: "paused" as const, pausedBy: "stall" as const },
+      { id: "user", status: "paused" as const, pausedBy: "user" as const },
+      { id: "running", status: "running" as const, pausedBy: null },
+    ];
+    expect(automaticWorkflowPauseIds(workflows)).toEqual(["w:budget", "w:stall"]);
+    expect(workflowPauseAttentionId(workflows[0]!)).toBe("w:budget");
+  });
+});
+
+describe("settledRunReviews", () => {
+  it("itemizes the same settled review lanes and excludes live/cancelled/recoverable failures", () => {
+    const completed = run("completed", "2026-01-02T00:00:00Z", { id: "completed" });
+    const failed = run("failed", "2026-01-02T00:00:00Z", { id: "failed" });
+    const recoverable = run("failed", "2026-01-02T00:00:00Z", {
+      id: "recoverable",
+      failure: OVERFLOW,
+    });
+    const running = run("running", null, { id: "running" });
+    const cancelled = run("cancelled", "2026-01-02T00:00:00Z", { id: "cancelled" });
+
+    const reviews = settledRunReviews([completed, failed, recoverable, running, cancelled]);
+    expect(reviews.review.map((item) => item.id)).toEqual(["completed"]);
+    expect(reviews.reviewFailed.map((item) => item.id)).toEqual(["failed"]);
+  });
+
+  it("moves a recovered classified failure into reviewFailed", () => {
+    const failed = run("failed", "2026-01-02T00:00:00Z", {
+      id: "failed",
+      failure: OVERFLOW,
+    });
+    const recovery = run("running", null, { id: "recovery", handoffFromRunId: "failed" });
+    expect(settledRunReviews([failed, recovery]).reviewFailed.map((item) => item.id)).toEqual([
+      "failed",
+    ]);
   });
 });
 
