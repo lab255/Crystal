@@ -10,21 +10,66 @@ export interface ElkLayoutOptions {
   /** Authoritative browser measurements, or deterministic estimates upstream. */
   dims?: ReadonlyMap<string, { width: number; height: number }>;
   direction?: "DOWN" | "RIGHT";
+  /** Width / height of the canvas the packed result should fill. */
+  aspectRatio?: number;
+}
+
+export interface ElkRouteLabel {
+  /** Absolute-canvas top-left corner and estimated/rendered footprint. */
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface ElkRoute {
+  /** Absolute-canvas orthogonal polyline. */
+  points: { x: number; y: number }[];
+  /** ELK-provided or deterministically de-collided label box. */
+  label?: ElkRouteLabel;
 }
 
 export interface ElkLayoutResult {
   /** Parent-relative positions and ELK-fitted pen sizes. */
   graph: ArchitectureGraph;
-  /** Absolute-canvas orthogonal polylines, keyed by architecture edge id. */
-  routes: ReadonlyMap<string, { x: number; y: number }[]>;
+  /** Absolute-canvas routes and label boxes, keyed by architecture edge id. */
+  routes: ReadonlyMap<string, ElkRoute>;
 }
 
 type Point = { x: number; y: number };
 
 const COMPOUND_PADDING = "[top=56,left=24,bottom=24,right=24]";
 const FALLBACK_CARD = { width: 200, height: 84 } as const;
+const DEFAULT_ASPECT_RATIO = 1.7;
+const EDGE_LABEL_FONT_SIZE = 10;
+const EDGE_LABEL_AVERAGE_GLYPH_WIDTH = 5.5;
+const EDGE_LABEL_HORIZONTAL_PADDING = 8;
+const EDGE_LABEL_VERTICAL_PADDING = 2;
+const EDGE_LABEL_LINE_HEIGHT = 15;
+const EDGE_LABEL_SPACING = 12;
 
-function rootLayoutOptions(direction: "DOWN" | "RIGHT"): Record<string, string> {
+/** Mirrors ElkEdge's 10px, single-line label with px-1 / py-px padding. */
+export function estimateEdgeLabelSize(text: string): { width: number; height: number } {
+  return {
+    width:
+      [...text].length * EDGE_LABEL_AVERAGE_GLYPH_WIDTH + EDGE_LABEL_HORIZONTAL_PADDING,
+    height: Math.max(EDGE_LABEL_FONT_SIZE, EDGE_LABEL_LINE_HEIGHT) + EDGE_LABEL_VERTICAL_PADDING,
+  };
+}
+
+function edgeLabelLayoutOptions(): Record<string, string> {
+  return {
+    "org.eclipse.elk.edgeLabels.inline": "true",
+    "org.eclipse.elk.spacing.edgeLabel": String(EDGE_LABEL_SPACING),
+    "org.eclipse.elk.spacing.labelLabel": "8",
+    "org.eclipse.elk.layered.edgeLabels.sideSelection": "SMART_DOWN",
+  };
+}
+
+function rootLayoutOptions(
+  direction: "DOWN" | "RIGHT",
+  aspectRatio: number,
+): Record<string, string> {
   return {
     "elk.algorithm": "layered",
     "elk.direction": direction,
@@ -38,7 +83,8 @@ function rootLayoutOptions(direction: "DOWN" | "RIGHT"): Record<string, string> 
     "elk.layered.considerModelOrder.strategy": "NODES_AND_EDGES",
     "elk.layered.nodePlacement.strategy": "NETWORK_SIMPLEX",
     "elk.separateConnectedComponents": "true",
-    "elk.aspectRatio": "1.7",
+    "elk.aspectRatio": String(aspectRatio),
+    ...edgeLabelLayoutOptions(),
   };
 }
 
@@ -103,6 +149,90 @@ function appendPoint(points: ElkPoint[], point: ElkPoint): void {
   if (!previous || previous.x !== point.x || previous.y !== point.y) points.push(point);
 }
 
+function longestSegmentLabelPlacement(
+  points: readonly Point[],
+  size: { width: number; height: number },
+): { box: ElkRouteLabel; direction: Point } {
+  let longest = -1;
+  let midpoint = points[0] ?? { x: 0, y: 0 };
+  let direction = { x: 1, y: 0 };
+  for (let index = 1; index < points.length; index += 1) {
+    const from = points[index - 1]!;
+    const to = points[index]!;
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const length = Math.hypot(dx, dy);
+    if (length <= longest) continue;
+    longest = length;
+    midpoint = { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 };
+    if (length > 0) direction = { x: dx / length, y: dy / length };
+  }
+  return {
+    box: {
+      x: midpoint.x - size.width / 2,
+      y: midpoint.y - size.height / 2,
+      ...size,
+    },
+    direction,
+  };
+}
+
+function labelBoxesOverlap(a: ElkRouteLabel, b: ElkRouteLabel): boolean {
+  const gap = EDGE_LABEL_SPACING / 2;
+  return (
+    a.x < b.x + b.width + gap &&
+    a.x + a.width + gap > b.x &&
+    a.y < b.y + b.height + gap &&
+    a.y + a.height + gap > b.y
+  );
+}
+
+/**
+ * Fill in labels ELK could not position, in edge-id order. Existing ELK
+ * boxes stay fixed; fallback boxes walk in alternating steps along their
+ * longest route segment until they no longer collide.
+ */
+export function placeFallbackEdgeLabels(
+  routes: ReadonlyMap<string, ElkRoute>,
+  labels: ReadonlyMap<string, string>,
+): ReadonlyMap<string, ElkRoute> {
+  const placed = new Map<string, ElkRoute>();
+  for (const [id, route] of routes) {
+    placed.set(id, {
+      points: route.points.map((point) => ({ ...point })),
+      ...(route.label ? { label: { ...route.label } } : {}),
+    });
+  }
+
+  // ELK-planned boxes have priority regardless of their edge ids.
+  const occupied = [...placed.values()].flatMap((route) =>
+    route.label ? [route.label] : [],
+  );
+  for (const id of [...placed.keys()].sort((a, b) => a.localeCompare(b))) {
+    const route = placed.get(id)!;
+    const text = labels.get(id)?.trim();
+    if (!text || route.label || route.points.length === 0) continue;
+    const size = estimateEdgeLabelSize(text);
+    const initial = longestSegmentLabelPlacement(route.points, size);
+    const step = Math.max(size.width, size.height) + EDGE_LABEL_SPACING;
+    let box = initial.box;
+    for (let attempt = 0; occupied.some((other) => labelBoxesOverlap(box, other)); attempt += 1) {
+      // +1, -1, +2, -2... keeps a parallel bundle centered as it grows.
+      const multiple = Math.floor(attempt / 2) + 1;
+      const sign = attempt % 2 === 0 ? 1 : -1;
+      const offset = sign * multiple * step;
+      box = {
+        ...initial.box,
+        x: initial.box.x + initial.direction.x * offset,
+        y: initial.box.y + initial.direction.y * offset,
+      };
+    }
+    route.label = box;
+    occupied.push(box);
+  }
+  return placed;
+}
+
 /**
  * Resolve parent-relative node positions into canvas coordinates. Keeping
  * this beside the route producer makes its coordinate contract explicit:
@@ -137,9 +267,9 @@ function absolutePositions(graph: ArchitectureGraph): Map<string, Point> {
 export function filterRoutesForMovedEndpoints(
   laid: ArchitectureGraph,
   displayed: ArchitectureGraph,
-  routes: ReadonlyMap<string, Point[]>,
+  routes: ReadonlyMap<string, ElkRoute>,
   tolerance = 0.5,
-): ReadonlyMap<string, Point[]> {
+): ReadonlyMap<string, ElkRoute> {
   const laidAbsolute = absolutePositions(laid);
   const displayedAbsolute = absolutePositions(displayed);
   const moved = (id: string): boolean => {
@@ -153,7 +283,7 @@ export function filterRoutesForMovedEndpoints(
     );
   };
 
-  let filtered: Map<string, Point[]> | null = null;
+  let filtered: Map<string, ElkRoute> | null = null;
   for (const edge of laid.edges) {
     if (!routes.has(edge.id) || (!moved(edge.source) && !moved(edge.target))) continue;
     filtered ??= new Map(routes);
@@ -173,6 +303,10 @@ export async function elkAutoLayout(
   graph: ArchitectureGraph,
   opts: ElkLayoutOptions = {},
 ): Promise<ElkLayoutResult> {
+  const aspectRatio = opts.aspectRatio ?? DEFAULT_ASPECT_RATIO;
+  if (!Number.isFinite(aspectRatio) || aspectRatio <= 0) {
+    throw new Error(`Invalid ELK aspect ratio ${aspectRatio}`);
+  }
   const byId = new Map(graph.nodes.map((node) => [node.id, node]));
   const rootId = rootIdFor(byId);
 
@@ -216,7 +350,7 @@ export async function elkAutoLayout(
   interface Solved {
     positions: Map<string, ElkPoint>;
     fittedSizes: Map<string, { width: number; height: number }>;
-    routes: Map<string, ElkPoint[]>;
+    routes: ReadonlyMap<string, ElkRoute>;
   }
 
   const solve = async (packedScopes: ReadonlySet<string>): Promise<Solved> => {
@@ -238,13 +372,14 @@ export async function elkAutoLayout(
       const layoutOptions: Record<string, string> = {};
       if (penIds.has(node.id)) {
         layoutOptions["elk.padding"] = COMPOUND_PADDING;
+        Object.assign(layoutOptions, edgeLabelLayoutOptions());
         if (packedScopes.has(node.id)) {
           // The scope becomes its own hierarchy boundary: ELK lays its children
           // out first (nested pens still use their own algorithms), then packs
           // the boxes toward the diagram's aspect ratio. Edges into a packed
           // scope lose their routed sections and fall back to plain edges.
           layoutOptions["elk.algorithm"] = "rectpacking";
-          layoutOptions["elk.aspectRatio"] = "1.7";
+          layoutOptions["elk.aspectRatio"] = String(aspectRatio);
           layoutOptions["elk.spacing.nodeNode"] = "32";
         }
       } else if (node.kind === "person") {
@@ -295,7 +430,7 @@ export async function elkAutoLayout(
       id: rootId,
       children: rootChildren,
       edges: [],
-      layoutOptions: rootLayoutOptions(opts.direction ?? "DOWN"),
+      layoutOptions: rootLayoutOptions(opts.direction ?? "DOWN", aspectRatio),
     };
     elkById.set(rootId, elkRoot);
 
@@ -338,6 +473,20 @@ export async function elkAutoLayout(
         sources: [source],
         targets: [target],
         container: ownerId,
+        ...(edge.label.trim() && !borderSnapped.has(edge.id)
+          ? {
+              labels: [
+                {
+                  text: edge.label,
+                  ...estimateEdgeLabelSize(edge.label),
+                  layoutOptions: {
+                    "org.eclipse.elk.edgeLabels.placement": "CENTER",
+                    "org.eclipse.elk.edgeLabels.inline": "true",
+                  },
+                },
+              ],
+            }
+          : {}),
       };
       (owner.edges ??= []).push(elkEdge);
     }
@@ -375,7 +524,7 @@ export async function elkAutoLayout(
       throw new Error("ELK omitted one or more architecture nodes");
     }
 
-    const routes = new Map<string, ElkPoint[]>();
+    const routes = new Map<string, ElkRoute>();
     for (const { edge, fallbackOrigin } of edgeLocations) {
       if (borderSnapped.has(edge.id)) continue;
       if (!edge.sections || edge.sections.length === 0) continue;
@@ -390,10 +539,27 @@ export async function elkAutoLayout(
         }
         appendPoint(points, absolutePoint(section.endPoint, origin, edge.id));
       }
-      if (points.length > 0) routes.set(edge.id, points);
+      if (points.length > 0) {
+        const label = edge.labels?.[0];
+        const labelBox =
+          label?.x != null && label.y != null
+            ? {
+                x: finite(label.x, `label x for edge ${edge.id}`) + origin.x,
+                y: finite(label.y, `label y for edge ${edge.id}`) + origin.y,
+                width: finite(label.width, `label width for edge ${edge.id}`),
+                height: finite(label.height, `label height for edge ${edge.id}`),
+              }
+            : undefined;
+        routes.set(edge.id, { points, ...(labelBox ? { label: labelBox } : {}) });
+      }
     }
 
-    return { positions, fittedSizes, routes };
+    const labels = new Map(
+      graph.edges
+        .filter((edge) => edge.label.trim().length > 0)
+        .map((edge) => [edge.id, edge.label] as const),
+    );
+    return { positions, fittedSizes, routes: placeFallbackEdgeLabels(routes, labels) };
   };
 
   // First pass: sparse scopes rectangle-pack pre-emptively. Hub-heavy scopes

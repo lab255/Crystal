@@ -657,6 +657,7 @@ function DiagramsView({
   > | null>(null);
   const measuredViewKey = useRef(viewKeyStr);
   const currentMeasuredDims = measuredViewKey.current === viewKeyStr ? measuredDims : null;
+  const [canvasAspectRatio, setCanvasAspectRatio] = useState(1.7);
   useEffect(() => {
     measuredViewKey.current = viewKeyStr;
     setMeasuredDims(null);
@@ -686,6 +687,15 @@ function DiagramsView({
     },
     [],
   );
+  const measureCanvas = useCallback((size: { width: number; height: number }) => {
+    // Quarter-step quantization, clamped to sane shapes: a changed ratio
+    // re-runs the whole ELK solve, so only meaningful viewport shape changes
+    // may move it — never per-pixel panel resizes.
+    const raw = size.width / size.height;
+    if (!Number.isFinite(raw) || raw <= 0) return;
+    const next = Math.min(4, Math.max(0.75, Math.round(raw * 4) / 4));
+    setCanvasAspectRatio((previous) => (previous === next ? previous : next));
+  }, []);
 
   // Card slots for member system cards — same convention as the canonical
   // layout: layout at the semantic body's own size, compact by design.
@@ -735,7 +745,11 @@ function DiagramsView({
     () => (withOverrides ? c4Reserve(withOverrides, mergedBase) : null),
     [withOverrides, mergedBase],
   );
-  const { laid, routes, revision: layoutRevision } = useElkLayout(withOverrides, dims);
+  const { laid, routes, revision: layoutRevision } = useElkLayout(
+    withOverrides,
+    dims,
+    canvasAspectRatio,
+  );
 
   // Pins remain a final, view-specific overlay on the solved geometry. This
   // is intentionally the same application logic as the previous dagre path.
@@ -1574,6 +1588,7 @@ function DiagramsView({
                   edgeRoutes={c4Enabled ? c4Routes : undefined}
                   layoutRevision={c4Enabled ? layoutRevision : undefined}
                   onMeasured={c4Enabled ? mergeMeasuredDims : undefined}
+                  onCanvasSize={c4Enabled ? measureCanvas : undefined}
                   onAutoLayout={c4Enabled ? clearCurrentC4Layout : undefined}
                   codeSummary={codeSummary}
                   overview={activeDraft ? null : overviewData}

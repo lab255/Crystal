@@ -37,6 +37,7 @@ import {
 import type { OverlayBadge } from "./overlay.js";
 import type { SystemCardFacts } from "./system-card.js";
 import { assignLanes, isBusbarScale } from "./edge-routing.js";
+import type { ElkRoute } from "./elk-layout.js";
 
 /* ------------------------------------------------------------------ */
 /* Presentation metadata per node kind                                 */
@@ -134,8 +135,8 @@ export type ArchRfNode = RfNode<{
 export type ArchRfEdge = RfEdge<{
   kind: ArchEdgeKind;
   lane?: number;
-  /** Absolute-canvas ELK polyline; plain structured-clonable data only. */
-  route?: { x: number; y: number }[];
+  /** Absolute-canvas ELK geometry; plain structured-clonable data only. */
+  route?: ElkRoute;
 }>;
 
 /** Shared diff tinting for the architecture views (matches the codebase map). */
@@ -208,7 +209,7 @@ export function toRfEdges(
   graph: ArchitectureGraph,
   selectedIds: ReadonlySet<string>,
   marks?: DiffMarks | null,
-  routes?: ReadonlyMap<string, { x: number; y: number }[]> | null,
+  routes?: ReadonlyMap<string, ElkRoute> | null,
 ): ArchRfEdge[] {
   // Small diagrams read best with curves; past the threshold, orthogonal
   // bus-bar routing keeps the dependency web sorted and legible.
@@ -251,9 +252,16 @@ export function toRfEdges(
       data: {
         kind: e.kind,
         lane: lanes?.get(e.id) ?? 0,
-        // Clone the array so edge data remains a plain render payload rather
-        // than exposing the layout engine's mutable collection.
-        ...(route ? { route: route.map((point) => ({ ...point })) } : {}),
+        // Clone the geometry so edge data remains a plain render payload
+        // rather than exposing the layout engine's mutable collection.
+        ...(route
+          ? {
+              route: {
+                points: route.points.map((point) => ({ ...point })),
+                ...(route.label ? { label: { ...route.label } } : {}),
+              },
+            }
+          : {}),
       },
       type: route ? "elk" : busbar ? "busbar" : "default",
       style: {
