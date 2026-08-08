@@ -163,11 +163,12 @@ export function CommandPalette({
   const workspaces = useWorkspaces((s) => s.workspaces);
   const recents = useWorkspaces((s) => s.recents);
   const activeWsId = useWorkspaces((s) => s.activeId);
+  const activeReviewRef = useNav((l) => l.architect?.vs ?? null);
   const lensActive = useNav((l) => l.lens != null);
   const lensSpec = useLens((s) => s.spec);
   const canSaveLens = lensActive && lensSpec !== null && lensSpec.kind !== "facet";
   const openWorkspace = useWorkspaces((s) => s.openWorkspace);
-  const { activeSid, selectWorkspace } = useCrystal();
+  const { activeSid, client, selectWorkspace } = useCrystal();
   const connections = useFleetConnections();
   // Run stores churn on every stream event — gate the subscriptions on `open`
   // (stable constants while closed) so the mounted-but-hidden palette never
@@ -280,6 +281,39 @@ export function CommandPalette({
             : undefined,
         run: () => runCapability(capability.action),
       })),
+      {
+        id: "review.base",
+        title: "Review vs base branch",
+        icon: GitCompareArrows,
+        run: () => {
+          void client
+            .request("git.refs", {})
+            .then((refs) => {
+              const local = ["main", "master"].find((name) => refs.branches.includes(name));
+              const remote = ["main", "master"]
+                .map((name) => refs.remoteBranches.find((branch) => branch.endsWith(`/${name}`)))
+                .find((branch): branch is string => branch != null);
+              const base = local ?? remote;
+              if (!base) {
+                window.dispatchEvent(new CustomEvent(CAPABILITY_EVENTS.reviewRef));
+                return;
+              }
+              onSwitchMode("architect");
+              nav({ architect: { vs: base } });
+            })
+            .catch(() => window.dispatchEvent(new CustomEvent(CAPABILITY_EVENTS.reviewRef)));
+        },
+      },
+      ...(activeReviewRef
+        ? [
+            {
+              id: "review.end",
+              title: "End review",
+              icon: XCircle,
+              run: () => nav({ architect: { vs: null } }),
+            },
+          ]
+        : []),
       // One entry per mode, straight from the registry — the rail derives its
       // Ctrl+N shortcuts the same way, so inserting a mode can never leave the
       // palette advertising the wrong key.
@@ -502,7 +536,9 @@ export function CommandPalette({
     workspaces,
     recents,
     activeWsId,
+    activeReviewRef,
     canSaveLens,
+    client,
     openWorkspace,
   ]);
 

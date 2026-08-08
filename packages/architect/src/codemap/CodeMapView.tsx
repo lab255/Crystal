@@ -22,6 +22,7 @@ import {
   Copy as CopyIcon,
   ExternalLink,
   FolderGit2,
+  GitCompareArrows,
   History,
   Layers,
   LayoutGrid,
@@ -1073,8 +1074,9 @@ function CodeMapInner({
    */
   const menuFor = useCallback(
     (data: MapRfNode["data"]): MenuEntry[] => {
-      // Review ghosts exist only at the ref — nothing local to act on.
-      if ((data.nodeKind === "module" || data.nodeKind === "file") && data.ghost) return [];
+      // A module ghost has no single file to diff. File ghosts do: the ref
+      // side is their only remaining source, so keep that route available.
+      if (data.nodeKind === "module" && data.ghost) return [];
       if (data.nodeKind === "module") {
         const d = data as ModuleNodeData;
         return [
@@ -1103,9 +1105,29 @@ function CodeMapInner({
       }
       if (data.nodeKind === "file") {
         const d = data as FileNodeData;
+        const fileMark = codeMapDiff?.marks[`f:${d.path}`];
+        const reviewEntry: MenuEntry[] =
+          refReview.active && fileMark
+            ? [
+                {
+                  type: "item",
+                  label: `View diff vs ${refReview.active.ref}`,
+                  icon: GitCompareArrows,
+                  onSelect: () => refReview.active?.openDiff(d.path),
+                },
+              ]
+            : [];
+        if (d.ghost) {
+          if (reviewEntry.length === 0) return [];
+          return [
+            { type: "heading", label: d.name },
+            ...reviewEntry,
+          ];
+        }
         if (d.planned) return [];
         return [
           { type: "heading", label: d.name },
+          ...reviewEntry,
           {
             type: "item",
             label: "Drill into file",
@@ -1153,7 +1175,18 @@ function CodeMapInner({
       }
       return [];
     },
-    [wsKey, setLevel, toggleModule, toggleCode, openInEditor, onStartJourney, onRevealInDiagram, symbolMenu],
+    [
+      wsKey,
+      setLevel,
+      toggleModule,
+      toggleCode,
+      openInEditor,
+      onStartJourney,
+      onRevealInDiagram,
+      symbolMenu,
+      codeMapDiff,
+      refReview.active,
+    ],
   );
 
   const onCrossNodeClick = useCallback(

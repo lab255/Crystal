@@ -1,6 +1,6 @@
 import Editor, { type OnMount } from "@monaco-editor/react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Circle, Code2, X } from "lucide-react";
+import { Circle, Code2, GitCompareArrows, X } from "lucide-react";
 import { useCrystal, useNav, useNavUpdate } from "@crystal/client";
 import { Button, EmptyState, Kbd, Spinner, cn } from "@crystal/ui";
 import {
@@ -18,6 +18,13 @@ import {
 } from "./editor-state.js";
 import { FileTree } from "./FileTree.js";
 import { QuickOpen } from "./QuickOpen.js";
+import { DiffView } from "./DiffView.js";
+import {
+  OPEN_DIFF_EVENT,
+  consumePendingDiffRequest,
+  shapeDiffRequest,
+  type OpenDiffRequest,
+} from "./diff-view.js";
 import { applyKeymap, KEYMAP_LABELS, type KeymapHandle, type KeymapProfile } from "./keymaps.js";
 import { setupMonaco } from "./monaco-setup.js";
 
@@ -49,6 +56,8 @@ export function EditorMode() {
   const [keymap, setKeymap] = useState<KeymapProfile>(loadKeymap);
   const [loadingFile, setLoadingFile] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [diffTab, setDiffTab] = useState<OpenDiffRequest | null>(null);
+  const [diffActive, setDiffActive] = useState(false);
 
   const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
   const editorRootRef = useRef<HTMLDivElement>(null);
@@ -61,6 +70,8 @@ export function EditorMode() {
   filesRef.current = files;
   const activeRef = useRef(activePath);
   activeRef.current = activePath;
+  const diffActiveRef = useRef(diffActive);
+  diffActiveRef.current = diffActive;
 
   const active = files.find((f) => f.path === activePath) ?? null;
 
@@ -86,6 +97,8 @@ export function EditorMode() {
       const existing = filesRef.current.find((f) => f.path === path);
       if (existing) {
         setActivePath(path);
+        diffActiveRef.current = false;
+        setDiffActive(false);
         activeRef.current = path;
         tryReveal();
         return true;
@@ -103,6 +116,8 @@ export function EditorMode() {
             : [...fs, bufferFromRead(path, read)],
         );
         setActivePath(path);
+        diffActiveRef.current = false;
+        setDiffActive(false);
         return true;
       } catch (err) {
         setError((err as Error).message);
@@ -182,6 +197,12 @@ export function EditorMode() {
     });
   }, []);
 
+  const closeDiff = useCallback(() => {
+    diffActiveRef.current = false;
+    setDiffActive(false);
+    setDiffTab(null);
+  }, []);
+
   useEffect(() => {
     const onBeforeUnload = (event: BeforeUnloadEvent) => {
       if (!hasDirtyBuffers(filesRef.current)) return;
@@ -246,6 +267,12 @@ export function EditorMode() {
       // The desktop menu deliberately leaves Cmd+W unbound (no native Close
       // Window item), so the webview owns it: close the active editor tab.
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "w" && !e.shiftKey && !e.altKey) {
+        if (diffActiveRef.current) {
+          if (!isVisible(editorRootRef.current)) return;
+          e.preventDefault();
+          closeDiff();
+          return;
+        }
         if (
           !shouldCloseFromShortcut({
             visible: isVisible(editorRootRef.current),
@@ -298,7 +325,26 @@ export function EditorMode() {
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("crystal:open-file", onOpenRequest);
     };
-  }, [openFile, closeFile, client]);
+  }, [openFile, closeFile, closeDiff, client]);
+
+  useEffect(() => {
+    const showDiff = (request: OpenDiffRequest) => {
+      setDiffTab(request);
+      diffActiveRef.current = true;
+      setDiffActive(true);
+    };
+    const pending = consumePendingDiffRequest(client.scope);
+    if (pending) showDiff(pending);
+    const onOpenDiff = (event: Event) => {
+      const request = shapeDiffRequest((event as CustomEvent<unknown>).detail);
+      // A live delivery owns the request; clear its lazy-mount handoff so a
+      // later editor remount cannot reopen a stale diff.
+      consumePendingDiffRequest(client.scope);
+      if (request) showDiff(request);
+    };
+    window.addEventListener(OPEN_DIFF_EVENT, onOpenDiff);
+    return () => window.removeEventListener(OPEN_DIFF_EVENT, onOpenDiff);
+  }, [client]);
 
   const applyProfile = useCallback(
     (profile: KeymapProfile) => {
@@ -344,7 +390,7 @@ export function EditorMode() {
       </aside>
 
       <main className="flex min-w-0 flex-1 flex-col">
-        {files.length > 0 ? (
+        {files.length > 0 || diffTab ? (
           <div className="flex items-center border-b border-edge bg-surface-1">
             <div className="flex min-w-0 flex-1 items-center overflow-x-auto">
               {files.map((file) => {
@@ -355,11 +401,15 @@ export function EditorMode() {
                     key={file.path}
                     className={cn(
                       "group flex shrink-0 cursor-pointer items-center gap-1.5 border-r border-edge px-3 py-1.5 text-xs",
-                      file.path === activePath
+                      !diffActive && file.path === activePath
                         ? "bg-surface-0 text-ink"
                         : "text-ink-muted hover:bg-surface-2",
                     )}
-                    onClick={() => setActivePath(file.path)}
+                    onClick={() => {
+                      setActivePath(file.path);
+                      diffActiveRef.current = false;
+                      setDiffActive(false);
+                    }}
                     title={file.path}
                   >
                     {dirty ? <Circle className="h-2 w-2 fill-crystal-400 text-crystal-400" /> : null}
@@ -378,25 +428,60 @@ export function EditorMode() {
                   </div>
                 );
               })}
-            </div>
-            <div className="flex shrink-0 items-center gap-0.5 px-2">
-              {(Object.keys(KEYMAP_LABELS) as KeymapProfile[]).map((profile) => (
-                <Button
-                  key={profile}
-                  variant="ghost"
-                  size="xs"
-                  className={cn(keymap === profile && "bg-surface-3 text-ink")}
-                  onClick={() => switchKeymap(profile)}
+              {diffTab ? (
+                <div
+                  className={cn(
+                    "group flex shrink-0 cursor-pointer items-center gap-1.5 border-r border-edge px-3 py-1.5 text-xs",
+                    diffActive
+                      ? "bg-surface-0 text-ink"
+                      : "text-ink-muted hover:bg-surface-2",
+                  )}
+                  onClick={() => {
+                    diffActiveRef.current = true;
+                    setDiffActive(true);
+                  }}
+                  title={`${diffTab.path} vs ${diffTab.ref}`}
                 >
-                  {KEYMAP_LABELS[profile]}
-                </Button>
-              ))}
+                  <GitCompareArrows className="h-3 w-3 text-crystal-300" />
+                  <span className="max-w-80 truncate">
+                    {diffTab.path} ⇄ {diffTab.ref}
+                  </span>
+                  <button
+                    type="button"
+                    aria-label={`Close diff ${diffTab.path} vs ${diffTab.ref}`}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      closeDiff();
+                    }}
+                    className="rounded p-0.5 opacity-0 transition-opacity hover:bg-surface-3 group-hover:opacity-100"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+              ) : null}
             </div>
+            {!diffActive ? (
+              <div className="flex shrink-0 items-center gap-0.5 px-2">
+                {(Object.keys(KEYMAP_LABELS) as KeymapProfile[]).map((profile) => (
+                  <Button
+                    key={profile}
+                    variant="ghost"
+                    size="xs"
+                    className={cn(keymap === profile && "bg-surface-3 text-ink")}
+                    onClick={() => switchKeymap(profile)}
+                  >
+                    {KEYMAP_LABELS[profile]}
+                  </Button>
+                ))}
+              </div>
+            ) : null}
           </div>
         ) : null}
 
         <div className="relative min-h-0 flex-1">
-          {active ? (
+          {diffActive && diffTab ? (
+            <DiffView request={diffTab} />
+          ) : active ? (
             <div className="flex h-full min-h-0 flex-col">
               {active.truncated ? (
                 <div className="border-b border-warn/30 bg-warn/10 px-3 py-1 text-[11px] text-warn">
@@ -482,7 +567,7 @@ export function EditorMode() {
             ref={vimStatusRef}
             className={cn(
               "absolute bottom-0 left-0 right-0 z-10 border-t border-edge bg-surface-1 px-2 py-0.5 font-mono text-[11px] text-ink-muted empty:hidden",
-              keymap !== "vim" && "hidden",
+              (diffActive || keymap !== "vim") && "hidden",
             )}
           />
         </div>

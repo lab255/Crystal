@@ -14,10 +14,26 @@ import { useCrystal, useWorkspaces } from "./provider.js";
 
 export type RefSnapshotNeed = "summary" | "overview" | "surfaces";
 export type RefSnapshot = BridgeMethods["codemap.snapshotAtRef"]["result"];
+export type RefReviewDirection = "worktree" | "of-ref";
+export type RefReviewFile =
+  | RefSnapshot["changedFiles"][number]
+  | { path: string; status: "changed" };
+
+export interface ActiveRefReview {
+  ref: string;
+  commit: string | null;
+  files: RefReviewFile[];
+  fileDirection: RefReviewDirection;
+  setFileDirection: (direction: RefReviewDirection) => void;
+  filesLoading: boolean;
+  filesError: string | null;
+  /** Open this review's ref-vs-worktree textual diff. */
+  openDiff: (path: string) => void;
+}
 
 export interface RefReviewState {
   /** The running review (param + resolved commit), or null when idle. */
-  active: { ref: string; commit: string | null } | null;
+  active: ActiveRefReview | null;
   /** The base-side bundle, present once resolved (holds the last value across refreshes). */
   snapshot: RefSnapshot | null;
   loading: boolean;
@@ -44,6 +60,11 @@ export function useRefReview(opts: {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const generation = useRef(0);
+  const [fileDirection, setFileDirection] = useState<RefReviewDirection>("worktree");
+  const [ofRefFiles, setOfRefFiles] = useState<RefReviewFile[]>([]);
+  const [ofRefLoading, setOfRefLoading] = useState(false);
+  const [ofRefError, setOfRefError] = useState<string | null>(null);
+  const ofRefGeneration = useRef(0);
 
   // `need` is order-insensitive identity; a re-created array must not refetch.
   const needKey = [...opts.need].sort().join("+");
@@ -81,6 +102,14 @@ export function useRefReview(opts: {
     fetchSnapshot();
   }, [fetchSnapshot]);
 
+  useEffect(() => {
+    setFileDirection("worktree");
+    setOfRefFiles([]);
+    setOfRefError(null);
+    setOfRefLoading(false);
+    ofRefGeneration.current += 1;
+  }, [ref]);
+
   // The worktree half of the diff moves with every edit — refresh the
   // changed-file resolution (the ref side is LRU-cached per commit).
   useEffect(() => {
@@ -90,12 +119,84 @@ export function useRefReview(opts: {
     });
   }, [client, ref, activeWs, fetchSnapshot]);
 
+  useEffect(() => {
+    const gen = ++ofRefGeneration.current;
+    if (!ref || !activeWs || fileDirection !== "of-ref") {
+      setOfRefLoading(false);
+      return;
+    }
+    setOfRefLoading(true);
+    setOfRefError(null);
+    client
+      .request("git.changedFiles", {
+        scope: "base",
+        ofRef: ref,
+        ...(repoPath ? { repoPath } : {}),
+      })
+      .then(({ files }) => {
+        if (ofRefGeneration.current !== gen) return;
+        // This bridge path deliberately returns names only. "changed" is an
+        // honest status; guessing add/delete from a name would mislead review.
+        setOfRefFiles(files.map((path) => ({ path, status: "changed" as const })));
+        setOfRefLoading(false);
+      })
+      .catch((err: Error) => {
+        if (ofRefGeneration.current !== gen) return;
+        setOfRefFiles([]);
+        setOfRefLoading(false);
+        setOfRefError(err.message);
+      });
+  }, [client, ref, activeWs, fileDirection, repoPath]);
+
   const start = useCallback((next: string) => setParam(next.trim() || null), [setParam]);
   const exit = useCallback(() => setParam(null), [setParam]);
 
+  const openDiff = useCallback(
+    (path: string) => {
+      if (!ref) return;
+      const request = { path, ref, ...(repoPath ? { repoPath } : {}) };
+      try {
+        sessionStorage.setItem(
+          "crystal.pendingOpenDiff",
+          JSON.stringify({ request, ws: activeWs ?? undefined }),
+        );
+      } catch {
+        /* storage unavailable — the live listener still works */
+      }
+      // The shell already owns this event as the cross-mode path to `code`.
+      // An empty detail switches modes without creating a normal file tab.
+      window.dispatchEvent(new CustomEvent("crystal:open-file", { detail: {} }));
+      window.dispatchEvent(new CustomEvent("crystal:open-diff", { detail: request }));
+    },
+    [ref, repoPath, activeWs],
+  );
+
   const active = useMemo(
-    () => (ref ? { ref, commit: snapshot?.commit ?? null } : null),
-    [ref, snapshot?.commit],
+    () =>
+      ref
+        ? {
+            ref,
+            commit: snapshot?.commit ?? null,
+            files:
+              fileDirection === "worktree" ? (snapshot?.changedFiles ?? []) : ofRefFiles,
+            fileDirection,
+            setFileDirection,
+            filesLoading: fileDirection === "worktree" ? loading : ofRefLoading,
+            filesError: fileDirection === "worktree" ? null : ofRefError,
+            openDiff,
+          }
+        : null,
+    [
+      ref,
+      snapshot?.commit,
+      snapshot?.changedFiles,
+      fileDirection,
+      ofRefFiles,
+      loading,
+      ofRefLoading,
+      ofRefError,
+      openDiff,
+    ],
   );
 
   return { active, snapshot: ref ? snapshot : null, loading, error, start, exit };

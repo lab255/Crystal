@@ -1,5 +1,7 @@
+import { useCallback, useEffect, useState } from "react";
 import { ArrowRight, GitCompareArrows, X } from "lucide-react";
-import type { SystemOverviewDiff } from "@crystal/core";
+import type { ChangedRefFile, SystemOverviewDiff } from "@crystal/core";
+import { useCrystal } from "@crystal/client";
 import { Button, EmptyState, Tooltip, cn } from "@crystal/ui";
 
 /**
@@ -23,6 +25,51 @@ export function DiffPanel({
   onSelectEdge: (key: string) => void;
   onClose: () => void;
 }) {
+  const { client } = useCrystal();
+  const [changedFiles, setChangedFiles] = useState<ChangedRefFile[]>([]);
+  const [filesLoading, setFilesLoading] = useState(true);
+  const [filesError, setFilesError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let current = true;
+    setChangedFiles([]);
+    setFilesLoading(true);
+    setFilesError(null);
+    client
+      .request("codemap.snapshotAtRef", { ref: vsRef, need: ["overview"] })
+      .then((snapshot) => {
+        if (!current) return;
+        setChangedFiles(snapshot.changedFiles);
+        setFilesLoading(false);
+      })
+      .catch((error: Error) => {
+        if (!current) return;
+        setChangedFiles([]);
+        setFilesLoading(false);
+        setFilesError(error.message);
+      });
+    return () => {
+      current = false;
+    };
+  }, [client, vsRef]);
+
+  const openFileDiff = useCallback(
+    (path: string) => {
+      const request = { path, ref: vsRef };
+      try {
+        sessionStorage.setItem(
+          "crystal.pendingOpenDiff",
+          JSON.stringify({ request, ws: client.scope ?? undefined }),
+        );
+      } catch {
+        /* storage unavailable — the live listener still works */
+      }
+      window.dispatchEvent(new CustomEvent("crystal:open-file", { detail: {} }));
+      window.dispatchEvent(new CustomEvent("crystal:open-diff", { detail: request }));
+    },
+    [client, vsRef],
+  );
+
   const section = (title: string, tone: "ok" | "danger" | "warn", count: number) =>
     count > 0 ? (
       <div className="flex items-center justify-between px-1.5 pb-1 pt-3 first:pt-1">
@@ -80,6 +127,20 @@ export function DiffPanel({
         </Button>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-1.5">
+        {section("Changed files", "warn", changedFiles.length)}
+        {changedFiles.map((file) =>
+          row(
+            `file:${file.path}`,
+            <span className="font-mono">{file.path}</span>,
+            () => openFileDiff(file.path),
+            `${file.status === "added" ? "A" : file.status === "deleted" ? "D" : "M"} · View diff`,
+          ),
+        )}
+        {filesLoading ? (
+          <div className="px-2 py-1 text-[10px] text-ink-faint">Loading changed files…</div>
+        ) : filesError ? (
+          <div className="px-2 py-1 text-[10px] text-danger">{filesError}</div>
+        ) : null}
         {empty ? (
           <EmptyState title="No structural drift">
             The architecture at {vsRef} matches the working tree — same systems, same
