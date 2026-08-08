@@ -2,11 +2,14 @@ import { useEffect, useState } from "react";
 import { Bot, FolderPlus, Inbox, LayoutGrid, Unplug } from "lucide-react";
 import type { OverviewViewId } from "@crystal/core";
 import { useFleetConnections, useHub, useNav, useNavUpdate } from "@crystal/client";
-import { Button, EmptyState, Input, cn } from "@crystal/ui";
+import { Button, EmptyState, Input, Tooltip, cn } from "@crystal/ui";
 import { CoordinatorChat, QuestionsView } from "@crystal/hub";
 import { OpenWorkspaceDialog } from "../OpenWorkspaceDialog.js";
 import { FleetPulse } from "./FleetPulse.js";
 import { WorkspaceCard } from "./WorkspaceCard.js";
+import { attentionLegendText } from "../shell-labels.js";
+
+const ATTENTION_LEGEND = attentionLegendText();
 
 /**
  * The Overview — mission control. Three faces on one cross-project level:
@@ -103,6 +106,14 @@ function Dashboard() {
                 ? "Every workspace across your connected bridges — traffic lights, agents and todos in one place."
                 : "Every workspace on this bridge — traffic lights, agents and todos in one place."}
             </p>
+            <Tooltip content={ATTENTION_LEGEND} side="bottom">
+              <button
+                type="button"
+                className="mt-1 text-[10px] text-ink-faint underline decoration-dotted underline-offset-2 hover:text-ink-muted"
+              >
+                What do the colors mean?
+              </button>
+            </Tooltip>
           </div>
           <Button
             variant="ghost"

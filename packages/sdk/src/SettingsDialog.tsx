@@ -16,12 +16,16 @@ import { Dialog, DialogContent, Input, Spinner, Switch, cn } from "@crystal/ui";
  * Everything applies immediately; there is no save step. Workspace-scoped
  * configuration lives with its feature, not here.
  */
+export type SettingsSection = "publish";
+
 export function SettingsDialog({
   open,
   onOpenChange,
+  section,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  section?: SettingsSection;
 }) {
   const theme = useSettings((s) => s.theme);
   const enterToSend = useSettings((s) => s.enterToSend);
@@ -30,10 +34,20 @@ export function SettingsDialog({
   const notifyWorkflowPaused = useSettings((s) => s.notifyWorkflowPaused);
   const set = useSettings((s) => s.set);
 
+  useEffect(() => {
+    if (!open || section !== "publish") return;
+    const frame = requestAnimationFrame(() => {
+      const target = document.getElementById("crystal-settings-publish");
+      target?.scrollIntoView({ block: "nearest" });
+      target?.focus({ preventScroll: true });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [open, section]);
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent title="Settings" className="w-[440px]">
-        <div className="flex flex-col gap-5 p-4">
+        <div className="flex max-h-[70vh] flex-col gap-5 overflow-y-auto p-4">
           <Section label="Appearance">
             <Segmented<ThemePreference>
               value={theme}
@@ -88,6 +102,7 @@ export function SettingsDialog({
           </Section>
 
           <Section
+            id="crystal-settings-publish"
             label="Publish server"
             hint="Relays this bridge through Cloudflare so other devices (and teammates, later) can reach it. Password required; attempts are rate-limited at the relay."
           >
@@ -100,16 +115,22 @@ export function SettingsDialog({
 }
 
 function Section({
+  id,
   label,
   hint,
   children,
 }: {
+  id?: string;
   label: string;
   hint?: string;
   children: React.ReactNode;
 }) {
   return (
-    <div className="flex flex-col gap-1.5">
+    <div
+      id={id}
+      tabIndex={id ? -1 : undefined}
+      className="flex flex-col gap-1.5 focus:outline-none"
+    >
       <div className="text-[11px] font-medium uppercase tracking-wide text-ink-faint">{label}</div>
       {children}
       {hint ? <div className="text-[11px] text-ink-faint">{hint}</div> : null}

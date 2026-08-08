@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   AppWindow,
+  BookmarkPlus,
   BookOpenText,
   Bot,
   Boxes,
@@ -15,9 +16,11 @@ import {
   FlaskConical,
   Folder,
   FolderPlus,
+  GitCompareArrows,
   Globe2,
   History,
   KanbanSquare,
+  Keyboard,
   Layers,
   ListTodo,
   Network,
@@ -27,9 +30,12 @@ import {
   SunMoon,
   Target,
   Sparkles,
+  Share2,
   TerminalSquare,
+  Telescope,
   Umbrella,
   Webhook,
+  XCircle,
   type LucideIcon,
 } from "lucide-react";
 import {
@@ -50,6 +56,8 @@ import {
   useCrystal,
   useFleet,
   useFleetConnections,
+  useLens,
+  useNav,
   useNavUpdate,
   useWorkspace,
   useWorkspaces,
@@ -57,12 +65,20 @@ import {
 } from "@crystal/client";
 import { CommandList, Dialog, DialogContent, Kbd } from "@crystal/ui";
 import {
+  CAPABILITY_EVENTS,
+  NEW_WORKFLOW_NAV,
+  paletteCapabilities,
+  type PaletteCapabilityAction,
+  type PaletteCapabilityIcon,
+} from "./capabilities.js";
+import {
   CRYSTAL_MODES,
   MODE_ICONS,
   MODE_LABELS,
   modeShortcutDigit,
   type CrystalMode,
 } from "./modes.js";
+import { SHELL_SHORTCUTS, shortcutHint, workspaceShortcutHint } from "./shortcuts.js";
 
 /** Command-palette icon per orchestrate tab (mirrors the tab strip). */
 const ORCHESTRATE_TAB_ICONS: Record<OrchestratorTabId, LucideIcon> = {
@@ -82,6 +98,17 @@ const TASK_ATTENTION_ICONS: Record<TaskAttentionGroup, LucideIcon> = {
   in_progress: CircleDot,
   backlog: ListTodo,
   done: CircleCheck,
+};
+
+const CAPABILITY_ICONS: Record<PaletteCapabilityIcon, LucideIcon> = {
+  review: GitCompareArrows,
+  lens: Telescope,
+  clear: XCircle,
+  save: BookmarkPlus,
+  publish: Share2,
+  workspace: FolderPlus,
+  workflow: Network,
+  keyboard: Keyboard,
 };
 
 export interface Command {
@@ -119,12 +146,14 @@ export function CommandPalette({
   onSwitchMode,
   onSelectWorkspace,
   onOpenSettings,
+  onOpenShortcuts,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSwitchMode: (mode: CrystalMode) => void;
   onSelectWorkspace: (id: string) => void;
-  onOpenSettings?: () => void;
+  onOpenSettings?: (section?: "publish") => void;
+  onOpenShortcuts?: () => void;
 }) {
   const createArchitecture = useWorkspace((s) => s.createArchitecture);
   const createProject = useWorkspace((s) => s.createProject);
@@ -134,6 +163,9 @@ export function CommandPalette({
   const workspaces = useWorkspaces((s) => s.workspaces);
   const recents = useWorkspaces((s) => s.recents);
   const activeWsId = useWorkspaces((s) => s.activeId);
+  const lensActive = useNav((l) => l.lens != null);
+  const lensSpec = useLens((s) => s.spec);
+  const canSaveLens = lensActive && lensSpec !== null && lensSpec.kind !== "facet";
   const openWorkspace = useWorkspaces((s) => s.openWorkspace);
   const { activeSid, selectWorkspace } = useCrystal();
   const connections = useFleetConnections();
@@ -198,6 +230,26 @@ export function CommandPalette({
 
   const commands: Command[] = useMemo(() => {
     const openRoots = new Set(workspaces.map((w) => w.root));
+    const runCapability = (action: PaletteCapabilityAction): void => {
+      if (action === "review-ref") {
+        window.dispatchEvent(new CustomEvent(CAPABILITY_EVENTS.reviewRef));
+      } else if (action === "set-base-lens") {
+        window.dispatchEvent(new CustomEvent(CAPABILITY_EVENTS.setBaseLens));
+      } else if (action === "clear-lens") {
+        window.dispatchEvent(new CustomEvent(CAPABILITY_EVENTS.clearLens));
+      } else if (action === "save-lens") {
+        window.dispatchEvent(new CustomEvent(CAPABILITY_EVENTS.saveLens));
+      } else if (action === "publish-settings") {
+        onOpenSettings?.("publish");
+      } else if (action === "open-workspace") {
+        window.dispatchEvent(new CustomEvent("crystal:open-workspace"));
+      } else if (action === "new-workflow") {
+        onSwitchMode("orchestrate");
+        nav(NEW_WORKFLOW_NAV);
+      } else {
+        onOpenShortcuts?.();
+      }
+    };
     return [
       // Workspaces are the top level: switching and reopening come first.
       ...workspaces
@@ -207,7 +259,7 @@ export function CommandPalette({
           id: `ws.switch.${w.id}`,
           title: `Switch to workspace: ${w.name}`,
           icon: Folder,
-          hint: i < 9 ? `Ctrl+Alt+${i + 1}` : undefined,
+          hint: workspaceShortcutHint(i),
           run: () => onSelectWorkspace(w.id),
         })),
       ...recents
@@ -218,12 +270,16 @@ export function CommandPalette({
           icon: History,
           run: () => void openWorkspace(r.root),
         })),
-      {
-        id: "ws.open",
-        title: "Open workspace…",
-        icon: FolderPlus,
-        run: () => window.dispatchEvent(new CustomEvent("crystal:open-workspace")),
-      },
+      ...paletteCapabilities(canSaveLens).map((capability) => ({
+        id: capability.id,
+        title: capability.title,
+        icon: CAPABILITY_ICONS[capability.icon],
+        hint:
+          capability.action === "keyboard-shortcuts"
+            ? shortcutHint(SHELL_SHORTCUTS.cheatSheet)
+            : undefined,
+        run: () => runCapability(capability.action),
+      })),
       // One entry per mode, straight from the registry — the rail derives its
       // Ctrl+N shortcuts the same way, so inserting a mode can never leave the
       // palette advertising the wrong key.
@@ -433,6 +489,7 @@ export function CommandPalette({
     ];
   }, [
     onOpenSettings,
+    onOpenShortcuts,
     onSwitchMode,
     onSelectWorkspace,
     createArchitecture,
@@ -445,6 +502,7 @@ export function CommandPalette({
     workspaces,
     recents,
     activeWsId,
+    canSaveLens,
     openWorkspace,
   ]);
 
