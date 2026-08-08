@@ -40,18 +40,24 @@ export interface AgentState {
 export type AgentStore = StoreApi<AgentState>;
 
 export function createAgentStore(client: BridgeClient): AgentStore {
+  let refreshEpoch = 0;
   const store = createStore<AgentState>((set, get) => ({
     runs: [],
     eventsByRun: {},
     auth: { broken: false, detail: null },
 
     async refresh() {
+      const ws = client.scope;
+      const myEpoch = ++refreshEpoch;
       const { runs, auth } = await client.request("agent.list", {});
+      if (refreshEpoch !== myEpoch || client.scope !== ws) return;
       set({ runs, auth: auth ?? { broken: false, detail: null } });
     },
 
     async start(input) {
+      const ws = client.scope;
       const { run } = await client.request("agent.start", input);
+      if (client.scope !== ws) return run;
       set((s) => ({
         runs: [run, ...s.runs.filter((r) => r.id !== run.id)],
         eventsByRun: { ...s.eventsByRun, [run.id]: s.eventsByRun[run.id] ?? [] },

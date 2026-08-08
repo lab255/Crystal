@@ -4,9 +4,24 @@ import { createWorkspaceFacet } from "@crystal/core";
 import { createLensStore } from "./lens-store.js";
 import type { BridgeClient } from "./bridge-client.js";
 
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve(value: T): void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 /** A BridgeClient stub answering only the methods lens resolution uses. */
 function stubClient(handlers: {
-  [M in keyof BridgeMethods]?: (params: BridgeMethods[M]["params"]) => BridgeMethods[M]["result"];
+  [M in keyof BridgeMethods]?: (
+    params: BridgeMethods[M]["params"],
+  ) => BridgeMethods[M]["result"] | Promise<BridgeMethods[M]["result"]>;
 }): BridgeClient {
   return {
     request: vi.fn(async (method: string, params: unknown) => {
@@ -136,5 +151,27 @@ describe("lens store", () => {
     await store.getState().saveFacet("ws1", facet);
     expect(store.getState().facets).toEqual([facet]);
     expect(saved[0]).toMatchObject({ ws: "ws1", facets: [facet] });
+  });
+
+  it("does not let a stale workspace facet load replace the active cache", async () => {
+    const a = deferred<BridgeMethods["facets.get"]["result"]>();
+    const b = deferred<BridgeMethods["facets.get"]["result"]>();
+    const facetA = createWorkspaceFacet("Workspace A", { kind: "tags", tags: ["intent:a"] });
+    const facetB = createWorkspaceFacet("Workspace B", { kind: "tags", tags: ["intent:b"] });
+    const store = createLensStore(
+      stubClient({
+        "facets.get": ({ ws }) => (ws === "a" ? a.promise : b.promise),
+      }),
+    );
+
+    const loadA = store.getState().loadFacets("a");
+    const loadB = store.getState().loadFacets("b");
+    b.resolve({ facets: [facetB] });
+    await loadB;
+    a.resolve({ facets: [facetA] });
+    await loadA;
+
+    expect(store.getState().facetsWs).toBe("b");
+    expect(store.getState().facets).toEqual([facetB]);
   });
 });
