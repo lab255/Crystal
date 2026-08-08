@@ -1749,7 +1749,7 @@ export class CodeMapAnalyzer {
       const dirModules = synthesizeDirModules(files.map((f) => f.rel));
       if (dirModules.length > 0) {
         const dirPaths = dirModules.map((m) => m.path);
-        moduleDirs.push(...dirModules.map((m) => ({ ...m, fileCount: 0 })));
+        moduleDirs.push(...dirModules.map((m) => ({ ...m, fileCount: 0, synthetic: true })));
         files = files.map((f) => ({ ...f, module: dirModuleOwner(f.rel, dirPaths) }));
       }
     }

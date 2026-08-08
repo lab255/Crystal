@@ -135,7 +135,7 @@ describe("deriveC4Model", () => {
     expect(model.containerOfSystem["sys:model"]).toBe("ctr:apps-server");
   });
 
-  it("falls back to layer containers for a single-package repo", () => {
+  it("falls back to one app container for a single-package repo", () => {
     const model = deriveC4Model({
       overview: overview([
         system({ id: "sys:pages", name: "Pages", layer: "frontend", parts: [{ path: "src/pages", pkg: ".", fileCount: 5 }] }),
@@ -144,9 +144,63 @@ describe("deriveC4Model", () => {
       externals: [],
       modules: [{ path: ".", name: "app", fileCount: 12 }],
     });
-    expect(model.containers.map((c) => c.id).sort()).toEqual(["ctr:app", "ctr:web"]);
-    expect(model.containerOfSystem["sys:pages"]).toBe("ctr:web");
+    expect(model.containers.map((c) => c.id)).toEqual(["ctr:app"]);
+    expect(model.containers[0]).toMatchObject({ name: "app", variant: "web", modulePath: "." });
+    expect(model.containerOfSystem["sys:pages"]).toBe("ctr:app");
     expect(model.containerOfSystem["sys:logic"]).toBe("ctr:app");
+    expect(model.containerOfModule["."]).toBe("ctr:app");
+  });
+
+  it("never lets synthetic dir modules seed containers", () => {
+    // A single-package SPA: dir modules synthesized per folder, screens
+    // spread across them — every folder used to become its own "web app".
+    const model = deriveC4Model({
+      overview: overview(
+        [
+          system({ id: "sys:components", name: "Components", layer: "frontend", parts: [{ path: "src/components", pkg: "src/components", fileCount: 13 }] }),
+          system({ id: "sys:geometry", name: "Geometry", parts: [{ path: "src/geometry", pkg: "src/geometry", fileCount: 15 }] }),
+          system({ id: "sys:sim", name: "Sim", parts: [{ path: "src/sim", pkg: "src/sim", fileCount: 2 }] }),
+        ],
+        [{ source: "sys:components", target: "sys:geometry", weight: 8, symbols: ["mesh"] }],
+      ),
+      externals: [],
+      modules: [
+        { path: ".", name: "inventor", fileCount: 90 },
+        { path: "src/components", name: "components", fileCount: 13, synthetic: true },
+        { path: "src/geometry", name: "geometry", fileCount: 15, synthetic: true },
+        { path: "src/sim", name: "sim", fileCount: 2, synthetic: true },
+      ],
+      deps: [{ source: "src/components", target: "src/geometry", weight: 8 }],
+      screens: [{ id: "scr:main", route: "/", file: "src/components/App.tsx" }] as never,
+    });
+    expect(model.containers.map((c) => c.id)).toEqual(["ctr:app"]);
+    expect(model.containers[0]).toMatchObject({ name: "inventor", variant: "web" });
+    expect(new Set(Object.values(model.containerOfSystem))).toEqual(new Set(["ctr:app"]));
+    expect(model.containerOfModule["src/geometry"]).toBe("ctr:app");
+  });
+
+  it("attributes screens to their owning container", () => {
+    const model = deriveC4Model({
+      ...INPUT,
+      screens: [
+        { id: "scr:home", route: "/", file: "apps/web/src/Home.tsx" },
+        { id: "scr:about", route: "/about", file: "apps/web/src/About.tsx" },
+      ] as never,
+    });
+    const web = model.containers.find((c) => c.id === "ctr:apps-web")!;
+    expect(web.screenCount).toBe(2);
+    expect(model.containers.find((c) => c.id === "ctr:apps-server")!.screenCount).toBe(0);
+  });
+
+  it("marks a seedless library repo as shared library code", () => {
+    const model = deriveC4Model({
+      overview: overview([
+        system({ id: "sys:utils", name: "Utils", role: "shared", parts: [{ path: "src/utils", pkg: ".", fileCount: 9 }] }),
+      ]),
+      externals: [],
+      modules: [{ path: ".", name: "lib", fileCount: 9 }],
+    });
+    expect(model.containers.map((c) => c.variant)).toEqual(["shared"]);
   });
 });
 

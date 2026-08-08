@@ -1,0 +1,392 @@
+{
+  "crystal": 1,
+  "kind": "arch-overlay",
+  "data": {
+    "overrides": {
+      "sys:api": {
+        "placements": {
+          "env_4e6d8d5974e3": {
+            "target": "database",
+            "runtime": ""
+          }
+        }
+      },
+      "sys:core": {
+        "placements": {
+          "env_4e6d8d5974e3": {
+            "target": "database",
+            "runtime": ""
+          }
+        }
+      },
+      "sys:architect": {
+        "placements": {
+          "env_4e6d8d5974e3": {
+            "target": "ecs",
+            "runtime": ""
+          }
+        }
+      },
+      "sys:client": {
+        "placements": {
+          "env_4e6d8d5974e3": {
+            "target": "ecs",
+            "runtime": ""
+          }
+        }
+      },
+      "sys:ui": {
+        "placements": {
+          "env_4e6d8d5974e3": {
+            "target": "ecs",
+            "runtime": ""
+          }
+        }
+      },
+      "sys:orchestrator": {
+        "placements": {
+          "env_4e6d8d5974e3": {
+            "target": "database",
+            "runtime": ""
+          }
+        }
+      },
+      "sys:sdk": {
+        "placements": {
+          "env_4e6d8d5974e3": {
+            "target": "database",
+            "runtime": ""
+          }
+        }
+      },
+      "sys:editor": {
+        "placements": {
+          "env_4e6d8d5974e3": {
+            "target": "ecs",
+            "runtime": ""
+          }
+        }
+      },
+      "sys:web": {
+        "placements": {
+          "env_4e6d8d5974e3": {
+            "target": "cdn",
+            "runtime": ""
+          }
+        }
+      }
+    },
+    "manualNodes": [
+      {
+        "id": "node_c687f5e095fb",
+        "kind": "group",
+        "label": "apps/",
+        "description": "",
+        "parentId": null,
+        "position": {
+          "x": 10670,
+          "y": 789.5
+        },
+        "size": {
+          "width": 264,
+          "height": 292
+        },
+        "tech": [],
+        "placements": {}
+      },
+      {
+        "id": "node_ee44861d5f2a",
+        "kind": "group",
+        "label": "packages/",
+        "description": "",
+        "parentId": null,
+        "position": {
+          "x": 10982,
+          "y": 662
+        },
+        "size": {
+          "width": 1134,
+          "height": 547
+        },
+        "tech": [],
+        "placements": {}
+      }
+    ],
+    "manualEdges": [
+      {
+        "id": "edge_0f80ef031711",
+        "source": "sys:api",
+        "target": "sys:core",
+        "kind": "dependency",
+        "label": "×20"
+      },
+      {
+        "id": "edge_88e63cfc26d1",
+        "source": "sys:web",
+        "target": "sys:sdk",
+        "kind": "dependency",
+        "label": "×1"
+      },
+      {
+        "id": "edge_fb118277064f",
+        "source": "sys:architect",
+        "target": "sys:core",
+        "kind": "dependency",
+        "label": "×55"
+      },
+      {
+        "id": "edge_a3ada29426e3",
+        "source": "sys:architect",
+        "target": "sys:client",
+        "kind": "dependency",
+        "label": "×16"
+      },
+      {
+        "id": "edge_8dcb0966c323",
+        "source": "sys:architect",
+        "target": "sys:ui",
+        "kind": "dependency",
+        "label": "×27"
+      },
+      {
+        "id": "edge_d0d3fd939a3b",
+        "source": "sys:client",
+        "target": "sys:core",
+        "kind": "dependency",
+        "label": "×10"
+      },
+      {
+        "id": "edge_d615560eecfc",
+        "source": "sys:editor",
+        "target": "sys:client",
+        "kind": "dependency",
+        "label": "×3"
+      },
+      {
+        "id": "edge_c3398daf9c1b",
+        "source": "sys:editor",
+        "target": "sys:ui",
+        "kind": "dependency",
+        "label": "×3"
+      },
+      {
+        "id": "edge_a55387d423e2",
+        "source": "sys:editor",
+        "target": "sys:core",
+        "kind": "dependency",
+        "label": "×2"
+      },
+      {
+        "id": "edge_3dd6797c6c05",
+        "source": "sys:orchestrator",
+        "target": "sys:core",
+        "kind": "dependency",
+        "label": "×7"
+      },
+      {
+        "id": "edge_1bc99ce59804",
+        "source": "sys:orchestrator",
+        "target": "sys:client",
+        "kind": "dependency",
+        "label": "×5"
+      },
+      {
+        "id": "edge_1348a566b326",
+        "source": "sys:orchestrator",
+        "target": "sys:ui",
+        "kind": "dependency",
+        "label": "×6"
+      },
+      {
+        "id": "edge_fe0ad95c0a42",
+        "source": "sys:sdk",
+        "target": "sys:client",
+        "kind": "dependency",
+        "label": "×14"
+      },
+      {
+        "id": "edge_e1ed0b99c188",
+        "source": "sys:sdk",
+        "target": "sys:ui",
+        "kind": "dependency",
+        "label": "×11"
+      },
+      {
+        "id": "edge_8c63fd0be2c3",
+        "source": "sys:sdk",
+        "target": "sys:core",
+        "kind": "dependency",
+        "label": "×11"
+      },
+      {
+        "id": "edge_268f1ffdcd89",
+        "source": "sys:sdk",
+        "target": "sys:architect",
+        "kind": "dependency",
+        "label": "×2"
+      },
+      {
+        "id": "edge_8c35127bd8b9",
+        "source": "sys:sdk",
+        "target": "sys:orchestrator",
+        "kind": "dependency",
+        "label": "×1"
+      },
+      {
+        "id": "edge_39ef9b1d701a",
+        "source": "sys:sdk",
+        "target": "sys:editor",
+        "kind": "dependency",
+        "label": "×1"
+      },
+      {
+        "id": "edge_306246ac6574",
+        "source": "sys:payments",
+        "target": "sys:shared-ledgerline",
+        "kind": "dependency",
+        "label": "×3"
+      },
+      {
+        "id": "edge_0891db66aafe",
+        "source": "sys:api@examples-ledgerline-server",
+        "target": "sys:shared-ledgerline",
+        "kind": "dependency",
+        "label": "×6"
+      },
+      {
+        "id": "edge_29099a70770e",
+        "source": "sys:api@examples-ledgerline-server",
+        "target": "sys:jobs@examples-ledgerline-worker",
+        "kind": "dependency",
+        "label": "×1"
+      },
+      {
+        "id": "edge_e1a064c8b285",
+        "source": "sys:jobs@examples-ledgerline-worker",
+        "target": "sys:shared-ledgerline",
+        "kind": "dependency",
+        "label": "×3"
+      }
+    ],
+    "hiddenIds": [],
+    "hiddenEdgeIds": [],
+    "environments": [
+      {
+        "id": "env_4e6d8d5974e3",
+        "name": "Local",
+        "kind": "local"
+      }
+    ],
+    "journeys": [
+      {
+        "id": "journey_d839c3b58ed4",
+        "name": "SurveySection",
+        "description": "",
+        "entry": {
+          "file": "packages/architect/src/SurveyPanel.tsx",
+          "symbol": "SurveySection"
+        }
+      },
+      {
+        "id": "journey_b90a03940601",
+        "name": "Board",
+        "description": "",
+        "entry": {
+          "file": "packages/orchestrator/src/Board.tsx",
+          "symbol": "Board"
+        }
+      }
+    ],
+    "facets": [
+      {
+        "id": "facet:diagram:.crystal/architecture/crystal.json",
+        "name": "Crystal",
+        "description": "",
+        "nodeIds": [
+          "node_c687f5e095fb",
+          "node_ee44861d5f2a",
+          "sys:api",
+          "sys:web",
+          "sys:architect",
+          "sys:client",
+          "sys:core",
+          "sys:editor",
+          "sys:orchestrator",
+          "sys:sdk",
+          "sys:ui",
+          "sys:driftwood",
+          "sys:jobs",
+          "sys:payments",
+          "sys:api@examples-ledgerline-server",
+          "sys:shared-ledgerline",
+          "sys:jobs@examples-ledgerline-worker"
+        ],
+        "sourcePath": ".crystal/architecture/crystal.json"
+      },
+      {
+        "id": "facet_3489e73776d4",
+        "name": "API surface",
+        "description": "41 tagged symbols across 5 components + 1 shared",
+        "nodeIds": [
+          "sys:api",
+          "sys:architect",
+          "sys:client",
+          "sys:core",
+          "sys:editor",
+          "sys:ui"
+        ],
+        "sourcePath": null
+      },
+      {
+        "id": "facet_10f88677df8a",
+        "name": "Background jobs",
+        "description": "26 tagged symbols across 1 component",
+        "nodeIds": [
+          "sys:architect"
+        ],
+        "sourcePath": null
+      },
+      {
+        "id": "facet_5d22f8bbd441",
+        "name": "Authentication",
+        "description": "12 tagged symbols across 5 components + 1 shared",
+        "nodeIds": [
+          "sys:api",
+          "sys:architect",
+          "sys:core",
+          "sys:orchestrator",
+          "sys:ui",
+          "sys:client"
+        ],
+        "sourcePath": null
+      },
+      {
+        "id": "facet_5e931beb56ae",
+        "name": "Validation",
+        "description": "8 tagged symbols across 2 components",
+        "nodeIds": [
+          "sys:api",
+          "sys:core"
+        ],
+        "sourcePath": null
+      },
+      {
+        "id": "facet_a6615ef6608e",
+        "name": "Observability",
+        "description": "6 tagged symbols across 2 components + 1 shared",
+        "nodeIds": [
+          "sys:api",
+          "sys:architect",
+          "sys:core"
+        ],
+        "sourcePath": null
+      }
+    ],
+    "viewport": {
+      "x": -2164.979274462965,
+      "y": -467.0684233854604,
+      "zoom": 0.6468373573137376
+    },
+    "c4Layouts": {}
+  }
+}

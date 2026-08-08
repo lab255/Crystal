@@ -39,6 +39,14 @@ export interface CodeModule {
    * is what distinguishes them. Optional so cached summaries stay valid.
    */
   versioned?: boolean;
+  /**
+   * True when this module was synthesized from a directory (single-package
+   * workspaces get dir modules so the module graph carries structure). A
+   * synthetic module is a folder of one deployable, never a deployable of
+   * its own — C4 container derivation must not treat it as one. Optional so
+   * cached summaries stay valid; absent means a real package module.
+   */
+  synthetic?: boolean;
 }
 
 export interface CodeModuleDep {

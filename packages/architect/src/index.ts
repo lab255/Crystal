@@ -22,10 +22,3 @@ export {
 } from "./overlay.js";
 export { buildSurveyPrompt, type SurveyKind } from "./survey-prompts.js";
 export { highlightAttrs, hlClass, useViewHighlight } from "./use-highlight.js";
-export {
-  LOD_MIN_TEXT_DEFAULT,
-  LOD_MIN_TEXT_RANGE,
-  fileExpandZoom,
-  moduleExpandZoom,
-  useLodConfig,
-} from "./lod-config.js";

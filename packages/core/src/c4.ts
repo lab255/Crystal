@@ -156,6 +156,8 @@ export interface C4Container {
   /** Owning code-map module (null for the synthetic shared container). */
   modulePath: string | null;
   fileCount: number;
+  /** Screens served from this container's modules (0 when none/unknown). */
+  screenCount: number;
 }
 
 export interface C4Model {
@@ -216,18 +218,25 @@ function aggregateTech(systems: readonly SystemModule[], cap = 4): string[] {
 }
 
 /**
- * Derive the C4 container tier. A module *seeds* a container when it carries a
- * deployable signal: it serves HTTP routes, it owns screens/frontend systems,
+ * Derive the C4 container tier. A *package* module seeds a container when it
+ * carries a deployable signal: it serves HTTP routes, it owns routed screens,
  * or it sits at the top of the module import graph (imports others, imported
- * by none — where apps live in a monorepo). Systems in non-seed modules fold
- * into the single app when there is exactly one, and into the explicit
- * `Shared components` container when several apps would otherwise each claim
- * them — shared code ships inside every one of those apps, and one honest box
- * beats a misleading attribution.
+ * by none — where apps live in a monorepo). Merely owning frontend-layer
+ * systems is NOT a signal — a React component library owns plenty and ships
+ * inside someone else's bundle; it decides the *variant* of a container, not
+ * whether one exists. Systems in non-seed modules fold into the single app
+ * when there is exactly one, and into the explicit `Shared components`
+ * container when several apps would otherwise each claim them — shared code
+ * ships inside every one of those apps, and one honest box beats a
+ * misleading attribution.
  *
- * Repos where nothing seeds (single package, pure library) fall back to the
- * systems' own layers: frontend systems form a web container, the rest an
- * application container — so the container level always exists.
+ * Synthetic dir modules (single-package workspaces get those so the module
+ * graph carries structure) never seed: a folder of one deployable is not a
+ * deployable of its own, and letting them seed turns every screen-owning
+ * directory into its own "web application". Repos where nothing seeds —
+ * single package, monorepo of libraries — get exactly one app container:
+ * that is what C4 means by container, and the structure lives one level
+ * down, at Components.
  */
 export function deriveC4Model(input: C4DeriveInput): C4Model {
   const { overview, externals, modules, deps, screens } = input;
@@ -270,23 +279,23 @@ export function deriveC4Model(input: C4DeriveInput): C4Model {
   const moduleFacts = (m: CodeModule) => {
     const owned = systemsOfModule.get(m.path) ?? [];
     const servesHttp = owned.some((s) => s.endpoints.length > 0);
-    const ownsFrontend =
-      (screensOfModule.get(m.path) ?? 0) > 0 || owned.some((s) => s.layer === "frontend");
+    const ownsScreens = (screensOfModule.get(m.path) ?? 0) > 0;
+    const ownsFrontend = ownsScreens || owned.some((s) => s.layer === "frontend");
     const topOfGraph =
       (deps?.length ?? 0) > 0 &&
       (importedBy.get(m.path) ?? 0) === 0 &&
       (importsOut.get(m.path) ?? 0) > 0;
-    return { owned, servesHttp, ownsFrontend, topOfGraph };
+    return { owned, servesHttp, ownsScreens, ownsFrontend, topOfGraph };
   };
 
-  // The root module never seeds — a single-package repo takes the layer
-  // fallback below, which splits web from server more honestly than one
-  // whole-repo box would.
+  // Only real package modules may seed — the root folds into the app
+  // fallback below, and synthetic dir modules are folders of one deployable,
+  // never deployables of their own.
   const seeds = modules.filter((m) => {
-    if (m.path === ".") return false;
+    if (m.path === "." || m.synthetic) return false;
     const f = moduleFacts(m);
     if (f.owned.length === 0) return false;
-    return f.servesHttp || f.ownsFrontend || f.topOfGraph;
+    return f.servesHttp || f.ownsScreens || f.topOfGraph;
   });
 
   const containers: C4Container[] = [];
@@ -307,6 +316,7 @@ export function deriveC4Model(input: C4DeriveInput): C4Model {
         memberSystemIds: f.owned.map((s) => idOf(s.id)),
         modulePath: m.path,
         fileCount: f.owned.reduce((n, s) => n + s.fileCount, 0),
+        screenCount: 0,
       });
       containerOfModule[m.path] = containerNodeIdOf(m.path);
       for (const s of f.owned) containerOfSystem[idOf(s.id)] = containerNodeIdOf(m.path);
@@ -327,6 +337,7 @@ export function deriveC4Model(input: C4DeriveInput): C4Model {
                 memberSystemIds: [],
                 modulePath: null,
                 fileCount: 0,
+                screenCount: 0,
               };
               containers.push(shared);
               return shared;
@@ -343,55 +354,37 @@ export function deriveC4Model(input: C4DeriveInput): C4Model {
           seeds.length === 1 ? containers[0]!.id : C4_SHARED_CONTAINER_ID;
       }
     }
-  } else {
-    // Layer fallback: the container level must exist even for a single
-    // package with no deployable signals.
-    const frontend = overview.systems.filter((s) => s.layer === "frontend");
-    const backend = overview.systems.filter((s) => s.layer !== "frontend");
-    const mk = (id: string, name: string, variant: C4ContainerVariant, members: SystemModule[]) => {
-      containers.push({
-        id,
-        name,
-        variant,
-        tech: aggregateTech(members),
-        memberSystemIds: members.map((s) => idOf(s.id)),
-        modulePath: null,
-        fileCount: members.reduce((n, s) => n + s.fileCount, 0),
-      });
-      for (const s of members) containerOfSystem[idOf(s.id)] = id;
-    };
-    if (frontend.length > 0 && backend.length > 0) {
-      mk("ctr:web", "Web app", "web", frontend);
-      mk("ctr:app", "Application", "server", backend);
-    } else if (overview.systems.length > 0) {
-      mk(
-        "ctr:app",
-        "Application",
-        frontend.length > 0 ? "web" : "server",
-        overview.systems.slice(),
-      );
-    }
-    const fallback = containers[0]?.id;
-    if (fallback) {
-      for (const m of modules) {
-        // Attribute each module to the container owning most of its systems.
-        const owned = systemsOfModule.get(m.path) ?? [];
-        const counts = new Map<string, number>();
-        for (const s of owned) {
-          const c = containerOfSystem[idOf(s.id)];
-          if (c) counts.set(c, (counts.get(c) ?? 0) + s.fileCount);
-        }
-        let best = fallback;
-        let bestWeight = 0;
-        for (const [c, w] of counts) {
-          if (w > bestWeight) {
-            best = c;
-            bestWeight = w;
-          }
-        }
-        containerOfModule[m.path] = best;
-      }
-    }
+  } else if (overview.systems.length > 0) {
+    // No deployable package seeds — the whole workspace is one runnable unit
+    // (single package, or a monorepo of libraries). One honest app container:
+    // C4 containers are deployables, and this repo has exactly one, whatever
+    // its folder structure looks like. The structure shows at Components.
+    const all = overview.systems;
+    const servesHttp = all.some((s) => s.endpoints.length > 0);
+    const ownsFrontend =
+      (screens?.length ?? 0) > 0 || all.some((s) => s.layer === "frontend");
+    const appRootName = modules.find((m) => m.path === ".")?.name;
+    containers.push({
+      id: "ctr:app",
+      name: appRootName && appRootName !== "." ? appRootName : "Application",
+      variant:
+        servesHttp || ownsFrontend ? variantFor(servesHttp, ownsFrontend) : "shared",
+      tech: aggregateTech(all),
+      memberSystemIds: all.map((s) => idOf(s.id)),
+      modulePath: ".",
+      fileCount: all.reduce((n, s) => n + s.fileCount, 0),
+      screenCount: 0,
+    });
+    for (const s of all) containerOfSystem[idOf(s.id)] = "ctr:app";
+    for (const m of modules) containerOfModule[m.path] = "ctr:app";
+  }
+
+  // Screens attribute to containers through their owning module — the count
+  // rides the container card ("uses the product through its screens" needs a
+  // where) and feeds the surfaces cross-links.
+  for (const [modulePath, count] of screensOfModule) {
+    const home = containers.find((c) => c.id === containerOfModule[modulePath]);
+    if (home) home.screenCount += count;
   }
 
   const hasScreens =
@@ -659,9 +652,13 @@ export function projectC4(input: C4ProjectInput): C4Projection {
       id: c.id,
       kind: "container",
       label: c.name,
-      description: `${c.memberSystemIds.length} component${
-        c.memberSystemIds.length === 1 ? "" : "s"
-      } · ${c.fileCount} files`,
+      description: [
+        `${c.memberSystemIds.length} component${c.memberSystemIds.length === 1 ? "" : "s"}`,
+        `${c.fileCount} files`,
+        ...(c.screenCount > 0
+          ? [`${c.screenCount} screen${c.screenCount === 1 ? "" : "s"}`]
+          : []),
+      ].join(" · "),
       parentId,
       tech: c.tech,
       codeModule: c.modulePath,

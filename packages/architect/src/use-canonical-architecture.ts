@@ -21,8 +21,7 @@ import {
   useWorkspaces,
 } from "@crystal/client";
 import { autoLayoutFitted } from "./layout.js";
-import { estimateModuleFootprint } from "./live-code.js";
-import { buildSystemCardFacts, maxSlot, systemCardSlot } from "./system-card.js";
+import { buildSystemCardFacts, systemCardSlot } from "./system-card.js";
 
 /**
  * The one canonical architecture, as a hook: fetches the overview + code map
@@ -43,6 +42,12 @@ export function useCanonicalArchitecture(options?: {
     calls: readonly ScreenApiCall[];
     endpoints?: boolean;
   } | null;
+  /**
+   * Screens as *information* (container screen counts, surfaces links) even
+   * while the screens layer is off — never adds nodes to the derivation.
+   * The layer's own screens win when both are set.
+   */
+  screens?: readonly ScreenSurface[] | null;
 }): {
   overviewData: SystemOverview | null;
   codeSummary: CodeMapSummary | null;
@@ -55,9 +60,9 @@ export function useCanonicalArchitecture(options?: {
   c4Model: C4Model | null;
   reconciled: ArchOverlay | null;
   /**
-   * Composed + auto-laid-out at reserved LOD footprints; nodes with explicit
-   * x/y overrides keep their own coordinates. This is also the `rendered`
-   * baseline `extractOverlay` diffs drags against.
+   * Composed + auto-laid-out (system cards at their card slots); nodes with
+   * explicit x/y overrides keep their own coordinates. This is also the
+   * `rendered` baseline `extractOverlay` diffs drags against.
    */
   rendered: ArchitectureGraph | null;
   /**
@@ -74,6 +79,7 @@ export function useCanonicalArchitecture(options?: {
   const loadArchOverlay = useWorkspace((s) => s.loadArchOverlay);
   const updateArchOverlay = useWorkspace((s) => s.updateArchOverlay);
   const surfaces = options?.surfaces ?? null;
+  const screensInfo = options?.screens ?? null;
 
   useEffect(() => {
     if (connection === "open") void loadArchOverlay();
@@ -124,10 +130,10 @@ export function useCanonicalArchitecture(options?: {
             externals: codeSummary.externals ?? [],
             modules: codeSummary.modules,
             deps: codeSummary.deps,
-            screens: surfaces?.screens ?? null,
+            screens: surfaces?.screens ?? screensInfo,
           })
         : null,
-    [overviewData, codeSummary, surfaces],
+    [overviewData, codeSummary, surfaces, screensInfo],
   );
   // Fold the fresh derivation through the overlay (drops dead positional
   // overrides, keeps semantic ones as stale). The C4 aggregates count as
@@ -148,21 +154,17 @@ export function useCanonicalArchitecture(options?: {
   const rendered = useMemo(() => {
     if (!derived || !reconciled) return null;
     const composed = composeArchitecture(derived, reconciled);
-    // Reserved LOD footprints, same convention as the canvas's own
-    // auto-layout: each code-linked node is laid out at the size its zoomed
-    // expansion needs — raised to its semantic card body's own height where
-    // the exports/consumes sections need more — so neither zooming into code
-    // nor the card content ever overlaps neighbors.
+    // System cards lay out at their card slots (semantic body height), same
+    // convention as the canvas's own auto-layout — compact by design; a live
+    // code expansion displaces neighbors instead of pre-claiming space.
     const reserve = new Map<string, { width: number; height: number }>();
     if (overviewData) {
       const idOfRaw = canonicalSystemIds(overviewData.systems);
       const cards = buildSystemCardFacts(overviewData);
       for (const s of overviewData.systems) {
         const id = idOfRaw.get(s.id) ?? s.id;
-        const footprint = s.fileCount > 0 ? estimateModuleFootprint(s.fileCount) : undefined;
         const card = cards.get(id);
-        const slot = card ? maxSlot(footprint, systemCardSlot(card)) : footprint;
-        if (slot) reserve.set(id, slot);
+        if (card) reserve.set(id, systemCardSlot(card));
       }
     }
     const laid = autoLayoutFitted(composed, { mode: "flow", reserve });

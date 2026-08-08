@@ -4,7 +4,6 @@ import {
   SYSTEM_CARD_EXPORTS_MAX,
   SYSTEM_CARD_W,
   buildSystemCardFacts,
-  maxSlot,
   systemCardSlot,
 } from "./system-card.js";
 
@@ -117,13 +116,5 @@ describe("systemCardSlot", () => {
     const bare = systemCardSlot(facts.get("sys:bare")!);
     expect(rich.width).toBe(SYSTEM_CARD_W);
     expect(rich.height).toBeGreaterThan(bare.height);
-  });
-
-  it("maxSlot keeps the larger footprint per axis", () => {
-    expect(maxSlot(undefined, { width: 10, height: 20 })).toEqual({ width: 10, height: 20 });
-    expect(maxSlot({ width: 300, height: 96 }, { width: 252, height: 200 })).toEqual({
-      width: 300,
-      height: 200,
-    });
   });
 });

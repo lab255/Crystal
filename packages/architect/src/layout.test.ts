@@ -6,7 +6,13 @@ import {
   type ArchNodeKind,
   type ArchitectureGraph,
 } from "@crystal/core";
-import { autoLayout, fitContainersToChildren, scopeIsFullstack, scopeLayerOf } from "./layout.js";
+import {
+  autoLayout,
+  autoLayoutFitted,
+  fitContainersToChildren,
+  scopeIsFullstack,
+  scopeLayerOf,
+} from "./layout.js";
 
 function node(id: string, kind: ArchNodeKind, patch: Partial<ArchNode> = {}): ArchNode {
   return { ...createArchNode(kind, id, { x: 0, y: 0 }), ...patch, id };
@@ -68,6 +74,38 @@ describe("autoLayout — reserved footprints", () => {
     // size, so LOD growth stays inside the box the layout drew.
     expect(size.width).toBeGreaterThanOrEqual(24 + 840);
     expect(size.height).toBeGreaterThanOrEqual(48 + 620);
+  });
+});
+
+describe("autoLayoutFitted — C4 boundaries", () => {
+  it("fits the C4 system boundary around its containers instead of the minted placeholder", () => {
+    // The projection mints the boundary at 640×420; five reserved-size
+    // containers overflow that badly unless the fit pass owns it.
+    const containers = Array.from({ length: 5 }, (_, i) =>
+      node(`ctr:c${i}`, "container", { parentId: "c4:system", size: null }),
+    );
+    const g = graph([
+      node("c4:system", "system", { size: { width: 640, height: 420 } }),
+      ...containers,
+      node("ext:stripe", "external"),
+    ]);
+    const reserve = new Map(containers.map((c) => [c.id, { width: 300, height: 170 }]));
+    const laid = autoLayoutFitted(g, { mode: "flow", reserve });
+    const boundary = laid.nodes.find((n) => n.id === "c4:system")!;
+    for (const c of containers) {
+      const child = laid.nodes.find((n) => n.id === c.id)!;
+      expect(child.position.x + 300).toBeLessThanOrEqual(boundary.size!.width + 1);
+      expect(child.position.y + 170).toBeLessThanOrEqual(boundary.size!.height + 1);
+    }
+    // The external neighbor clears the fitted boundary, not the placeholder.
+    const ext = laid.nodes.find((n) => n.id === "ext:stripe")!;
+    const overlapsX =
+      ext.position.x < boundary.position.x + boundary.size!.width &&
+      ext.position.x + 200 > boundary.position.x;
+    const overlapsY =
+      ext.position.y < boundary.position.y + boundary.size!.height &&
+      ext.position.y + 84 > boundary.position.y;
+    expect(overlapsX && overlapsY).toBe(false);
   });
 });
 

@@ -83,30 +83,6 @@ function fileImportanceOf(detail: CodeModuleDetail): (f: CodeFileSummary) => num
 }
 
 /**
- * What a collapsed, code-linked block shows at medium zoom: the module's
- * files as chips — all of them, importance-ranked, sized to fit the slot.
- * Pure summary — the reserved slot's geometry never changes, the box just
- * uses its area for information instead of empty space. When fitting every
- * chip would push the words below the legibility threshold, `LeafNode`
- * swaps the same area for the high-level overview instead of truncating.
- */
-export interface BlockPreview {
-  files: { name: string; dir: string; exports: number }[];
-  totalFiles: number;
-  totalExports: number;
-}
-
-export function buildBlockPreview(detail: CodeModuleDetail): BlockPreview {
-  const importance = fileImportanceOf(detail);
-  const ranked = [...detail.files].sort((a, b) => importance(b) - importance(a));
-  return {
-    files: ranked.map((f) => ({ name: f.name, dir: f.dir, exports: f.exportCount })),
-    totalFiles: detail.files.length,
-    totalExports: detail.files.reduce((s, f) => s + f.exportCount, 0),
-  };
-}
-
-/**
  * The files a module's expansion will actually show — the cap winners by the
  * same importance ranking the cap uses. Bulk expansion (the members ladder
  * stop) must expand exactly this set: marking *every* file expanded re-adds
@@ -221,31 +197,6 @@ export function buildCodeContent(input: CodeContentInput): CodeContent {
 /** Module-relative path of a file summary (role heuristics never see the module prefix). */
 function relPathOf(f: CodeFileSummary): string {
   return f.dir ? `${f.dir}/${f.name}` : f.name;
-}
-
-/**
- * Skeletal footprint of a node expanded to module level (capped file cards,
- * collapsed): the space auto-layout reserves up front, so zooming in fills a
- * slot that already exists instead of colliding with neighbors. Deliberately
- * generous — role bands wrap independently, so two spare rows and the band
- * gaps are budgeted; must always contain the actual collapsed-cards packing.
- */
-export function estimateModuleFootprint(fileCount: number): { width: number; height: number } {
-  const cards = Math.min(fileCount, LIVE_FILE_CAP) + (fileCount > LIVE_FILE_CAP ? 1 : 0);
-  const perRow = Math.max(1, Math.floor((MODULE_INNER_MAX_W + GAP) / (FILE_COLLAPSED_W + GAP)));
-  // Worst case: cards spread across every role band (≤5 distinct ranks), each
-  // band wrapping separately — one extra partial row and one gap per band.
-  const bands = Math.min(cards, 5);
-  const rows = Math.ceil(cards / perRow) + (bands - 1);
-  const cols = Math.min(cards, perRow);
-  const width = cols * (FILE_COLLAPSED_W + GAP) - GAP + MODULE_PAD * 2;
-  const height =
-    ARCH_CODE_HEADER_H +
-    rows * (FILE_COLLAPSED_H + GAP) -
-    GAP +
-    (bands - 1) * BAND_GAP_Y +
-    MODULE_PAD;
-  return { width: Math.max(width, 224), height: Math.max(height, 96) };
 }
 
 /** Extra breathing room between role bands, beyond the in-band grid gap. */

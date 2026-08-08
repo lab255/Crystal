@@ -97,10 +97,10 @@ export function buildSystemCardFacts(overview: SystemOverview): Map<string, Syst
   return out;
 }
 
-/* ---- reserved footprint ---- */
+/* ---- card slot ---- */
 
-// The overview body renders at the slot-scaled type of `LeafNode` (label
-// ≈18px at the card width); these allowances are measured against that.
+// The card body renders at the slot-scaled type of `LeafNode` (label
+// ≈17px at the card width); these allowances are measured against that.
 const CARD_BASE_H = 96; // header + role/count line + padding
 const CARD_DESC_H = 32; // two clamped description lines
 const CARD_SECTION_H = 18; // section heading
@@ -109,10 +109,9 @@ const CARD_CONSUMES_H = 34; // wrapped consumes text
 const CARD_FOOT_H = 30; // tech badges / code-link badge allowance
 
 /**
- * Height the semantic card body needs. Reserved-LOD-footprint convention
- * (`layout.ts` `reserve`): a system node is laid out at the larger of its
- * live-code expansion footprint and this card size, so the exports/consumes
- * sections never overflow the box and zooming never reflows the diagram.
+ * Size the semantic card body needs — the `reserve` a system node is laid
+ * out at (`layout.ts`), so the exports/consumes sections never overflow the
+ * box or overlap a neighbor.
  */
 export function systemCardSlot(facts: SystemCardFacts): { width: number; height: number } {
   let h = CARD_BASE_H + CARD_DESC_H;
@@ -121,13 +120,4 @@ export function systemCardSlot(facts: SystemCardFacts): { width: number; height:
   if (facts.consumes.length > 0 || facts.externals.length > 0 || facts.libraries.length > 0)
     h += CARD_SECTION_H + CARD_CONSUMES_H;
   return { width: SYSTEM_CARD_W, height: h + CARD_FOOT_H };
-}
-
-/** Elementwise max of two footprints (module expansion vs semantic card). */
-export function maxSlot(
-  a: { width: number; height: number } | undefined,
-  b: { width: number; height: number },
-): { width: number; height: number } {
-  if (!a) return b;
-  return { width: Math.max(a.width, b.width), height: Math.max(a.height, b.height) };
 }

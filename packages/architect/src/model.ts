@@ -31,7 +31,6 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import type { OverlayBadge } from "./overlay.js";
-import type { BlockPreview } from "./live-code.js";
 import type { SystemCardFacts } from "./system-card.js";
 import { assignLanes, isBusbarScale } from "./edge-routing.js";
 
@@ -94,16 +93,10 @@ export type ArchRfNode = RfNode<{
   code?: OverlayBadge;
   flow?: FlowMark;
   /**
-   * Reserved level-of-detail footprint: the node renders collapsed at the
-   * exact size its live-code expansion will occupy, so detail arriving with
-   * zoom fills a box that never moves or grows.
+   * Card slot: system cards render at the size their semantic body needs
+   * (see `systemCardSlot`), so the body always fits without clipping.
    */
   slot?: { width: number; height: number };
-  /**
-   * Collapsed-block content preview (top files of the linked module) — shown
-   * inside the slot at medium zoom, where a bare title wastes the reserved area.
-   */
-  preview?: BlockPreview;
   /**
    * Semantic system-card body (exports with consumer counts, consumes
    * footer, role) joined from the overview by canonical id — a plain,

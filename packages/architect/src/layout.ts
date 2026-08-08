@@ -90,11 +90,15 @@ export function autoLayout(
   };
 }
 
+/** Derived container ids the layout owns the size of (never user-sized). */
+const FITTED_ID_PREFIXES = ["mod:", "screens:", "routes:", "ctr:", "c4:"];
+
 /**
- * Auto-layout with derived containers (`mod:` module groups, `screens:`
- * groups) fitted to their children: layout → fit → layout again so sibling
- * spacing in the outer scope uses the fitted sizes, not the 420×280 default
- * (a module owning five reserved-footprint systems overflows it badly).
+ * Auto-layout with derived containers (`mod:` module groups, `screens:`/
+ * `routes:` groups, the C4 boundary and container scopes) fitted to their
+ * children: layout → fit → layout again so sibling spacing in the outer
+ * scope uses the fitted sizes, not the projection's placeholder (the C4
+ * boundary is minted at 640×420 — five containers overflow it badly).
  * Child positions are scope-local and deterministic, so the second pass
  * reproduces them and the fitted sizes stay valid.
  */
@@ -103,10 +107,13 @@ export function autoLayoutFitted(
   opts: AutoLayoutOptions = {},
 ): ArchitectureGraph {
   let laid = autoLayout(graph, opts);
+  const hasChildren = new Set(laid.nodes.map((n) => n.parentId).filter(Boolean));
   const derivedContainers = laid.nodes
     .filter(
       (n) =>
-        isContainerKind(n.kind) && (n.id.startsWith("mod:") || n.id.startsWith("screens:")),
+        isContainerKind(n.kind) &&
+        hasChildren.has(n.id) &&
+        FITTED_ID_PREFIXES.some((p) => n.id.startsWith(p)),
     )
     .map((n) => n.id);
   if (derivedContainers.length === 0) return laid;

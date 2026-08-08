@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
-import { AppWindow, ClipboardCheck, Copy, Handshake, History, Layers, LayoutGrid, Lightbulb, Maximize2, Network, Radar, Rows3, Waypoints, X, ZoomIn } from "lucide-react";
+import { AppWindow, ClipboardCheck, Copy, Handshake, History, Layers, LayoutGrid, Lightbulb, Maximize2, Network, Radar, Rows3, Waypoints, X } from "lucide-react";
 import type { ArchEdgeKind, ArchitectureGraph, CodeLodLevel } from "@crystal/core";
 import { Button, Tooltip, cn } from "@crystal/ui";
 import { EDGE_KIND_STYLE } from "./model.js";
 import { LodSlider } from "./codemap/LodSlider.js";
-import { CANVAS_LOD_LEVELS, LOD_MIN_TEXT_RANGE, lodConfigStore, useLodConfig } from "./lod-config.js";
+import { CANVAS_LOD_LEVELS } from "./lod-config.js";
 
 export function Toolbar({
   graph,
@@ -15,8 +15,6 @@ export function Toolbar({
   onAutoLayout,
   onFitView,
   onRename,
-  lodOn,
-  onToggleLod,
   lodLevel,
   onLodLevelChange,
   lodCounts,
@@ -47,8 +45,6 @@ export function Toolbar({
   onAutoLayout: (mode: "flow" | "layers") => void;
   onFitView: () => void;
   onRename: (name: string) => void;
-  lodOn?: boolean;
-  onToggleLod?: (on: boolean) => void;
   /** Explicit detail ladder (packages → modules → members) over the whole canvas. */
   lodLevel?: CodeLodLevel;
   onLodLevelChange?: (level: CodeLodLevel) => void;
@@ -176,25 +172,6 @@ export function Toolbar({
             counts={lodCounts}
             levels={CANVAS_LOD_LEVELS}
           />
-        </>
-      ) : null}
-      {onToggleLod ? (
-        <>
-          <Tooltip content="Dynamic detail — nodes expand into their code as you zoom in, and fold up as you zoom out">
-            <button
-              type="button"
-              aria-pressed={lodOn}
-              onClick={() => onToggleLod(!lodOn)}
-              className={cn(
-                "flex h-6 items-center gap-1.5 rounded-md px-1.5 text-[11px] transition-colors",
-                lodOn ? "bg-crystal-500/20 text-crystal-300" : "text-ink-faint hover:text-ink-muted",
-              )}
-            >
-              <ZoomIn className="h-3.5 w-3.5" />
-              auto
-            </button>
-          </Tooltip>
-          {lodOn ? <LegibilitySlider /> : null}
         </>
       ) : null}
       {onToggleOverlay ? (
@@ -352,33 +329,5 @@ export function Toolbar({
         </Tooltip>
       ) : null}
     </div>
-  );
-}
-
-/**
- * The one level-of-detail knob: the minimum on-screen text height (css px)
- * worth rendering. Chip grids collapse into their overview below it, and
- * zoom-driven expansion thresholds derive from it (see lod-config.ts).
- */
-function LegibilitySlider() {
-  const minTextPx = useLodConfig((s) => s.minTextPx);
-  return (
-    <Tooltip
-      content={`Legibility threshold — words smaller than ${minTextPx}px on screen fold into the high-level overview`}
-    >
-      <span className="flex items-center gap-1 pr-1 text-[10px] tabular-nums text-ink-faint">
-        <input
-          type="range"
-          min={LOD_MIN_TEXT_RANGE.min}
-          max={LOD_MIN_TEXT_RANGE.max}
-          step={0.5}
-          value={minTextPx}
-          onChange={(e) => lodConfigStore.getState().setMinTextPx(Number(e.target.value))}
-          className="h-1 w-14 cursor-pointer accent-crystal-400"
-          aria-label="Minimum legible text height in pixels"
-        />
-        {minTextPx}px
-      </span>
-    </Tooltip>
   );
 }

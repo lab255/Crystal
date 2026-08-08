@@ -307,9 +307,14 @@ build/sign (+notarize on macOS) → signed updater `latest.json`).
   architecture view is organized around the **C4 model** (`core/c4.ts`): one
   canvas with three altitudes — System Context / Containers / Components
   (`level` + `scope` deep-link params, default `containers`) — where
-  `deriveC4Model` finds the container tier (deployable-signal seeds: serves
-  HTTP, owns screens, top of the module import graph; library systems pool
-  into `ctr:shared`; single-package repos fall back to layer containers),
+  `deriveC4Model` finds the container tier (deployable-signal seeds on *package*
+  modules only: serves HTTP, owns routed screens, top of the module import
+  graph — merely owning frontend-layer systems is NOT a signal, it only picks
+  the variant, or every React library becomes a "web application"; synthetic
+  dir modules — `CodeModule.synthetic`, minted for single-package repos —
+  never seed; library systems pool into `ctr:shared`; no seeds at all ⇒ ONE
+  `ctr:app` container named after the root package, structure lives at
+  Components),
   splits detected externals into owned infrastructure (database/cache/queue/
   storage/search/realtime → containers inside the boundary) vs external
   systems, and synthesizes the default `person:user` when screens exist.
@@ -332,8 +337,11 @@ build/sign (+notarize on macOS) → signed updater `latest.json`).
   the user-authored overlay (`core/arch-overlay.ts`, envelope kind `arch-overlay` at
   `.crystal/architecture/overlay.json`). Views edit a plain `ArchitectureGraph`;
   persistence goes through `extractOverlay(derived, rendered, edited, prev)` — only real
-  drags become position overrides (auto-layout owns everything else, laid out at
-  reserved LOD footprints so zoom-into-code never reflows), manual nodes/edges and
+  drags become position overrides (auto-layout owns everything else; system cards lay
+  out at their card slots — `systemCardSlot` — and derived containers/`c4:` boundaries
+  are fitted to their children by `autoLayoutFitted`; there is NO zoom-driven LOD —
+  detail is explicit: C4 altitude, the discrete packages/modules/members ladder, and
+  per-node expand, with an expansion displacing neighbors view-only), manual nodes/edges and
   hidden ids round-trip, and legacy diagram files migrate losslessly ONCE on the first
   `arch.getOverlay` (files are read, never rewritten; each becomes an `ArchFacet` with
   `sourcePath` so old `?diagram=` links resolve). Never let review ghosts reach

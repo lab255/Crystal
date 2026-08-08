@@ -2,6 +2,7 @@ import "@xyflow/react/dist/style.css";
 import "./architect.css";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  AppWindow,
   Bot,
   Boxes,
   Check,
@@ -18,6 +19,7 @@ import {
   Search,
   Sparkles,
   Trash2,
+  Waypoints,
   X,
 } from "lucide-react";
 import {
@@ -52,6 +54,7 @@ import {
   type FacetSuggestion,
   type SurfaceMapReport,
   type SurfacesReport,
+  type SystemModule,
   type SystemOverview,
   type SystemRole,
   type TaskItem,
@@ -114,8 +117,7 @@ import {
   remapFlowProjection,
 } from "./c4-view.js";
 import { C4Bar } from "./C4Bar.js";
-import { estimateModuleFootprint } from "./live-code.js";
-import { buildSystemCardFacts, maxSlot, systemCardSlot } from "./system-card.js";
+import { buildSystemCardFacts, systemCardSlot } from "./system-card.js";
 
 const EMPTY_DRAFTS: never[] = [];
 const EMPTY_REFACTORS: never[] = [];
@@ -380,23 +382,26 @@ function DiagramsView({
       // No analyzable frontend — the layer simply stays empty.
     }
   }, [client]);
+  // Screens are fetched for the architecture view even with the layer off:
+  // the C4 container cards carry screen counts and surfaces cross-links.
+  const wantScreens = screensOn || variant === "architecture";
   useEffect(() => {
-    if (!screensOn) return;
+    if (!wantScreens) return;
     if (connection === "open") void fetchScreens();
-  }, [screensOn, connection, fetchScreens]);
+  }, [wantScreens, connection, fetchScreens]);
   useEffect(() => {
-    if (!screensOn) return;
+    if (!wantScreens) return;
     return client.events.on("codemap.changed", ({ ws }) => {
       if (!activeWs || ws === activeWs) void fetchScreens();
     });
-  }, [client, screensOn, fetchScreens, activeWs]);
+  }, [client, wantScreens, fetchScreens, activeWs]);
 
   const surfacesInput = useMemo(
     () => (screensOn && screensData ? { ...screensData, endpoints: endpointsOn } : null),
     [screensOn, screensData, endpointsOn],
   );
   const { overviewData, codeSummary, derived, c4Model, reconciled, rendered, commitEdited } =
-    useCanonicalArchitecture({ surfaces: surfacesInput });
+    useCanonicalArchitecture({ surfaces: surfacesInput, screens: screensData?.screens ?? null });
 
   /* ---- C4 altitude: level + scope live in the deep-linkable nav store ---- */
 
@@ -465,6 +470,14 @@ function DiagramsView({
     if (!overviewData) return map;
     const idOfRaw = canonicalSystemIds(overviewData.systems);
     for (const s of overviewData.systems) map.set(idOfRaw.get(s.id) ?? s.id, s.role);
+    return map;
+  }, [overviewData]);
+  /** Canonical id → the overview's raw system (surfaces links speak raw ids). */
+  const systemOfCanonical = useMemo(() => {
+    const map = new Map<string, SystemModule>();
+    if (!overviewData) return map;
+    const idOfRaw = canonicalSystemIds(overviewData.systems);
+    for (const s of overviewData.systems) map.set(idOfRaw.get(s.id) ?? s.id, s);
     return map;
   }, [overviewData]);
   /**
@@ -609,9 +622,8 @@ function DiagramsView({
   const c4Enabled = variant === "architecture" && !activeDraft;
   const viewKeyStr = c4ViewKey({ level, scope });
 
-  // Reserved footprints for member system cards — same convention as the
-  // canonical layout, so zoom-into-code fills pre-allocated space at the
-  // components level too.
+  // Card slots for member system cards — same convention as the canonical
+  // layout: layout at the semantic body's own size, compact by design.
   const sysReserve = useMemo(() => {
     const reserve = new Map<string, { width: number; height: number }>();
     if (!overviewData) return reserve;
@@ -619,10 +631,8 @@ function DiagramsView({
     const cards = buildSystemCardFacts(overviewData);
     for (const s of overviewData.systems) {
       const id = idOfRaw.get(s.id) ?? s.id;
-      const footprint = s.fileCount > 0 ? estimateModuleFootprint(s.fileCount) : undefined;
       const card = cards.get(id);
-      const slot = card ? maxSlot(footprint, systemCardSlot(card)) : footprint;
-      if (slot) reserve.set(id, slot);
+      if (card) reserve.set(id, systemCardSlot(card));
     }
     return reserve;
   }, [overviewData]);
@@ -797,7 +807,7 @@ function DiagramsView({
     [activeFlow],
   );
 
-  /** Focus-filter + C4-navigation entries prepended to node context menus. */
+  /** Focus-filter + C4-navigation + surfaces entries prepended to node context menus. */
   const extraNodeEntries = useCallback(
     (node: ArchNode): MenuEntry[] => {
       const entries: MenuEntry[] = [];
@@ -813,6 +823,52 @@ function DiagramsView({
             setHighlightRequest({ nodeId: ctr, nonce: ++highlightNonce.current });
           },
         });
+      }
+      // A container card links to the screens it serves in the surfaces
+      // explorer, scoped by its module path (the screens list matches files).
+      const container = c4Model?.containers.find((c) => c.id === node.id);
+      if (container && container.screenCount > 0) {
+        entries.push({
+          type: "item",
+          label: `View screens (${container.screenCount})`,
+          icon: AppWindow,
+          onSelect: () =>
+            nav({
+              mode: "surfaces",
+              surfaces: {
+                view: "screens",
+                ...(container.modulePath && container.modulePath !== "."
+                  ? { find: container.modulePath }
+                  : {}),
+              },
+            }),
+        });
+      }
+      const system = systemOfCanonical.get(node.id);
+      if (system) {
+        // A component that serves routes links to the API explorer filtered
+        // to it (the explorer speaks the overview's raw system ids).
+        if (system.endpoints.length > 0) {
+          entries.push({
+            type: "item",
+            label: `View APIs (${system.endpoints.length})`,
+            icon: Waypoints,
+            onSelect: () =>
+              nav({ mode: "surfaces", surfaces: { view: "apis", system: system.id } }),
+          });
+        }
+        if (system.layer === "frontend" && node.codeModule) {
+          entries.push({
+            type: "item",
+            label: "View screens",
+            icon: AppWindow,
+            onSelect: () =>
+              nav({
+                mode: "surfaces",
+                surfaces: { view: "screens", find: node.codeModule ?? undefined },
+              }),
+          });
+        }
       }
       if (!roleOfCanonical.has(node.id)) return entries;
       const inFocus = focusIds.has(node.id);
@@ -834,7 +890,7 @@ function DiagramsView({
       }
       return entries;
     },
-    [roleOfCanonical, focusIds, focusParam, nav, c4Model, c4Enabled, level, setC4View],
+    [roleOfCanonical, systemOfCanonical, focusIds, focusParam, nav, c4Model, c4Enabled, level, setC4View],
   );
 
   // `?system=` links (surfaces "show on architecture", hub menus, old
