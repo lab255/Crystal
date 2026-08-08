@@ -27,11 +27,17 @@ export function QuestionRow({
   const answerQuestion = useHub((s) => s.answerQuestion);
   const goToProject = useCrossWorkspaceNav();
 
-  async function send(answer: string): Promise<void> {
+  async function send(answer: string) {
     const result = await answerQuestion(programId, question.questionId, answer).catch(
       (err: Error) => ({ ok: false as const, reason: err.message }),
     );
     if (!result.ok) throw new Error(result.reason);
+    if (!result.resumedRunId) {
+      return {
+        notice:
+          "Recorded on the board — the asking session will pick it up if it resumes.",
+      };
+    }
   }
 
   return (

@@ -13,12 +13,17 @@ export interface QuestionCardOption {
   recommended?: boolean;
 }
 
+export interface QuestionCardAnswerResult {
+  /** Neutral delivery truth shown after the board write succeeds. */
+  notice?: string;
+}
+
 export interface QuestionCardProps {
   context: ReactNode;
   question: string;
   options?: readonly QuestionCardOption[];
   recommended?: string | null;
-  onAnswer: (answer: string) => Promise<void>;
+  onAnswer: (answer: string) => Promise<QuestionCardAnswerResult | void>;
   action?: ReactNode;
   answerLabel?: string;
   className?: string;
@@ -26,8 +31,9 @@ export interface QuestionCardProps {
 
 /**
  * Shared answering surface for the project and portfolio inboxes. Choice
- * clicks optimistically hide the card; a rejected answer restores it with
- * the error, while a successful caller removes it from its source store.
+ * clicks stay visible while the write is in flight; a rejected answer keeps
+ * the draft and shows the error. Callers may return a neutral delivery notice
+ * when the board accepted the answer but the asking session was not reached.
  */
 export function QuestionCard({
   context,
@@ -42,20 +48,21 @@ export function QuestionCard({
   const [draft, setDraft] = useState("");
   const [otherOpen, setOtherOpen] = useState(options.length === 0);
   const [submitting, setSubmitting] = useState(false);
-  const [optimisticHidden, setOptimisticHidden] = useState(false);
+  const [answeredHidden, setAnsweredHidden] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [answeredNotice, setAnsweredNotice] = useState<string | null>(null);
 
   async function submit(rawAnswer: string): Promise<void> {
     const answer = rawAnswer.trim();
     if (!answer || submitting) return;
     setSubmitting(true);
-    setOptimisticHidden(true);
     setError(null);
     try {
-      await onAnswer(answer);
+      const result = await onAnswer(answer);
       setDraft("");
+      if (result?.notice) setAnsweredNotice(result.notice);
+      else setAnsweredHidden(true);
     } catch (err) {
-      setOptimisticHidden(false);
       setError((err as Error).message);
     } finally {
       setSubmitting(false);
@@ -64,7 +71,7 @@ export function QuestionCard({
 
   const onComposerKeydown = useComposerKeydown(() => void submit(draft));
 
-  if (optimisticHidden) return null;
+  if (answeredHidden) return null;
 
   return (
     <article
@@ -81,7 +88,13 @@ export function QuestionCard({
 
       <p className="whitespace-pre-wrap py-3 text-sm leading-relaxed text-ink">{question}</p>
 
-      {options.length > 0 ? (
+      {answeredNotice ? (
+        <p className="rounded-lg border border-info/30 bg-info/10 px-3 py-2 text-xs text-ink">
+          {answeredNotice}
+        </p>
+      ) : null}
+
+      {!answeredNotice && options.length > 0 ? (
         <div className="grid gap-2">
           {options.map((option) => {
             const isRecommended = option.recommended || option.value === recommended;
@@ -118,7 +131,7 @@ export function QuestionCard({
         </div>
       ) : null}
 
-      {options.length > 0 && !otherOpen ? (
+      {!answeredNotice && options.length > 0 && !otherOpen ? (
         <button
           type="button"
           onClick={() => setOtherOpen(true)}
@@ -128,7 +141,7 @@ export function QuestionCard({
         </button>
       ) : null}
 
-      {otherOpen ? (
+      {!answeredNotice && otherOpen ? (
         <div className={cn("flex items-end gap-2", options.length > 0 && "mt-2")}>
           <Textarea
             autoFocus={options.length > 0}
@@ -148,7 +161,7 @@ export function QuestionCard({
             size="sm"
             disabled={submitting || !draft.trim()}
             onClick={() => void submit(draft)}
-            aria-label="Submit answer and resume the asking run"
+            aria-label="Submit answer"
           >
             <Send className="h-3.5 w-3.5" /> Answer
           </Button>

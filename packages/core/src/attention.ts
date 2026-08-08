@@ -1,4 +1,5 @@
 import type { AgentRun, AgentRunStatus } from "./agent.js";
+import type { PendingPermission } from "./bridge.js";
 import { openQuestions, type Project, type TaskQuestion } from "./project.js";
 import type { RunFailure } from "./run-failure.js";
 import { todosLight, worstLight, type TodoItem, type TrafficLight } from "./todo.js";
@@ -12,10 +13,10 @@ import type { Workflow } from "./workflow.js";
  * slicing and the grouped task list live in task-attention.ts, on the same
  * primitives.) Three lanes, each with its own way of clearing:
  *
- * - **Attention** ("needs you"): open board questions + recoverable-failed
- *   runs no later run has recovered (see run-failure.ts). An agent is stopped
- *   until a human acts, so this lane clears only by answering the question or
- *   recovering the run — never by acknowledgement.
+ * - **Attention** ("needs you"): open board questions + parked tool
+ *   permissions + recoverable-failed runs no later run has recovered (see
+ *   run-failure.ts). An agent is stopped until a human acts, so this lane
+ *   clears only by answering, deciding or recovering — never by acknowledgement.
  * - **Review**: runs that settled after the workspace was last looked at
  *   (`seenAt`) — results to skim, red when the run failed. Acknowledgeable:
  *   focusing the workspace (`markSeen`) clears it.
@@ -37,6 +38,8 @@ export interface NeedsYouQuestion {
 
 export interface NeedsYou {
   questions: NeedsYouQuestion[];
+  /** Tool calls blocked on an explicit Allow/Deny decision. */
+  permissions: PendingPermission[];
   /** Recoverable-failed runs still awaiting recovery, newest first. */
   failures: AgentRun[];
   count: number;
@@ -101,10 +104,16 @@ export function unrecoveredFailures(runs: readonly AgentRun[]): AgentRun[] {
 export function deriveNeedsYou(
   projects: readonly ProjectEntry[],
   runs: readonly AgentRun[],
+  permissions: readonly PendingPermission[] = [],
 ): NeedsYou {
   const questions = needsYouQuestions(projects);
   const failures = unrecoveredFailures(runs);
-  return { questions, failures, count: questions.length + failures.length };
+  return {
+    questions,
+    permissions: [...permissions],
+    failures,
+    count: questions.length + permissions.length + failures.length,
+  };
 }
 
 /* Count-only variants: primitives, safe to call inside zustand selectors so
@@ -117,6 +126,10 @@ export function countOpenQuestions(projects: readonly ProjectEntry[]): number {
     for (const task of project.tasks) count += openQuestions(task).length;
   }
   return count;
+}
+
+export function countPendingPermissions(permissions: readonly PendingPermission[]): number {
+  return permissions.length;
 }
 
 export function countUnrecoveredFailures(runs: readonly AttentionRun[]): number {

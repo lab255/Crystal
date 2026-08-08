@@ -95,7 +95,7 @@ function StripQuestion({
    * `workspace.changed`, and a later whole-project save from a stale snapshot
    * would silently reopen the question (newest-updatedAt merge).
    */
-  async function send(answer: string): Promise<void> {
+  async function send(answer: string) {
     const result = await client.request("task.answer", {
       path: projectPath,
       taskId: task.id,
@@ -118,6 +118,12 @@ function StripQuestion({
       ),
     });
     if (result.resumedRunId) onOpenRun(result.resumedRunId);
+    if (!result.resumedRunId) {
+      return {
+        notice:
+          "Recorded on the board — the asking session will pick it up if it resumes.",
+      };
+    }
   }
 
   return (

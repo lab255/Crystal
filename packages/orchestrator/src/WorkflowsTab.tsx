@@ -64,6 +64,7 @@ import {
 import { TemplateBuilder } from "./TemplateBuilder.js";
 import { TemplateEditor } from "./TemplateEditor.js";
 import { WorkflowGraph } from "./WorkflowGraph.js";
+import { managerSessionEnded } from "./workflow-manager.js";
 
 const EMPTY_PROJECTS: never[] = [];
 
@@ -296,6 +297,7 @@ function WorkflowDetail({
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
     [runs, tag],
   );
+  const managerEnded = managerSessionEnded(workflow.status, managerTurns);
 
   // Open questions on the workflow's board tasks — the manager (or a worker)
   // is waiting on the human owner; answering happens on the Board tab.
@@ -334,8 +336,48 @@ function WorkflowDetail({
 
   const [editingBudget, setEditingBudget] = useState(false);
   const [budgetInput, setBudgetInput] = useState("");
+  const [budgetBusy, setBudgetBusy] = useState(false);
+  const [budgetError, setBudgetError] = useState<string | null>(null);
   const [editingRunCap, setEditingRunCap] = useState(false);
   const [runCapInput, setRunCapInput] = useState("");
+  const [runCapBusy, setRunCapBusy] = useState(false);
+  const [runCapError, setRunCapError] = useState<string | null>(null);
+
+  async function saveBudget(): Promise<void> {
+    if (budgetBusy) return;
+    setBudgetBusy(true);
+    setBudgetError(null);
+    const n = Number(budgetInput);
+    try {
+      await setBudget(
+        workflow.id,
+        budgetInput.trim() === "" || !Number.isFinite(n) ? null : n,
+      );
+      setEditingBudget(false);
+    } catch (err) {
+      setBudgetError((err as Error).message);
+    } finally {
+      setBudgetBusy(false);
+    }
+  }
+
+  async function saveRunCap(): Promise<void> {
+    if (runCapBusy) return;
+    setRunCapBusy(true);
+    setRunCapError(null);
+    const n = Number(runCapInput);
+    try {
+      await setRunCap(
+        workflow.id,
+        runCapInput.trim() === "" || !Number.isFinite(n) ? null : n,
+      );
+      setEditingRunCap(false);
+    } catch (err) {
+      setRunCapError((err as Error).message);
+    } finally {
+      setRunCapBusy(false);
+    }
+  }
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -346,6 +388,7 @@ function WorkflowDetail({
             {workflow.name}
           </h2>
           <Badge tone={STATUS_TONES[workflow.status]}>{workflow.status}</Badge>
+          {workflow.budgetWarnedAt ? <Badge tone="rose">80% of budget</Badge> : null}
           {!terminal ? (
             <>
               <Button
@@ -363,6 +406,12 @@ function WorkflowDetail({
                   </>
                 )}
               </Button>
+              {managerEnded ? (
+                <span className="max-w-md text-[10px] font-semibold leading-snug text-danger">
+                  Manager session ended — messages can't be delivered. Compact to continue with
+                  a fresh session.
+                </span>
+              ) : null}
               <Tooltip content="Retire the manager's transcript and reseed a fresh session from the workflow record + board — cuts what every wake re-ingests. Only between waves (refused while runs are live).">
                 <Button
                   variant="ghost"
@@ -468,7 +517,7 @@ function WorkflowDetail({
                 / ${budget.budgetUsd.toFixed(2)}
               </span>
             ) : (
-              <span className="text-ink-faint"> (no budget)</span>
+              <span className="text-ink-faint"> (no budget — unbounded)</span>
             )}
             · {formatRunTokens(spend.totalTokens)} tok · {spend.runCount} runs
           </span>
@@ -477,9 +526,7 @@ function WorkflowDetail({
               className="flex items-center gap-1"
               onSubmit={(e) => {
                 e.preventDefault();
-                const n = Number(budgetInput);
-                void setBudget(workflow.id, budgetInput.trim() === "" || !Number.isFinite(n) ? null : n);
-                setEditingBudget(false);
+                void saveBudget();
               }}
             >
               <Input
@@ -490,9 +537,11 @@ function WorkflowDetail({
                 className="h-6 w-32 text-[11px]"
                 aria-label="Budget in USD"
               />
-              <Button type="submit" variant="ghost" size="xs">
+              <Button type="submit" variant="ghost" size="xs" disabled={budgetBusy}>
+                {budgetBusy ? <Spinner className="h-3 w-3" /> : null}
                 Set
               </Button>
+              {budgetError ? <span className="text-[10px] text-danger">{budgetError}</span> : null}
             </form>
           ) : (
             <Button
@@ -500,6 +549,7 @@ function WorkflowDetail({
               size="xs"
               onClick={() => {
                 setBudgetInput(workflow.budgetUsd?.toString() ?? "");
+                setBudgetError(null);
                 setEditingBudget(true);
               }}
             >
@@ -516,12 +566,7 @@ function WorkflowDetail({
               className="flex items-center gap-1"
               onSubmit={(e) => {
                 e.preventDefault();
-                const n = Number(runCapInput);
-                void setRunCap(
-                  workflow.id,
-                  runCapInput.trim() === "" || !Number.isFinite(n) ? null : n,
-                );
-                setEditingRunCap(false);
+                void saveRunCap();
               }}
             >
               <Input
@@ -532,9 +577,11 @@ function WorkflowDetail({
                 className="h-6 w-32 text-[11px]"
                 aria-label="Per-run cost cap in USD"
               />
-              <Button type="submit" variant="ghost" size="xs">
+              <Button type="submit" variant="ghost" size="xs" disabled={runCapBusy}>
+                {runCapBusy ? <Spinner className="h-3 w-3" /> : null}
                 Set
               </Button>
+              {runCapError ? <span className="text-[10px] text-danger">{runCapError}</span> : null}
             </form>
           ) : (
             <Button
@@ -542,6 +589,7 @@ function WorkflowDetail({
               size="xs"
               onClick={() => {
                 setRunCapInput(workflow.runCapUsd?.toString() ?? "");
+                setRunCapError(null);
                 setEditingRunCap(true);
               }}
             >
@@ -831,7 +879,9 @@ function NewWorkflowPanel({
           onChange={(e) => setGoal(e.target.value)}
           onKeyDown={onComposerKey}
           rows={5}
-          placeholder="Describe the goal. The manager refines it with you before planning — rough is fine."
+          placeholder={
+            "Describe the goal — rough is fine. Add premises such as “assert: file src/index.ts — checked free before dispatch”."
+          }
           aria-label="Workflow goal"
           className="mt-2"
         />
@@ -900,32 +950,35 @@ function NewWorkflowPanel({
             />
           </div>
         ) : null}
-        {/* Everything a workflow can start without — budgets, board, model —
-            folds away so the required trio (name, goal, template) stays the
-            whole visible form. */}
+
+        <div className="mt-3 grid grid-cols-2 gap-3">
+          <Field label="Budget (USD)" hint="Total spend cap — the workflow pauses when reached">
+            <Input
+              value={budget}
+              onChange={(e) => setBudgetInput(e.target.value)}
+              placeholder="(no budget — unbounded)"
+              aria-label="Budget in USD"
+            />
+          </Field>
+          <Field label="Per-run cap (USD)">
+            <Tooltip content="Per-run cost cap: any single run (manager turns included) crossing it is killed mid-flight — the lever against one runaway resume.">
+              <Input
+                value={runCap}
+                onChange={(e) => setRunCapInput(e.target.value)}
+                placeholder="(no cap — unbounded)"
+                aria-label="Per-run cost cap in USD"
+              />
+            </Tooltip>
+          </Field>
+        </div>
+
+        {/* Board and model are useful overrides, but neither changes the
+            workflow's spending contract, so they stay secondary. */}
         <details className="mt-3">
           <summary className="cursor-pointer text-[10px] font-semibold uppercase tracking-wider text-ink-faint">
-            Options — budget, board, manager model
+            Options — board, manager model
           </summary>
           <div className="mt-2 grid grid-cols-2 gap-3">
-            <Field label="Budget (USD)" hint="Total spend cap — the workflow pauses when reached">
-              <Input
-                value={budget}
-                onChange={(e) => setBudgetInput(e.target.value)}
-                placeholder="No budget"
-                aria-label="Budget in USD"
-              />
-            </Field>
-            <Field label="Per-run cap (USD)">
-              <Tooltip content="Per-run cost cap: any single run (manager turns included) crossing it is killed mid-flight — the lever against one runaway resume.">
-                <Input
-                  value={runCap}
-                  onChange={(e) => setRunCapInput(e.target.value)}
-                  placeholder="No cap"
-                  aria-label="Per-run cost cap in USD"
-                />
-              </Tooltip>
-            </Field>
             <Field label="Project board" hint="Where the manager plans its tasks">
               <Select
                 value={projectId}

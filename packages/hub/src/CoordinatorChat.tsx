@@ -2,16 +2,27 @@ import { useEffect, useMemo, useState } from "react";
 import {
   Ban,
   Bot,
+  Check,
+  CircleDollarSign,
   Copy,
   MoreHorizontal,
   Pause,
   Play,
   Plus,
+  RotateCcw,
   TerminalSquare,
   Trash2,
   X,
 } from "lucide-react";
-import { isProgramTerminal, type AgentRun, type Program } from "@crystal/core";
+import {
+  deliveryReadiness,
+  isDeliveryTerminal,
+  isProgramTerminal,
+  type AgentRun,
+  type Program,
+  type ProgramDelivery,
+  type ProgramSpend,
+} from "@crystal/core";
 import {
   EMPTY_HUB_EVENTS,
   RunSurface,
@@ -33,7 +44,7 @@ import {
   useContextMenu,
   type MenuEntry,
 } from "@crystal/ui";
-import { SectionLabel, SpendLine, StatusBadge } from "./common.js";
+import { parseBudget, SectionLabel, SpendLine, StatusBadge } from "./common.js";
 
 /** Stable empty chain — a fresh [] per render would defeat the memo below. */
 const EMPTY_TURNS: AgentRun[] = [];
@@ -73,6 +84,16 @@ export function CoordinatorChat() {
     return (
       <div className="flex min-h-0 flex-1 items-center justify-center">
         <Spinner />
+      </div>
+    );
+  }
+
+  if (!program && hubError && !creating) {
+    return (
+      <div className="flex min-h-0 flex-1 items-center justify-center px-6">
+        <EmptyState icon={Bot} title="Coordinator unavailable">
+          {hubError}
+        </EmptyState>
       </div>
     );
   }
@@ -164,11 +185,7 @@ export function CoordinatorChat() {
           className="w-56"
         />
         <StatusBadge status={program.status} />
-        {sp ? (
-          <span className="text-[11px] text-ink-faint">
-            <SpendLine costUsd={sp.costUsd} budgetUsd={program.budgetUsd} />
-          </span>
-        ) : null}
+        <ProgramBudgetChip program={program} spend={sp} />
         <span className="min-w-0 flex-1 truncate text-[11px] text-ink-faint" title={program.goal}>
           {program.goal}
         </span>
@@ -189,8 +206,261 @@ export function CoordinatorChat() {
         </Tooltip>
       </div>
       {hubError ? <p className="px-4 py-1 text-[11px] text-danger">{hubError}</p> : null}
+      <DeliveryStrip program={program} programs={programs} spend={sp} />
       <ManagerPane program={program} />
     </div>
+  );
+}
+
+function ProgramBudgetChip({
+  program,
+  spend,
+}: {
+  program: Program;
+  spend: ProgramSpend | null;
+}) {
+  const setBudget = useHub((s) => s.setBudget);
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setEditing(false);
+    setError(null);
+  }, [program.id]);
+
+  async function save(): Promise<void> {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await setBudget(program.id, parseBudget(value));
+      setEditing(false);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return editing ? (
+    <form
+      className="flex shrink-0 items-center gap-1"
+      onSubmit={(event) => {
+        event.preventDefault();
+        void save();
+      }}
+    >
+      <Input
+        autoFocus
+        value={value}
+        onChange={(event) => setValue(event.target.value)}
+        placeholder="(no budget — unbounded)"
+        aria-label="Program budget in USD"
+        className="h-6 w-44 text-[11px]"
+      />
+      <Button
+        type="submit"
+        variant="ghost"
+        size="icon-sm"
+        disabled={busy}
+        aria-label="Set program budget"
+      >
+        {busy ? <Spinner className="h-3 w-3" /> : <Check className="h-3 w-3" />}
+      </Button>
+      {error ? (
+        <span className="max-w-48 truncate text-[10px] text-danger" title={error}>
+          {error}
+        </span>
+      ) : null}
+    </form>
+  ) : (
+    <button
+      type="button"
+      onClick={() => {
+        setValue(program.budgetUsd?.toString() ?? "");
+        setError(null);
+        setEditing(true);
+      }}
+      className="flex shrink-0 items-center gap-1 rounded-full border border-edge bg-surface-2 px-2 py-0.5 text-[11px] text-ink-muted hover:border-crystal-500/40 hover:text-ink"
+      title="Edit program budget"
+    >
+      <CircleDollarSign className="h-3 w-3 text-crystal-300" />
+      <SpendLine
+        costUsd={spend?.costUsd ?? 0}
+        budgetUsd={program.budgetUsd}
+        stale={spend?.stale ?? false}
+        showUnbudgeted
+      />
+    </button>
+  );
+}
+
+function DeliveryStrip({
+  program,
+  programs,
+  spend,
+}: {
+  program: Program;
+  programs: Program[];
+  spend: ProgramSpend | null;
+}) {
+  const others = useMemo(
+    () => programs.filter((candidate) => candidate.id !== program.id),
+    [program.id, programs],
+  );
+  return (
+    <section className="shrink-0 border-b border-edge bg-surface-1/70 px-4 py-2">
+      <div className="mb-1 flex items-center gap-2">
+        <SectionLabel>Deliveries</SectionLabel>
+        <span className="text-[10px] text-ink-faint">{program.deliveries.length}</span>
+      </div>
+      {program.deliveries.length === 0 ? (
+        <p className="text-[11px] text-ink-faint">
+          The coordinator has not split this program into projects yet.
+        </p>
+      ) : (
+        <div className="flex gap-2 overflow-x-auto pb-0.5">
+          {program.deliveries.map((delivery) => (
+            <DeliveryCard
+              key={delivery.id}
+              program={program}
+              delivery={delivery}
+              others={others}
+              spend={spend}
+            />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function DeliveryCard({
+  program,
+  delivery,
+  others,
+  spend,
+}: {
+  program: Program;
+  delivery: ProgramDelivery;
+  others: Program[];
+  spend: ProgramSpend | null;
+}) {
+  const retryDelivery = useHub((s) => s.retryDelivery);
+  const closeDelivery = useHub((s) => s.closeDelivery);
+  const [closing, setClosing] = useState(false);
+  const [outcome, setOutcome] = useState<"completed" | "failed">("completed");
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const readiness =
+    delivery.status === "pending" ? deliveryReadiness(program, delivery, others) : null;
+  const blockedReason =
+    delivery.status === "pending"
+      ? readiness && !readiness.ready
+        ? readiness.reason
+        : delivery.note
+      : null;
+  const ownSpend = spend?.byDelivery[delivery.id];
+  const retryable = isDeliveryTerminal(delivery.status) && delivery.status !== "completed";
+
+  async function retry(): Promise<void> {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await retryDelivery(program.id, delivery.id);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function close(): Promise<void> {
+    if (!note.trim() || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await closeDelivery(program.id, delivery.id, outcome, note.trim());
+      setClosing(false);
+      setNote("");
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <article className="min-w-72 max-w-96 rounded-lg border border-edge bg-surface-0 px-2.5 py-2">
+      <div className="flex items-center gap-2">
+        <span className="min-w-0 flex-1 truncate text-xs font-semibold text-ink" title={delivery.projectRoot}>
+          {delivery.projectName}
+        </span>
+        <StatusBadge status={delivery.status} />
+        <span className="text-[10px] text-ink-faint">
+          <SpendLine
+            costUsd={ownSpend?.costUsd ?? 0}
+            budgetUsd={delivery.budgetUsd}
+            stale={spend?.stale ?? false}
+          />
+        </span>
+      </div>
+      {blockedReason ? (
+        <p className="mt-1 line-clamp-2 text-[10px] leading-snug text-warn" title={blockedReason}>
+          {blockedReason}
+        </p>
+      ) : null}
+      {closing ? (
+        <form
+          className="mt-1.5 flex items-center gap-1"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void close();
+          }}
+        >
+          <Select
+            size="xs"
+            value={outcome}
+            onChange={(event) => setOutcome(event.target.value as "completed" | "failed")}
+            aria-label="Delivery outcome"
+          >
+            <option value="completed">Completed</option>
+            <option value="failed">Failed</option>
+          </Select>
+          <Input
+            value={note}
+            onChange={(event) => setNote(event.target.value)}
+            placeholder="What settled it?"
+            aria-label="Delivery close note"
+            className="h-6 min-w-32 flex-1 text-[10px]"
+          />
+          <Button type="submit" variant="primary" size="xs" disabled={busy || !note.trim()}>
+            Close
+          </Button>
+          <Button type="button" variant="ghost" size="xs" onClick={() => setClosing(false)}>
+            Cancel
+          </Button>
+        </form>
+      ) : (
+        <div className="mt-1.5 flex items-center justify-end gap-1">
+          {retryable ? (
+            <Button variant="ghost" size="xs" disabled={busy} onClick={() => void retry()}>
+              <RotateCcw className="h-3 w-3" /> Retry
+            </Button>
+          ) : null}
+          {!isDeliveryTerminal(delivery.status) ? (
+            <Button variant="ghost" size="xs" disabled={busy} onClick={() => setClosing(true)}>
+              Close
+            </Button>
+          ) : null}
+        </div>
+      )}
+      {error ? <p className="mt-1 text-[10px] text-danger">{error}</p> : null}
+    </article>
   );
 }
 
