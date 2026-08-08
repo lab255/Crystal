@@ -735,7 +735,7 @@ function DiagramsView({
     () => (withOverrides ? c4Reserve(withOverrides, mergedBase) : null),
     [withOverrides, mergedBase],
   );
-  const { laid, routes } = useElkLayout(withOverrides, dims);
+  const { laid, routes, revision: layoutRevision } = useElkLayout(withOverrides, dims);
 
   // Pins remain a final, view-specific overlay on the solved geometry. This
   // is intentionally the same application logic as the previous dagre path.
@@ -1572,6 +1572,7 @@ function DiagramsView({
                   }
                   onChange={c4Enabled && c4Laid ? commitC4 : commitGraph}
                   edgeRoutes={c4Enabled ? c4Routes : undefined}
+                  layoutRevision={c4Enabled ? layoutRevision : undefined}
                   onMeasured={c4Enabled ? mergeMeasuredDims : undefined}
                   onAutoLayout={c4Enabled ? clearCurrentC4Layout : undefined}
                   codeSummary={codeSummary}

@@ -200,6 +200,50 @@ describe("elkAutoLayout", () => {
       expect(contains(expandedBy(boxes.get(edge.target)!, 150), route.at(-1)!)).toBe(true);
     }
   });
+
+  it("packs sparse scopes toward the diagram aspect instead of one endless row", async () => {
+    // A components-level projection of a big shared-library container: dozens
+    // of members, almost no intra-scope edges. Hierarchical layered layout
+    // strings these into a single row (component packing is unsupported with
+    // INCLUDE_CHILDREN); the sparse-scope rule must rectangle-pack instead.
+    const pen = node("ctr:shared", "group", { size: { width: 640, height: 420 } });
+    const outside = node("svc:consumer", "service");
+    const members = Array.from({ length: 24 }, (_, i) =>
+      node(`cmp:m${i}`, "service", { parentId: pen.id }),
+    );
+    const input = graph(
+      [pen, outside, ...members],
+      [
+        { id: "e:0-1", source: "cmp:m0", target: "cmp:m1", kind: "dependency", label: "" },
+        { id: "e:2-3", source: "cmp:m2", target: "cmp:m3", kind: "dependency", label: "" },
+        // Crosses the packed boundary — ELK crashes on a hierarchical edge
+        // into a rectpacked scope unless the endpoint snaps to the border.
+        { id: "e:in", source: outside.id, target: "cmp:m5", kind: "sync", label: "" },
+      ],
+    );
+    const dims = new Map(members.map((m) => [m.id, { width: 224, height: 96 }]));
+
+    const { graph: laid, routes } = await elkAutoLayout(input, { dims });
+    expect(routes.has("e:in")).toBe(false);
+    const fitted = laid.nodes.find((n) => n.id === pen.id)!.size!;
+    const aspect = fitted.width / fitted.height;
+    expect(aspect).toBeLessThan(4);
+    expect(aspect).toBeGreaterThan(0.5);
+
+    const boxes = boxesOf(laid, dims);
+    for (let i = 0; i < members.length; i += 1) {
+      const a = boxes.get(members[i]!.id)!;
+      for (let j = i + 1; j < members.length; j += 1) {
+        const b = boxes.get(members[j]!.id)!;
+        const overlaps =
+          a.x < b.x + b.width &&
+          a.x + a.width > b.x &&
+          a.y < b.y + b.height &&
+          a.y + a.height > b.y;
+        expect(overlaps, `${members[i]!.id} overlaps ${members[j]!.id}`).toBe(false);
+      }
+    }
+  });
 });
 
 describe("filterRoutesForMovedEndpoints", () => {

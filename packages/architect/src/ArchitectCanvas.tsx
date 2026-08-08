@@ -9,6 +9,7 @@ import {
   ReactFlowProvider,
   useNodesInitialized,
   useReactFlow,
+  useUpdateNodeInternals,
   type Connection,
   type EdgeChange,
   type NodeChange,
@@ -194,6 +195,8 @@ export interface ArchitectCanvasProps {
   onChange: (graph: ArchitectureGraph) => void;
   /** Absolute ELK polylines for edges whose endpoints still match the solve. */
   edgeRoutes?: ReadonlyMap<string, { x: number; y: number }[]> | null;
+  /** Bumps when a level's first async solve lands — the canvas reframes. */
+  layoutRevision?: number;
   /** Browser-measured card footprints fed back into the asynchronous layout. */
   onMeasured?: (sizes: ReadonlyMap<string, { width: number; height: number }>) => void;
   /** C4 resets its per-view pins; other canvases commit a dagre layout. */
@@ -388,6 +391,7 @@ function CanvasInner({
   graph,
   onChange,
   edgeRoutes,
+  layoutRevision,
   onMeasured,
   onAutoLayout,
   headerExtra,
@@ -438,6 +442,17 @@ function CanvasInner({
   const wrapperRef = useRef<HTMLDivElement>(null);
   const { screenToFlowPosition, fitView, getNodes } = useReactFlow();
   const nodesInitialized = useNodesInitialized();
+  const updateNodeInternals = useUpdateNodeInternals();
+
+  // Replacing the nodes array while React Flow is still flushing its initial
+  // measurement can drop the pending handleBounds update — the DOM never
+  // remounts, so the affected nodes stay `visibility: hidden` forever. The
+  // async layout engine swaps the array exactly in that window (dagre first
+  // paint → ELK solve → measured re-solve), so re-register internals after
+  // every graph swap; it is cheap and idempotent at this node count.
+  useEffect(() => {
+    updateNodeInternals(graph.nodes.map((n) => n.id));
+  }, [graph, updateNodeInternals]);
 
   // Keep a ref of the latest graph so stale-closure callbacks always mutate fresh state.
   const graphRef = useRef(graph);
@@ -1579,6 +1594,18 @@ function CanvasInner({
     const timer = setTimeout(() => void fitView({ padding: 0.15, duration: 300 }), 60);
     return () => clearTimeout(timer);
   }, [graph.id, c4, fitView]);
+
+  // The asynchronous ELK solve replaces the dagre first paint under the
+  // viewport's feet — reframe when a level's first solve lands (the revision
+  // bumps once per graph id). Same-level refinements (measured dims) keep the
+  // revision so the viewport is not yanked away from wherever the user panned.
+  const lastLayoutRevision = useRef(layoutRevision ?? 0);
+  useEffect(() => {
+    if (layoutRevision == null || layoutRevision === lastLayoutRevision.current) return;
+    lastLayoutRevision.current = layoutRevision;
+    const timer = setTimeout(() => void fitView({ padding: 0.15, duration: 300 }), 60);
+    return () => clearTimeout(timer);
+  }, [layoutRevision, fitView]);
 
   const runAutoLayout = useCallback(
     (mode: "flow" | "layers" = "flow") => {
