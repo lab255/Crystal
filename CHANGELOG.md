@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.21.0 (2026-08-08)
+
+### Features
+
+- redesign the architecture view around the C4 model ([`e9d7514`](https://github.com/lab255/Crystal/commit/e9d7514))
+
 ## v0.20.0 (2026-08-04)
 
 ### Features
