@@ -15,15 +15,18 @@ import {
 import {
   AppWindow,
   Boxes,
+  Cloud,
   Container,
   Database,
   Folder,
   GitBranch,
   Globe,
+  LayoutGrid,
   Network,
   Package,
   Rows3,
   Server,
+  Shield,
   StickyNote,
   Table2,
   UserRound,
@@ -65,6 +68,9 @@ export const KIND_META: Record<ArchNodeKind, KindMeta> = {
   person: { label: "Person", icon: UserRound, defaultAccent: "blue" },
   container: { label: "Container", icon: Container, defaultAccent: "cyan" },
   entity: { label: "Entity", icon: Table2, defaultAccent: "emerald" },
+  vpc: { label: "VPC", icon: Cloud, defaultAccent: "blue" },
+  subnet: { label: "Subnet", icon: LayoutGrid, defaultAccent: "cyan" },
+  securitygroup: { label: "Security group", icon: Shield, defaultAccent: "rose" },
 };
 
 export const ACCENT_CSS: Record<AccentName, string> = {

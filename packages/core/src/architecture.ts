@@ -36,13 +36,24 @@ export const ARCH_NODE_KINDS = [
   // Data-schema entity projected into a C4 component boundary. Entity cards
   // are derived from `SchemaSurface`, never inferred as infrastructure.
   "entity",
+  // Deployment-topology zones (the infra view's grouping constructs): never
+  // derived — always user-authored placement structure.
+  "vpc",
+  "subnet",
+  "securitygroup",
 ] as const;
 
 export const ArchNodeKindSchema = z.enum(ARCH_NODE_KINDS);
 export type ArchNodeKind = z.infer<typeof ArchNodeKindSchema>;
 
 /** Kinds that render as containers and may hold children. */
-export const CONTAINER_KINDS: readonly ArchNodeKind[] = ["system", "group"];
+export const CONTAINER_KINDS: readonly ArchNodeKind[] = [
+  "system",
+  "group",
+  "vpc",
+  "subnet",
+  "securitygroup",
+];
 
 /**
  * Traffic layers for the top-down layered view: requests enter through the

@@ -223,7 +223,10 @@ export function RunSurface({
           className="border-t border-edge px-3 py-1.5"
         />
       ) : null}
-      {onSend ? (
+      {/* A live interactive run takes input in its PTY — a composer beside
+          the terminal is a second, confusing input path. It returns once the
+          terminal is gone (the chain then steers headlessly via deliver). */}
+      {onSend && !(interactive && live) ? (
         <MessageComposer
           onSend={onSend}
           // Mid-turn sends queue server-side; say so up front instead of
