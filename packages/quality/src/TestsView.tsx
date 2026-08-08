@@ -9,7 +9,7 @@ import {
   Square,
   Umbrella,
 } from "lucide-react";
-import type { QualityRun, TestCaseResult, TestFileResult } from "@crystal/core";
+import type { QualityRun, QualityRunUpdate, TestCaseResult, TestFileResult } from "@crystal/core";
 import { requestOpenFile, useNav, useNavUpdate, useSymbolMenu } from "@crystal/client";
 import {
   Badge,
@@ -163,6 +163,26 @@ export function TestsView() {
                 <Play className="h-3 w-3" /> Run all
               </button>
             </Tooltip>
+            {info && info.packages.length > 1 ? (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    type="button"
+                    className="flex items-center gap-1 rounded-lg border border-edge bg-surface-2 px-2 py-1 text-[11px] font-medium text-ink-muted hover:text-ink"
+                    title="Run a single package's tests"
+                  >
+                    One package <ChevronDown className="h-3 w-3" />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start">
+                  {info.packages.map((p) => (
+                    <DropdownMenuItem key={p.dir} onSelect={() => run({ packageDir: p.dir })}>
+                      {p.dir === "." ? "root" : p.dir}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            ) : null}
             <Tooltip
               content={
                 info?.coverageCapable
@@ -339,14 +359,19 @@ function RerunChip({ run }: { run: QualityRun }) {
 }
 
 /** passed/failed/skipped counts + duration for the run bar. */
-function RunSummaryChip({ run }: { run: QualityRun }) {
+function RunSummaryChip({ run }: { run: QualityRunUpdate }) {
   const s = run.summary;
   if (run.status === "running") {
     const done = run.files.length;
+    const job = run.progress;
     return (
       <span className="flex items-center gap-1.5 text-[10.5px] text-info">
         <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-info" />
-        running{done > 0 ? ` · ${done} file${done === 1 ? "" : "s"} in` : "…"}
+        running
+        {job && job.jobCount > 1
+          ? ` · pkg ${job.jobIndex}/${job.jobCount} (${job.packageDir === "." ? "root" : job.packageDir})`
+          : ""}
+        {done > 0 ? ` · ${done} file${done === 1 ? "" : "s"} in` : job ? "" : "…"}
       </span>
     );
   }

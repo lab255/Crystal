@@ -2,6 +2,7 @@ import type {
   CoverageReport,
   FileCoverage,
   QualityRun,
+  QualityRunUpdate,
   TestFileResult,
   TestRunnerInfo,
 } from "@crystal/core";
@@ -92,11 +93,17 @@ export function testNamePattern(name: string): string {
     .join(" ");
 }
 
-export function latestCoverageRunWithoutData(runs: readonly QualityRun[]): QualityRun | null {
+export function latestCoverageRunWithoutData(
+  runs: readonly QualityRunUpdate[],
+): QualityRunUpdate | null {
+  // The runner's explicit verdict wins (it probed the istanbul paths after the
+  // run); the shape-based fallback covers runs recorded before that field.
   return (
+    runs.find((run) => run.coverageMissing) ??
     runs.find(
       (run) => run.withCoverage && (run.status === "passed" || run.status === "failed"),
-    ) ?? null
+    ) ??
+    null
   );
 }
 

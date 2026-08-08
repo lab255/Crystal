@@ -5,6 +5,7 @@ import type {
   CoverageReport,
   LensMatcher,
   QualityRun,
+  QualityRunUpdate,
   TestCaseStatus,
   TestRunnerInfo,
 } from "@crystal/core";
@@ -19,9 +20,9 @@ import { loadQualitySources, performQualityAction } from "./quality-state.js";
 
 export interface QualityData {
   info: TestRunnerInfo | null;
-  runs: QualityRun[];
+  runs: QualityRunUpdate[];
   /** The in-flight run, when one exists. */
-  liveRun: QualityRun | null;
+  liveRun: QualityRunUpdate | null;
   coverage: CoverageReport | null;
   loading: boolean;
   infoLoading: boolean;
@@ -32,7 +33,13 @@ export interface QualityData {
   coverageError: string | null;
   actionError: string | null;
   /** Start a run; scope/coverage optional. Rejections surface via `actionError`. */
-  run: (params: { file?: string; testName?: string; coverage?: boolean }) => void;
+  run: (params: {
+    file?: string;
+    testName?: string;
+    testNamePath?: string[];
+    packageDir?: string;
+    coverage?: boolean;
+  }) => void;
   cancel: (runId: string) => void;
   refresh: () => void;
 }
@@ -43,7 +50,7 @@ export function QualityProvider({ children }: { children: React.ReactNode }) {
   const { client } = useCrystal();
   const activeWs = useWorkspaces((s) => s.activeId);
   const [info, setInfo] = useState<TestRunnerInfo | null>(null);
-  const [runs, setRuns] = useState<QualityRun[]>([]);
+  const [runs, setRuns] = useState<QualityRunUpdate[]>([]);
   const [coverage, setCoverage] = useState<CoverageReport | null>(null);
   const [infoLoading, setInfoLoading] = useState(true);
   const [runsLoading, setRunsLoading] = useState(true);
@@ -142,7 +149,13 @@ export function QualityProvider({ children }: { children: React.ReactNode }) {
 
   const nav = useNavUpdate();
   const run = useCallback(
-    (params: { file?: string; testName?: string; coverage?: boolean }) => {
+    (params: {
+      file?: string;
+      testName?: string;
+      testNamePath?: string[];
+      packageDir?: string;
+      coverage?: boolean;
+    }) => {
       setActionError(null);
       // A new run supersedes any pinned historical run — otherwise the view
       // stays frozen on the pin and the fresh results never appear.
