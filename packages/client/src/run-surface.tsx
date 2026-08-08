@@ -14,6 +14,7 @@ import {
   Timer,
   Trash2,
   Wrench,
+  X,
 } from "lucide-react";
 import {
   formatResetsAt,
@@ -96,6 +97,14 @@ export interface RunSurfaceProps {
   /** Routes the message (workflow/hub/plain — the adopter decides). Absent = no composer. */
   onSend?: (text: string) => Promise<ComposerSendResult | void>;
   onCancel?: () => void | Promise<void>;
+  /**
+   * Close/dismiss the surface (the adopter decides what that means — the
+   * coordinator ends the manager session, a picker just deselects). Absent =
+   * no close button.
+   */
+  onClose?: () => void | Promise<void>;
+  /** Tooltip for the close button (default "Close"). */
+  closeHint?: string;
   /** Turn selection routing (nav store, local state…). Absent = strip hidden. */
   onSelectTurn?: (runId: string) => void;
   className?: string;
@@ -120,6 +129,8 @@ export function RunSurface({
   merge,
   onSend,
   onCancel,
+  onClose,
+  closeHint,
   onSelectTurn,
   className,
 }: RunSurfaceProps) {
@@ -170,6 +181,18 @@ export function RunSurface({
           <Button variant="danger" size="xs" onClick={() => void onCancel()}>
             <Ban className="h-3 w-3" /> Cancel
           </Button>
+        ) : null}
+        {onClose ? (
+          <Tooltip content={closeHint ?? "Close"}>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label={closeHint ?? "Close"}
+              onClick={() => void onClose()}
+            >
+              <X className="h-3 w-3" />
+            </Button>
+          </Tooltip>
         ) : null}
       </header>
 

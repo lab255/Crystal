@@ -1110,6 +1110,14 @@ export interface BridgeMethods {
     };
     result: { program: Program; run: AgentRun };
   };
+  /**
+   * Close the program-manager session: cancel any live manager run (headless
+   * or interactive) and detach it from the program, so a fresh session can be
+   * started. The run history stays in `hub.runs`; the program itself is
+   * untouched — deliveries keep running and notices queue until a new
+   * manager picks them up.
+   */
+  "hub.closeManager": { params: { programId: string }; result: { program: Program } };
   /** Deliver an owner message into the program manager's session. */
   "hub.message": {
     params: { programId: string; text: string };
@@ -1212,6 +1220,7 @@ export const UNSCOPED_METHODS: readonly BridgeMethodName[] = [
   "hub.questions",
   "hub.answerQuestion",
   "hub.startManager",
+  "hub.closeManager",
   "hub.message",
   "hub.endpoint",
   "hub.runs",

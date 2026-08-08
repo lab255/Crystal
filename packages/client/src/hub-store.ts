@@ -127,6 +127,11 @@ export interface HubState {
     terminal?: { ws: string } | null,
     opts?: { model?: string | null; agentId?: string | null },
   ): Promise<AgentRun>;
+  /**
+   * Close the program-manager session: cancel its live run (if any) and
+   * detach it, so the start buttons return. History stays in `runs`.
+   */
+  closeManager(programId: string): Promise<void>;
   /** Deliver an owner message into the program-manager session. */
   message(programId: string, text: string): Promise<{ queued: boolean }>;
   loadRunEvents(runId: string): Promise<void>;
@@ -338,6 +343,11 @@ export function createHubStore(client: BridgeClient): HubStore {
       upsert(program);
       set((s) => ({ runs: [run, ...s.runs] }));
       return run;
+    },
+
+    async closeManager(programId) {
+      const { program } = await client.request("hub.closeManager", { programId });
+      upsert(program);
     },
 
     async message(programId, text) {

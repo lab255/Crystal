@@ -961,6 +961,9 @@ export async function startCrystalServer(opts: {
       if (!program) throw new Error(`Unknown program: ${programId}`);
       return { program, run };
     },
+    "hub.closeManager": async ({ programId }) => ({
+      program: await requireHub().closeManager(programId),
+    }),
     "hub.message": ({ programId, text }) => requireHub().message(programId, text),
     "hub.questions": async () => ({ questions: await requireHub().allQuestions() }),
     "hub.answerQuestion": ({ programId, questionId, answer, deliveryId, taskId }) =>

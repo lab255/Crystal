@@ -1011,6 +1011,30 @@ export class HubEngine {
     return params;
   }
 
+  /**
+   * Close the manager session: cancel any live program-tagged run (headless
+   * chain turn or interactive PTY — `agents.cancel` settles both) and clear
+   * `managerRunId` so the start buttons come back. The run history keeps its
+   * `program:<id>` tag, so spend attribution survives; pending notices stay
+   * queued and flush into whatever session is started next.
+   */
+  async closeManager(programId: string): Promise<Program> {
+    const program = await this.get(programId);
+    if (!program) throw new Error(`Unknown program: ${programId}`);
+    if (!program.managerRunId) return program;
+    if (this.agents) {
+      const tag = programTag(programId);
+      const live = (await this.agents.list()).filter(
+        (r) => r.tags.includes(tag) && (r.status === "running" || r.status === "queued"),
+      );
+      for (const run of live) await this.agents.cancel(run.id).catch(() => {});
+    }
+    return this.mutate(programId, (current) => {
+      const next: Program = { ...current, managerRunId: null };
+      return { program: next, result: next };
+    });
+  }
+
   private async requireManagerless(programId: string): Promise<Program> {
     const program = await this.get(programId);
     if (!program) throw new Error(`Unknown program: ${programId}`);

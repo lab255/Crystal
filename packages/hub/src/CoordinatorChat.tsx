@@ -1,5 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
-import { Bot, Plus, TerminalSquare } from "lucide-react";
+import {
+  Ban,
+  Bot,
+  Copy,
+  MoreHorizontal,
+  Pause,
+  Play,
+  Plus,
+  TerminalSquare,
+  Trash2,
+  X,
+} from "lucide-react";
 import { isProgramTerminal, type AgentRun, type Program } from "@crystal/core";
 import {
   EMPTY_HUB_EVENTS,
@@ -19,6 +30,8 @@ import {
   Spinner,
   Textarea,
   Tooltip,
+  useContextMenu,
+  type MenuEntry,
 } from "@crystal/ui";
 import { SectionLabel, SpendLine, StatusBadge } from "./common.js";
 
@@ -41,6 +54,11 @@ export function CoordinatorChat() {
   const selectedId = useNav((l) => l.projects?.program) ?? null;
   const nav = useNavUpdate();
   const [creating, setCreating] = useState(false);
+  const closeManager = useHub((s) => s.closeManager);
+  const setPaused = useHub((s) => s.setPaused);
+  const cancelProgram = useHub((s) => s.cancel);
+  const removeProgram = useHub((s) => s.remove);
+  const menu = useContextMenu();
 
   // Live programs first, newest first inside each half — the select's order.
   const ordered = useMemo(() => {
@@ -73,10 +91,69 @@ export function CoordinatorChat() {
   }
 
   const sp = spend[program.id] ?? null;
+  const terminal = isProgramTerminal(program.status);
+
+  // The one management surface for the selected program: reachable from the
+  // "⋯" button and by right-clicking the header. Program cancel/remove had no
+  // UI at all before this — they were store methods only.
+  const programMenu = (p: Program): MenuEntry[] => [
+    { type: "heading", label: p.name },
+    { type: "item", label: "New program…", icon: Plus, onSelect: () => setCreating(true) },
+    {
+      type: "item",
+      label: "Copy program id",
+      icon: Copy,
+      onSelect: () => void navigator.clipboard?.writeText(p.id),
+    },
+    { type: "separator" },
+    {
+      type: "item",
+      label: "Close coordinator session",
+      icon: X,
+      disabled: !p.managerRunId,
+      hint: p.managerRunId ? undefined : "none",
+      onSelect: () => void closeManager(p.id),
+    },
+    ...(isProgramTerminal(p.status)
+      ? []
+      : [
+          {
+            type: "item" as const,
+            label: p.status === "paused" ? "Resume program" : "Pause program",
+            icon: p.status === "paused" ? Play : Pause,
+            onSelect: () => void setPaused(p.id, p.status !== "paused"),
+          },
+        ]),
+    { type: "separator" },
+    isProgramTerminal(p.status)
+      ? {
+          type: "item",
+          label: "Remove program",
+          icon: Trash2,
+          danger: true,
+          onSelect: () => {
+            const fallback = ordered.find((o) => o.id !== p.id);
+            void removeProgram(p.id).then(() =>
+              nav({ projects: { view: "chat", program: fallback?.id ?? null } }),
+            );
+          },
+        }
+      : {
+          type: "item",
+          label: "Cancel program",
+          icon: Ban,
+          danger: true,
+          onSelect: () => void cancelProgram(p.id),
+        },
+  ];
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex shrink-0 items-center gap-2 border-b border-edge px-4 py-2">
+      {menu.element}
+      <div
+        className="flex shrink-0 items-center gap-2 border-b border-edge px-4 py-2"
+        onContextMenu={(e) => menu.open(e, programMenu(program))}
+      >
         <Bot className="h-4 w-4 shrink-0 text-crystal-300" />
         <Select
           size="xs"
@@ -98,6 +175,16 @@ export function CoordinatorChat() {
         <Tooltip content="Start another program">
           <Button variant="ghost" size="icon-sm" aria-label="New program" onClick={() => setCreating(true)}>
             <Plus className="h-3.5 w-3.5" />
+          </Button>
+        </Tooltip>
+        <Tooltip content="Manage this program">
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Program menu"
+            onClick={(e) => menu.open(e, programMenu(program))}
+          >
+            <MoreHorizontal className="h-3.5 w-3.5" />
           </Button>
         </Tooltip>
       </div>
@@ -188,6 +275,7 @@ function ManagerPane({ program }: { program: Program }) {
   const startManager = useHub((s) => s.startManager);
   const message = useHub((s) => s.message);
   const cancelRun = useHub((s) => s.cancelRun);
+  const closeManager = useHub((s) => s.closeManager);
   const activeWs = useWorkspaces((s) => s.activeId);
   const openWsIds = useWorkspaces((s) => s.workspaces);
   const focusTerminal = useTerminals((s) => s.focusTerminal);
@@ -285,6 +373,8 @@ function ManagerPane({ program }: { program: Program }) {
       chain={chain}
       diff={null}
       onCancel={() => cancelRun(viewed.id)}
+      onClose={() => closeManager(program.id)}
+      closeHint="Close the coordinator session — cancels any live turn; the start buttons return"
       onSend={terminal ? undefined : (t) => message(program.id, t)}
       onSelectTurn={(id) => setSelectedRun(id === latest?.id ? null : id)}
       className="min-h-0 flex-1"
