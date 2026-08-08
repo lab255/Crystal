@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.24.0 (2026-08-08)
+
+### Features
+
+- analysis progress, stale-serve refresh, and a real failure path ([`f940826`](https://github.com/lab255/Crystal/commit/f940826))
+- native tabs/windows replace the in-app tab strip; custom titlebar ([`201a58b`](https://github.com/lab255/Crystal/commit/201a58b))
+- notify on settled runs and budget/stall workflow pauses ([`443ee22`](https://github.com/lab255/Crystal/commit/443ee22))
+
+### Bug Fixes
+
+- let pinch/ctrl-wheel zoom through to react-flow and Monaco panes ([`eed47a5`](https://github.com/lab255/Crystal/commit/eed47a5))
+
+### ⚠ BREAKING CHANGES
+
+- native tabs/windows replace the in-app tab strip; custom titlebar ([`201a58b`](https://github.com/lab255/Crystal/commit/201a58b))
+
 ## v0.23.0 (2026-08-08)
 
 ### Features
