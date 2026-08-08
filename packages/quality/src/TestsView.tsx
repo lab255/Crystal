@@ -34,6 +34,11 @@ import {
   useQuality,
   useQualityLens,
 } from "./common.js";
+import {
+  projectQualityFiles,
+  projectQualityRuns,
+  testNamePattern,
+} from "./quality-state.js";
 
 /**
  * Tests — the workspace's own test suite, run from inside Crystal. The file
@@ -50,7 +55,7 @@ interface FileRow {
 }
 
 export function TestsView() {
-  const { info, runs, liveRun, error, run, cancel } = useQuality();
+  const { info, runs, liveRun, infoError, runsError, actionError, run, cancel } = useQuality();
   const nav = useNavUpdate();
   const selectedFile = useNav((l) => l.quality?.file ?? null);
   const selectedTest = useNav((l) => l.quality?.test ?? null);
@@ -60,13 +65,10 @@ export function TestsView() {
   const symbolMenu = useSymbolMenu();
   const lens = useQualityLens();
 
-  // The run everything renders against: explicit selection, else live, else latest.
-  const shownRun: QualityRun | null =
-    runs.find((r) => r.id === selectedRunId) ?? liveRun ?? runs[0] ?? null;
+  const { baseRun: shownRun, rerun } = projectQualityRuns(runs, selectedRunId);
 
   const rows = useMemo<FileRow[]>(() => {
-    const byFile = new Map<string, TestFileResult>();
-    for (const f of shownRun?.files ?? []) byFile.set(f.file, f);
+    const byFile = projectQualityFiles(shownRun, rerun);
     const known = new Set<string>([...(info?.testFiles ?? []), ...byFile.keys()]);
     return [...known]
       .sort()
@@ -76,7 +78,7 @@ export function TestsView() {
         inLens: testFileInLens(lens.matcher, file),
       }))
       .filter((r) => !find || r.file.toLowerCase().includes(find));
-  }, [info, shownRun, find, lens.matcher]);
+  }, [info, shownRun, rerun, find, lens.matcher]);
 
   const lensMemberCount = useMemo(() => rows.filter((r) => r.inLens).length, [rows]);
 
@@ -102,6 +104,13 @@ export function TestsView() {
   }
 
   const running = liveRun != null;
+  const headerError = [
+    infoError ? `Runner detection: ${infoError}` : null,
+    runsError ? `Run history: ${runsError}` : null,
+    actionError,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 
   const fileMenu = (r: FileRow): Parameters<typeof menu.open>[1] => [
     { type: "heading", label: r.file.split("/").at(-1) ?? r.file },
@@ -175,9 +184,10 @@ export function TestsView() {
           </>
         )}
         {shownRun ? <RunSummaryChip run={shownRun} /> : null}
-        {error ? (
-          <span className="min-w-0 truncate text-[10.5px] text-danger" title={error}>
-            {error}
+        {rerun ? <RerunChip run={rerun} /> : null}
+        {headerError ? (
+          <span className="min-w-0 truncate text-[10.5px] text-danger" title={headerError}>
+            {headerError}
           </span>
         ) : null}
         <span className="ml-auto" />
@@ -232,7 +242,9 @@ export function TestsView() {
             <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2">
               {failedFirst.map((r) => {
                 const isRunning =
-                  running && (liveRun!.scope.file == null || liveRun!.scope.file === r.file) && !r.result;
+                  running &&
+                  (liveRun!.scope.file == null || liveRun!.scope.file === r.file) &&
+                  !liveRun!.files.some((file) => file.file === r.file);
                 return (
                   <button
                     key={r.file}
@@ -294,6 +306,35 @@ export function TestsView() {
         {menu.element}
       </Split>
     </div>
+  );
+}
+
+/** Make the projection explicit: this status belongs to one file, not the suite. */
+function RerunChip({ run }: { run: QualityRun }) {
+  const file = run.scope.file?.split("/").at(-1) ?? "file";
+  const status =
+    run.status === "running"
+      ? "running"
+      : run.status === "passed"
+        ? "passed"
+        : run.status === "failed"
+          ? "failed"
+          : run.status;
+  return (
+    <Tooltip content={`Showing the full-suite baseline with fresh results for ${run.scope.file}`}>
+      <span
+        className={cn(
+          "rounded-full px-1.5 py-0.5 text-[10px]",
+          run.status === "failed" || run.status === "error"
+            ? "bg-danger/15 text-danger"
+            : run.status === "running"
+              ? "bg-info/15 text-info"
+              : "bg-ok/15 text-ok",
+        )}
+      >
+        1-file re-run · {file} · {status}
+      </span>
+    </Tooltip>
   );
 }
 
@@ -411,7 +452,7 @@ function FileDetail({
       label: "Run this test",
       icon: Play,
       disabled: running,
-      onSelect: () => onRun({ file: row.file, testName: lastSegment(t.name) }),
+      onSelect: () => onRun({ file: row.file, testName: testNamePattern(t.name) }),
     },
     { type: "separator" },
     // Shared cross-view block — "Open in editor" jumps to the failure line.
@@ -507,12 +548,6 @@ function FileDetail({
       {menu.element}
     </div>
   );
-}
-
-/** "suite > nested > name" → "name" (the `-t` filter target). */
-function lastSegment(name: string): string {
-  const parts = name.split(" > ");
-  return parts[parts.length - 1] ?? name;
 }
 
 function TestRow({

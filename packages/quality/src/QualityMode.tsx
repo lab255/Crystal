@@ -2,9 +2,10 @@ import { useEffect, useRef } from "react";
 import { FlaskConical, RefreshCw, Search, ShieldCheck, Umbrella, X } from "lucide-react";
 import type { QualityViewId } from "@crystal/core";
 import { useNav, useNavUpdate } from "@crystal/client";
-import { Spinner, Tooltip, cn } from "@crystal/ui";
+import { Tooltip, cn } from "@crystal/ui";
 import { CoverageView } from "./CoverageView.js";
 import { QualityProvider, useQuality } from "./common.js";
+import { projectQualityRuns } from "./quality-state.js";
 import { TestsView } from "./TestsView.js";
 
 /**
@@ -50,10 +51,12 @@ function QualityShell() {
     return () => window.removeEventListener("keydown", onKey);
   }, [activeMode]);
 
-  const latest = runs[0] ?? null;
+  const { baseRun: latest, rerun } = projectQualityRuns(runs, null);
   const testBadge =
     liveRun != null
       ? { label: "running", cls: "bg-info/15 text-info" }
+      : rerun?.status === "failed" || rerun?.status === "error"
+        ? { label: "1-file failing", cls: "bg-danger/15 text-danger" }
       : latest?.status === "failed"
         ? { label: `${latest.summary?.failed ?? "!"} failing`, cls: "bg-danger/15 text-danger" }
         : latest?.status === "passed"
@@ -144,11 +147,7 @@ function QualityShell() {
         </div>
       </header>
       <div className="min-h-0 flex-1">
-        {loading && !info ? (
-          <div className="flex h-full items-center justify-center">
-            <Spinner />
-          </div>
-        ) : view === "tests" ? (
+        {view === "tests" ? (
           <TestsView />
         ) : (
           <CoverageView />

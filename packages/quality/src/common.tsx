@@ -11,6 +11,7 @@ import type {
 import { coverageBand, lensLabel } from "@crystal/core";
 import { useCrystal, useLens, useNavUpdate, useWorkspaces } from "@crystal/client";
 import { Spinner, Tooltip, cn } from "@crystal/ui";
+import { loadQualitySources, performQualityAction } from "./quality-state.js";
 
 /* ------------------------------------------------------------------ */
 /* Data: runner info + runs + coverage, live over the bridge           */
@@ -23,8 +24,14 @@ export interface QualityData {
   liveRun: QualityRun | null;
   coverage: CoverageReport | null;
   loading: boolean;
-  error: string | null;
-  /** Start a run; scope/coverage optional. Surfaces errors via `error`. */
+  infoLoading: boolean;
+  runsLoading: boolean;
+  coverageLoading: boolean;
+  infoError: string | null;
+  runsError: string | null;
+  coverageError: string | null;
+  actionError: string | null;
+  /** Start a run; scope/coverage optional. Rejections surface via `actionError`. */
   run: (params: { file?: string; testName?: string; coverage?: boolean }) => void;
   cancel: (runId: string) => void;
   refresh: () => void;
@@ -38,32 +45,60 @@ export function QualityProvider({ children }: { children: React.ReactNode }) {
   const [info, setInfo] = useState<TestRunnerInfo | null>(null);
   const [runs, setRuns] = useState<QualityRun[]>([]);
   const [coverage, setCoverage] = useState<CoverageReport | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [infoLoading, setInfoLoading] = useState(true);
+  const [runsLoading, setRunsLoading] = useState(true);
+  const [coverageLoading, setCoverageLoading] = useState(true);
+  const [infoError, setInfoError] = useState<string | null>(null);
+  const [runsError, setRunsError] = useState<string | null>(null);
+  const [coverageError, setCoverageError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [generation, setGeneration] = useState(0);
+
+  useEffect(() => {
+    setInfo(null);
+    setRuns([]);
+    setCoverage(null);
+    setInfoError(null);
+    setRunsError(null);
+    setCoverageError(null);
+    setActionError(null);
+    setInfoLoading(activeWs != null);
+    setRunsLoading(activeWs != null);
+    setCoverageLoading(activeWs != null);
+  }, [activeWs]);
 
   useEffect(() => {
     if (!activeWs) return;
     let cancelled = false;
-    setLoading(true);
-    Promise.all([
-      client.request("quality.detect", {}),
-      client.request("quality.runs", {}),
-      client.request("quality.coverage", {}),
-    ])
-      .then(([detected, runList, cov]) => {
+    setInfoLoading(true);
+    setRunsLoading(true);
+    setCoverageLoading(true);
+    setInfoError(null);
+    setRunsError(null);
+    setCoverageError(null);
+    void loadQualitySources(
+      {
+        info: () => client.request("quality.detect", {}),
+        runs: () => client.request("quality.runs", {}).then((result) => result.runs),
+        coverage: () => client.request("quality.coverage", {}).then((result) => result.coverage),
+      },
+      (result) => {
         if (cancelled) return;
-        setInfo(detected);
-        setRuns(runList.runs);
-        setCoverage(cov.coverage);
-        setError(null);
-      })
-      .catch((err: Error) => {
-        if (!cancelled) setError(err.message);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
+        if (result.source === "info") {
+          setInfoLoading(false);
+          if ("error" in result) setInfoError(result.error);
+          else setInfo(result.data);
+        } else if (result.source === "runs") {
+          setRunsLoading(false);
+          if ("error" in result) setRunsError(result.error);
+          else setRuns(result.data);
+        } else {
+          setCoverageLoading(false);
+          if ("error" in result) setCoverageError(result.error);
+          else setCoverage(result.data);
+        }
+      },
+    );
     return () => {
       cancelled = true;
     };
@@ -71,6 +106,7 @@ export function QualityProvider({ children }: { children: React.ReactNode }) {
 
   // Live: replace/insert the changed run; refetch coverage when it lands.
   useEffect(() => {
+    let disposed = false;
     const d1 = client.events.on("quality.runChanged", ({ ws, run }) => {
       if (ws !== activeWs) return;
       setRuns((prev) => {
@@ -83,12 +119,22 @@ export function QualityProvider({ children }: { children: React.ReactNode }) {
     });
     const d2 = client.events.on("quality.coverageChanged", ({ ws }) => {
       if (ws !== activeWs) return;
+      setCoverageLoading(true);
+      setCoverageError(null);
       client
         .request("quality.coverage", {})
-        .then((cov) => setCoverage(cov.coverage))
-        .catch(() => {});
+        .then((cov) => {
+          if (!disposed) setCoverage(cov.coverage);
+        })
+        .catch((err: Error) => {
+          if (!disposed) setCoverageError(err.message);
+        })
+        .finally(() => {
+          if (!disposed) setCoverageLoading(false);
+        });
     });
     return () => {
+      disposed = true;
       d1();
       d2();
     };
@@ -97,25 +143,32 @@ export function QualityProvider({ children }: { children: React.ReactNode }) {
   const nav = useNavUpdate();
   const run = useCallback(
     (params: { file?: string; testName?: string; coverage?: boolean }) => {
-      setError(null);
+      setActionError(null);
       // A new run supersedes any pinned historical run — otherwise the view
       // stays frozen on the pin and the fresh results never appear.
       nav({ quality: { run: null } });
-      client
-        .request("quality.run", params)
-        .then(({ run: started }) => {
+      void performQualityAction(
+        () => client.request("quality.run", params),
+        setActionError,
+      ).then((result) => {
+        if (result) {
+          const started = result.run;
           setRuns((prev) =>
             prev.some((r) => r.id === started.id) ? prev : [started, ...prev].slice(0, 20),
           );
-        })
-        .catch((err: Error) => setError(err.message));
+        }
+      });
     },
     [client, nav],
   );
 
   const cancel = useCallback(
     (runId: string) => {
-      client.request("quality.cancel", { runId }).catch(() => {});
+      setActionError(null);
+      void performQualityAction(
+        () => client.request("quality.cancel", { runId }),
+        setActionError,
+      );
     },
     [client],
   );
@@ -123,10 +176,27 @@ export function QualityProvider({ children }: { children: React.ReactNode }) {
   const refresh = useCallback(() => setGeneration((g) => g + 1), []);
 
   const liveRun = useMemo(() => runs.find((r) => r.status === "running") ?? null, [runs]);
+  const loading = infoLoading || runsLoading || coverageLoading;
 
   return (
     <QualityCtx.Provider
-      value={{ info, runs, liveRun, coverage, loading, error, run, cancel, refresh }}
+      value={{
+        info,
+        runs,
+        liveRun,
+        coverage,
+        loading,
+        infoLoading,
+        runsLoading,
+        coverageLoading,
+        infoError,
+        runsError,
+        coverageError,
+        actionError,
+        run,
+        cancel,
+        refresh,
+      }}
     >
       {children}
     </QualityCtx.Provider>
