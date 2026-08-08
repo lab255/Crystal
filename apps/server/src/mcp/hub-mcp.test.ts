@@ -128,6 +128,7 @@ describe("McpHubServer protocol", () => {
     });
     const boundNames = (bound!.result as { tools: { name: string }[] }).tools.map((t) => t.name);
     expect(boundNames).not.toContain("create_program");
+    expect(boundNames).not.toContain("dispatch_epic");
     expect(boundNames).toContain("dispatch_program");
   });
 
@@ -357,6 +358,10 @@ describe("program scoping", () => {
     const create = await call(server, "create_program", { name: "n", goal: "g" });
     expect(create.isError).toBe(true);
     expect(host.createProgram).not.toHaveBeenCalled();
+
+    const epic = await call(server, "dispatch_epic", { project: "ws-auth", goal: "g" });
+    expect(epic.isError).toBe(true);
+    expect(host.dispatchEpic).not.toHaveBeenCalled();
   });
 
   it("answers a project's question and says the asker resumed", async () => {

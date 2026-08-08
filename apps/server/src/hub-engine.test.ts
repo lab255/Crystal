@@ -36,6 +36,7 @@ class FakeProjects implements HubProjects {
   compacted: string[] = [];
   workflows = new Map<string, Workflow>();
   spend = new Map<string, number>();
+  nullSpend = new Set<string>();
   /** Roots that cannot be opened, mapped to the failure message. */
   broken = new Map<string, string>();
 
@@ -93,6 +94,7 @@ class FakeProjects implements HubProjects {
 
   async workflowSpend(_ws: string, workflowId: string) {
     if (this.unreachable.has(workflowId)) throw new Error("Unknown workspace: ws-auth");
+    if (this.nullSpend.has(workflowId)) return null;
     if (!this.workflows.has(workflowId)) return null;
     return { costUsd: this.spend.get(workflowId) ?? 0, totalTokens: 1000, runCount: 1, liveRunCount: 0 };
   }
@@ -360,6 +362,40 @@ describe("HubEngine", () => {
     expect((await hub.get(second.id))!.deliveries[0]!.status).toBe("running");
   });
 
+  it("serializes concurrent dispatches from different programs into one project", async () => {
+    const { hub, projects } = await fresh("cross-program-lock-race");
+    const first = await hub.create({ name: "First", goal: "g" });
+    await hub.addDelivery(first.id, { projectRoot: "/repos/auth-service", brief: "a" });
+    const second = await hub.create({ name: "Second", goal: "g" });
+    await hub.addDelivery(second.id, { projectRoot: "/repos/auth-service", brief: "b" });
+
+    const originalStart = projects.startWorkflow.bind(projects);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let entered!: () => void;
+    const firstEntered = new Promise<void>((resolve) => (entered = resolve));
+    let startCalls = 0;
+    projects.startWorkflow = async (ws, init) => {
+      startCalls += 1;
+      if (startCalls === 1) entered();
+      await gate;
+      return originalStart(ws, init);
+    };
+
+    const firstDispatch = hub.dispatch(first.id);
+    await firstEntered;
+    const secondDispatch = hub.dispatch(second.id);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    release();
+    const reports = await Promise.all([firstDispatch, secondDispatch]);
+
+    expect(startCalls).toBe(1);
+    expect(reports.flatMap((report) => report.dispatched)).toHaveLength(1);
+    expect(reports.flatMap((report) => report.skipped)[0]!.reason).toMatch(
+      /already running .* of program/,
+    );
+  });
+
   it("frees the project for other programs on failure and on cancel, not just success", async () => {
     const { hub, projects } = await fresh("portfolio-sweep");
     const first = await hub.create({ name: "First", goal: "g" });
@@ -464,6 +500,35 @@ describe("HubEngine", () => {
     expect(projects.cancelled).toEqual([report.dispatched[0]!.workflowId]);
     expect(cancelled.status).toBe("cancelled");
     expect(cancelled.deliveries[0]!.status).toBe("cancelled");
+  });
+
+  it("cancels a workflow created while cancellation waits for dispatch", async () => {
+    const { hub, projects } = await fresh("cancel-dispatch-race");
+    const program = await hub.create({ name: "P", goal: "g" });
+    await hub.addDelivery(program.id, { projectRoot: "/repos/auth-service", brief: "b" });
+
+    const originalStart = projects.startWorkflow.bind(projects);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let entered!: () => void;
+    const dispatchEntered = new Promise<void>((resolve) => (entered = resolve));
+    projects.startWorkflow = async (ws, init) => {
+      entered();
+      await gate;
+      return originalStart(ws, init);
+    };
+
+    const dispatch = hub.dispatch(program.id);
+    await dispatchEntered;
+    const cancel = hub.cancel(program.id);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    release();
+    const [report, cancelled] = await Promise.all([dispatch, cancel]);
+    const workflowId = report.dispatched[0]!.workflowId;
+
+    expect(projects.cancelled).toContain(workflowId);
+    expect(projects.workflows.get(workflowId)!.status).toBe("cancelled");
+    expect(cancelled.status).toBe("cancelled");
   });
 
   it("steers one project's orchestrator without leaving the program", async () => {
@@ -576,6 +641,35 @@ describe("HubEngine", () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(agents.resumes.length).toBeGreaterThan(0);
     expect(agents.resumes[0]).toContain("settled: completed");
+  });
+
+  it("serializes concurrent manager starts so only one session is spawned", async () => {
+    const { hub, agents } = await fresh("manager-start-race");
+    const program = await hub.create({ name: "P", goal: "g" });
+    const originalStart = agents.start.bind(agents);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let entered!: () => void;
+    const firstEntered = new Promise<void>((resolve) => (entered = resolve));
+    let startCalls = 0;
+    agents.start = async (params) => {
+      startCalls += 1;
+      if (startCalls === 1) entered();
+      await gate;
+      return originalStart(params);
+    };
+
+    const first = hub.startManager(program.id);
+    await firstEntered;
+    const second = hub.startManager(program.id);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    release();
+    const settled = await Promise.allSettled([first, second]);
+
+    expect(startCalls).toBe(1);
+    expect(settled.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(settled.filter((result) => result.status === "rejected")).toHaveLength(1);
+    expect((await hub.get(program.id))!.managerRunId).toBe(agents.runs[0]!.id);
   });
 
   it("catches up on a workflow that settled while the server was down", async () => {
@@ -976,5 +1070,18 @@ describe("HubEngine spend integrity", () => {
     // and the status text has to say so rather than quietly under-reporting.
     expect(programBudgetState((await hub.get(program.id))!, spend).exhausted).toBe(false);
     expect(await hub.statusText(program.id)).toContain("INCOMPLETE");
+  });
+
+  it("marks the rollup incomplete when a live spend adapter returns null", async () => {
+    const projects = new FakeProjects([...PROJECTS]);
+    const hub = new HubEngine(path.join(dir, "null-spend"), projects, null);
+    const program = await hub.create({ name: "P", goal: "g" });
+    await hub.addDelivery(program.id, { projectRoot: "/repos/auth-service", brief: "b" });
+    const workflowId = (await hub.dispatch(program.id)).dispatched[0]!.workflowId;
+    projects.nullSpend.add(workflowId);
+
+    const spend = await hub.spend(program.id);
+    expect(spend.costUsd).toBe(0);
+    expect(spend.stale).toBe(true);
   });
 });

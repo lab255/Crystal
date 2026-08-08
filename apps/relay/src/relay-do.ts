@@ -1,4 +1,9 @@
-import { HOST_TOKEN_MIN_LEN, type HostToRelay, type RelayToHost } from "./protocol.js";
+import {
+  HOST_TOKEN_MIN_LEN,
+  PUBLISH_PASSWORD_MIN_LEN,
+  type HostToRelay,
+  type RelayToHost,
+} from "./protocol.js";
 
 // One BridgeRelayDO per published instance (idFromName(instanceId)).
 //
@@ -239,11 +244,16 @@ export class BridgeRelayDO {
       } catch {
         return json(400, { error: "expected JSON body" });
       }
-      if (typeof body.password === "string" && body.password.length >= 8) {
+      if (
+        typeof body.password === "string" &&
+        body.password.length >= PUBLISH_PASSWORD_MIN_LEN
+      ) {
         await this.setPassword(body.password);
         return json(200, { ok: true });
       }
-      return json(400, { error: "password must be at least 8 characters" });
+      return json(400, {
+        error: `password must be at least ${PUBLISH_PASSWORD_MIN_LEN} characters`,
+      });
     }
 
     if (action === "host") {

@@ -75,9 +75,20 @@ const DEFAULT_SETTINGS: PublishSettings = {
   hasPassword: false,
 };
 
+const RELAY_PROTOCOLS = new Set(["ws:", "wss:", "http:", "https:"]);
+
+/** Parse a relay origin without admitting local-file or custom URL handlers. */
+function parseRelayUrl(relayUrl: string): URL {
+  const url = new URL(relayUrl);
+  if (!RELAY_PROTOCOLS.has(url.protocol)) {
+    throw new Error("The relay URL must use ws, wss, http, or https.");
+  }
+  return url;
+}
+
 /** Host-socket URL for a stored relay origin (http(s) → ws(s)). */
 function hostSocketUrl(relayUrl: string, instanceId: string): string {
-  const u = new URL(relayUrl);
+  const u = parseRelayUrl(relayUrl);
   if (u.protocol === "http:") u.protocol = "ws:";
   else if (u.protocol === "https:") u.protocol = "wss:";
   const base = u.toString().replace(/\/+$/, "");
@@ -114,9 +125,20 @@ export class PublishManager {
   private async load(): Promise<void> {
     try {
       const raw = JSON.parse(await fs.readFile(this.port.file, "utf8")) as Partial<PublishSettings>;
+      const storedRelayUrl = typeof raw.relayUrl === "string" ? raw.relayUrl : null;
+      let relayUrl: string | null = null;
+      if (storedRelayUrl !== null) {
+        try {
+          parseRelayUrl(storedRelayUrl);
+          relayUrl = storedRelayUrl;
+        } catch {
+          // Old versions admitted any parseable URL. Treat a poisoned setting
+          // as disabled rather than handing it to WebSocket on every startup.
+        }
+      }
       this.settings = {
-        enabled: raw.enabled === true,
-        relayUrl: typeof raw.relayUrl === "string" ? raw.relayUrl : null,
+        enabled: raw.enabled === true && relayUrl !== null,
+        relayUrl,
         instanceId: typeof raw.instanceId === "string" ? raw.instanceId : null,
         hostToken: typeof raw.hostToken === "string" ? raw.hostToken : null,
         hasPassword: raw.hasPassword === true,
@@ -169,7 +191,7 @@ export class PublishManager {
     const prev = this.settings;
     const next: PublishSettings = { ...prev };
     if (params.relayUrl !== undefined && params.relayUrl !== next.relayUrl) {
-      if (params.relayUrl !== null) new URL(params.relayUrl); // throws on garbage
+      if (params.relayUrl !== null) parseRelayUrl(params.relayUrl);
       next.relayUrl = params.relayUrl;
     }
     if (params.enabled !== undefined) next.enabled = params.enabled;
@@ -187,7 +209,6 @@ export class PublishManager {
       if (password.length < PUBLISH_PASSWORD_MIN_LEN) {
         throw new Error(`The access password must be at least ${PUBLISH_PASSWORD_MIN_LEN} characters.`);
       }
-      next.hasPassword = true;
     }
 
     const relayChanged = next.relayUrl !== prev.relayUrl;
@@ -202,6 +223,8 @@ export class PublishManager {
       // Apply immediately over HTTP so a live connection needs no bounce; the
       // pending header copy stays armed until a connect actually succeeds.
       await this.postPassword(s.relayUrl, s.instanceId, s.hostToken, password);
+      this.settings = { ...this.settings, hasPassword: true };
+      await this.persist();
     }
 
     if (!s.enabled || relayChanged) this.disconnect();
@@ -232,7 +255,8 @@ export class PublishManager {
       return; // unparseable stored URL — configure() validates new ones
     }
     const headers: Record<string, string> = { authorization: `Bearer ${hostToken}` };
-    if (this.pendingPassword) headers["x-crystal-access-password"] = this.pendingPassword;
+    const passwordOnConnect = this.pendingPassword;
+    if (passwordOnConnect) headers["x-crystal-access-password"] = passwordOnConnect;
 
     const ws = new WebSocket(url, { headers });
     this.socket = ws;
@@ -244,7 +268,16 @@ export class PublishManager {
       if (ws !== this.socket) return;
       this.connected = true;
       this.backoffMs = RECONNECT_MIN_MS;
-      this.pendingPassword = null; // it rode this connect's header
+      if (passwordOnConnect) {
+        // An accepted host upgrade applied the header password. A newer
+        // pending value may have arrived while this socket was dialing; only
+        // clear the copy that actually rode this connection.
+        if (this.pendingPassword === passwordOnConnect) this.pendingPassword = null;
+        this.settings = { ...this.settings, hasPassword: true };
+        void this.persist().catch((err) => {
+          console.warn("[crystal] could not persist relay password status:", (err as Error).message);
+        });
+      }
       this.startKeepalive();
       this.port.onChanged(this.snapshot());
     });
@@ -385,18 +418,17 @@ export class PublishManager {
     hostToken: string,
     password: string,
   ): Promise<void> {
-    try {
-      await fetch(configUrl(relayUrl, instanceId), {
-        method: "POST",
-        headers: { authorization: `Bearer ${hostToken}`, "content-type": "application/json" },
-        body: JSON.stringify({ password }),
-      });
-      // Applied — no need to re-set it on the next reconnect (setting a
-      // password invalidates every remote session, so don't do it twice).
-      this.pendingPassword = null;
-    } catch {
-      // Relay unreachable: the pending header copy applies it on reconnect.
+    const response = await fetch(configUrl(relayUrl, instanceId), {
+      method: "POST",
+      headers: { authorization: `Bearer ${hostToken}`, "content-type": "application/json" },
+      body: JSON.stringify({ password }),
+    });
+    if (!response.ok) {
+      throw new Error(`Relay rejected the access password (HTTP ${response.status}).`);
     }
+    // Applied — no need to re-set it on the next reconnect (setting a
+    // password invalidates every remote session, so don't do it twice).
+    this.pendingPassword = null;
   }
 
   private snapshot(): PublishStatus {

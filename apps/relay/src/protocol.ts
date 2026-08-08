@@ -20,4 +20,6 @@ export type HostToRelay =
   | { t: "close"; ch: string };
 
 export const HOST_TOKEN_MIN_LEN = 32;
+/** Keep in lockstep with PUBLISH_PASSWORD_MIN_LEN in packages/core/src/publish.ts. */
+export const PUBLISH_PASSWORD_MIN_LEN = 8;
 export const INSTANCE_ID_RE = /^[a-zA-Z0-9_-]{6,64}$/;
