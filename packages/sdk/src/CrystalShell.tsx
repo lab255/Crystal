@@ -141,15 +141,19 @@ export function CrystalShell({
   useEffect(() => initTheme(), []);
 
   // The shell is an app, not a document: suppress page-level zoom (ctrl/pinch
-  // wheel and WebKit gesture magnification) at the document. Canvas zoom
-  // (react-flow, Monaco) attaches its own handlers and is unaffected —
-  // preventDefault only cancels the browser's whole-page scale. Page scroll
-  // is locked in CSS (html/body overflow hidden, see ui/styles.css).
+  // wheel and WebKit gesture magnification) outside panes that own zoom. In
+  // WebKit, allowing gestures inside react-flow keeps its ctrl-wheel stream
+  // alive; Monaco handles ctrl-wheel itself. Page scroll is locked in CSS
+  // (html/body overflow hidden, see ui/styles.css).
   useEffect(() => {
+    const inZoomablePane = (e: Event) =>
+      e.target instanceof Element && !!e.target.closest(".react-flow, .monaco-editor");
     const onWheel = (e: WheelEvent) => {
-      if (e.ctrlKey) e.preventDefault();
+      if (e.ctrlKey && !inZoomablePane(e)) e.preventDefault();
     };
-    const onGesture = (e: Event) => e.preventDefault();
+    const onGesture = (e: Event) => {
+      if (!inZoomablePane(e)) e.preventDefault();
+    };
     document.addEventListener("wheel", onWheel, { passive: false });
     document.addEventListener("gesturestart", onGesture);
     document.addEventListener("gesturechange", onGesture);
