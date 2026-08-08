@@ -1,20 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import {
-  ArrowDown,
-  ArrowUp,
-  Focus,
-  FolderGit2,
-  GitBranch,
-  Loader2,
-  RefreshCw,
-} from "lucide-react";
-import {
-  suggestIndexFacets,
-  type GitStatusResult,
-  type GitSyncOp,
-  type IndexFacetSuggestion,
-} from "@crystal/core";
-import { useCrystal, useGitRefs, useNav, useNavUpdate, useWorkspaces } from "@crystal/client";
+import { ArrowDown, ArrowUp, FolderGit2, GitBranch, Loader2, RefreshCw } from "lucide-react";
+import { type GitStatusResult, type GitSyncOp } from "@crystal/core";
+import { useCrystal, useGitRefs, useWorkspaces } from "@crystal/client";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -24,38 +11,28 @@ import {
   DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-  cn,
 } from "@crystal/ui";
 
 /**
- * Top-navbar dropdown for the active workspace's git state: switch local
- * branches, jump between linked worktrees (each opens as its own workspace),
- * and drop a facet lens over the code graph. Hidden when nothing is open.
+ * Top-navbar dropdown for the active workspace's git state: remote sync,
+ * switch local branches, jump between linked worktrees (each opens as its own
+ * workspace). Hidden when nothing is open. Lenses/facets live in the LensBar —
+ * this menu is git only.
  */
 export function BranchSwitcher() {
   const { client } = useCrystal();
   const activeWsId = useWorkspaces((s) => s.activeId);
   const openWorkspace = useWorkspaces((s) => s.openWorkspace);
-  const lensParam = useNav((l) => l.lens ?? null);
-  const updateNav = useNavUpdate();
 
   // Shared refs fetch (branches + worktrees; no commits needed here) — the
   // hook clears on workspace switch so another repo's branches never linger.
   const { refs, error: refsError, load: loadRefs, reload: reloadRefs } = useGitRefs({
     commitLimit: 0,
   });
-  const [facets, setFacets] = useState<IndexFacetSuggestion[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<GitStatusResult | null>(null);
   const [syncing, setSyncing] = useState<GitSyncOp | null>(null);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
-
-  const loadFacets = useCallback(() => {
-    client
-      .request("codeindex.get", {})
-      .then((res) => setFacets(suggestIndexFacets(res.index).slice(0, 6)))
-      .catch(() => setFacets([]));
-  }, [client]);
 
   // Ahead/behind for the trigger badge and the Pull/Push rows — quietly
   // absent when the workspace isn't a repo.
@@ -70,8 +47,7 @@ export function BranchSwitcher() {
     setError(null);
     loadRefs();
     loadStatus();
-    loadFacets();
-  }, [loadRefs, loadStatus, loadFacets]);
+  }, [loadRefs, loadStatus]);
 
   // Opening the menu re-fetches — branches move underneath us (fetches,
   // checkouts in a terminal…).
@@ -79,13 +55,11 @@ export function BranchSwitcher() {
     setError(null);
     reloadRefs();
     loadStatus();
-    loadFacets();
-  }, [reloadRefs, loadStatus, loadFacets]);
+  }, [reloadRefs, loadStatus]);
 
   // The trigger shows the current branch, so refresh on workspace switch too —
   // not just when the menu opens. Stale data is cleared first.
   useEffect(() => {
-    setFacets(null);
     setStatus(null);
     setError(null);
     setSyncMsg(null);
@@ -143,13 +117,6 @@ export function BranchSwitcher() {
       }
     },
     [openWorkspace],
-  );
-
-  const applyLens = useCallback(
-    (s: IndexFacetSuggestion) => {
-      updateNav({ mode: "architect", architect: { view: "architecture" }, lens: s.tags.join(",") });
-    },
-    [updateNav],
   );
 
   if (!activeWsId) return null;
@@ -307,44 +274,6 @@ export function BranchSwitcher() {
               </DropdownMenuItem>
             ))}
           </>
-        ) : null}
-
-        <DropdownMenuSeparator />
-        <DropdownMenuLabel>Facet lens</DropdownMenuLabel>
-        {facets && facets.length > 0 ? (
-          <DropdownMenuRadioGroup
-            value={lensParam ?? ""}
-            onValueChange={(param) => {
-              const s = facets.find((f) => f.tags.join(",") === param);
-              if (s) applyLens(s);
-            }}
-          >
-            {facets.map((s) => {
-              const param = s.tags.join(",");
-              const active = lensParam === param;
-              return (
-                <DropdownMenuRadioItem key={param} value={param} className="gap-2">
-                  <Focus className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
-                  <span className="min-w-0 flex-1 truncate">{s.name}</span>
-                  <span className={cn("shrink-0 text-[10px]", active ? "text-ok" : "text-ink-faint")}>
-                    {active ? "active" : `${s.members} members`}
-                  </span>
-                </DropdownMenuRadioItem>
-              );
-            })}
-          </DropdownMenuRadioGroup>
-        ) : (
-          <div className="px-2 py-1 text-[11px] text-ink-faint">
-            No facets yet — run indexing from Jobs
-          </div>
-        )}
-        {lensParam ? (
-          <DropdownMenuItem
-            onSelect={() => updateNav({ lens: null })}
-            className="gap-2 text-ink-muted"
-          >
-            <Focus className="h-3.5 w-3.5 shrink-0" /> Clear lens
-          </DropdownMenuItem>
         ) : null}
       </DropdownMenuContent>
     </DropdownMenu>

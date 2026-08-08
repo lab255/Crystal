@@ -68,9 +68,14 @@
     color-scheme: dark;
   }
 
+  /* The app owns the viewport: the document itself never scrolls, rubber-bands
+     or pans — only inner panes do. Pinch/ctrl-wheel page zoom is suppressed in
+     the shell (see CrystalShell); canvas zoom (react-flow, Monaco) is unaffected. */
   html,
   body {
     height: 100%;
+    overflow: hidden;
+    overscroll-behavior: none;
   }
 
   body {

@@ -12,6 +12,8 @@ import {
   createWorkspaceFacet,
   formatLensParam,
   lensLabel,
+  suggestIndexFacets,
+  type IndexFacetSuggestion,
   type LensSpec,
 } from "@crystal/core";
 import { RefCombobox, useCrystal, useLens, useNav, useNavUpdate, useWorkspaces } from "@crystal/client";
@@ -49,7 +51,7 @@ export interface LensBarProps {
  * a fresh agent console.
  */
 export function LensBar({ onOpenTerminal }: LensBarProps) {
-  const { lensStore, terminalsStore } = useCrystal();
+  const { client, lensStore, terminalsStore } = useCrystal();
   const activeWsId = useWorkspaces((s) => s.activeId);
   const activeWsRoot = useWorkspaces(
     (s) => s.workspaces.find((w) => w.id === s.activeId)?.root ?? null,
@@ -66,6 +68,7 @@ export function LensBar({ onOpenTerminal }: LensBarProps) {
   const facetsWs = useLens((s) => s.facetsWs);
 
   const [menuOpen, setMenuOpen] = useState(false);
+  const [suggested, setSuggested] = useState<IndexFacetSuggestion[] | null>(null);
   const [refValue, setRefValue] = useState("");
   const [saveOpen, setSaveOpen] = useState(false);
   const [saveName, setSaveName] = useState("");
@@ -73,7 +76,8 @@ export function LensBar({ onOpenTerminal }: LensBarProps) {
   const [askText, setAskText] = useState("");
   const [barError, setBarError] = useState<string | null>(null);
 
-  // Saved facets load lazily when the menu opens (cached per workspace).
+  // Saved facets load lazily when the menu opens (cached per workspace);
+  // suggested facets ride the same open (from the code index, best-effort).
   const onMenuOpenChange = useCallback(
     (open: boolean) => {
       setMenuOpen(open);
@@ -82,9 +86,13 @@ export function LensBar({ onOpenTerminal }: LensBarProps) {
           .getState()
           .loadFacets(activeWsId)
           .catch((err: Error) => setBarError(err.message));
+        client
+          .request("codeindex.get", {})
+          .then((res) => setSuggested(suggestIndexFacets(res.index).slice(0, 6)))
+          .catch(() => setSuggested([]));
       }
     },
-    [activeWsId, lensStore],
+    [activeWsId, lensStore, client],
   );
 
   const setLens = useCallback(
@@ -223,6 +231,31 @@ export function LensBar({ onOpenTerminal }: LensBarProps) {
                 >
                   <Trash2 className="h-3 w-3" />
                 </button>
+              </DropdownMenuRadioItem>
+            );
+          })}
+        </DropdownMenuRadioGroup>
+      )}
+
+      <DropdownMenuSeparator />
+      <DropdownMenuLabel>Suggested facets</DropdownMenuLabel>
+      {suggested === null ? (
+        <div className="flex items-center gap-2 px-2 py-1 text-[11px] text-ink-faint">
+          <Spinner className="h-3 w-3" /> loading…
+        </div>
+      ) : suggested.length === 0 ? (
+        <div className="px-2 py-1 text-[11px] text-ink-faint">
+          No suggestions yet — run indexing from Jobs
+        </div>
+      ) : (
+        <DropdownMenuRadioGroup value={lensParam ?? ""} onValueChange={setLens}>
+          {suggested.map((s) => {
+            const param = s.tags.join(",");
+            return (
+              <DropdownMenuRadioItem key={param} value={param} className="gap-2">
+                <Sparkles className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
+                <span className="min-w-0 flex-1 truncate">{s.name}</span>
+                <span className="shrink-0 text-[10px] text-ink-faint">{s.members} members</span>
               </DropdownMenuRadioItem>
             );
           })}

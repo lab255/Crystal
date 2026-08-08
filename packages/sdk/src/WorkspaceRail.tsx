@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import {
   ChevronsLeft,
   ChevronsRight,
+  FolderGit2,
   FolderOpen,
   LayoutGrid,
   Plug,
@@ -42,6 +43,7 @@ import {
 } from "@crystal/ui";
 import { isCrossProjectMode, type CrystalMode } from "./modes.js";
 import { ConnectBridgeDialog } from "./ConnectBridgeDialog.js";
+import { DevServersButton } from "./DevServersButton.js";
 import { OpenWorkspaceDialog } from "./OpenWorkspaceDialog.js";
 import { RecentWorkspaceRowContent } from "./RecentWorkspaceRow.js";
 
@@ -58,8 +60,12 @@ export function WorkspaceRail({
   attention,
   hubBadge,
   hubWarns,
+  gitOpen,
+  terminalOpen,
   onHome,
   onHub,
+  onToggleGit,
+  onToggleTerminal,
   onSelectWorkspace,
   onOpenSettings,
 }: {
@@ -68,8 +74,12 @@ export function WorkspaceRail({
   attention: TrafficLight;
   hubBadge: number;
   hubWarns: boolean;
+  gitOpen: boolean;
+  terminalOpen: boolean;
   onHome: () => void;
   onHub: () => void;
+  onToggleGit: () => void;
+  onToggleTerminal: () => void;
   onSelectWorkspace: (sid: string, id: string) => void;
   onOpenSettings: () => void;
 }) {
@@ -393,10 +403,58 @@ export function WorkspaceRail({
           </DropdownMenu>
         </div>
 
+        {/* Workspace tools: runners (dev servers), git tree, terminal — the
+            panel toggles live on the rail so they're one click away from any
+            mode, cross-project ones included. */}
+        <div
+          className={cn(
+            "mt-2 flex shrink-0 gap-1 border-t border-edge pt-1.5",
+            expanded ? "flex-row items-center justify-center" : "flex-col items-center",
+          )}
+        >
+          <DevServersButton />
+          <Tooltip content="Git tree & log" shortcut="Ctrl+Shift+G" side={expanded ? "top" : "right"}>
+            <button
+              type="button"
+              onClick={onToggleGit}
+              aria-label="Toggle git panel"
+              aria-pressed={gitOpen}
+              className={cn(
+                "flex h-9 w-9 items-center justify-center rounded-lg transition-colors",
+                gitOpen
+                  ? "bg-crystal-500/20 text-crystal-300"
+                  : "text-ink-faint hover:bg-surface-3 hover:text-ink-muted",
+              )}
+            >
+              <FolderGit2 className="h-4 w-4" />
+            </button>
+          </Tooltip>
+          <Tooltip
+            content="Toggle the terminal panel"
+            shortcut="Ctrl+`"
+            side={expanded ? "top" : "right"}
+          >
+            <button
+              type="button"
+              onClick={onToggleTerminal}
+              aria-label="Toggle terminal panel"
+              aria-pressed={terminalOpen}
+              className={cn(
+                "flex h-9 w-9 items-center justify-center rounded-lg transition-colors",
+                terminalOpen
+                  ? "bg-crystal-500/20 text-crystal-300"
+                  : "text-ink-faint hover:bg-surface-3 hover:text-ink-muted",
+              )}
+            >
+              <TerminalSquare className="h-4 w-4" />
+            </button>
+          </Tooltip>
+        </div>
+
         {/* Bottom: collapse toggle + settings. */}
         <div
           className={cn(
-            "mt-2 flex shrink-0 flex-col gap-1 border-t border-edge pt-1.5",
+            "mt-1.5 flex shrink-0 flex-col gap-1 border-t border-edge pt-1.5",
             expanded ? "" : "items-center",
           )}
         >

@@ -1,5 +1,15 @@
 import { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
-import { Check, ChevronRight, DownloadCloud, Gem, Inbox, Link2, Search } from "lucide-react";
+import {
+  ArrowLeft,
+  ArrowRight,
+  Check,
+  ChevronRight,
+  DownloadCloud,
+  Gem,
+  Inbox,
+  Link2,
+  Search,
+} from "lucide-react";
 import {
   countOpenQuestions,
   countUnrecoveredFailures,
@@ -44,6 +54,7 @@ import {
 import { GitPanel } from "./GitPanel.js";
 import { NeedsYouPill } from "./NeedsYouPill.js";
 import { ProjectNav } from "./ProjectNav.js";
+import { ProjectMenu, ProjectSwitcher } from "./ProjectSwitcher.js";
 import { SettingsDialog } from "./SettingsDialog.js";
 import { TerminalPanel } from "./TerminalPanel.js";
 import { WorkspaceRail } from "./WorkspaceRail.js";
@@ -129,6 +140,28 @@ export function CrystalShell({
 
   // Theme preference lands on <html> before anything paints twice.
   useEffect(() => initTheme(), []);
+
+  // The shell is an app, not a document: suppress page-level zoom (ctrl/pinch
+  // wheel and WebKit gesture magnification) at the document. Canvas zoom
+  // (react-flow, Monaco) attaches its own handlers and is unaffected —
+  // preventDefault only cancels the browser's whole-page scale. Page scroll
+  // is locked in CSS (html/body overflow hidden, see ui/styles.css).
+  useEffect(() => {
+    const onWheel = (e: WheelEvent) => {
+      if (e.ctrlKey) e.preventDefault();
+    };
+    const onGesture = (e: Event) => e.preventDefault();
+    document.addEventListener("wheel", onWheel, { passive: false });
+    document.addEventListener("gesturestart", onGesture);
+    document.addEventListener("gesturechange", onGesture);
+    document.addEventListener("gestureend", onGesture);
+    return () => {
+      document.removeEventListener("wheel", onWheel);
+      document.removeEventListener("gesturestart", onGesture);
+      document.removeEventListener("gesturechange", onGesture);
+      document.removeEventListener("gestureend", onGesture);
+    };
+  }, []);
 
   const { terminalsStore, navStore, fleet, activeSid, selectWorkspace: focusWorkspace } =
     useCrystal();
@@ -232,6 +265,17 @@ export function CrystalShell({
       } else if ((e.ctrlKey || e.metaKey) && e.key === "`") {
         e.preventDefault();
         terminalsStore.getState().setPanelOpen(!terminalsStore.getState().panelOpen);
+      } else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "l") {
+        // Copy a shareable link to the current view (the header button shows
+        // the feedback). Browsers reserve Cmd+L for the address bar; in the
+        // desktop shell it's ours.
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent("crystal:copy-link"));
+      } else if ((e.ctrlKey || e.metaKey) && (e.key === "[" || e.key === "]")) {
+        // In-app history — mirrors the header back/forward buttons.
+        e.preventDefault();
+        if (e.key === "[") history.back();
+        else history.forward();
       }
     };
     window.addEventListener("keydown", onKey);
@@ -287,37 +331,64 @@ export function CrystalShell({
           the nav rail with the terminal panel dragged high) must clip inside
           its row, never grow the document and scroll the page. */}
       <div className="flex h-full min-h-0 flex-col overflow-hidden bg-surface-0 text-ink">
-        {/* Top navbar: context on the left (workspace ▸ branch), global
-            constructs on the right (search/palette, needs-you, inbox, lens). */}
-        <header className="flex h-9 shrink-0 items-center gap-2 border-b border-edge bg-surface-1 px-2.5">
-          <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-crystal-500 to-prism-500 shadow-lg shadow-crystal-500/30">
-            <Gem className="h-4 w-4 text-white" />
-          </div>
-          <div className="flex min-w-0 items-center gap-1">
-            <span className="max-w-48 truncate text-xs font-medium text-ink">
-              {isCrossProjectMode(mode) ? MODE_LABELS[mode] : (activeWsName ?? "No workspace")}
-            </span>
-            {!isCrossProjectMode(mode) && activeWsName ? (
+        {/* Top navbar, three lanes: context on the left (history ▸ project ▸
+            switcher ▸ branch), search dead-center, global constructs on the
+            right (needs-you, inbox, copy link, lens). */}
+        <header className="grid h-9 shrink-0 grid-cols-[minmax(0,1fr)_minmax(10rem,26rem)_minmax(0,1fr)] items-center gap-2 border-b border-edge bg-surface-1 px-2.5">
+          <div className="flex min-w-0 items-center gap-1 overflow-hidden">
+            <div className="mr-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-crystal-500 to-prism-500 shadow-lg shadow-crystal-500/30">
+              <Gem className="h-4 w-4 text-white" />
+            </div>
+            {deepLinking ? (
               <>
+                <Tooltip content="Back" shortcut="Ctrl+[">
+                  <button
+                    type="button"
+                    aria-label="Back"
+                    onClick={() => history.back()}
+                    className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-surface-3 hover:text-ink"
+                  >
+                    <ArrowLeft className="h-3.5 w-3.5" />
+                  </button>
+                </Tooltip>
+                <Tooltip content="Forward" shortcut="Ctrl+]">
+                  <button
+                    type="button"
+                    aria-label="Forward"
+                    onClick={() => history.forward()}
+                    className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-surface-3 hover:text-ink"
+                  >
+                    <ArrowRight className="h-3.5 w-3.5" />
+                  </button>
+                </Tooltip>
+              </>
+            ) : null}
+            {isCrossProjectMode(mode) || !activeWsName ? (
+              <span className="ml-0.5 min-w-0 truncate text-xs font-medium text-ink">
+                {isCrossProjectMode(mode) ? MODE_LABELS[mode] : "No workspace"}
+              </span>
+            ) : (
+              <>
+                <ProjectMenu onOpenSettings={() => setSettingsOpen(true)} />
+                <ProjectSwitcher onSelectWorkspace={selectWorkspace} />
                 <ChevronRight className="h-3 w-3 shrink-0 text-ink-faint" />
                 <BranchSwitcher />
               </>
-            ) : null}
+            )}
           </div>
-
-          <div className="flex-1" />
 
           <button
             type="button"
             onClick={() => setPaletteOpen(true)}
             aria-label="Search and commands"
-            className="flex h-6.5 w-64 shrink items-center gap-2 rounded-md border border-edge bg-surface-0 px-2 text-xs text-ink-faint transition-colors hover:border-edge-strong hover:text-ink-muted"
+            className="flex h-6.5 w-full min-w-0 items-center gap-2 rounded-md border border-edge bg-surface-0 px-2 text-xs text-ink-faint transition-colors hover:border-edge-strong hover:text-ink-muted"
           >
             <Search className="h-3.5 w-3.5 shrink-0" />
             <span className="min-w-0 flex-1 truncate text-left">Search or jump to…</span>
             <Kbd>Ctrl+K</Kbd>
           </button>
 
+          <div className="flex min-w-0 items-center justify-end gap-1.5">
           {/* Fleet-wide "needs you" (also hosts the attention notifier). */}
           <NeedsYouPill />
           <Tooltip content="Inbox — agent questions across every project">
@@ -340,7 +411,9 @@ export function CrystalShell({
               ) : null}
             </button>
           </Tooltip>
+          {deepLinking ? <CopyLinkButton /> : null}
           <LensBar onOpenTerminal={() => setTerminalOpen(true)} />
+          </div>
         </header>
 
         <div className="flex min-h-0 flex-1 overflow-hidden">
@@ -351,8 +424,12 @@ export function CrystalShell({
             attention={attention}
             hubBadge={hubWaiting || liveProgramCount}
             hubWarns={hubWaiting > 0}
+            gitOpen={gitOpen}
+            terminalOpen={terminalOpen}
             onHome={() => switchMode("projects")}
             onHub={() => switchMode("hub")}
+            onToggleGit={() => setGitOpen((o) => !o)}
+            onToggleTerminal={() => setTerminalOpen(!terminalOpen)}
             onSelectWorkspace={selectWorkspace}
             onOpenSettings={() => setSettingsOpen(true)}
           />
@@ -362,10 +439,6 @@ export function CrystalShell({
               runningRuns={runningRuns}
               needsYouCount={needsYouCount}
               runningJobs={runningJobs}
-              gitOpen={gitOpen}
-              terminalOpen={terminalOpen}
-              onToggleGit={() => setGitOpen((o) => !o)}
-              onToggleTerminal={() => setTerminalOpen(!terminalOpen)}
               onSwitchMode={switchMode}
             />
           ) : null}
@@ -415,7 +488,6 @@ export function CrystalShell({
                   {runningRuns} agent{runningRuns > 1 ? "s" : ""} running
                 </span>
               ) : null}
-              {deepLinking ? <CopyLinkButton /> : null}
               <VersionBadge />
             </span>
           </footer>
@@ -554,7 +626,11 @@ function VersionBadge() {
   );
 }
 
-/** Copies the current deep link — the URL always encodes the active view. */
+/**
+ * Copies the current deep link — the URL always encodes the active view.
+ * Ctrl/Cmd+L triggers the same copy via the `crystal:copy-link` event (the
+ * shell's keydown dispatches it), so the feedback lands on this button.
+ */
 function CopyLinkButton() {
   const [copied, setCopied] = useState(false);
   useEffect(() => {
@@ -562,23 +638,28 @@ function CopyLinkButton() {
     const t = setTimeout(() => setCopied(false), 1500);
     return () => clearTimeout(t);
   }, [copied]);
+  useEffect(() => {
+    const onCopy = () => {
+      navigator.clipboard
+        .writeText(window.location.href)
+        .then(() => setCopied(true))
+        .catch(() => {});
+    };
+    window.addEventListener("crystal:copy-link", onCopy);
+    return () => window.removeEventListener("crystal:copy-link", onCopy);
+  }, []);
   return (
-    <Tooltip content="Copy a shareable link to this view">
+    <Tooltip content="Copy a shareable link to this view" shortcut="Ctrl+L">
       <button
         type="button"
-        onClick={() => {
-          navigator.clipboard
-            .writeText(window.location.href)
-            .then(() => setCopied(true))
-            .catch(() => {});
-        }}
+        aria-label="Copy link to this view"
+        onClick={() => window.dispatchEvent(new CustomEvent("crystal:copy-link"))}
         className={cn(
-          "flex items-center gap-1 transition-colors",
-          copied ? "text-ok" : "text-ink-faint hover:text-ink-muted",
+          "flex h-6.5 w-6.5 shrink-0 items-center justify-center rounded-md transition-colors",
+          copied ? "text-ok" : "text-ink-faint hover:bg-surface-3 hover:text-ink-muted",
         )}
       >
-        {copied ? <Check className="h-3 w-3" /> : <Link2 className="h-3 w-3" />}
-        {copied ? "copied" : "share"}
+        {copied ? <Check className="h-3.5 w-3.5" /> : <Link2 className="h-3.5 w-3.5" />}
       </button>
     </Tooltip>
   );

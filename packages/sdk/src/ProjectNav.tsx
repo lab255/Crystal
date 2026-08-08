@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ArrowDown, ArrowUp, ChevronRight, FolderGit2, RotateCcw, TerminalSquare } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronRight, RotateCcw } from "lucide-react";
 import type {
   ArchitectViewId,
   OrchestratorTabId,
@@ -7,7 +7,7 @@ import type {
   SurfaceViewId,
 } from "@crystal/core";
 import { useNav, useNavUpdate, useSettings } from "@crystal/client";
-import { Tooltip, cn, useContextMenu, type MenuEntry } from "@crystal/ui";
+import { cn, useContextMenu, type MenuEntry } from "@crystal/ui";
 import {
   MODE_ICONS,
   MODE_LABELS,
@@ -16,35 +16,26 @@ import {
   orderedFacets,
   type CrystalMode,
 } from "./modes.js";
-import { DevServersButton } from "./DevServersButton.js";
 
 /**
  * The project menu — second navigation level, inside the active workspace.
  * One section per facet (Architecture, Surfaces, Orchestrate, …) with its
  * deep-link subviews as subsections. Sections are drag-rearrangeable (order
  * persists in the settings store) and carry context menus; the active
- * section auto-expands, others toggle by chevron. The bottom row hosts the
- * workspace-scoped panel toggles (dev servers, git, terminal).
+ * section auto-expands, others toggle by chevron. The workspace panel
+ * toggles (dev servers, git, terminal) live on the WorkspaceRail.
  */
 export function ProjectNav({
   mode,
   runningRuns,
   needsYouCount,
   runningJobs,
-  gitOpen,
-  terminalOpen,
-  onToggleGit,
-  onToggleTerminal,
   onSwitchMode,
 }: {
   mode: CrystalMode;
   runningRuns: number;
   needsYouCount: number;
   runningJobs: number;
-  gitOpen: boolean;
-  terminalOpen: boolean;
-  onToggleGit: () => void;
-  onToggleTerminal: () => void;
   onSwitchMode: (mode: CrystalMode) => void;
 }) {
   const navOrder = useSettings((s) => s.navOrder);
@@ -265,42 +256,6 @@ export function ProjectNav({
         })}
       </div>
 
-      {/* Workspace-scoped panel toggles. */}
-      <div className="flex shrink-0 items-center justify-center gap-1 border-t border-edge px-1.5 py-1.5">
-        <DevServersButton />
-        <Tooltip content="Git tree & log" shortcut="Ctrl+Shift+G" side="top">
-          <button
-            type="button"
-            onClick={onToggleGit}
-            aria-label="Toggle git panel"
-            aria-pressed={gitOpen}
-            className={cn(
-              "flex h-8 w-8 items-center justify-center rounded-lg transition-colors",
-              gitOpen
-                ? "bg-crystal-500/20 text-crystal-300"
-                : "text-ink-faint hover:bg-surface-3 hover:text-ink-muted",
-            )}
-          >
-            <FolderGit2 className="h-4 w-4" />
-          </button>
-        </Tooltip>
-        <Tooltip content="Toggle the terminal panel" shortcut="Ctrl+`" side="top">
-          <button
-            type="button"
-            onClick={onToggleTerminal}
-            aria-label="Toggle terminal panel"
-            aria-pressed={terminalOpen}
-            className={cn(
-              "flex h-8 w-8 items-center justify-center rounded-lg transition-colors",
-              terminalOpen
-                ? "bg-crystal-500/20 text-crystal-300"
-                : "text-ink-faint hover:bg-surface-3 hover:text-ink-muted",
-            )}
-          >
-            <TerminalSquare className="h-4 w-4" />
-          </button>
-        </Tooltip>
-      </div>
       {menu.element}
     </nav>
   );
