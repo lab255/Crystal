@@ -125,7 +125,12 @@ export type ArchRfNode = RfNode<{
    */
   c4Type?: string;
 }>;
-export type ArchRfEdge = RfEdge<{ kind: ArchEdgeKind; lane?: number }>;
+export type ArchRfEdge = RfEdge<{
+  kind: ArchEdgeKind;
+  lane?: number;
+  /** Absolute-canvas ELK polyline; plain structured-clonable data only. */
+  route?: { x: number; y: number }[];
+}>;
 
 /** Shared diff tinting for the architecture views (matches the codebase map). */
 export const DIFF_EDGE_STROKE: Record<DiffMark["kind"], string> = {
@@ -197,6 +202,7 @@ export function toRfEdges(
   graph: ArchitectureGraph,
   selectedIds: ReadonlySet<string>,
   marks?: DiffMarks | null,
+  routes?: ReadonlyMap<string, { x: number; y: number }[]> | null,
 ): ArchRfEdge[] {
   // Small diagrams read best with curves; past the threshold, orthogonal
   // bus-bar routing keeps the dependency web sorted and legible.
@@ -229,14 +235,21 @@ export function toRfEdges(
       e.weight != null && e.weight > 0
         ? 1 + 1.6 * Math.sqrt(e.weight / maxWeight)
         : 1.5;
+    const route = routes?.get(e.id);
     return {
       id: e.id,
       source: e.source,
       target: e.target,
       label: mark?.detail ?? (e.label || undefined),
       selected: selectedIds.has(e.id),
-      data: { kind: e.kind, lane: lanes?.get(e.id) ?? 0 },
-      type: busbar ? "busbar" : "default",
+      data: {
+        kind: e.kind,
+        lane: lanes?.get(e.id) ?? 0,
+        // Clone the array so edge data remains a plain render payload rather
+        // than exposing the layout engine's mutable collection.
+        ...(route ? { route: route.map((point) => ({ ...point })) } : {}),
+      },
+      type: route ? "elk" : busbar ? "busbar" : "default",
       style: {
         stroke,
         strokeWidth: mark ? 2 : weightWidth,

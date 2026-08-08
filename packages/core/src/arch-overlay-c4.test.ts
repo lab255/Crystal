@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ArchOverlaySchema,
+  clearC4Layout,
   createArchOverlay,
   reconcileOverlay,
   setC4Position,
@@ -51,6 +52,16 @@ describe("overlay c4Layouts", () => {
     let overlay = setC4Position(createArchOverlay(), "context", "person:user", { x: 1, y: 2 });
     overlay = setC4Position(overlay, "context", "person:user", null);
     expect(overlay.c4Layouts).toEqual({});
+  });
+
+  it("clears one view at a time and preserves identity for an absent view", () => {
+    let overlay = setC4Position(createArchOverlay(), "context", "person:user", { x: 1, y: 2 });
+    overlay = setC4Position(overlay, "containers", "ctr:web", { x: 10, y: 20 });
+
+    const cleared = clearC4Layout(overlay, "containers");
+    expect(cleared).not.toBe(overlay);
+    expect(cleared.c4Layouts).toEqual({ context: { "person:user": { x: 1, y: 2 } } });
+    expect(clearC4Layout(cleared, "containers")).toBe(cleared);
   });
 
   it("reconcile keeps pins on derived and extra-known ids, drops the rest", () => {

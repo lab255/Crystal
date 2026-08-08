@@ -19,6 +19,8 @@ export interface ElkLayoutResult {
   routes: ReadonlyMap<string, { x: number; y: number }[]>;
 }
 
+type Point = { x: number; y: number };
+
 const COMPOUND_PADDING = "[top=56,left=24,bottom=24,right=24]";
 const FALLBACK_CARD = { width: 200, height: 84 } as const;
 
@@ -99,6 +101,65 @@ function absolutePoint(point: ElkPoint, origin: ElkPoint, edgeId: string): ElkPo
 function appendPoint(points: ElkPoint[], point: ElkPoint): void {
   const previous = points[points.length - 1];
   if (!previous || previous.x !== point.x || previous.y !== point.y) points.push(point);
+}
+
+/**
+ * Resolve parent-relative node positions into canvas coordinates. Keeping
+ * this beside the route producer makes its coordinate contract explicit:
+ * ELK routes are absolute, while architecture node positions are not.
+ */
+function absolutePositions(graph: ArchitectureGraph): Map<string, Point> {
+  const byId = new Map(graph.nodes.map((node) => [node.id, node]));
+  const absolute = new Map<string, Point>();
+  const visiting = new Set<string>();
+  const resolve = (id: string): Point | null => {
+    const cached = absolute.get(id);
+    if (cached) return cached;
+    const node = byId.get(id);
+    if (!node || visiting.has(id)) return null;
+    visiting.add(id);
+    const parent = node.parentId ? resolve(node.parentId) : { x: 0, y: 0 };
+    visiting.delete(id);
+    if (!parent) return null;
+    const point = { x: parent.x + node.position.x, y: parent.y + node.position.y };
+    absolute.set(id, point);
+    return point;
+  };
+  for (const node of graph.nodes) resolve(node.id);
+  return absolute;
+}
+
+/**
+ * Routed polylines describe one exact ELK geometry. A pin on either endpoint
+ * (or on one of its parents) makes that geometry stale, so let React Flow
+ * fall back to its live endpoint-based edge for that edge only.
+ */
+export function filterRoutesForMovedEndpoints(
+  laid: ArchitectureGraph,
+  displayed: ArchitectureGraph,
+  routes: ReadonlyMap<string, Point[]>,
+  tolerance = 0.5,
+): ReadonlyMap<string, Point[]> {
+  const laidAbsolute = absolutePositions(laid);
+  const displayedAbsolute = absolutePositions(displayed);
+  const moved = (id: string): boolean => {
+    const before = laidAbsolute.get(id);
+    const after = displayedAbsolute.get(id);
+    return (
+      !before ||
+      !after ||
+      Math.abs(before.x - after.x) > tolerance ||
+      Math.abs(before.y - after.y) > tolerance
+    );
+  };
+
+  let filtered: Map<string, Point[]> | null = null;
+  for (const edge of laid.edges) {
+    if (!routes.has(edge.id) || (!moved(edge.source) && !moved(edge.target))) continue;
+    filtered ??= new Map(routes);
+    filtered.delete(edge.id);
+  }
+  return filtered ?? routes;
 }
 
 /**

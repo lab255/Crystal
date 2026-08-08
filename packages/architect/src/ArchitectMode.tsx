@@ -26,6 +26,7 @@ import {
   ARCH_OVERLAY_FILE,
   c4ViewKey,
   canonicalSystemIds,
+  clearC4Layout,
   countMarks,
   createArchDraft as newArchDraft,
   createArchFacet,
@@ -106,7 +107,7 @@ import { JourneyProfilePanel } from "./ProfilePanel.js";
 import { useRefactorIntents } from "./refactor-intents.js";
 import { buildHoistPrompt } from "./refactor-prompts.js";
 import { ApplyRefactorsDialog, RefactorChip, useIntentProblems } from "./RefactorPanel.js";
-import { autoLayout, autoLayoutFitted } from "./layout.js";
+import { autoLayout } from "./layout.js";
 import { ReviewView } from "./ReviewView.js";
 import { SurveySection } from "./SurveyPanel.js";
 import { useCanonicalArchitecture } from "./use-canonical-architecture.js";
@@ -120,6 +121,8 @@ import {
 } from "./c4-view.js";
 import { C4Bar } from "./C4Bar.js";
 import { buildSystemCardFacts, systemCardSlot } from "./system-card.js";
+import { filterRoutesForMovedEndpoints } from "./elk-layout.js";
+import { useElkLayout } from "./use-elk-layout.js";
 
 const EMPTY_DRAFTS: never[] = [];
 const EMPTY_REFACTORS: never[] = [];
@@ -648,6 +651,41 @@ function DiagramsView({
   // it); the C4 altitudes drive the canonical canvas only.
   const c4Enabled = variant === "architecture" && !activeDraft;
   const viewKeyStr = c4ViewKey({ level, scope });
+  const [measuredDims, setMeasuredDims] = useState<Map<
+    string,
+    { width: number; height: number }
+  > | null>(null);
+  const measuredViewKey = useRef(viewKeyStr);
+  const currentMeasuredDims = measuredViewKey.current === viewKeyStr ? measuredDims : null;
+  useEffect(() => {
+    measuredViewKey.current = viewKeyStr;
+    setMeasuredDims(null);
+  }, [viewKeyStr]);
+
+  const mergeMeasuredDims = useCallback(
+    (sizes: ReadonlyMap<string, { width: number; height: number }>) => {
+      setMeasuredDims((previous) => {
+        let changed = false;
+        const next = new Map(previous ?? []);
+        for (const [id, size] of sizes) {
+          const before = previous?.get(id);
+          if (
+            before &&
+            Math.abs(before.width - size.width) <= 1 &&
+            Math.abs(before.height - size.height) <= 1
+          ) {
+            continue;
+          }
+          next.set(id, size);
+          changed = true;
+        }
+        // Measurements are feedback into layout; preserving the reference
+        // here is the final loop guard after the canvas's own comparison.
+        return changed ? next : previous;
+      });
+    },
+    [],
+  );
 
   // Card slots for member system cards — same convention as the canonical
   // layout: layout at the semantic body's own size, compact by design.
@@ -665,7 +703,7 @@ function DiagramsView({
   }, [overviewData]);
 
   // Project the display graph (ghosts merged, view filters applied) to the
-  // active C4 level, then lay the level out and pin its manual positions.
+  // active C4 level, then apply aggregate-only overrides and projected facets.
   const c4Projection = useMemo(
     () =>
       c4Enabled && displayGraph && c4Model
@@ -679,18 +717,30 @@ function DiagramsView({
         : null,
     [c4Enabled, displayGraph, c4Model, level, scope, showData, schemasData, reconciled],
   );
-  const c4Laid = useMemo(() => {
+  const withOverrides = useMemo(() => {
     if (!c4Projection || !reconciled || !rendered) return null;
     const canonicalIds = new Set(rendered.nodes.map((n) => n.id));
-    const withOverrides = applyAggregateOverrides(
+    return applyAggregateOverrides(
       { ...c4Projection.graph, facets: projectFacets(c4Projection.graph.facets, c4Projection) },
       reconciled.overrides,
       canonicalIds,
     );
-    const laid = autoLayoutFitted(withOverrides, {
-      mode: "flow",
-      reserve: c4Reserve(withOverrides, sysReserve),
-    });
+  }, [c4Projection, reconciled, rendered]);
+  const mergedBase = useMemo(() => {
+    const base = new Map(sysReserve);
+    for (const [id, size] of currentMeasuredDims ?? []) base.set(id, size);
+    return base;
+  }, [sysReserve, currentMeasuredDims]);
+  const dims = useMemo(
+    () => (withOverrides ? c4Reserve(withOverrides, mergedBase) : null),
+    [withOverrides, mergedBase],
+  );
+  const { laid, routes } = useElkLayout(withOverrides, dims);
+
+  // Pins remain a final, view-specific overlay on the solved geometry. This
+  // is intentionally the same application logic as the previous dagre path.
+  const c4Laid = useMemo(() => {
+    if (!laid || !reconciled) return null;
     const pins = reconciled.c4Layouts[viewKeyStr] ?? {};
     if (Object.keys(pins).length === 0) return laid;
     return {
@@ -700,7 +750,18 @@ function DiagramsView({
         return pin ? { ...n, position: { ...pin } } : n;
       }),
     };
-  }, [c4Projection, reconciled, rendered, sysReserve, viewKeyStr]);
+  }, [laid, reconciled, viewKeyStr]);
+  const c4Routes = useMemo(
+    () =>
+      laid && c4Laid && routes
+        ? filterRoutesForMovedEndpoints(laid, c4Laid, routes)
+        : null,
+    [laid, c4Laid, routes],
+  );
+  const clearCurrentC4Layout = useCallback(() => {
+    if (!reconciled) return;
+    updateArchOverlay(clearC4Layout(reconciled, viewKeyStr));
+  }, [reconciled, viewKeyStr, updateArchOverlay]);
   const c4Marks = useMemo(
     () => (archDiff && c4Projection ? rollupC4Marks(archDiff.marks, c4Projection) : null),
     [archDiff, c4Projection],
@@ -1510,6 +1571,9 @@ function DiagramsView({
                         : (archDiff?.marks ?? null)
                   }
                   onChange={c4Enabled && c4Laid ? commitC4 : commitGraph}
+                  edgeRoutes={c4Enabled ? c4Routes : undefined}
+                  onMeasured={c4Enabled ? mergeMeasuredDims : undefined}
+                  onAutoLayout={c4Enabled ? clearCurrentC4Layout : undefined}
                   codeSummary={codeSummary}
                   overview={activeDraft ? null : overviewData}
                   overlayOn={overlayOn}

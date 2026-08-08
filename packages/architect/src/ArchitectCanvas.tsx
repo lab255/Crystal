@@ -7,6 +7,7 @@ import {
   Panel,
   ReactFlow,
   ReactFlowProvider,
+  useNodesInitialized,
   useReactFlow,
   type Connection,
   type EdgeChange,
@@ -137,6 +138,7 @@ import {
 } from "./live-code.js";
 import { resolveCollisions, type DisplaceRect } from "./displace.js";
 import { BusbarEdge } from "./BusbarEdge.js";
+import { estimateGraphDims } from "./card-metrics.js";
 import { PeekPanel } from "./snippets.js";
 import { Palette, DRAG_MIME, PALETTE_KINDS } from "./Palette.js";
 import { Toolbar } from "./Toolbar.js";
@@ -155,6 +157,7 @@ import {
   type PartRfNode,
 } from "./part-split.js";
 import { PartNode } from "./nodes/PartNode.js";
+import { ElkEdge } from "./nodes/ElkEdge.js";
 import { buildSystemCardFacts, systemCardSlot } from "./system-card.js";
 
 const nodeTypes = {
@@ -169,6 +172,7 @@ const nodeTypes = {
 
 const edgeTypes = {
   busbar: BusbarEdge,
+  elk: ElkEdge,
 };
 
 type CanvasNode = ArchRfNode | MapRfNode | PartRfNode;
@@ -188,6 +192,12 @@ function isCodeChildId(id: string): boolean {
 export interface ArchitectCanvasProps {
   graph: ArchitectureGraph;
   onChange: (graph: ArchitectureGraph) => void;
+  /** Absolute ELK polylines for edges whose endpoints still match the solve. */
+  edgeRoutes?: ReadonlyMap<string, { x: number; y: number }[]> | null;
+  /** Browser-measured card footprints fed back into the asynchronous layout. */
+  onMeasured?: (sizes: ReadonlyMap<string, { width: number; height: number }>) => void;
+  /** C4 resets its per-view pins; other canvases commit a dagre layout. */
+  onAutoLayout?: () => void;
   /** Compact view controls that share a header lane above the canvas toolbar. */
   headerExtra?: ReactNode;
   /** Live code map for the overlay + code expansion; null while unavailable. */
@@ -377,6 +387,9 @@ const NO_MOVES: MoveLikeIntent[] = [];
 function CanvasInner({
   graph,
   onChange,
+  edgeRoutes,
+  onMeasured,
+  onAutoLayout,
   headerExtra,
   codeSummary,
   overview,
@@ -424,6 +437,7 @@ function CanvasInner({
   const [peek, setPeek] = useState<{ module: string; label: string; file?: string } | null>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const { screenToFlowPosition, fitView, getNodes } = useReactFlow();
+  const nodesInitialized = useNodesInitialized();
 
   // Keep a ref of the latest graph so stale-closure callbacks always mutate fresh state.
   const graphRef = useRef(graph);
@@ -1001,7 +1015,37 @@ function CanvasInner({
   }, [viewGraph, selectedNodes, slotSizes, diffMarks, c4, overlay, systemCards, flow, expanded, codeContent, partsExpanded, partsContent, dragOverrides, displacements, dragActive, nodeHlRefs]);
 
   const rfEdges = useMemo(() => {
-    let edges = [...toRfEdges(viewGraph, selectedEdges, diffMarks), ...(codeContent.edges as ArchRfEdge[])];
+    // ELK routes describe base node coordinates. Expanded-code displacement
+    // and in-flight drags are view-only, so suppress affected routes until
+    // those endpoints return to the solved geometry.
+    const byId = new Map(viewGraph.nodes.map((node) => [node.id, node]));
+    const transientlyMoved = (id: string): boolean => {
+      let node = byId.get(id);
+      const seen = new Set<string>();
+      while (node && !seen.has(node.id)) {
+        if (dragOverrides.has(node.id) || displacements.has(node.id)) return true;
+        seen.add(node.id);
+        node = node.parentId ? byId.get(node.parentId) : undefined;
+      }
+      return false;
+    };
+    let renderRoutes = edgeRoutes;
+    if (edgeRoutes && (dragOverrides.size > 0 || displacements.size > 0)) {
+      let filteredRoutes: Map<string, { x: number; y: number }[]> | null = null;
+      for (const edge of viewGraph.edges) {
+        if (
+          !edgeRoutes.has(edge.id) ||
+          (!transientlyMoved(edge.source) && !transientlyMoved(edge.target))
+        ) continue;
+        filteredRoutes ??= new Map(edgeRoutes);
+        filteredRoutes.delete(edge.id);
+      }
+      renderRoutes = filteredRoutes ?? edgeRoutes;
+    }
+    let edges = [
+      ...toRfEdges(viewGraph, selectedEdges, diffMarks, renderRoutes),
+      ...(codeContent.edges as ArchRfEdge[]),
+    ];
     if (overlay) edges = applyOverlayToEdges(edges, overlay);
     if (flow) edges = applyFlowToEdges(edges, flow);
     if (partsExpanded && partLinkOf) {
@@ -1016,7 +1060,7 @@ function CanvasInner({
       edges = [...edges, ...(partsContent.edges as ArchRfEdge[])];
     }
     return edges;
-  }, [viewGraph, selectedEdges, diffMarks, overlay, flow, codeContent, partsExpanded, partLinkOf, partsContent]);
+  }, [viewGraph, selectedEdges, diffMarks, edgeRoutes, dragOverrides, displacements, overlay, flow, codeContent, partsExpanded, partLinkOf, partsContent]);
 
   /**
    * Ids to keep lit while `hovered` is set: the node itself plus everything
@@ -1051,6 +1095,52 @@ function CanvasInner({
 
   const displayEdges = useMemo(() => decorateEdges(rfEdges, hovered), [rfEdges, hovered]);
 
+  const measuredNodeSetKey = useMemo(
+    () =>
+      rfNodes
+        .map((node) => `${node.id}:${node.type ?? ""}`)
+        .sort()
+        .join("\u0000"),
+    [rfNodes],
+  );
+  const lastReportedSizes = useRef<ReadonlyMap<string, { width: number; height: number }> | null>(
+    null,
+  );
+  useEffect(() => {
+    if (!onMeasured || !nodesInitialized) return;
+    // One animation frame lets React Flow commit its internal measurement
+    // pass before we read it, and coalesces a burst of node initialization.
+    const frame = requestAnimationFrame(() => {
+      const sizes = new Map<string, { width: number; height: number }>();
+      for (const node of getNodes()) {
+        if ((node.type !== "leaf" && node.type !== "note") || isCodeChildId(node.id)) continue;
+        const width = node.measured?.width;
+        const height = node.measured?.height;
+        if (width == null || height == null || !Number.isFinite(width) || !Number.isFinite(height)) {
+          continue;
+        }
+        sizes.set(node.id, { width, height });
+      }
+
+      const previous = lastReportedSizes.current;
+      const changed =
+        !previous ||
+        previous.size !== sizes.size ||
+        [...sizes].some(([id, size]) => {
+          const before = previous.get(id);
+          return (
+            !before ||
+            Math.abs(before.width - size.width) > 1 ||
+            Math.abs(before.height - size.height) > 1
+          );
+        });
+      if (!changed) return;
+      lastReportedSizes.current = sizes;
+      onMeasured(sizes);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [onMeasured, nodesInitialized, graph.id, measuredNodeSetKey, getNodes]);
+
   const onNodesChange = useCallback(
     (changes: NodeChange<CanvasNode>[]) => {
       let g = graphRef.current;
@@ -1060,9 +1150,12 @@ function CanvasInner({
         switch (change.type) {
           case "position": {
             if (!change.position) break;
+            // Also track architecture nodes while dragging: routed edges are
+            // absolute polylines and must fall back to live RF geometry until
+            // the drag commits its final pin/base position.
+            overrides ??= new Map(dragOverrides);
+            overrides.set(change.id, change.position);
             if (isCodeChildId(change.id)) {
-              overrides ??= new Map(dragOverrides);
-              overrides.set(change.id, change.position);
               break;
             }
             // Rendered = base + ephemeral displacement; store base so the node
@@ -1296,6 +1389,7 @@ function CanvasInner({
         }
       }
       if (g !== graphRef.current) commit(g);
+      setDragOverrides(new Map());
     },
     [commit, getNodes, moduleForNode, onRecordMove, onRecordFileMove],
   );
@@ -1488,13 +1582,20 @@ function CanvasInner({
 
   const runAutoLayout = useCallback(
     (mode: "flow" | "layers" = "flow") => {
-      // System cards lay out at their card slots so the semantic body never
-      // overlaps a neighbor; everything else at its rendered size.
-      commit(autoLayoutFitted(graphRef.current, { mode, reserve: slotSizes }));
+      if (onAutoLayout) {
+        onAutoLayout();
+      } else {
+        // Dagre's non-C4 callers still need every card's footprint. Browser
+        // system-card slots override deterministic estimates because their
+        // semantic rows are taller than the generic card renderer.
+        const reserve = estimateGraphDims(graphRef.current);
+        for (const [id, size] of slotSizes) reserve.set(id, size);
+        commit(autoLayoutFitted(graphRef.current, { mode, reserve }));
+      }
       // Let the new positions render, then bring everything into view.
       requestAnimationFrame(() => void fitView({ padding: 0.15, duration: 300 }));
     },
-    [commit, fitView, slotSizes],
+    [commit, fitView, slotSizes, onAutoLayout],
   );
 
   // A click pins the highlight into the deep link (`sel=`): it survives
@@ -1644,15 +1745,26 @@ function CanvasInner({
           })),
         },
         { type: "separator" },
-        {
-          type: "submenu",
-          label: "Auto-layout",
-          icon: LayoutGrid,
-          entries: [
-            { type: "item", label: "Flow — top to bottom", icon: LayoutGrid, onSelect: () => runAutoLayout("flow") },
-            { type: "item", label: "Layers — by role (fullstack aware)", icon: Rows3, onSelect: () => runAutoLayout("layers") },
-          ],
-        },
+        ...(onAutoLayout
+          ? ([
+              {
+                type: "item",
+                label: "Auto layout",
+                icon: LayoutGrid,
+                onSelect: () => runAutoLayout("flow"),
+              },
+            ] satisfies MenuEntry[])
+          : ([
+              {
+                type: "submenu",
+                label: "Auto-layout",
+                icon: LayoutGrid,
+                entries: [
+                  { type: "item", label: "Flow — top to bottom", icon: LayoutGrid, onSelect: () => runAutoLayout("flow") },
+                  { type: "item", label: "Layers — by role (fullstack aware)", icon: Rows3, onSelect: () => runAutoLayout("layers") },
+                ],
+              },
+            ] satisfies MenuEntry[])),
         {
           type: "item",
           label: "Fit view",
@@ -2092,6 +2204,7 @@ function CanvasInner({
     addNodeAt,
     addModuleNodeAt,
     runAutoLayout,
+    onAutoLayout,
     fitView,
     duplicateNode,
     commit,
@@ -2328,6 +2441,7 @@ function CanvasInner({
               defaultEdgeKind={defaultEdgeKind}
               onDefaultEdgeKindChange={setDefaultEdgeKind}
               onAutoLayout={runAutoLayout}
+              singleAutoLayout={onAutoLayout != null}
               onFitView={() => void fitView({ padding: 0.15, duration: 300 })}
               onRename={(name) => commit({ ...graphRef.current, name })}
               lodLevel={lodLevel}

@@ -7,7 +7,7 @@ import {
   type ArchitectureGraph,
 } from "@crystal/core";
 import { estimateCardSize } from "./card-metrics.js";
-import { elkAutoLayout } from "./elk-layout.js";
+import { elkAutoLayout, filterRoutesForMovedEndpoints } from "./elk-layout.js";
 
 type Size = { width: number; height: number };
 type Point = { x: number; y: number };
@@ -199,5 +199,51 @@ describe("elkAutoLayout", () => {
       expect(contains(expandedBy(boxes.get(edge.source)!, 150), route[0]!)).toBe(true);
       expect(contains(expandedBy(boxes.get(edge.target)!, 150), route.at(-1)!)).toBe(true);
     }
+  });
+});
+
+describe("filterRoutesForMovedEndpoints", () => {
+  it("drops routes when an endpoint moves absolutely through its parent chain", () => {
+    const parent = node("ctr:parent", "container", { size: { width: 400, height: 300 } });
+    const child = node("svc:child", "service", { parentId: parent.id, position: { x: 20, y: 30 } });
+    const peer = node("svc:peer", "service", { position: { x: 500, y: 40 } });
+    const stableA = node("svc:a", "service", { position: { x: 0, y: 500 } });
+    const stableB = node("svc:b", "service", { position: { x: 200, y: 500 } });
+    const laid = graph(
+      [parent, child, peer, stableA, stableB],
+      [
+        { id: "nested", source: child.id, target: peer.id, kind: "sync", label: "" },
+        { id: "stable", source: stableA.id, target: stableB.id, kind: "sync", label: "" },
+      ],
+    );
+    const displayed = {
+      ...laid,
+      nodes: laid.nodes.map((item) =>
+        item.id === parent.id ? { ...item, position: { x: 10, y: 0 } } : item,
+      ),
+    };
+    const routes = new Map([
+      ["nested", [{ x: 20, y: 30 }, { x: 500, y: 40 }]],
+      ["stable", [{ x: 0, y: 500 }, { x: 200, y: 500 }]],
+    ]);
+
+    const filtered = filterRoutesForMovedEndpoints(laid, displayed, routes);
+    expect(filtered.has("nested")).toBe(false);
+    expect(filtered.get("stable")).toEqual(routes.get("stable"));
+  });
+
+  it("keeps the original map when sub-pixel differences stay within tolerance", () => {
+    const laid = graph([node("a", "service"), node("b", "service")], [
+      { id: "ab", source: "a", target: "b", kind: "sync", label: "" },
+    ]);
+    const displayed = {
+      ...laid,
+      nodes: laid.nodes.map((item) => ({
+        ...item,
+        position: { x: item.position.x + 0.5, y: item.position.y - 0.5 },
+      })),
+    };
+    const routes = new Map([["ab", [{ x: 0, y: 0 }, { x: 10, y: 10 }]]]);
+    expect(filterRoutesForMovedEndpoints(laid, displayed, routes)).toBe(routes);
   });
 });
