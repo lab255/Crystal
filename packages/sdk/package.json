@@ -22,7 +22,8 @@
     "@crystal/quality": "workspace:*",
     "@crystal/surfaces": "workspace:*",
     "@crystal/ui": "workspace:*",
-    "lucide-react": "^0.469.0"
+    "lucide-react": "^0.469.0",
+    "zustand": "^5.0.3"
   },
   "peerDependencies": {
     "react": "^18 || ^19",

@@ -546,6 +546,34 @@ fn supervise(app: tauri::AppHandle, sup: Arc<BridgeSupervisor>, mut cmd: Command
     }
 }
 
+/// Monotonic label suffix for extra windows — labels must be unique for the
+/// life of the app, including after a window with the same ordinal closed.
+static WINDOW_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Open another Crystal window on the same webview bundle. Only the caller's
+/// URL *fragment* (the deep link) is reused — the origin differs between the
+/// dev server and the bundled `tauri://` app, so the base URL is always the
+/// bundle's own. Every window is an independent bridge client over the pipe
+/// relay; no coordination is needed.
+#[tauri::command]
+fn new_window(app: tauri::AppHandle, url: Option<String>) -> Result<(), String> {
+    let frag = url
+        .as_deref()
+        .and_then(|u| u.split_once('#').map(|(_, f)| format!("#{f}")))
+        .unwrap_or_default();
+    let n = WINDOW_SEQ.fetch_add(1, Ordering::SeqCst);
+    tauri::WebviewWindowBuilder::new(
+        &app,
+        format!("crystal-{n}"),
+        tauri::WebviewUrl::App(format!("index.html{frag}").into()),
+    )
+    .title("Crystal")
+    .inner_size(1500.0, 950.0)
+    .build()
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     install_panic_hook();
@@ -573,7 +601,8 @@ pub fn run() {
     #[cfg(target_os = "macos")]
     {
         use tauri::menu::{
-            AboutMetadata, Menu, PredefinedMenuItem, Submenu, HELP_SUBMENU_ID, WINDOW_SUBMENU_ID,
+            AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu, HELP_SUBMENU_ID,
+            WINDOW_SUBMENU_ID,
         };
         builder = builder.menu(|handle| {
             let pkg_info = handle.package_info();
@@ -631,6 +660,14 @@ pub fn run() {
                         "Window",
                         true,
                         &[
+                            &MenuItem::with_id(
+                                handle,
+                                "new-window",
+                                "New Window",
+                                true,
+                                Some("CmdOrCtrl+Shift+N"),
+                            )?,
+                            &PredefinedMenuItem::separator(handle)?,
                             &PredefinedMenuItem::minimize(handle, None)?,
                             &PredefinedMenuItem::maximize(handle, None)?,
                         ],
@@ -647,8 +684,14 @@ pub fn run() {
             bridge_send,
             bridge_close,
             list_bridge_instances,
+            new_window,
             notifier::notify_attention
         ])
+        .on_menu_event(|app, event| {
+            if event.id() == "new-window" {
+                let _ = new_window(app.clone(), None);
+            }
+        })
         .setup(|app| {
             // The staged node-pty resource lives at `<resource>/sidecar`; the
             // SEA sidecar anchors its require() there to load the native addon.
@@ -671,7 +714,18 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {
-                window.state::<SupervisorState>().0.begin_shutdown();
+                // Multi-window: the sidecar dies with the LAST window, not the
+                // first. The destroyed window may still be in the map at this
+                // point, so count the others by label.
+                let remaining = window
+                    .app_handle()
+                    .webview_windows()
+                    .keys()
+                    .filter(|label| label.as_str() != window.label())
+                    .count();
+                if remaining == 0 {
+                    window.state::<SupervisorState>().0.begin_shutdown();
+                }
             }
         })
         .run(tauri::generate_context!())

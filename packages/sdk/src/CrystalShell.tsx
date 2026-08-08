@@ -8,6 +8,7 @@ import {
   Gem,
   Inbox,
   Link2,
+  Plus,
   Search,
 } from "lucide-react";
 import {
@@ -56,6 +57,8 @@ import { NeedsYouPill } from "./NeedsYouPill.js";
 import { ProjectNav } from "./ProjectNav.js";
 import { ProjectMenu, ProjectSwitcher } from "./ProjectSwitcher.js";
 import { SettingsDialog } from "./SettingsDialog.js";
+import { TabStrip } from "./TabStrip.js";
+import { tabsStore } from "./tabs.js";
 import { TerminalPanel } from "./TerminalPanel.js";
 import { WorkspaceRail } from "./WorkspaceRail.js";
 
@@ -165,6 +168,13 @@ export function CrystalShell({
 
   const { terminalsStore, navStore, fleet, activeSid, selectWorkspace: focusWorkspace } =
     useCrystal();
+
+  // Every nav change is snapshotted into the active shell tab, so switching
+  // back to a tab restores exactly where it was.
+  useEffect(() => {
+    tabsStore.getState().syncActive(navStore.getState().link);
+    return navStore.subscribe(() => tabsStore.getState().syncActive(navStore.getState().link));
+  }, [navStore]);
   const connections = useFleetConnections();
   const activeWsId = useWorkspaces((s) => s.activeId);
   const activeWsRoot = useWorkspaces(
@@ -361,6 +371,19 @@ export function CrystalShell({
                     <ArrowRight className="h-3.5 w-3.5" />
                   </button>
                 </Tooltip>
+                <Tooltip content="New tab">
+                  <button
+                    type="button"
+                    aria-label="New tab"
+                    onClick={() => {
+                      tabsStore.getState().activate(tabsStore.getState().open({ mode: "projects" }).id);
+                      navStore.getState().apply({ mode: "projects" });
+                    }}
+                    className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-surface-3 hover:text-ink"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                  </button>
+                </Tooltip>
               </>
             ) : null}
             {isCrossProjectMode(mode) || !activeWsName ? (
@@ -415,6 +438,8 @@ export function CrystalShell({
           <LensBar onOpenTerminal={() => setTerminalOpen(true)} />
           </div>
         </header>
+
+        <TabStrip />
 
         <div className="flex min-h-0 flex-1 overflow-hidden">
           {/* Level 1: the workspace rail (Slack-style). Level 2: the project
