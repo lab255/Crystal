@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.26.0 (2026-08-08)
+
+### Features
+
+- arrangeable deployment view with VPC/subnet/security-group zones ([`f63f631`](https://github.com/lab255/Crystal/commit/f63f631))
+- Delegated default preset — Fable orchestration, gpt-5.6-sol coding, Sonnet merge ([`3c8d477`](https://github.com/lab255/Crystal/commit/3c8d477))
+- approvable pending-permission requests in the Agents tab ([`c419cd2`](https://github.com/lab255/Crystal/commit/c419cd2))
+- taskless asks land on the board; card-based answering UI ([`102bc94`](https://github.com/lab255/Crystal/commit/102bc94))
+- ELK-modeled edge labels + viewport-aware packing ([`20b4a03`](https://github.com/lab255/Crystal/commit/20b4a03))
+- Ask AI routes to the coordinator; robust nav drag ([`12695b7`](https://github.com/lab255/Crystal/commit/12695b7))
+- network-zone node kinds; fix(client): no composer beside a live PTY ([`1fedf00`](https://github.com/lab255/Crystal/commit/1fedf00))
+- closeable coordinator sessions + program management menu ([`862e7fc`](https://github.com/lab255/Crystal/commit/862e7fc))
+
+### Bug Fixes
+
+- hydrate scoped stores after the workspace list lands on connect ([`78b93b2`](https://github.com/lab255/Crystal/commit/78b93b2))
+- disable Tauri drag-drop interception — HTML5 DnD works again ([`9fff0da`](https://github.com/lab255/Crystal/commit/9fff0da))
+
 ## v0.25.0 (2026-08-08)
 
 ### Features
