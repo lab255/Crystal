@@ -23,6 +23,7 @@ import {
 } from "./bridge-client.js";
 import { tauriBridgeTransport } from "./tauri-transport.js";
 import { checkForDesktopUpdate } from "./desktop-update.js";
+import { isDesktop } from "./desktop-window.js";
 import {
   FleetClient,
   wsKey,
@@ -145,22 +146,11 @@ function resolveBridgeToken(): string | null {
   }
 }
 
-/**
- * True inside the Tauri desktop WebView. Tauri v2 always injects
- * `__TAURI_INTERNALS__` (and `isTauri`) into the page — independent of the
- * `withGlobalTauri` option that only controls `window.__TAURI__`.
- */
-function inTauriWebview(): boolean {
-  if (typeof window === "undefined") return false;
-  const w = window as unknown as Record<string, unknown>;
-  return "__TAURI_INTERNALS__" in w || "isTauri" in w || "__TAURI__" in w;
-}
-
 export function defaultBridgeUrl(): string {
   if (
     typeof window !== "undefined" &&
     window.location.protocol.startsWith("http") &&
-    !inTauriWebview()
+    !isDesktop()
   ) {
     // Served same-origin (web console / remote deploy): derive scheme and host
     // (incl. port) from the page so it works on 443, on 4517, or behind any
@@ -183,7 +173,7 @@ export function defaultBridgeUrl(): string {
  * WebSocket only when the shell owns no pipe). Everywhere else: WebSocket URL.
  */
 export function defaultBridgeTarget(): string | BridgeTransportFactory {
-  if (inTauriWebview()) return tauriBridgeTransport(defaultBridgeUrl());
+  if (isDesktop()) return tauriBridgeTransport(defaultBridgeUrl());
   return defaultBridgeUrl();
 }
 

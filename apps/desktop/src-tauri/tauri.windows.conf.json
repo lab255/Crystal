@@ -1,0 +1,17 @@
+{
+  "app": {
+    "windows": [
+      {
+        "title": "Crystal",
+        "width": 1500,
+        "height": 950,
+        "minWidth": 980,
+        "minHeight": 620,
+        "center": true,
+        "theme": "Dark",
+        "backgroundColor": "#0a0c11",
+        "decorations": false
+      }
+    ]
+  }
+}

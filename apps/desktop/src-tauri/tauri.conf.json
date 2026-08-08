@@ -19,7 +19,10 @@
         "minHeight": 620,
         "center": true,
         "theme": "Dark",
-        "backgroundColor": "#0a0c11"
+        "backgroundColor": "#0a0c11",
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": { "x": 12, "y": 11 }
       }
     ],
     "security": {

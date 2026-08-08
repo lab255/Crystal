@@ -18,6 +18,7 @@
  */
 import { createStore } from "zustand/vanilla";
 import { useStore } from "zustand";
+import { isDesktop } from "./desktop-window.js";
 
 export type DesktopUpdatePhase =
   | "idle"
@@ -36,15 +37,8 @@ export interface DesktopUpdateState {
   error: string | null;
 }
 
-/** True only inside the Tauri webview (same probe as the transport selector). */
-function inTauriWebview(): boolean {
-  if (typeof window === "undefined") return false;
-  const w = window as unknown as Record<string, unknown>;
-  return "__TAURI_INTERNALS__" in w || "isTauri" in w || "__TAURI__" in w;
-}
-
 export const desktopUpdateStore = createStore<DesktopUpdateState>(() => ({
-  supported: inTauriWebview(),
+  supported: isDesktop(),
   phase: "idle",
   version: null,
   error: null,
@@ -90,13 +84,13 @@ async function runUpdateCheck(): Promise<void> {
  * workspace work, so the relaunch is the least disruptive.
  */
 export async function checkForDesktopUpdate(): Promise<void> {
-  if (checkedAtLaunch || !inTauriWebview()) return;
+  if (checkedAtLaunch || !isDesktop()) return;
   checkedAtLaunch = true;
   await runUpdateCheck();
 }
 
 /** Explicit "check for updates" — the footer badge's click action. */
 export async function checkForDesktopUpdateNow(): Promise<void> {
-  if (!inTauriWebview()) return;
+  if (!isDesktop()) return;
   await runUpdateCheck();
 }

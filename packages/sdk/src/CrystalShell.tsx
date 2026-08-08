@@ -8,8 +8,11 @@ import {
   Gem,
   Inbox,
   Link2,
+  Minus,
   Plus,
   Search,
+  Square,
+  X,
 } from "lucide-react";
 import {
   countOpenQuestions,
@@ -25,7 +28,10 @@ import {
   EMPTY_RUNS,
   EMPTY_TODOS,
   checkForDesktopUpdateNow,
+  desktopPlatform,
   initTheme,
+  isDesktop,
+  openNewWindow,
   useAgents,
   useCrystal,
   useDesktopUpdate,
@@ -56,8 +62,6 @@ import { NeedsYouPill } from "./NeedsYouPill.js";
 import { ProjectNav } from "./ProjectNav.js";
 import { ProjectMenu, ProjectSwitcher } from "./ProjectSwitcher.js";
 import { SettingsDialog } from "./SettingsDialog.js";
-import { TabStrip } from "./TabStrip.js";
-import { tabsStore } from "./tabs.js";
 import { TerminalPanel } from "./TerminalPanel.js";
 import { WorkspaceRail } from "./WorkspaceRail.js";
 
@@ -164,13 +168,8 @@ export function CrystalShell({
 
   const { terminalsStore, navStore, fleet, activeSid, selectWorkspace: focusWorkspace } =
     useCrystal();
-
-  // Every nav change is snapshotted into the active shell tab, so switching
-  // back to a tab restores exactly where it was.
-  useEffect(() => {
-    tabsStore.getState().syncActive(navStore.getState().link);
-    return navStore.subscribe(() => tabsStore.getState().syncActive(navStore.getState().link));
-  }, [navStore]);
+  const desktop = isDesktop();
+  const platform = desktopPlatform();
   const connections = useFleetConnections();
   const activeWsId = useWorkspaces((s) => s.activeId);
   const activeWsRoot = useWorkspaces(
@@ -337,9 +336,21 @@ export function CrystalShell({
         {/* Top navbar, three lanes: context on the left (history ▸ project ▸
             switcher ▸ branch), search dead-center, global constructs on the
             right (needs-you, inbox, copy link, lens). */}
-        <header className="grid h-9 shrink-0 grid-cols-[minmax(0,1fr)_minmax(10rem,26rem)_minmax(0,1fr)] items-center gap-2 border-b border-edge bg-surface-1 px-2.5">
-          <div className="flex min-w-0 items-center gap-1 overflow-hidden">
-            <div className="mr-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-crystal-500 to-prism-500 shadow-lg shadow-crystal-500/30">
+        <header
+          data-tauri-drag-region={desktop ? "" : undefined}
+          className="grid h-9 shrink-0 grid-cols-[minmax(0,1fr)_minmax(10rem,26rem)_minmax(0,1fr)] items-center gap-2 border-b border-edge bg-surface-1 px-2.5"
+        >
+          <div
+            data-tauri-drag-region={desktop ? "" : undefined}
+            className={cn(
+              "flex min-w-0 items-center gap-1 overflow-hidden",
+              platform === "macos" && "pl-[78px]",
+            )}
+          >
+            <div
+              data-tauri-drag-region={desktop ? "" : undefined}
+              className="mr-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-crystal-500 to-prism-500 shadow-lg shadow-crystal-500/30"
+            >
               <Gem className="h-4 w-4 text-white" />
             </div>
             {deepLinking ? (
@@ -364,14 +375,11 @@ export function CrystalShell({
                     <ArrowRight className="h-3.5 w-3.5" />
                   </button>
                 </Tooltip>
-                <Tooltip content="New tab">
+                <Tooltip content={desktop ? "New window" : "New tab"}>
                   <button
                     type="button"
-                    aria-label="New tab"
-                    onClick={() => {
-                      tabsStore.getState().activate(tabsStore.getState().open({ mode: "projects" }).id);
-                      navStore.getState().apply({ mode: "projects" });
-                    }}
+                    aria-label={desktop ? "New window" : "New tab"}
+                    onClick={() => void openNewWindow()}
                     className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-surface-3 hover:text-ink"
                   >
                     <Plus className="h-3.5 w-3.5" />
@@ -380,7 +388,10 @@ export function CrystalShell({
               </>
             ) : null}
             {isCrossProjectMode(mode) || !activeWsName ? (
-              <span className="ml-0.5 min-w-0 truncate text-xs font-medium text-ink">
+              <span
+                data-tauri-drag-region={desktop ? "" : undefined}
+                className="ml-0.5 min-w-0 truncate text-xs font-medium text-ink"
+              >
                 {isCrossProjectMode(mode) ? MODE_LABELS[mode] : "No workspace"}
               </span>
             ) : (
@@ -391,6 +402,11 @@ export function CrystalShell({
                 <BranchSwitcher />
               </>
             )}
+            <span
+              data-tauri-drag-region={desktop ? "" : undefined}
+              aria-hidden="true"
+              className="min-w-0 flex-1 self-stretch"
+            />
           </div>
 
           <button
@@ -404,35 +420,42 @@ export function CrystalShell({
             <Kbd>Ctrl+K</Kbd>
           </button>
 
-          <div className="flex min-w-0 items-center justify-end gap-1.5">
-          {/* Fleet-wide "needs you" (also hosts the attention notifier). */}
-          <NeedsYouPill />
-          <Tooltip content="Inbox — agent questions across every project">
-            <button
-              type="button"
-              onClick={() => updateNav({ mode: "projects", projects: { view: "inbox" } })}
-              aria-label="Open the questions inbox"
-              className={cn(
-                "relative flex h-6.5 w-6.5 shrink-0 items-center justify-center rounded-md transition-colors",
-                mode === "projects" && overviewView === "inbox"
-                  ? "bg-crystal-500/20 text-crystal-300"
-                  : "text-ink-faint hover:bg-surface-3 hover:text-ink-muted",
-              )}
-            >
-              <Inbox className="h-4 w-4" />
-              {hubWaiting > 0 ? (
-                <span className="absolute -right-1 -top-1 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-warn px-0.5 text-[9px] font-bold text-surface-0">
-                  {hubWaiting}
-                </span>
-              ) : null}
-            </button>
-          </Tooltip>
-          {deepLinking ? <CopyLinkButton /> : null}
-          <LensBar onOpenTerminal={() => setTerminalOpen(true)} />
+          <div
+            data-tauri-drag-region={desktop ? "" : undefined}
+            className="flex min-w-0 items-center justify-end gap-1.5"
+          >
+            <span
+              data-tauri-drag-region={desktop ? "" : undefined}
+              aria-hidden="true"
+              className="min-w-0 flex-1 self-stretch"
+            />
+            {/* Fleet-wide "needs you" (also hosts the attention notifier). */}
+            <NeedsYouPill />
+            <Tooltip content="Inbox — agent questions across every project">
+              <button
+                type="button"
+                onClick={() => updateNav({ mode: "projects", projects: { view: "inbox" } })}
+                aria-label="Open the questions inbox"
+                className={cn(
+                  "relative flex h-6.5 w-6.5 shrink-0 items-center justify-center rounded-md transition-colors",
+                  mode === "projects" && overviewView === "inbox"
+                    ? "bg-crystal-500/20 text-crystal-300"
+                    : "text-ink-faint hover:bg-surface-3 hover:text-ink-muted",
+                )}
+              >
+                <Inbox className="h-4 w-4" />
+                {hubWaiting > 0 ? (
+                  <span className="absolute -right-1 -top-1 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-warn px-0.5 text-[9px] font-bold text-surface-0">
+                    {hubWaiting}
+                  </span>
+                ) : null}
+              </button>
+            </Tooltip>
+            {deepLinking ? <CopyLinkButton /> : null}
+            <LensBar onOpenTerminal={() => setTerminalOpen(true)} />
+            {platform === "windows" || platform === "linux" ? <DesktopWindowControls /> : null}
           </div>
         </header>
-
-        <TabStrip />
 
         <div className="flex min-h-0 flex-1 overflow-hidden">
           {/* Level 1: the workspace rail (Slack-style). Level 2: the project
@@ -522,6 +545,51 @@ export function CrystalShell({
       </div>
     </TooltipProvider>
   );
+}
+
+/** Native-window controls for undecorated Windows and Linux shells. */
+function DesktopWindowControls() {
+  return (
+    <div className="-mr-2.5 ml-1 flex h-9 shrink-0 self-center">
+      <button
+        type="button"
+        aria-label="Minimize window"
+        title="Minimize"
+        onClick={() => void controlDesktopWindow("minimize")}
+        className="flex h-9 w-11 items-center justify-center text-ink-muted transition-colors hover:bg-surface-3 hover:text-ink"
+      >
+        <Minus className="h-3.5 w-3.5" />
+      </button>
+      <button
+        type="button"
+        aria-label="Toggle maximized window"
+        title="Maximize or restore"
+        onClick={() => void controlDesktopWindow("toggle-maximize")}
+        className="flex h-9 w-11 items-center justify-center text-ink-muted transition-colors hover:bg-surface-3 hover:text-ink"
+      >
+        <Square className="h-3 w-3" />
+      </button>
+      <button
+        type="button"
+        aria-label="Close window"
+        title="Close"
+        onClick={() => void controlDesktopWindow("close")}
+        className="flex h-9 w-11 items-center justify-center text-ink-muted transition-colors hover:bg-danger hover:text-surface-0"
+      >
+        <X className="h-4 w-4" />
+      </button>
+    </div>
+  );
+}
+
+async function controlDesktopWindow(
+  action: "minimize" | "toggle-maximize" | "close",
+): Promise<void> {
+  const { getCurrentWindow } = await import("@tauri-apps/api/window");
+  const appWindow = getCurrentWindow();
+  if (action === "minimize") await appWindow.minimize();
+  else if (action === "toggle-maximize") await appWindow.toggleMaximize();
+  else await appWindow.close();
 }
 
 /**
