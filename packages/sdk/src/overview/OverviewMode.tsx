@@ -1,20 +1,91 @@
-import { useState } from "react";
-import { FolderPlus, Unplug } from "lucide-react";
-import { useFleetConnections } from "@crystal/client";
-import { Button, EmptyState } from "@crystal/ui";
+import { useEffect, useState } from "react";
+import { Bot, FolderPlus, Inbox, LayoutGrid, Unplug } from "lucide-react";
+import type { OverviewViewId } from "@crystal/core";
+import { useFleetConnections, useHub, useNav, useNavUpdate } from "@crystal/client";
+import { Button, EmptyState, Input, cn } from "@crystal/ui";
+import { CoordinatorChat, QuestionsView } from "@crystal/hub";
 import { OpenWorkspaceDialog } from "../OpenWorkspaceDialog.js";
 import { FleetPulse } from "./FleetPulse.js";
 import { WorkspaceCard } from "./WorkspaceCard.js";
 
 /**
- * Projects mode — mission control across every open workspace of every
- * connected bridge server. Each card shows the workspace's traffic light,
- * what its agents are doing, and its todo list, so switching codebases starts
- * with context instead of archaeology. With more than one server, cards group
- * under a server heading; a disconnected server keeps its heading (dimmed) so
- * a dead connection is visible rather than silently absent.
+ * The Overview — mission control. Three faces on one cross-project level:
+ * the dashboard (every workspace's traffic light, agents and todos), the
+ * coordinator chat (the program-manager session the hub mode used to hold),
+ * and the inbox (every unanswered agent question across the portfolio).
  */
 export function OverviewMode() {
+  const view = useNav((l) => l.projects?.view) ?? "dashboard";
+  const find = useNav((l) => l.projects?.find) ?? "";
+  const updateNav = useNavUpdate();
+  const refresh = useHub((s) => s.refresh);
+  const waiting = useHub((s) =>
+    Object.values(s.questions).reduce((n, qs) => n + qs.length, 0),
+  );
+  const livePrograms = useHub((s) => s.programs.filter((p) => p.status === "running").length);
+
+  // The hub store used to be primed by the hub mode; the Overview owns it now.
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const tab = (id: OverviewViewId, label: string, icon: React.ReactNode, badge?: number) => (
+    <button
+      type="button"
+      onClick={() => updateNav({ projects: { view: id } })}
+      aria-pressed={view === id}
+      className={cn(
+        "flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
+        view === id ? "bg-surface-3 text-ink" : "text-ink-muted hover:text-ink",
+      )}
+    >
+      {icon}
+      {label}
+      {badge ? (
+        <span className="flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-warn px-0.5 text-[9px] font-bold text-surface-0">
+          {badge}
+        </span>
+      ) : null}
+    </button>
+  );
+
+  return (
+    <div className="flex h-full min-h-0 flex-col bg-surface-0">
+      <div className="flex shrink-0 items-center gap-2 border-b border-edge px-4 py-2">
+        <div className="flex items-center gap-0.5 rounded-lg bg-surface-2 p-0.5">
+          {tab("dashboard", "Dashboard", <LayoutGrid className="h-3.5 w-3.5" />)}
+          {tab("chat", "Coordinator", <Bot className="h-3.5 w-3.5" />, livePrograms)}
+          {tab("inbox", "Inbox", <Inbox className="h-3.5 w-3.5" />, waiting)}
+        </div>
+        {view === "inbox" ? (
+          <Input
+            value={find}
+            onChange={(e) => updateNav({ projects: { find: e.target.value || null } })}
+            placeholder="Filter questions…"
+            aria-label="Filter questions"
+            className="h-6 w-56 rounded-md px-2 text-xs"
+          />
+        ) : null}
+      </div>
+
+      {view === "chat" ? (
+        <CoordinatorChat />
+      ) : view === "inbox" ? (
+        <QuestionsView find={find} />
+      ) : (
+        <Dashboard />
+      )}
+    </div>
+  );
+}
+
+/**
+ * The dashboard face — every open workspace of every connected bridge server.
+ * With more than one server, cards group under a server heading; a
+ * disconnected server keeps its heading (dimmed) so a dead connection is
+ * visible rather than silently absent.
+ */
+function Dashboard() {
   const connections = useFleetConnections();
   const [openDialog, setOpenDialog] = useState(false);
 
@@ -22,7 +93,7 @@ export function OverviewMode() {
   const total = connections.reduce((n, c) => n + c.workspaces.length, 0);
 
   return (
-    <div className="h-full overflow-y-auto bg-surface-0">
+    <div className="min-h-0 flex-1 overflow-y-auto">
       <div className="mx-auto max-w-5xl px-6 py-6">
         <header className="mb-5 flex items-center gap-3">
           <div>

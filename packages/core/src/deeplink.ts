@@ -16,7 +16,6 @@
 
 import { C4_LEVELS, type C4Level } from "./c4.js";
 import { CODE_LOD_LEVELS, type CodeLodLevel } from "./codemap.js";
-import type { HubViewId } from "./hub.js";
 import { INSIGHT_PERIODS } from "./insights.js";
 import type { QualityViewId } from "./quality.js";
 import type { SurfaceViewId } from "./surfaces.js";
@@ -57,7 +56,6 @@ export function formatWsRef(sid: string | null | undefined, ws: string): string 
 
 export type CrystalModeId =
   | "projects"
-  | "hub"
   | "architect"
   | "orchestrate"
   | "code"
@@ -255,27 +253,21 @@ export interface QualityLink {
   find?: string;
 }
 
+/** Overview subviews: the dashboard, the coordinator chat, the questions inbox. */
+export type OverviewViewId = "dashboard" | "chat" | "inbox";
+
 /**
- * The Hub — cross-project programs. Unlike every other section this one is
- * *not* scoped to `ws`: a program spans workspaces, so its links stay valid
+ * The Overview — cross-workspace dashboard plus the absorbed hub surfaces
+ * (coordinator chat, questions inbox). Unlike every other section this one is
+ * *not* scoped to `ws`: programs span workspaces, so its links stay valid
  * whichever workspace is active (`ws` still rides along, marking where to
- * return when the user leaves the Hub).
+ * return when the user leaves the Overview).
  */
-export interface HubLink {
-  view?: HubViewId;
-  /** Selected program id. */
+export interface ProjectsLink {
+  view?: OverviewViewId;
+  /** Selected program id (coordinator chat). */
   program?: string;
-  /**
-   * Workspace id the start panel should dispatch into — set when arriving
-   * from a project card, so "dispatch an epic into this project" actually
-   * carries the project.
-   */
-  project?: string;
-  /** Selected delivery within the program. */
-  delivery?: string;
-  /** Selected program-manager turn (run id); latest when unset. */
-  run?: string;
-  /** Find query across programs / projects. */
+  /** Find query (inbox). */
   find?: string;
 }
 
@@ -294,7 +286,7 @@ export interface DeepLink {
    */
   lens?: string;
   mode?: CrystalModeId;
-  hub?: HubLink;
+  projects?: ProjectsLink;
   architect?: ArchitectLink;
   orchestrate?: OrchestrateLink;
   code?: CodeLink;
@@ -438,20 +430,14 @@ export function formatDeepLink(link: DeepLink): string {
       if (q.covPath) add("path", q.covPath);
     }
     if (q.find) add("find", q.find);
-  } else if (mode === "hub") {
-    const h = link.hub ?? {};
-    const view = h.view ?? "programs";
-    path += `/${view}`;
-    if (view === "programs") {
-      if (h.program) add("program", h.program);
-      if (h.delivery) add("delivery", h.delivery);
-      if (h.run) add("run", h.run);
-      if (h.project) add("project", h.project);
-    }
-    if (h.find) add("find", h.find);
+  } else if (mode === "projects") {
+    const p = link.projects ?? {};
+    const view = p.view ?? "dashboard";
+    if (view !== "dashboard") path += `/${view}`;
+    if (view === "chat" && p.program) add("program", p.program);
+    if (p.find) add("find", p.find);
   }
-  // "projects" (cross-workspace overview) and "jobs" (agent job hub) are
-  // stateless — nothing to encode beyond ws.
+  // "jobs" (agent job hub) is stateless — nothing to encode beyond ws.
 
   return `#${path}${pairs.length ? `?${pairs.join("&")}` : ""}`;
 }
@@ -463,8 +449,13 @@ export function formatDeepLink(link: DeepLink): string {
  */
 const MODE_ALIASES: Record<string, [CrystalModeId, string?]> = {
   overview: ["projects"],
-  programs: ["hub", "programs"],
-  portfolio: ["hub", "programs"],
+  // The hub merged into the Overview: programs became the coordinator chat,
+  // questions the inbox. Old hub links are permanent parse aliases.
+  hub: ["projects", "chat"],
+  programs: ["projects", "chat"],
+  portfolio: ["projects", "chat"],
+  inbox: ["projects", "inbox"],
+  questions: ["projects", "inbox"],
   editor: ["code"],
   arch: ["architect"],
   architecture: ["architect"],
@@ -682,24 +673,21 @@ export function parseDeepLink(hash: string): DeepLink {
     const find = params.get("find");
     if (find) q.find = find;
     if (Object.keys(q).length) link.quality = q;
-  } else if (mode === "hub") {
-    link.mode = "hub";
-    const h: HubLink = {};
-    const view = segments[1];
-    if (view === "programs" || view === "projects" || view === "questions") h.view = view;
-    const program = params.get("program");
-    if (program) h.program = program;
-    const delivery = params.get("delivery");
-    if (delivery) h.delivery = delivery;
-    const run = params.get("run");
-    if (run) h.run = run;
-    const project = params.get("project");
-    if (project) h.project = project;
-    const find = params.get("find");
-    if (find) h.find = find;
-    if (Object.keys(h).length) link.hub = h;
   } else if (mode === "projects") {
     link.mode = "projects";
+    const p: ProjectsLink = {};
+    const view = segments[1];
+    if (view === "dashboard" || view === "chat" || view === "inbox") p.view = view;
+    // Legacy hub subviews parse onto their Overview successors (the `hub`
+    // segment itself is a MODE_ALIAS): programs → chat, questions → inbox,
+    // the hub's projects portfolio → the dashboard.
+    else if (view === "programs") p.view = "chat";
+    else if (view === "questions") p.view = "inbox";
+    const program = params.get("program");
+    if (program) p.program = program;
+    const find = params.get("find");
+    if (find) p.find = find;
+    if (Object.keys(p).length) link.projects = p;
   } else if (mode === "jobs") {
     link.mode = "jobs";
   }
@@ -742,10 +730,10 @@ const QUALITY_VIEW_FIELDS: Record<QualityViewId, readonly (keyof QualityLink)[]>
   coverage: ["view", "covPath", "find"],
 };
 
-const HUB_VIEW_FIELDS: Record<HubViewId, readonly (keyof HubLink)[]> = {
-  programs: ["view", "program", "delivery", "run", "project", "find"],
-  projects: ["view", "find"],
-  questions: ["view", "find"],
+const PROJECTS_VIEW_FIELDS: Record<OverviewViewId, readonly (keyof ProjectsLink)[]> = {
+  dashboard: ["view", "find"],
+  chat: ["view", "program", "find"],
+  inbox: ["view", "find"],
 };
 
 /** Replace the owned fields with the incoming section's; keep everything else. */
@@ -800,11 +788,11 @@ export function applyDeepLink(current: DeepLink, next: DeepLink): DeepLink {
     const merged = replaceOwned(current.quality, next.quality, QUALITY_VIEW_FIELDS[view]);
     if (merged) link.quality = merged;
     else delete link.quality;
-  } else if (next.mode === "hub") {
-    const view = next.hub?.view ?? "programs";
-    const merged = replaceOwned(current.hub, next.hub, HUB_VIEW_FIELDS[view]);
-    if (merged) link.hub = merged;
-    else delete link.hub;
+  } else if (next.mode === "projects") {
+    const view = next.projects?.view ?? "dashboard";
+    const merged = replaceOwned(current.projects, next.projects, PROJECTS_VIEW_FIELDS[view]);
+    if (merged) link.projects = merged;
+    else delete link.projects;
   }
   return link;
 }
@@ -843,15 +831,15 @@ export function deepLinkNavIdentity(link: DeepLink): string {
   if (mode === "code") return `code/${link.code?.file ?? ""}`;
   if (mode === "surfaces") return `surfaces/${link.surfaces?.view ?? "screens"}`;
   if (mode === "quality") return `quality/${link.quality?.view ?? "tests"}`;
-  // Opening a program is a place of its own — the back button should walk
-  // portfolio → program, not every delivery click inside one. Only the
-  // programs view owns `program`: reading it on the projects view (where it
-  // survives in the store but never reaches the URL) made every keystroke in
-  // the find box push a history entry.
-  if (mode === "hub") {
-    const h = link.hub ?? {};
-    const view = h.view ?? "programs";
-    return `hub/${view}/${view === "programs" ? (h.program ?? "") : ""}`;
+  // Opening a program's chat is a place of its own — the back button should
+  // walk dashboard → chat → program, not every click inside one. Only the
+  // chat view owns `program`: reading it elsewhere (where it survives in the
+  // store but never reaches the URL) made every keystroke in the find box
+  // push a history entry.
+  if (mode === "projects") {
+    const p = link.projects ?? {};
+    const view = p.view ?? "dashboard";
+    return `projects/${view}/${view === "chat" ? (p.program ?? "") : ""}`;
   }
   return mode;
 }

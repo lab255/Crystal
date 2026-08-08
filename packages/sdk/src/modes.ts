@@ -6,7 +6,6 @@ import {
   LayoutGrid,
   PanelsTopLeft,
   ShieldCheck,
-  Target,
   type LucideIcon,
 } from "lucide-react";
 import type { CrystalModeId } from "@crystal/core";
@@ -16,7 +15,6 @@ export type CrystalMode = CrystalModeId;
 
 export const CRYSTAL_MODES: CrystalMode[] = [
   "projects",
-  "hub",
   "architect",
   "surfaces",
   "orchestrate",
@@ -27,7 +25,6 @@ export const CRYSTAL_MODES: CrystalMode[] = [
 
 export const MODE_LABELS: Record<CrystalMode, string> = {
   projects: "Overview",
-  hub: "Hub",
   architect: "Architecture",
   surfaces: "Surfaces",
   orchestrate: "Orchestrate",
@@ -39,7 +36,6 @@ export const MODE_LABELS: Record<CrystalMode, string> = {
 /** The rail icon for each mode — beside the labels, so a new mode fills both in. */
 export const MODE_ICONS: Record<CrystalMode, LucideIcon> = {
   projects: LayoutGrid,
-  hub: Target,
   architect: Boxes,
   surfaces: PanelsTopLeft,
   orchestrate: KanbanSquare,
@@ -49,12 +45,12 @@ export const MODE_ICONS: Record<CrystalMode, LucideIcon> = {
 };
 
 /**
- * Modes that sit *above* the workspace hierarchy rather than inside it:
- * `projects` (the cross-workspace overview) and `hub` (cross-project
- * programs). They neither read nor write the active workspace, so they are
+ * Modes that sit *above* the workspace hierarchy rather than inside it —
+ * `projects` (the cross-workspace overview, hosting the absorbed hub
+ * surfaces). They neither read nor write the active workspace, so they are
  * not facets and must not be remounted when it changes.
  */
-export const CROSS_PROJECT_MODES: CrystalMode[] = ["projects", "hub"];
+export const CROSS_PROJECT_MODES: CrystalMode[] = ["projects"];
 
 export function isCrossProjectMode(mode: CrystalMode): boolean {
   return CROSS_PROJECT_MODES.includes(mode);

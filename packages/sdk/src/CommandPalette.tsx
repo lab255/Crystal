@@ -229,21 +229,21 @@ export function CommandPalette({
         run: () => onSwitchMode(m),
       })),
       {
-        id: "view.hub.programs",
-        title: "Hub: Programs across projects",
+        id: "view.overview.chat",
+        title: "Overview: Coordinator chat",
         icon: Target,
         run: () => {
-          onSwitchMode("hub");
-          nav({ hub: { view: "programs" } });
+          onSwitchMode("projects");
+          nav({ projects: { view: "chat" } });
         },
       },
       {
-        id: "view.hub.projects",
-        title: "Hub: Projects and what they carry",
+        id: "view.overview.inbox",
+        title: "Overview: Questions inbox",
         icon: Boxes,
         run: () => {
-          onSwitchMode("hub");
-          nav({ hub: { view: "projects" } });
+          onSwitchMode("projects");
+          nav({ projects: { view: "inbox" } });
         },
       },
       // Views inside a mode are jump targets too — a palette hit lands on the

@@ -1,5 +1,12 @@
 import { useMemo } from "react";
-import { ArrowRight, Bot, History, KanbanSquare, TerminalSquare } from "lucide-react";
+import {
+  ArrowRight,
+  Bot,
+  History,
+  KanbanSquare,
+  MessageSquare,
+  TerminalSquare,
+} from "lucide-react";
 import {
   buildWorkspaceRecap,
   deriveRunAttention,
@@ -16,6 +23,7 @@ import {
   EMPTY_TODOS,
   useCrystal,
   useFleet,
+  useHub,
   useNavUpdate,
   useWorkspaces,
   wsKey,
@@ -98,6 +106,18 @@ export function WorkspaceCard({
     );
   };
 
+  // The program whose delivery runs in this project, if any — "talk to the
+  // coordinator" opens the chat on it (primitive selector: id or null).
+  const programId = useHub(
+    (s) => s.programs.find((p) => p.deliveries.some((d) => d.ws === ws.id))?.id ?? null,
+  );
+  const goToChat = () => {
+    updateNav({
+      mode: "projects",
+      projects: { view: "chat", program: programId },
+    });
+  };
+
   return (
     <section
       className={cn(
@@ -110,7 +130,15 @@ export function WorkspaceCard({
         <TrafficLightDot light={light} className="h-2.5 w-2.5" />
         <div className="min-w-0 flex-1">
           <div className="flex items-baseline gap-2">
-            <h3 className="truncate text-sm font-semibold text-ink">{ws.name}</h3>
+            <button
+              type="button"
+              disabled={offline}
+              onClick={enter}
+              title={`Open ${ws.name}`}
+              className="min-w-0 truncate text-left text-sm font-semibold text-ink hover:text-crystal-300 disabled:cursor-default disabled:hover:text-ink"
+            >
+              {ws.name}
+            </button>
             {serverLabel ? (
               <span className="truncate text-[10px] text-ink-faint">{serverLabel}</span>
             ) : null}
@@ -142,6 +170,22 @@ export function WorkspaceCard({
               className="rounded p-1 text-ink-faint hover:bg-surface-3 hover:text-ink disabled:opacity-40"
             >
               <Bot className="h-3.5 w-3.5" />
+            </button>
+          </Tooltip>
+          <Tooltip
+            content={
+              programId
+                ? "Talk to the coordinating agent about this project"
+                : "Talk to the coordinating agent"
+            }
+          >
+            <button
+              type="button"
+              onClick={goToChat}
+              aria-label={`Talk to the coordinator about ${ws.name}`}
+              className="rounded p-1 text-ink-faint hover:bg-surface-3 hover:text-ink"
+            >
+              <MessageSquare className="h-3.5 w-3.5" />
             </button>
           </Tooltip>
           <Tooltip content="Open the task board">

@@ -17,7 +17,6 @@ import {
   parseDeepLink,
   workspaceLight,
   worstLight,
-  type HubViewId,
   type ProjectEntry,
   type TrafficLight,
 } from "@crystal/core";
@@ -86,11 +85,8 @@ const SurfacesMode = lazy(() =>
 const QualityMode = lazy(() =>
   import("@crystal/quality").then((m) => ({ default: m.QualityMode })),
 );
-const HubMode = lazy(() => import("@crystal/hub").then((m) => ({ default: m.HubMode })));
-
 const MODE_COMPONENTS: Record<CrystalMode, React.LazyExoticComponent<() => React.JSX.Element>> = {
   projects: OverviewMode,
-  hub: HubMode,
   architect: ArchitectMode,
   surfaces: SurfacesMode,
   orchestrate: OrchestratorMode,
@@ -193,16 +189,13 @@ export function CrystalShell({
       ).length,
   );
   const attention = useFleetAttention(activeSid, activeWsId);
-  // Programs still in flight across every project — the Hub's rail badge.
-  const liveProgramCount = useHub(
-    (s) => s.programs.filter((p) => p.status === "running").length,
-  );
-  // Unanswered agent questions across the portfolio: they outrank the live
-  // count on the rail — a stopped run waiting on a human is the thing to see
-  // from any mode.
+  // Unanswered agent questions across the portfolio — the navbar inbox badge
+  // and the Overview rail badge: a stopped run waiting on a human is the
+  // thing to see from any mode.
   const hubWaiting = useHub((s) =>
     Object.values(s.questions).reduce((n, qs) => n + qs.length, 0),
   );
+  const overviewView = useNav((l) => l.projects?.view);
   // Count-only selectors (primitives): the shell must not re-render on every
   // stream event that replaces the runs array — only when a count changes.
   const needsYouCount =
@@ -417,11 +410,11 @@ export function CrystalShell({
           <Tooltip content="Inbox — agent questions across every project">
             <button
               type="button"
-              onClick={() => updateNav({ mode: "hub", hub: { view: "questions" as HubViewId } })}
+              onClick={() => updateNav({ mode: "projects", projects: { view: "inbox" } })}
               aria-label="Open the questions inbox"
               className={cn(
                 "relative flex h-6.5 w-6.5 shrink-0 items-center justify-center rounded-md transition-colors",
-                mode === "hub"
+                mode === "projects" && overviewView === "inbox"
                   ? "bg-crystal-500/20 text-crystal-300"
                   : "text-ink-faint hover:bg-surface-3 hover:text-ink-muted",
               )}
@@ -447,12 +440,10 @@ export function CrystalShell({
           <WorkspaceRail
             mode={mode}
             attention={attention}
-            hubBadge={hubWaiting || liveProgramCount}
-            hubWarns={hubWaiting > 0}
+            waitingBadge={hubWaiting}
             gitOpen={gitOpen}
             terminalOpen={terminalOpen}
             onHome={() => switchMode("projects")}
-            onHub={() => switchMode("hub")}
             onToggleGit={() => setGitOpen((o) => !o)}
             onToggleTerminal={() => setTerminalOpen(!terminalOpen)}
             onSelectWorkspace={selectWorkspace}

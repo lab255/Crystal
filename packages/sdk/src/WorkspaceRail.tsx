@@ -58,12 +58,10 @@ import { RecentWorkspaceRowContent } from "./RecentWorkspaceRow.js";
 export function WorkspaceRail({
   mode,
   attention,
-  hubBadge,
-  hubWarns,
+  waitingBadge,
   gitOpen,
   terminalOpen,
   onHome,
-  onHub,
   onToggleGit,
   onToggleTerminal,
   onSelectWorkspace,
@@ -72,12 +70,11 @@ export function WorkspaceRail({
   mode: CrystalMode;
   /** Worst light across the non-active workspaces — the Overview badge. */
   attention: TrafficLight;
-  hubBadge: number;
-  hubWarns: boolean;
+  /** Unanswered agent questions across the portfolio — outranks the light. */
+  waitingBadge: number;
   gitOpen: boolean;
   terminalOpen: boolean;
   onHome: () => void;
-  onHub: () => void;
   onToggleGit: () => void;
   onToggleTerminal: () => void;
   onSelectWorkspace: (sid: string, id: string) => void;
@@ -220,26 +217,15 @@ export function WorkspaceRail({
           icon: <LayoutGrid className="h-4.5 w-4.5 shrink-0" />,
           active: mode === "projects",
           onClick: onHome,
+          // Waiting questions outrank the fleet light: a stopped run waiting
+          // on a human is the thing to see from any mode.
           badge:
-            attention === "red" || attention === "yellow" ? (
-              <TrafficLightDot light={attention} className="absolute right-1 top-1" />
-            ) : null,
-        })}
-        {levelButton({
-          label: "Hub",
-          icon: <Target className="h-4.5 w-4.5 shrink-0" />,
-          active: mode === "hub",
-          onClick: onHub,
-          badge:
-            hubBadge > 0 ? (
-              <span
-                className={cn(
-                  "absolute right-1 top-1 flex h-3.5 min-w-3.5 items-center justify-center rounded-full px-0.5 text-[9px] font-bold text-surface-0",
-                  hubWarns ? "bg-warn" : "bg-info",
-                )}
-              >
-                {hubBadge}
+            waitingBadge > 0 ? (
+              <span className="absolute right-1 top-1 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-warn px-0.5 text-[9px] font-bold text-surface-0">
+                {waitingBadge}
               </span>
+            ) : attention === "red" || attention === "yellow" ? (
+              <TrafficLightDot light={attention} className="absolute right-1 top-1" />
             ) : null,
         })}
 

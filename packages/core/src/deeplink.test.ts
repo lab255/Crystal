@@ -416,42 +416,42 @@ describe("round trips", () => {
     expect(roundTrip(link)).toEqual(link);
   });
 
-  it("hub programs carry the selected program, delivery and manager turn", () => {
+  it("the coordinator chat carries the selected program", () => {
     const link: DeepLink = {
       ws: "abc",
-      mode: "hub",
-      hub: { view: "programs", program: "prog_1", delivery: "dlv_2", run: "run_3", find: "sso" },
+      mode: "projects",
+      projects: { view: "chat", program: "prog_1", find: "sso" },
     };
-    expect(formatDeepLink(link)).toBe(
-      "#/hub/programs?ws=abc&program=prog_1&delivery=dlv_2&run=run_3&find=sso",
-    );
+    expect(formatDeepLink(link)).toBe("#/projects/chat?ws=abc&program=prog_1&find=sso");
     expect(roundTrip(link)).toEqual(link);
   });
 
-  it("carries the project a dispatch was started from", () => {
-    const link: DeepLink = {
-      mode: "hub",
-      hub: { view: "programs", project: "ws-abc", find: "sso" },
-    };
-    expect(formatDeepLink(link)).toBe("#/hub/programs?project=ws-abc&find=sso");
+  it("the inbox carries only the filter", () => {
+    // Program selection belongs to the chat view; an inbox URL that carried
+    // it would resurrect a stale selection on back/forward.
+    const link: DeepLink = { mode: "projects", projects: { view: "inbox", find: "api" } };
+    expect(formatDeepLink(link)).toBe("#/projects/inbox?find=api");
     expect(roundTrip(link)).toEqual(link);
-  });
-
-  it("the hub projects view carries only the filter", () => {
-    // Program selection belongs to the programs view; a projects URL that
-    // carried it would resurrect a stale selection on back/forward.
-    const link: DeepLink = { mode: "hub", hub: { view: "projects", find: "api" } };
-    expect(formatDeepLink(link)).toBe("#/hub/projects?find=api");
-    expect(roundTrip(link)).toEqual(link);
-    expect(formatDeepLink({ mode: "hub", hub: { view: "projects", program: "prog_1" } })).toBe(
-      "#/hub/projects",
+    expect(formatDeepLink({ mode: "projects", projects: { view: "inbox", program: "prog_1" } })).toBe(
+      "#/projects/inbox",
     );
   });
 
-  it("defaults the hub to the programs view", () => {
-    expect(formatDeepLink({ mode: "hub" })).toBe("#/hub/programs");
-    expect(parseDeepLink("#/hub").mode).toBe("hub");
-    expect(parseDeepLink("#/hub/bogus").hub).toBeUndefined();
+  it("defaults the overview to the dashboard and aliases old hub links", () => {
+    expect(formatDeepLink({ mode: "projects" })).toBe("#/projects");
+    expect(parseDeepLink("#/projects").mode).toBe("projects");
+    expect(parseDeepLink("#/projects/bogus").projects).toBeUndefined();
+    // The hub merged into the Overview: its old links are permanent aliases.
+    expect(parseDeepLink("#/hub")).toEqual({ mode: "projects", projects: { view: "chat" } });
+    expect(parseDeepLink("#/hub/programs?program=prog_1")).toEqual({
+      mode: "projects",
+      projects: { view: "chat", program: "prog_1" },
+    });
+    expect(parseDeepLink("#/hub/questions")).toEqual({
+      mode: "projects",
+      projects: { view: "inbox" },
+    });
+    expect(parseDeepLink("#/hub/projects").projects).toBeUndefined();
   });
 
   it("surfaces subviews round-trip their selections", () => {
@@ -742,20 +742,23 @@ describe("applyDeepLink", () => {
   });
 });
 
-describe("applyDeepLink (hub)", () => {
-  it("keeps the program selection out of the projects view and back on return", () => {
+describe("applyDeepLink (overview)", () => {
+  it("keeps the program selection out of the inbox and back on return", () => {
     const current: DeepLink = {
-      mode: "hub",
-      hub: { view: "programs", program: "prog_1", delivery: "dlv_2" },
+      mode: "projects",
+      projects: { view: "chat", program: "prog_1" },
     };
-    const onProjects = applyDeepLink(current, { mode: "hub", hub: { view: "projects" } });
-    // The projects URL owns only view+find, so the program selection survives
+    const onInbox = applyDeepLink(current, { mode: "projects", projects: { view: "inbox" } });
+    // The inbox URL owns only view+find, so the program selection survives
     // untouched underneath it.
-    expect(onProjects.hub).toEqual({ view: "projects", program: "prog_1", delivery: "dlv_2" });
+    expect(onInbox.projects).toEqual({ view: "inbox", program: "prog_1" });
 
-    const back = applyDeepLink(onProjects, { mode: "hub", hub: { view: "programs", program: "prog_1" } });
-    // …and a programs URL without a delivery genuinely means "nothing selected".
-    expect(back.hub).toEqual({ view: "programs", program: "prog_1" });
+    const back = applyDeepLink(onInbox, {
+      mode: "projects",
+      projects: { view: "chat", program: "prog_2" },
+    });
+    // …and a chat URL's program replaces the stored one.
+    expect(back.projects).toEqual({ view: "chat", program: "prog_2" });
   });
 });
 
@@ -835,24 +838,22 @@ describe("deepLinkNavIdentity", () => {
     ).not.toBe(deepLinkNavIdentity(board));
   });
 
-  it("ignores a program selection the projects view does not own", () => {
-    // The selection survives underneath the projects view (HUB_VIEW_FIELDS),
+  it("ignores a program selection the inbox does not own", () => {
+    // The selection survives underneath the inbox (PROJECTS_VIEW_FIELDS),
     // but the URL there never carries it — reading it in the identity made
     // every keystroke in the find box push a history entry.
-    const a: DeepLink = { mode: "hub", hub: { view: "projects", program: "prog_1" } };
-    const b: DeepLink = { mode: "hub", hub: { view: "projects" } };
+    const a: DeepLink = { mode: "projects", projects: { view: "inbox", program: "prog_1" } };
+    const b: DeepLink = { mode: "projects", projects: { view: "inbox" } };
     expect(deepLinkNavIdentity(a)).toBe(deepLinkNavIdentity(b));
     expect(deepLinkNavIdentity(a)).toBe(deepLinkNavIdentity(parseDeepLink(formatDeepLink(a))));
   });
 
-  it("treats opening a program as its own place", () => {
-    const portfolio: DeepLink = { mode: "hub", hub: { view: "programs" } };
-    const opened: DeepLink = { mode: "hub", hub: { view: "programs", program: "prog_1" } };
-    expect(deepLinkNavIdentity(portfolio)).not.toBe(deepLinkNavIdentity(opened));
-    // Picking a delivery inside one program is not a new place.
-    expect(
-      deepLinkNavIdentity({ mode: "hub", hub: { view: "programs", program: "prog_1", delivery: "dlv_9" } }),
-    ).toBe(deepLinkNavIdentity(opened));
+  it("treats opening a program's chat as its own place", () => {
+    const dashboard: DeepLink = { mode: "projects" };
+    const chat: DeepLink = { mode: "projects", projects: { view: "chat" } };
+    const opened: DeepLink = { mode: "projects", projects: { view: "chat", program: "prog_1" } };
+    expect(deepLinkNavIdentity(dashboard)).not.toBe(deepLinkNavIdentity(chat));
+    expect(deepLinkNavIdentity(chat)).not.toBe(deepLinkNavIdentity(opened));
   });
 });
 
@@ -869,10 +870,12 @@ describe("mode aliases", () => {
     expect(apis.surfaces?.view).toBe("apis");
   });
 
-  it("maps program vocabulary onto the hub", () => {
-    expect(parseDeepLink("#/programs").mode).toBe("hub");
-    expect(parseDeepLink("#/programs").hub?.view).toBe("programs");
-    expect(parseDeepLink("#/portfolio").mode).toBe("hub");
+  it("maps program vocabulary onto the overview's chat and inbox", () => {
+    expect(parseDeepLink("#/programs").mode).toBe("projects");
+    expect(parseDeepLink("#/programs").projects?.view).toBe("chat");
+    expect(parseDeepLink("#/portfolio").projects?.view).toBe("chat");
+    expect(parseDeepLink("#/inbox").projects?.view).toBe("inbox");
+    expect(parseDeepLink("#/questions").projects?.view).toBe("inbox");
   });
 
   it("leaves genuinely unknown modes unparsed", () => {

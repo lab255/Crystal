@@ -55,8 +55,8 @@ export function QuestionsView({ find }: { find: string }) {
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={() => nav({ hub: { view: "programs", program: program.id } })}
-                title="Open the program"
+                onClick={() => nav({ projects: { view: "chat", program: program.id } })}
+                title="Open the coordinator chat for this program"
                 className="flex min-w-0 items-center gap-1.5 text-xs font-semibold text-ink hover:underline"
               >
                 <Target className="h-3.5 w-3.5 shrink-0 text-crystal-300" />
