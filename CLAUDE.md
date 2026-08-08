@@ -295,6 +295,42 @@ build/sign (+notarize on macOS) → signed updater `latest.json`).
   codec is `packages/core/src/deeplink.ts`, view/selection state lives in the client nav
   store (`useNav`/`useNavUpdate`), and the SDK's `useDeepLinks` syncs store ↔ URL. New
   navigational state belongs in the nav store, not component-local `useState`.
+- File writes are conflict-guarded: `fs.read` returns the on-disk `sha`, `fs.write`
+  takes `baseSha` and refuses when the file changed since the read (agents and editors
+  share trees — external modification is the NORMAL case). The editor keeps its
+  dirty/conflict logic in pure `packages/editor/src/editor-state.ts`; any new
+  buffer-editing surface must ride the same guard, never a bare `fs.write`.
+- Delivery truth is typed end-to-end: `agent.message` returns
+  `{status: resumed|queued|recorded}` — `recorded` means the chain can NEVER receive
+  the text; MessageComposer keeps the draft and says so. Never collapse the status
+  back into a boolean at any seam (that exact collapse silently ate steering once).
+  `git.changedFiles`/`changedFilesStatus` resolve user-supplied refs loudly — a typo'd
+  ref must error like the vs review, never read as an empty (= clean) diff lens.
+- Textual diffs: `git.showFile` serves one file at a ref (null = absent, truncated
+  flag, loud on bad refs/binary); the editor's read-only Monaco `DiffView` opens via
+  the `crystal:open-diff` CustomEvent (same pattern as `crystal:open-terminal` — how
+  packages reach the editor without depending on it). Review surfaces (DiffPanel rows,
+  codemap changed/ghost node menus, RefReviewBar's changed-file list) all wire to it.
+- The architecture overlay broadcasts `arch.overlayChanged` after every save; the
+  client refetches unless its own overlay save is pending. Multi-window editing relies
+  on this — a new overlay-writing path must go through the workspace store's debounced
+  save (which keeps failed saves dirty in `failedSaves` and retries on flush), never a
+  direct `arch.saveOverlay`.
+- Shell keyboard: `packages/sdk/src/shortcuts.ts` + `modeShortcutDigit` (modes.ts) are
+  the ONE binding table — every advertised hint (ProjectNav, palette, the Shift+/
+  cheat-sheet) derives from them; never hand-compute a key hint. Global shortcuts must
+  yield to a focused terminal (`.xterm` closest-check at the top of the shell keydown).
+  Palette capability actions dispatch `crystal:` CustomEvents (see
+  `packages/sdk/src/capabilities.ts`).
+- Quality runs are scopeable additively: `quality.run` takes `packageDir` (one package
+  job), `testNamePath` (describe-ancestry `-t` pattern), and reports `progress`
+  (job n of m), `coverageMissing` + `coveragePathsProbed` on the `QualityRunUpdate`
+  shape. The partial-failure contract is load-bearing: some-packages-failed keeps
+  `status: "failed"` with `run.error`, and the UI must render that loudly (a green
+  count with a broken package is the failure mode being prevented).
+- Diagram export lives in `packages/architect/src/export-png.ts` /
+  `export-mermaid.ts` (pure generator, stable ordering — exports must diff cleanly)
+  behind the toolbar `ExportMenu`; mermaid is only offered on live C4 projections.
 - Context menus: anything rendering a function/symbol/file/module composes
   `useContextMenu()` (`@crystal/ui` plumbing) with `useSymbolMenu()` (`@crystal/client`,
   pure builder `symbolMenuEntries` underneath) — view-specific entries on top, the shared
@@ -382,6 +418,14 @@ build/sign (+notarize on macOS) → signed updater `latest.json`).
   bypass (it resolves against the global library, not a workspace roster).
 
 ## Gotchas
+
+- A react-flow pane with `onlyRenderVisibleElements` + a swapped-in node array can
+  cull EVERYTHING to a blank canvas: if the new scene's nodes all sit outside the
+  previously-fitted viewport (the codemap's worker-built full layout landing after
+  the initial fitView framed a smaller early scene), zero node elements render — no
+  error, store still holds the nodes. Any view with culling that swaps node SETS must
+  refit on id-set change (see CodeMapView's guarded swap effect) in addition to the
+  `updateNodeInternals` re-registration the ArchitectCanvas documents.
 
 - HTML5 drag-and-drop dies silently in the desktop webview unless Tauri's
   drag-drop handler is disabled: `dragDropEnabled: false` on the main window in
