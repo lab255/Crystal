@@ -7,6 +7,11 @@ import { RecentWorkspaceRowContent } from "./RecentWorkspaceRow.js";
 
 type Listing = { path: string; parent: string | null; entries: BrowseEntry[] };
 
+export function workspaceBrowseError(error: unknown): string {
+  const detail = error instanceof Error ? error.message : String(error);
+  return detail ? `Could not browse this folder: ${detail}` : "Could not browse this folder.";
+}
+
 /**
  * Open a workspace on the bridge host: reopen a recent one with a click,
  * browse the host's directories, or type/paste an absolute path. The browser
@@ -31,6 +36,7 @@ export function OpenWorkspaceDialog({
 
   const [path, setPath] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [browseError, setBrowseError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [listing, setListing] = useState<Listing | null>(null);
   const [browsing, setBrowsing] = useState(false);
@@ -47,10 +53,11 @@ export function OpenWorkspaceDialog({
       const result = await client.request("workspaces.browse", target ? { path: target } : {});
       if (seq !== browseSeq.current) return;
       setListing(result);
+      setBrowseError(null);
       if (intoInput) setPath(result.path);
-    } catch {
+    } catch (err) {
       if (seq !== browseSeq.current) return;
-      // Not a directory (yet) — keep the last good listing while the user types.
+      setBrowseError(workspaceBrowseError(err));
     } finally {
       if (seq === browseSeq.current) setBrowsing(false);
     }
@@ -61,6 +68,7 @@ export function OpenWorkspaceDialog({
     if (!open) return;
     setPath(initialPath ?? "");
     setError(initialError ?? null);
+    setBrowseError(null);
     setBusy(false);
     void browse(initialPath || undefined);
   }, [open]);
@@ -76,6 +84,7 @@ export function OpenWorkspaceDialog({
   function onPathChange(next: string): void {
     setPath(next);
     setError(null);
+    setBrowseError(null);
     if (pendingBrowse.current) clearTimeout(pendingBrowse.current);
     pendingBrowse.current = setTimeout(() => void browse(next || undefined), 250);
   }
@@ -212,6 +221,11 @@ export function OpenWorkspaceDialog({
                 </div>
               ) : null}
             </div>
+            {browseError ? (
+              <div role="alert" className="border-t border-edge px-2 py-1.5 text-[11px] text-danger">
+                {browseError}
+              </div>
+            ) : null}
           </div>
 
           {error ? <div className="text-[11px] text-danger">{error}</div> : null}

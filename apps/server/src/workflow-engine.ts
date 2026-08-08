@@ -557,6 +557,7 @@ export class WorkflowEngine {
       if (interactive) {
         return { run: interactive, queued: false, mode: "interactive" as const, wakeExpected: true };
       }
+      await this.assertManagerCanReceive(workflowId, workflow.managerRunId);
       if (opts.wake === false) {
         await this.queueMessageLocked(workflowId, framed);
         return {
@@ -570,6 +571,7 @@ export class WorkflowEngine {
       // the manager-id read and the resume attempt.
       const run = await this.agents.resumeChain(workflow.managerRunId, framed);
       if (!run) {
+        await this.assertManagerCanReceive(workflowId, workflow.managerRunId);
         await this.queueMessageLocked(workflowId, framed);
         return {
           run: null,
@@ -580,6 +582,15 @@ export class WorkflowEngine {
       }
       return { run, queued: false, mode: "resumed" as const, wakeExpected: true };
     });
+  }
+
+  /** Refuse a receipt for a manager chain whose session can never be resumed. */
+  private async assertManagerCanReceive(workflowId: string, managerRunId: string): Promise<void> {
+    const chain = await this.agents.chainRuns(managerRunId);
+    const latest = chain[chain.length - 1];
+    const live = chain.some((run) => run.status === "running" || run.status === "queued");
+    if (latest?.status !== "cancelled" && (live || chain.some((run) => run.sessionId))) return;
+    throw new Error(`Workflow ${workflowId}'s manager session has ended and cannot receive messages.`);
   }
 
   /** Is any run of the workflow live — i.e. will a settlement flush the queue? */

@@ -213,6 +213,12 @@ class FakeAgents {
     return this.runs.find((r) => r.id === runId) ?? null;
   }
 
+  async chainRuns(runId: string): Promise<AgentRun[]> {
+    const byId = new Map(this.runs.map((run) => [run.id, run]));
+    const root = chainRootId(runId, byId);
+    return this.runs.filter((run) => chainRootId(run.id, byId) === root);
+  }
+
   async eventsFor(): Promise<RunEvent[]> {
     return [];
   }
@@ -641,6 +647,42 @@ describe("HubEngine", () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(agents.resumes.length).toBeGreaterThan(0);
     expect(agents.resumes[0]).toContain("settled: completed");
+  });
+
+  it("returns typed receipts when steering the program manager", async () => {
+    const { hub, agents } = await fresh("manager-message-receipt");
+    const program = await hub.create({ name: "P", goal: "g" });
+    await hub.startManager(program.id);
+
+    await expect(hub.message(program.id, "hold the rollout")).resolves.toMatchObject({
+      run: null,
+      queued: true,
+      mode: "queued",
+      wakeExpected: true,
+    });
+
+    agents.settleLatest();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(agents.resumes.at(-1)).toContain("hold the rollout");
+    agents.settleLatest();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    await expect(hub.message(program.id, "continue now")).resolves.toMatchObject({
+      queued: false,
+      mode: "resumed",
+      wakeExpected: true,
+    });
+  });
+
+  it("refuses to queue a steer for a manager chain that can never receive it", async () => {
+    const { hub, agents } = await fresh("manager-message-dead");
+    const program = await hub.create({ name: "P", goal: "g" });
+    const run = await hub.startManager(program.id);
+    run.status = "cancelled";
+
+    await expect(hub.message(program.id, "this must not disappear")).rejects.toThrow(
+      /manager session has ended/,
+    );
   });
 
   it("serializes concurrent manager starts so only one session is spawned", async () => {

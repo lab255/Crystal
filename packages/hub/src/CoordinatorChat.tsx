@@ -105,7 +105,7 @@ export function CoordinatorChat() {
         onCancel={() => setCreating(false)}
         onCreated={(id) => {
           setCreating(false);
-          nav({ projects: { view: "chat", program: id } });
+          nav({ projects: { view: "chat", program: id, turn: null } });
         }}
       />
     );
@@ -155,7 +155,7 @@ export function CoordinatorChat() {
           onSelect: () => {
             const fallback = ordered.find((o) => o.id !== p.id);
             void removeProgram(p.id).then(() =>
-              nav({ projects: { view: "chat", program: fallback?.id ?? null } }),
+              nav({ projects: { view: "chat", program: fallback?.id ?? null, turn: null } }),
             );
           },
         }
@@ -180,7 +180,9 @@ export function CoordinatorChat() {
           size="xs"
           aria-label="Program"
           value={program.id}
-          onChange={(e) => nav({ projects: { view: "chat", program: e.target.value } })}
+          onChange={(e) =>
+            nav({ projects: { view: "chat", program: e.target.value, turn: null } })
+          }
           options={ordered.map((p) => ({ value: p.id, label: p.name }))}
           className="w-56"
         />
@@ -536,7 +538,8 @@ function CreateProgramPanel({
 /**
  * The manager session as a chat pane — the resume-chain transcript plus the
  * composer (`hub.message` under it). Same mechanics the hub's program detail
- * used; turn selection is view-local here, the chat deep-links by program only.
+ * used; program and turn selection live in the nav store so copied links
+ * reopen the same point in the conversation.
  */
 function ManagerPane({ program }: { program: Program }) {
   const runs = useHub((s) => s.runs);
@@ -549,7 +552,8 @@ function ManagerPane({ program }: { program: Program }) {
   const activeWs = useWorkspaces((s) => s.activeId);
   const openWsIds = useWorkspaces((s) => s.workspaces);
   const focusTerminal = useTerminals((s) => s.focusTerminal);
-  const [selectedRun, setSelectedRun] = useState<string | null>(null);
+  const selectedRun = useNav((l) => l.projects?.turn) ?? null;
+  const nav = useNavUpdate();
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -646,7 +650,15 @@ function ManagerPane({ program }: { program: Program }) {
       onClose={() => closeManager(program.id)}
       closeHint="Close the coordinator session — cancels any live turn; the start buttons return"
       onSend={terminal ? undefined : (t) => message(program.id, t)}
-      onSelectTurn={(id) => setSelectedRun(id === latest?.id ? null : id)}
+      onSelectTurn={(id) =>
+        nav({
+          projects: {
+            view: "chat",
+            program: program.id,
+            turn: id === latest?.id ? null : id,
+          },
+        })
+      }
       className="min-h-0 flex-1"
     />
   ) : null;

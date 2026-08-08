@@ -429,13 +429,15 @@ describe("round trips", () => {
     expect(roundTrip(link)).toEqual(link);
   });
 
-  it("the coordinator chat carries the selected program", () => {
+  it("the coordinator chat carries the selected program and manager turn", () => {
     const link: DeepLink = {
       ws: "abc",
       mode: "projects",
-      projects: { view: "chat", program: "prog_1", find: "sso" },
+      projects: { view: "chat", program: "prog_1", turn: "run_2", find: "sso" },
     };
-    expect(formatDeepLink(link)).toBe("#/projects/chat?ws=abc&program=prog_1&find=sso");
+    expect(formatDeepLink(link)).toBe(
+      "#/projects/chat?ws=abc&program=prog_1&turn=run_2&find=sso",
+    );
     expect(roundTrip(link)).toEqual(link);
   });
 
@@ -448,6 +450,10 @@ describe("round trips", () => {
     expect(formatDeepLink({ mode: "projects", projects: { view: "inbox", program: "prog_1" } })).toBe(
       "#/projects/inbox",
     );
+    expect(formatDeepLink({ mode: "projects", projects: { view: "inbox", turn: "run_2" } })).toBe(
+      "#/projects/inbox",
+    );
+    expect(parseDeepLink("#/projects/inbox?turn=run_2").projects?.turn).toBeUndefined();
   });
 
   it("defaults the overview to the dashboard and aliases old hub links", () => {
@@ -763,12 +769,12 @@ describe("applyDeepLink (overview)", () => {
   it("keeps the program selection out of the inbox and back on return", () => {
     const current: DeepLink = {
       mode: "projects",
-      projects: { view: "chat", program: "prog_1" },
+      projects: { view: "chat", program: "prog_1", turn: "run_1" },
     };
     const onInbox = applyDeepLink(current, { mode: "projects", projects: { view: "inbox" } });
     // The inbox URL owns only view+find, so the program selection survives
     // untouched underneath it.
-    expect(onInbox.projects).toEqual({ view: "inbox", program: "prog_1" });
+    expect(onInbox.projects).toEqual({ view: "inbox", program: "prog_1", turn: "run_1" });
 
     const back = applyDeepLink(onInbox, {
       mode: "projects",
@@ -869,8 +875,13 @@ describe("deepLinkNavIdentity", () => {
     const dashboard: DeepLink = { mode: "projects" };
     const chat: DeepLink = { mode: "projects", projects: { view: "chat" } };
     const opened: DeepLink = { mode: "projects", projects: { view: "chat", program: "prog_1" } };
+    const selectedTurn: DeepLink = {
+      mode: "projects",
+      projects: { view: "chat", program: "prog_1", turn: "run_2" },
+    };
     expect(deepLinkNavIdentity(dashboard)).not.toBe(deepLinkNavIdentity(chat));
     expect(deepLinkNavIdentity(chat)).not.toBe(deepLinkNavIdentity(opened));
+    expect(deepLinkNavIdentity(selectedTurn)).toBe(deepLinkNavIdentity(opened));
   });
 });
 

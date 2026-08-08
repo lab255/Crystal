@@ -267,6 +267,8 @@ export interface ProjectsLink {
   view?: OverviewViewId;
   /** Selected program id (coordinator chat). */
   program?: string;
+  /** Selected program-manager turn (coordinator chat; unset follows latest). */
+  turn?: string;
   /** Find query (inbox). */
   find?: string;
 }
@@ -435,6 +437,7 @@ export function formatDeepLink(link: DeepLink): string {
     const view = p.view ?? "dashboard";
     if (view !== "dashboard") path += `/${view}`;
     if (view === "chat" && p.program) add("program", p.program);
+    if (view === "chat" && p.turn) add("turn", p.turn);
     if (p.find) add("find", p.find);
   }
   // "jobs" (agent job hub) is stateless — nothing to encode beyond ws.
@@ -685,6 +688,8 @@ export function parseDeepLink(hash: string): DeepLink {
     else if (view === "questions") p.view = "inbox";
     const program = params.get("program");
     if (program) p.program = program;
+    const turn = params.get("turn");
+    if (p.view === "chat" && turn) p.turn = turn;
     const find = params.get("find");
     if (find) p.find = find;
     if (Object.keys(p).length) link.projects = p;
@@ -731,7 +736,7 @@ const QUALITY_VIEW_FIELDS: Record<QualityViewId, readonly (keyof QualityLink)[]>
 
 const PROJECTS_VIEW_FIELDS: Record<OverviewViewId, readonly (keyof ProjectsLink)[]> = {
   dashboard: ["view", "find"],
-  chat: ["view", "program", "find"],
+  chat: ["view", "program", "turn", "find"],
   inbox: ["view", "find"],
 };
 

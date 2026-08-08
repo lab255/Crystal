@@ -5,6 +5,7 @@ import {
   nowIso,
   type AgentRun,
   type NeedsYouQuestion,
+  type PendingPermission,
   type ProjectEntry,
   type TodoItem,
 } from "@crystal/core";
@@ -54,6 +55,8 @@ export interface FleetState {
    * first read (see AttentionTracker in @crystal/core).
    */
   questionsByWs: Record<string, NeedsYouQuestion[]>;
+  /** Tool calls parked on an owner decision, keyed by compound workspace key. */
+  permissionsByWs: Record<string, PendingPermission[]>;
   /**
    * Project boards per workspace — what cross-workspace surfaces (the command
    * palette's Tasks group) search without opening the workspace. Same writer
@@ -152,6 +155,31 @@ export function createFleetStore(): FleetStore {
   // `questionsByWs` + `projectsByWs` (refresh delegates here); a failed read
   // keeps the previous snapshot rather than clearing a genuine signal.
   const questionTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  // Permission reads can race an initial fleet refresh. Only the newest read
+  // for a workspace may land, or a stale refresh can resurrect a decided row.
+  const permissionReadSeq = new Map<string, number>();
+  function nextPermissionRead(key: string): number {
+    const seq = (permissionReadSeq.get(key) ?? 0) + 1;
+    permissionReadSeq.set(key, seq);
+    return seq;
+  }
+  function refreshPermissions(sid: string, ws: string): void {
+    const client = clientOf(sid);
+    if (!client) return;
+    const key = wsKey(sid, ws);
+    const seq = nextPermissionRead(key);
+    void client
+      .request("permissions.pending", { ws })
+      .then(({ pending }) => {
+        if (permissionReadSeq.get(key) !== seq || clientOf(sid) !== client) return;
+        store.setState((s) => ({
+          permissionsByWs: { ...s.permissionsByWs, [key]: pending },
+        }));
+      })
+      .catch(() => {
+        // workspace closed mid-flight — the next refresh drops it
+      });
+  }
   function scheduleRecount(sid: string, ws: string): void {
     const key = wsKey(sid, ws);
     if (questionTimers.has(key)) return;
@@ -192,6 +220,7 @@ export function createFleetStore(): FleetStore {
     runsByWs: {},
     todosByWs: {},
     questionsByWs: {},
+    permissionsByWs: {},
     projectsByWs: {},
     seenAtByWs: typeof localStorage === "undefined" ? {} : loadSeen(),
     pendingTodoSaves: {},
@@ -217,10 +246,14 @@ export function createFleetStore(): FleetStore {
           store.setState((s) => ({ todosByWs: { ...s.todosByWs, [key]: todos.items } }));
         }),
         client.events.on("workspace.changed", ({ ws }) => scheduleRecount(sid, ws)),
+        client.events.on("permissions.changed", ({ ws }) => refreshPermissions(sid, ws)),
       ];
       return () => {
         for (const dispose of disposers) dispose();
         clients.delete(sid);
+        for (const key of permissionReadSeq.keys()) {
+          if (key.startsWith(`${sid}/`)) permissionReadSeq.delete(key);
+        }
         // The server is gone from the fleet — its slice goes with it. Seen
         // timestamps stay (cheap, and they become live again on re-add).
         const prefix = `${sid}/`;
@@ -230,6 +263,7 @@ export function createFleetStore(): FleetStore {
           runsByWs: strip(s.runsByWs),
           todosByWs: strip(s.todosByWs),
           questionsByWs: strip(s.questionsByWs),
+          permissionsByWs: strip(s.permissionsByWs),
           projectsByWs: strip(s.projectsByWs),
         }));
       };
@@ -240,11 +274,20 @@ export function createFleetStore(): FleetStore {
       if (!client) return;
       const results = await Promise.all(
         wsIds.map(async (ws) => {
-          const [runs, todos] = await Promise.all([
+          const key = wsKey(sid, ws);
+          const permissionSeq = nextPermissionRead(key);
+          const [runs, todos, permissions] = await Promise.all([
             client.request("agent.list", { ws }),
             client.request("todos.get", { ws }),
+            client.request("permissions.pending", { ws }),
           ]);
-          return { key: wsKey(sid, ws), runs: runs.runs, todos: todos.todos.items };
+          return {
+            key,
+            runs: runs.runs,
+            todos: todos.todos.items,
+            permissions: permissions.pending,
+            permissionSeq,
+          };
         }),
       );
       const prefix = `${sid}/`;
@@ -259,10 +302,13 @@ export function createFleetStore(): FleetStore {
         const questionsByWs: Record<string, NeedsYouQuestion[]> = Object.fromEntries(
           Object.entries(s.questionsByWs).filter(([k]) => !k.startsWith(prefix)),
         );
+        const permissionsByWs: Record<string, PendingPermission[]> = Object.fromEntries(
+          Object.entries(s.permissionsByWs).filter(([k]) => !k.startsWith(prefix)),
+        );
         const projectsByWs: Record<string, ProjectEntry[]> = Object.fromEntries(
           Object.entries(s.projectsByWs).filter(([k]) => !k.startsWith(prefix)),
         );
-        for (const { key, runs, todos } of results) {
+        for (const { key, runs, todos, permissions, permissionSeq } of results) {
           runsByWs[key] = runs;
           // Carry the recount path's values; closed workspaces drop out. An
           // unread workspace stays ABSENT (not []) — absence is what tells
@@ -271,10 +317,16 @@ export function createFleetStore(): FleetStore {
           if (carried !== undefined) questionsByWs[key] = carried;
           const boards = s.projectsByWs[key];
           if (boards !== undefined) projectsByWs[key] = boards;
+          // An event-driven read that started later wins over this refresh.
+          if (permissionReadSeq.get(key) === permissionSeq) {
+            permissionsByWs[key] = permissions;
+          } else if (s.permissionsByWs[key] !== undefined) {
+            permissionsByWs[key] = s.permissionsByWs[key];
+          }
           // A pending local edit is newer than what the server just returned.
           todosByWs[key] = s.pendingTodoSaves[key] ? (s.todosByWs[key] ?? todos) : todos;
         }
-        return { runsByWs, todosByWs, questionsByWs, projectsByWs };
+        return { runsByWs, todosByWs, questionsByWs, permissionsByWs, projectsByWs };
       });
       // Question counts have exactly ONE writer — the recount below — so a
       // slow refresh can never overwrite a fresher event-driven count with

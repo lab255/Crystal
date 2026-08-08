@@ -41,18 +41,11 @@ export async function messageRun(
   }
   const programId = programIdOfRun(run);
   if (programId) {
-    // Older bridges returned only `queued`; preserve the typed receipt when
-    // the route provides it without guessing whether a manager can wake.
-    const receipt = (await client.request("hub.message", { programId, text })) as {
-      queued: boolean;
-    } & Partial<SteerReceipt>;
-    return {
-      queued: receipt.queued,
-      ...(receipt.mode ? { mode: receipt.mode } : {}),
-      ...(typeof receipt.wakeExpected === "boolean"
-        ? { wakeExpected: receipt.wakeExpected }
-        : {}),
-    };
+    const { queued, mode, wakeExpected } = await client.request("hub.message", {
+      programId,
+      text,
+    });
+    return { queued, mode, wakeExpected };
   }
   const { status, runId } = await client.request("agent.message", { runId: run.id, text });
   return { queued: status === "queued", status, runId };

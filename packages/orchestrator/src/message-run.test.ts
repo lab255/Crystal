@@ -29,7 +29,7 @@ describe("messageRun", () => {
     });
   });
 
-  it("preserves a hub steer receipt when the route supplies it", async () => {
+  it("passes the hub steer receipt through to the composer", async () => {
     const run = createAgentRun({ prompt: "coordinate", tags: [programTag("program-1")] });
     const { client } = clientReturning({
       run: null,
@@ -43,13 +43,10 @@ describe("messageRun", () => {
       mode: "queued",
       wakeExpected: true,
     });
-  });
-
-  it("does not invent a wake expectation for a legacy hub receipt", async () => {
-    const run = createAgentRun({ prompt: "coordinate", tags: [programTag("program-1")] });
-    const { client } = clientReturning({ run: null, queued: true });
-
-    await expect(messageRun(client, run, "ship it")).resolves.toEqual({ queued: true });
+    expect(client.request).toHaveBeenCalledWith("hub.message", {
+      programId: "program-1",
+      text: "ship it",
+    });
   });
 
   it("maps the generic agent delivery status and resumed run id", async () => {

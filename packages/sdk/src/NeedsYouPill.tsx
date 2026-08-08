@@ -1,10 +1,14 @@
 import { Fragment } from "react";
-import { AlertTriangle, MessageCircleQuestion } from "lucide-react";
+import { AlertTriangle, MessageCircleQuestion, ShieldAlert } from "lucide-react";
 import {
+  EMPTY_PENDING_PERMISSIONS,
   useAttentionJump,
   useAttentionNotifications,
+  useFleet,
   useFleetNeedsYou,
+  type WorkspaceNeedsYou,
 } from "@crystal/client";
+import type { PendingPermission } from "@crystal/core";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -15,22 +19,25 @@ import {
 } from "@crystal/ui";
 
 /**
- * The global "N need you" pill (operator-oss's titlebar pill): open questions
- * and unrecovered failures rolled up across every open workspace on every
- * connection. The dropdown groups items per workspace; each row jumps straight
- * to the waiting task's board card (its session and answer box) or to the
- * failed run — cross-server, from any mode. The orchestrator keeps its own
- * per-workspace pill; both derive from the same @crystal/core policy.
+ * The global "N need you" pill (operator-oss's titlebar pill): open questions,
+ * parked permissions and unrecovered failures rolled up across every open
+ * workspace on every connection. The dropdown groups items per workspace;
+ * each row jumps straight to the waiting task or run — cross-server, from any
+ * mode. The orchestrator keeps its own per-workspace pill with the same count.
  *
  * This component also hosts the attention notifier: it subscribes to the same
  * fleet slices anyway, and a leaf keeps those re-renders out of the shell.
  */
 export function NeedsYouPill() {
   useAttentionNotifications();
-  const { rows, count } = useFleetNeedsYou();
+  const { rows } = useFleetNeedsYou();
+  const permissionsByWs = useFleet((s) => s.permissionsByWs);
+  const count = fleetNeedsYouCount(rows, permissionsByWs);
   const jump = useAttentionJump();
   if (count === 0) return null;
-  const waiting = rows.filter((r) => r.count > 0);
+  const waiting = rows.filter(
+    (row) => row.count + (permissionsByWs[row.key]?.length ?? 0) > 0,
+  );
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -70,6 +77,26 @@ export function NeedsYouPill() {
                 </span>
               </DropdownMenuItem>
             ))}
+            {(permissionsByWs[row.key] ?? EMPTY_PENDING_PERMISSIONS).map((permission) => {
+              const run = row.runs.find((candidate) => candidate.id === permission.runId);
+              return (
+                <DropdownMenuItem
+                  key={permission.id}
+                  disabled={!run}
+                  onSelect={() =>
+                    run && jump({ kind: "run", sid: row.sid, ws: row.ws, run })
+                  }
+                >
+                  <ShieldAlert className="h-3.5 w-3.5 shrink-0 text-warn" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate">{permission.tool} needs permission</span>
+                    <span className="block truncate text-[10px] text-ink-faint">
+                      {permission.summary}
+                    </span>
+                  </span>
+                </DropdownMenuItem>
+              );
+            })}
             {row.failures.map((run) => (
               <DropdownMenuItem
                 key={run.id}
@@ -88,5 +115,15 @@ export function NeedsYouPill() {
         ))}
       </DropdownMenuContent>
     </DropdownMenu>
+  );
+}
+
+export function fleetNeedsYouCount(
+  rows: readonly Pick<WorkspaceNeedsYou, "key" | "count">[],
+  permissionsByWs: Readonly<Record<string, readonly PendingPermission[]>>,
+): number {
+  return rows.reduce(
+    (count, row) => count + row.count + (permissionsByWs[row.key]?.length ?? 0),
+    0,
   );
 }

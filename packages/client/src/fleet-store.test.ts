@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Emitter, type AgentRun, type BridgeEvents } from "@crystal/core";
+import {
+  Emitter,
+  type AgentRun,
+  type BridgeEvents,
+  type PendingPermission,
+} from "@crystal/core";
 import type { BridgeClient } from "./bridge-client.js";
 import { createFleetStore } from "./fleet-store.js";
 import { parseWsKey, sidForEndpoint, wsKey } from "./fleet-client.js";
@@ -60,6 +65,7 @@ function fakeClient(
   data: {
     runsByWs?: Record<string, AgentRun[]>;
     projectsByWs?: Record<string, { path: string; project: unknown }[]>;
+    permissionsByWs?: Record<string, PendingPermission[]>;
   } = {},
 ) {
   const events = new Emitter<BridgeEvents & { connection: { state: string } }>();
@@ -73,6 +79,9 @@ function fakeClient(
       if (method === "todos.save") return Promise.resolve({ ok: true });
       if (method === "workspace.get") {
         return Promise.resolve({ projects: data.projectsByWs?.[params.ws ?? ""] ?? [] });
+      }
+      if (method === "permissions.pending") {
+        return Promise.resolve({ pending: data.permissionsByWs?.[params.ws ?? ""] ?? [] });
       }
       return Promise.reject(new Error(`unexpected method ${method}`));
     }),
@@ -199,6 +208,37 @@ describe("question details per workspace", () => {
     // Runs landed, but no recount has read the board yet.
     expect(store.getState().runsByWs["default/w1"]).toBeDefined();
     expect("default/w1" in store.getState().questionsByWs).toBe(false);
+  });
+});
+
+describe("pending permissions per workspace", () => {
+  const permission = (id: string): PendingPermission => ({
+    id,
+    runId: `run-${id}`,
+    tool: "Bash",
+    summary: "pnpm test",
+    requestedAt: "2026-08-09T00:00:00.000Z",
+  });
+
+  it("hydrates permissions and refreshes them on permissions.changed", async () => {
+    const data = { permissionsByWs: { w1: [permission("p1")] } };
+    const store = createFleetStore();
+    const client = fakeClient(data);
+    store.getState().attach("default", client);
+
+    await store.getState().refresh("default", ["w1"]);
+    expect(store.getState().permissionsByWs["default/w1"]?.map((item) => item.id)).toEqual([
+      "p1",
+    ]);
+
+    data.permissionsByWs.w1 = [permission("p2"), permission("p3")];
+    client.events.emit("permissions.changed", { ws: "w1" });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(store.getState().permissionsByWs["default/w1"]?.map((item) => item.id)).toEqual([
+      "p2",
+      "p3",
+    ]);
   });
 });
 

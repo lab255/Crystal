@@ -574,6 +574,16 @@ describe("WorkflowEngine", () => {
     expect(woke.run?.prompt).toContain("act on this now");
   });
 
+  it("refuses to queue a steer for a manager chain that can never receive it", async () => {
+    const { agents, engine } = makeEngine();
+    const { workflow, run } = await engine.start({ name: "W", goal: "g" });
+    run.status = "cancelled";
+
+    await expect(engine.message(workflow.id, "this must not disappear")).rejects.toThrow(
+      /manager session has ended/,
+    );
+  });
+
   it("compact refuses while runs are live, then respawns the manager from durable state", async () => {
     const { agents, engine } = makeEngine();
     const { workflow, run } = await engine.start({ name: "Long Haul", goal: "g" });

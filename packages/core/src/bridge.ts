@@ -1194,7 +1194,7 @@ export interface BridgeMethods {
   /** Deliver an owner message into the program manager's session. */
   "hub.message": {
     params: { programId: string; text: string };
-    result: { run: AgentRun | null; queued: boolean };
+    result: { run: AgentRun | null; queued: boolean } & SteerReceipt;
   };
   /**
    * Open questions across every live program, keyed by program id: a project

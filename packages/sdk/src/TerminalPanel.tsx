@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Bot, ChevronDown, Plus, Square, TerminalSquare, X } from "lucide-react";
 import {
   XtermView,
+  useComposerKeydown,
   useFleetConnections,
   useTerminals,
   type TermChunk,
@@ -258,6 +259,43 @@ const STREAM_STYLES: Record<TermChunk["stream"], string> = {
   system: "text-ink-faint italic",
 };
 
+const AGENT_CONSOLE_INPUT_MIN_HEIGHT = 20;
+const AGENT_CONSOLE_INPUT_MAX_HEIGHT = 96;
+
+export function resizeAgentConsoleInput(
+  input: Pick<HTMLTextAreaElement, "scrollHeight" | "style">,
+): void {
+  input.style.height = "auto";
+  const height = Math.min(
+    AGENT_CONSOLE_INPUT_MAX_HEIGHT,
+    Math.max(AGENT_CONSOLE_INPUT_MIN_HEIGHT, input.scrollHeight),
+  );
+  input.style.height = `${height}px`;
+  input.style.overflowY = input.scrollHeight > AGENT_CONSOLE_INPUT_MAX_HEIGHT ? "auto" : "hidden";
+}
+
+export function handleAgentConsoleKeydown(
+  event: React.KeyboardEvent<HTMLTextAreaElement>,
+  history: readonly string[],
+  historyIndex: { current: number },
+  setLine: (line: string) => void,
+  composerKeydown: (event: React.KeyboardEvent<HTMLTextAreaElement>) => void,
+): void {
+  if (event.key === "ArrowUp" && history.length > 0) {
+    event.preventDefault();
+    historyIndex.current = Math.max(0, historyIndex.current - 1);
+    setLine(history[historyIndex.current] ?? "");
+    return;
+  }
+  if (event.key === "ArrowDown" && history.length > 0) {
+    event.preventDefault();
+    historyIndex.current = Math.min(history.length, historyIndex.current + 1);
+    setLine(history[historyIndex.current] ?? "");
+    return;
+  }
+  composerKeydown(event);
+}
+
 function AgentConsoleView({ tab }: { tab: TerminalTab }) {
   const chunks = useTerminals((s) => s.chunksByTab[tab.id]);
   const send = useTerminals((s) => s.send);
@@ -267,6 +305,7 @@ function AgentConsoleView({ tab }: { tab: TerminalTab }) {
   const historyRef = useRef<string[]>([]);
   const historyIdxRef = useRef(-1);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const count = chunks?.length ?? 0;
   useEffect(() => {
@@ -287,6 +326,11 @@ function AgentConsoleView({ tab }: { tab: TerminalTab }) {
       setError((err as Error).message);
     }
   }
+  const onComposerKeydown = useComposerKeydown(() => void submit());
+
+  useLayoutEffect(() => {
+    if (inputRef.current) resizeAgentConsoleInput(inputRef.current);
+  }, [line]);
 
   const busy = tab.activeRunId != null;
   const dead = tab.status === "exited";
@@ -308,30 +352,32 @@ function AgentConsoleView({ tab }: { tab: TerminalTab }) {
           e.preventDefault();
           void submit();
         }}
-        className="flex shrink-0 items-center gap-2 border-t border-edge px-3 py-1.5"
+        className="flex shrink-0 items-end gap-2 border-t border-edge px-3 py-1.5"
       >
-        <span className="font-mono text-[11px] text-crystal-300">✦</span>
-        <input
+        <span className="pb-0.5 font-mono text-[11px] text-crystal-300">✦</span>
+        <textarea
+          ref={inputRef}
+          rows={1}
           value={line}
-          onChange={(e) => setLine(e.target.value)}
-          onKeyDown={(e) => {
-            const history = historyRef.current;
-            if (e.key === "ArrowUp" && history.length > 0) {
-              e.preventDefault();
-              historyIdxRef.current = Math.max(0, historyIdxRef.current - 1);
-              setLine(history[historyIdxRef.current] ?? "");
-            } else if (e.key === "ArrowDown" && history.length > 0) {
-              e.preventDefault();
-              historyIdxRef.current = Math.min(history.length, historyIdxRef.current + 1);
-              setLine(history[historyIdxRef.current] ?? "");
-            }
+          onChange={(e) => {
+            setLine(e.target.value);
+            resizeAgentConsoleInput(e.currentTarget);
           }}
+          onKeyDown={(e) =>
+            handleAgentConsoleKeydown(
+              e,
+              historyRef.current,
+              historyIdxRef,
+              setLine,
+              onComposerKeydown,
+            )
+          }
           placeholder={
             dead ? "console closed" : busy ? "agent is working…" : "Prompt the agent in this project…"
           }
           disabled={dead || busy}
           spellCheck={false}
-          className="min-w-0 flex-1 bg-transparent font-mono text-[11px] text-ink outline-none placeholder:text-ink-faint disabled:opacity-50"
+          className="max-h-24 min-h-5 min-w-0 flex-1 resize-none bg-transparent font-mono text-[11px] leading-5 text-ink outline-none placeholder:text-ink-faint disabled:opacity-50"
         />
         {busy ? (
           <Tooltip content="Cancel the running agent">

@@ -1159,23 +1159,40 @@ export class HubEngine {
   }
 
   /** Deliver an owner message into the program manager's session. */
-  async message(programId: string, text: string): Promise<{ run: AgentRun | null; queued: boolean }> {
+  async message(
+    programId: string,
+    text: string,
+  ): Promise<{ run: AgentRun | null; queued: boolean } & SteerReceipt> {
     const program = await this.get(programId);
     if (!program) throw new Error(`Unknown program: ${programId}`);
     if (!this.agents || !program.managerRunId) {
       throw new Error(`Program ${programId} has no manager session — start one first.`);
     }
+    const framed = formatProgramMessage(text);
     // An interactive manager takes the message in its terminal, mid-turn or not.
     const interactive = await this.agents
-      .deliverInteractive(program.managerRunId, formatProgramMessage(text))
+      .deliverInteractive(program.managerRunId, framed)
       .catch(() => null);
-    if (interactive) return { run: interactive, queued: false };
-    const run = await this.agents.resumeChain(program.managerRunId, formatProgramMessage(text));
-    if (!run) {
-      this.queueNotice(programId, formatProgramMessage(text));
-      return { run: null, queued: true };
+    if (interactive) {
+      return { run: interactive, queued: false, mode: "interactive", wakeExpected: true };
     }
-    return { run, queued: false };
+    await this.assertManagerCanReceive(programId, program.managerRunId);
+    const run = await this.agents.resumeChain(program.managerRunId, framed);
+    if (!run) {
+      const wakeExpected = await this.assertManagerCanReceive(programId, program.managerRunId);
+      this.queueNotice(programId, framed);
+      return { run: null, queued: true, mode: "queued", wakeExpected };
+    }
+    return { run, queued: false, mode: "resumed", wakeExpected: true };
+  }
+
+  /** Return whether a natural settle is coming, or reject a dead manager chain. */
+  private async assertManagerCanReceive(programId: string, managerRunId: string): Promise<boolean> {
+    const chain = await this.agents!.chainRuns(managerRunId);
+    const latest = chain[chain.length - 1];
+    const live = chain.some((run) => run.status === "running" || run.status === "queued");
+    if (latest?.status !== "cancelled" && (live || chain.some((run) => run.sessionId))) return live;
+    throw new Error(`Program ${programId}'s manager session has ended and cannot receive messages.`);
   }
 
   private queueNotice(programId: string, text: string): void {
