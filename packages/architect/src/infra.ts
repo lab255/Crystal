@@ -5,6 +5,7 @@ import {
   type ArchEdge,
   type ArchLayer,
   type ArchNode,
+  type ArchNodeKind,
   type ArchitectureGraph,
 } from "@crystal/core";
 
@@ -19,6 +20,35 @@ import {
 export interface InfraGroup {
   target: string;
   nodes: ArchNode[];
+}
+
+export const INFRA_ZONE_KINDS = [
+  "vpc",
+  "subnet",
+  "securitygroup",
+] as const satisfies readonly ArchNodeKind[];
+export type InfraZoneKind = (typeof INFRA_ZONE_KINDS)[number];
+
+export function canNestZone(child: InfraZoneKind, parent: InfraZoneKind): boolean {
+  return child === "subnet"
+    ? parent === "vpc"
+    : child === "securitygroup"
+      ? parent === "vpc" || parent === "subnet"
+      : false;
+}
+
+export function zoneNestingRejection(
+  child: InfraZoneKind,
+  parent: InfraZoneKind,
+): string | null {
+  if (canNestZone(child, parent)) return null;
+  const label = (kind: InfraZoneKind) =>
+    kind === "vpc" ? "VPC" : kind === "subnet" ? "subnet" : "security group";
+  return `A ${label(child)} can't nest inside a ${label(parent)}`;
+}
+
+export function environmentPlacementCount(graph: ArchitectureGraph, envId: string): number {
+  return graph.nodes.filter((node) => envId in node.placements).length;
 }
 
 /** Components eligible for placement — containers and notes are logical-only. */

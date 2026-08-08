@@ -5,7 +5,6 @@ import {
   deriveArchGraph,
   deriveC4Model,
   extractOverlay,
-  reconcileOverlay,
   schemaNodeId,
   type ArchOverlay,
   type ArchitectureGraph,
@@ -25,10 +24,12 @@ import {
 } from "@crystal/client";
 import { autoLayoutFitted } from "./layout.js";
 import { buildSystemCardFacts, systemCardSlot } from "./system-card.js";
+import { reconcileCanonicalOverlay } from "./canonical-overlay.js";
 
 const DERIVE_TIMEOUT_MS = 180_000;
 const MAX_AUTO_RETRIES = 3;
 const RETRY_BASE_DELAY_MS = 1_000;
+const EMPTY_STALE_IDS: readonly string[] = [];
 
 /**
  * The one canonical architecture, as a hook: fetches the overview + code map
@@ -68,6 +69,8 @@ export function useCanonicalArchitecture(options?: {
    */
   c4Model: C4Model | null;
   reconciled: ArchOverlay | null;
+  /** Semantic overrides whose derived/manual node no longer exists. */
+  staleIds: readonly string[];
   /**
    * Composed + auto-laid-out (system cards at their card slots); nodes with
    * explicit x/y overrides keep their own coordinates. This is also the
@@ -263,10 +266,10 @@ export function useCanonicalArchitecture(options?: {
   // overrides, keeps semantic ones as stale). The C4 aggregates count as
   // known ids so per-level pins, schema entity pins, and renamed containers
   // survive without ever entering the flat graph/extractOverlay path.
-  const reconciled = useMemo(
+  const reconciliation = useMemo(
     () =>
       overlay && derived
-        ? reconcileOverlay(
+        ? reconcileCanonicalOverlay(
             overlay,
             derived,
             c4Model
@@ -277,10 +280,12 @@ export function useCanonicalArchitecture(options?: {
                   ...knownSchemaIds,
                 ]
               : undefined,
-          ).overlay
+          )
         : null,
     [overlay, derived, c4Model, knownSchemaIds],
   );
+  const reconciled = reconciliation?.overlay ?? null;
+  const staleIds = reconciliation?.staleIds ?? EMPTY_STALE_IDS;
   const rendered = useMemo(() => {
     if (!derived || !reconciled) return null;
     const composed = composeArchitecture(derived, reconciled);
@@ -326,6 +331,7 @@ export function useCanonicalArchitecture(options?: {
     derived,
     c4Model,
     reconciled,
+    staleIds,
     rendered,
     loading,
     error,

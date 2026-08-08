@@ -8,7 +8,9 @@ import {
 import {
   applyAggregateOverrides,
   applyC4Edit,
+  c4AddRejection,
   c4Reserve,
+  filterC4DeletionIds,
   projectFacets,
   remapFlowProjection,
 } from "./c4-view.js";
@@ -57,6 +59,34 @@ const PROJECTED = graph(
   ],
   [],
 );
+
+describe("filterC4DeletionIds", () => {
+  it("blocks every derived node aggregate while preserving ordinary node deletes", () => {
+    expect(
+      filterC4DeletionIds(
+        ["sys:api", "ctr:apps-server", "c4:system", "c4:boundary:payments", "person:user"],
+        "node",
+      ),
+    ).toEqual({
+      deletable: ["sys:api"],
+      blocked: ["ctr:apps-server", "c4:system", "c4:boundary:payments", "person:user"],
+    });
+  });
+
+  it("blocks aggregate edges while preserving ordinary edge deletes", () => {
+    expect(filterC4DeletionIds(["link:a->b", "c4rel:a->b"], "edge")).toEqual({
+      deletable: ["link:a->b"],
+      blocked: ["c4rel:a->b"],
+    });
+  });
+
+  it("refuses manual additions only at Components scope", () => {
+    expect(c4AddRejection({ level: "components", scope: "ctr:api" })).toContain(
+      "switch to Containers",
+    );
+    expect(c4AddRejection({ level: "containers" })).toBeNull();
+  });
+});
 
 describe("applyC4Edit", () => {
   it("records drags as per-level pins", () => {

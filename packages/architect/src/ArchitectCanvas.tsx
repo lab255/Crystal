@@ -161,6 +161,13 @@ import { PartNode } from "./nodes/PartNode.js";
 import { ElkEdge } from "./nodes/ElkEdge.js";
 import { buildSystemCardFacts, systemCardSlot } from "./system-card.js";
 import type { ElkRoute } from "./elk-layout.js";
+import {
+  C4_AGGREGATE_DELETE_NOTICE,
+  C4_AGGREGATE_HINT,
+  c4AddRejection,
+  filterC4DeletionIds,
+  isC4AggregateId,
+} from "./c4-view.js";
 
 const nodeTypes = {
   container: ContainerNode,
@@ -264,6 +271,8 @@ export interface ArchitectCanvasProps {
    * no contract (manual edges) so the caller can fall back silently.
    */
   onOpenContract?: (edgeId: string) => boolean;
+  /** Surface rejected edits through the host's existing notice toast. */
+  onNotice?: (message: string) => void;
   /**
    * Ref-review marks keyed by node/edge id (vs <ref>) — added/removed/changed
    * tints; ghost-marked nodes render dashed and inert. The caller merges
@@ -278,6 +287,7 @@ export interface ArchitectCanvasProps {
    * before.
    */
   c4?: {
+    view: C4View;
     typeLines: Record<string, string>;
     drill: Record<string, C4View>;
     onDrill: (view: C4View) => void;
@@ -430,6 +440,7 @@ function CanvasInner({
   onToggleEndpoints,
   extraNodeEntries,
   onOpenContract,
+  onNotice,
   diffMarks,
   c4,
 }: ArchitectCanvasProps) {
@@ -1182,6 +1193,16 @@ function CanvasInner({
       let g = graphRef.current;
       let selection: Set<string> | null = null;
       let overrides: Map<string, { x: number; y: number }> | null = null;
+      const removedIds = changes.flatMap((change) =>
+        change.type === "remove" && !isCodeChildId(change.id) ? [change.id] : [],
+      );
+      const blockedDeletes = c4
+        ? filterC4DeletionIds(removedIds, "node").blocked
+        : [];
+      const blockedDeleteIds = new Set(blockedDeletes);
+      if (blockedDeletes.length > 0) {
+        onNotice?.(C4_AGGREGATE_DELETE_NOTICE);
+      }
       for (const change of changes) {
         switch (change.type) {
           case "position": {
@@ -1221,7 +1242,9 @@ function CanvasInner({
             break;
           }
           case "remove":
-            if (!isCodeChildId(change.id)) g = deleteNodes(g, [change.id]);
+            if (!isCodeChildId(change.id) && !blockedDeleteIds.has(change.id)) {
+              g = deleteNodes(g, [change.id]);
+            }
             break;
           default:
             break;
@@ -1231,26 +1254,36 @@ function CanvasInner({
       if (selection) setSelectedNodes(selection);
       if (g !== graphRef.current) commit(g);
     },
-    [commit, selectedNodes, dragOverrides],
+    [commit, selectedNodes, dragOverrides, c4, onNotice],
   );
 
   const onEdgesChange = useCallback(
     (changes: EdgeChange<ArchRfEdge>[]) => {
       let g = graphRef.current;
       let selection: Set<string> | null = null;
+      const removedIds = changes.flatMap((change) =>
+        change.type === "remove" ? [change.id] : [],
+      );
+      const blockedDeletes = c4
+        ? filterC4DeletionIds(removedIds, "edge").blocked
+        : [];
+      const blockedDeleteIds = new Set(blockedDeletes);
+      if (blockedDeletes.length > 0) {
+        onNotice?.(C4_AGGREGATE_DELETE_NOTICE);
+      }
       for (const change of changes) {
         if (change.type === "select") {
           selection ??= new Set(selectedEdges);
           if (change.selected) selection.add(change.id);
           else selection.delete(change.id);
         } else if (change.type === "remove") {
-          g = deleteEdges(g, [change.id]);
+          if (!blockedDeleteIds.has(change.id)) g = deleteEdges(g, [change.id]);
         }
       }
       if (selection) setSelectedEdges(selection);
       if (g !== graphRef.current) commit(g);
     },
-    [commit, selectedEdges],
+    [commit, selectedEdges, c4, onNotice],
   );
 
   const onConnect = useCallback(
@@ -1432,6 +1465,11 @@ function CanvasInner({
 
   const addNodeAt = useCallback(
     (kind: ArchNodeKind, flowPos: { x: number; y: number }) => {
+      const rejection = c4 ? c4AddRejection(c4.view) : null;
+      if (rejection) {
+        onNotice?.(rejection);
+        return;
+      }
       let g = graphRef.current;
       const container = containerAtPoint(g, flowPos, undefined);
       const parentAbs = container ? absolutePosition(g, container.id) : { x: 0, y: 0 };
@@ -1447,7 +1485,7 @@ function CanvasInner({
       setSelectedNodes(new Set([node.id]));
       setSelectedEdges(new Set());
     },
-    [commit, adoptIntoActiveFacet],
+    [commit, adoptIntoActiveFacet, c4, onNotice],
   );
 
   /** Add a node pre-linked to a code module, expanded into live code. */
@@ -1928,9 +1966,7 @@ function CanvasInner({
       // every projection — deleting or duplicating one is meaningless, and
       // their first affordance is navigation between altitudes.
       const drillView = c4?.drill[node.id];
-      const c4Aggregate =
-        c4 != null &&
-        (node.id.startsWith("ctr:") || node.id === "c4:system" || node.id === "person:user");
+      const c4Aggregate = c4 != null && isC4AggregateId(node.id, "node");
       const drillEntries: MenuEntry[] = drillView
         ? [
             {
@@ -2060,7 +2096,7 @@ function CanvasInner({
           icon: Trash2,
           danger: true,
           disabled: c4Aggregate,
-          hint: c4Aggregate ? "derived — hide its components instead" : undefined,
+          hint: c4Aggregate ? C4_AGGREGATE_HINT : undefined,
           onSelect: () => {
             commit(deleteNodes(graphRef.current, [node.id]));
             setSelectedNodes(new Set());
