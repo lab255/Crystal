@@ -24,9 +24,11 @@ import {
   computeReviewFindings,
   facetIndexProjection,
   migrateLegacyToOverlay,
+  openQuestions,
   openQuestionsOfWorkflow,
   profileOverlay,
   suggestFacets,
+  workflowTasks,
 } from "@crystal/core";
 import { LineBuffer } from "@crystal/core";
 import { browseDirs } from "./browse.js";
@@ -146,12 +148,26 @@ function registryProjects(registry: WorkspaceRegistry): HubProjects {
       const project =
         projects.find((p) => p.project.id === workflow.projectId) ?? projects[0];
       if (!project) return [];
-      return openQuestionsOfWorkflow(workflow, project.project.tasks).map((q) => ({
+      const workflows = await rt.workflows.list();
+      const workflowTaskIds = new Set(
+        workflows.flatMap((candidate) =>
+          workflowTasks(candidate, project.project.tasks).map((task) => task.id),
+        ),
+      );
+      const questions = [
+        ...openQuestionsOfWorkflow(workflow, project.project.tasks),
+        ...project.project.tasks
+          .filter((task) => !workflowTaskIds.has(task.id))
+          .flatMap((task) => openQuestions(task).map((question) => ({ task, question }))),
+      ];
+      return questions.map((q) => ({
         taskId: q.task.id,
         taskTitle: q.task.title,
         questionId: q.question.id,
         text: q.question.text,
         createdAt: q.question.createdAt,
+        options: q.question.options,
+        recommended: q.question.recommended,
       }));
     },
     answerQuestion: async (ws, workflowId, taskId, questionId, answer) => {

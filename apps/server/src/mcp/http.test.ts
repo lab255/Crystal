@@ -136,6 +136,116 @@ describe("handleMcpRequest", () => {
     });
   });
 
+  it("files a taskless ask on an auto-created workflow task", async () => {
+    const run = {
+      ...createAgentRun({
+        prompt: "design the API",
+        projectId: "proj_1",
+        purpose: "design",
+        tags: ["workflow:wf_1"],
+      }),
+      id: "run_taskless",
+    };
+    const addQuestionForRun = vi.fn(async () => ({
+      ok: true as const,
+      taskId: "task_auto",
+      questionId: "q_auto",
+      taskCreated: true,
+    }));
+    const noteQuestion = vi.fn();
+    const runtime = {
+      agents: {
+        get: async (id: string) => (id === run.id ? run : null),
+        noteQuestion,
+      },
+      orchestration: {
+        projectPathForRun: async () => ".crystal/projects/general.json",
+        addQuestionForRun,
+      },
+      workflows: {
+        workflowForRun: async () => ({ id: "wf_1", epicId: "epic_1" }),
+      },
+      permissions: {
+        request: vi.fn(),
+      },
+    };
+    const registry = {
+      get: (ws: string) => {
+        if (ws === "ws1") return runtime;
+        throw new Error(`Unknown workspace: ${ws}`);
+      },
+    } as unknown as WorkspaceRegistry;
+
+    const rec = await post(
+      `/mcp/ws1/${run.id}`,
+      {
+        jsonrpc: "2.0",
+        id: 10,
+        method: "tools/call",
+        params: {
+          name: "ask_question",
+          arguments: {
+            question: "Which transport?",
+            options: ["HTTP", "WebSocket"],
+            recommended: "HTTP",
+          },
+        },
+      },
+      registry,
+    );
+
+    expect(rec.status).toBe(200);
+    expect(addQuestionForRun).toHaveBeenCalledWith(
+      ".crystal/projects/general.json",
+      run,
+      "Which transport?",
+      { options: ["HTTP", "WebSocket"], recommended: "HTTP" },
+      { epicId: "epic_1" },
+    );
+    expect(noteQuestion).toHaveBeenCalledWith(run.id, "Which transport?", {
+      options: ["HTTP", "WebSocket"],
+      recommended: "HTTP",
+    });
+    expect(JSON.parse(rec.body).result.isError).not.toBe(true);
+  });
+
+  it("keeps a taskless ask stream-only when no project resolves", async () => {
+    const run = { ...createAgentRun({ prompt: "standalone" }), id: "run_no_board" };
+    const noteQuestion = vi.fn();
+    const addQuestionForRun = vi.fn();
+    const runtime = {
+      agents: { get: async () => run, noteQuestion },
+      orchestration: {
+        projectPathForRun: async () => {
+          throw new Error("Workspace has no project board");
+        },
+        addQuestionForRun,
+      },
+      workflows: { workflowForRun: async () => null },
+      permissions: { request: vi.fn() },
+    };
+    const registry = { get: () => runtime } as unknown as WorkspaceRegistry;
+
+    const rec = await post(
+      `/mcp/ws1/${run.id}`,
+      {
+        jsonrpc: "2.0",
+        id: 11,
+        method: "tools/call",
+        params: { name: "ask_question", arguments: { question: "Still listening?" } },
+      },
+      registry,
+    );
+
+    expect(rec.status).toBe(200);
+    expect(addQuestionForRun).not.toHaveBeenCalled();
+    expect(noteQuestion).toHaveBeenCalledWith(run.id, "Still listening?", {
+      options: undefined,
+      recommended: undefined,
+    });
+    expect(JSON.parse(rec.body).result.isError).not.toBe(true);
+  });
+
   it("returns 202 with no body for a notification", async () => {
     const { registry } = fakeRegistry();
     const rec = await post("/mcp/ws1/m1", { jsonrpc: "2.0", method: "notifications/initialized" }, registry);

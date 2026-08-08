@@ -33,8 +33,6 @@ export function QuestionsView({ find }: { find: string }) {
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
     }))
     .filter((s) => s.questions.length > 0);
-  const total = sections.reduce((n, s) => n + s.questions.length, 0);
-
   if (sections.length === 0) {
     return (
       <div className="flex min-h-0 flex-1 items-center justify-center">
@@ -72,10 +70,8 @@ export function QuestionsView({ find }: { find: string }) {
                 <QuestionRow
                   key={q.questionId}
                   programId={program.id}
+                  programName={program.name}
                   question={q}
-                  // A short list deserves open answer boxes; a wall of them
-                  // reads better collapsed to two lines each.
-                  defaultOpen={total <= 4}
                 />
               ))}
             </div>

@@ -99,6 +99,30 @@ export async function handleMcpRequest(
     if (result.ok) rt.agents.noteQuestion(runId, text, ask);
     return result;
   };
+  /**
+   * Taskless asks become durable board questions whenever a project can be
+   * resolved. A missing board is still a valid stream-only ask: escalation
+   * must never crash or fail the calling agent's turn.
+   */
+  const fileTasklessAsk = async (text: string, ask?: AskOptions) => {
+    if (!run) return { ok: false as const, reason: "Unknown asking run." };
+    try {
+      const projectPath = await rt.orchestration.projectPathForRun(run);
+      const workflow = await rt.workflows.workflowForRun(run).catch(() => null);
+      const result = await rt.orchestration.addQuestionForRun(
+        projectPath,
+        run,
+        text,
+        ask,
+        { epicId: workflow?.epicId ?? null },
+      );
+      rt.agents.noteQuestion(runId, text, ask);
+      return result.ok ? { ok: true as const } : result;
+    } catch {
+      rt.agents.noteQuestion(runId, text, ask);
+      return { ok: true as const };
+    }
+  };
   const isManager = run?.role === "manager";
   // A manager run tagged `workflow:<id>` also drives its workflow record.
   const workflow = isManager && run ? await rt.workflows.workflowForRun(run) : null;
@@ -109,15 +133,13 @@ export async function handleMcpRequest(
     permission: run
       ? { request: (toolName, input) => rt.permissions.request(runId, toolName, input) }
       : undefined,
-    // Task-less, non-manager runs still get ask_question: stream-only (no
-    // board task to attach to), answered by messaging the run.
+    // Task-less, non-manager runs still get ask_question. The handler mints a
+    // board task when possible and falls back to the live stream only when no
+    // project board resolves.
     ask:
       run && !isManager && !run.taskId
         ? {
-            askQuestion: async (text, ask) => {
-              rt.agents.noteQuestion(runId, text, ask);
-              return { ok: true as const };
-            },
+            askQuestion: fileTasklessAsk,
           }
         : undefined,
     workflow: workflow
@@ -173,9 +195,7 @@ export async function handleMcpRequest(
             rt.orchestration.releaseTask((await boardCtx()).projectPath, taskId, { claimId }),
           askQuestion: async (text, taskId, ask) => {
             const target = taskId ?? run?.taskId;
-            if (!target) {
-              return { ok: false as const, reason: "No task to attach the question to — pass taskId." };
-            }
+            if (!target) return fileTasklessAsk(text, ask);
             return fileAsk(target, text, ask);
           },
           resolveQuestion: async (resolution, questionId, taskId) => {

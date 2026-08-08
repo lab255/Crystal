@@ -1,9 +1,13 @@
-import { useState } from "react";
-import { ExternalLink, Send } from "lucide-react";
+import { ExternalLink } from "lucide-react";
 import type { HubQuestion } from "@crystal/core";
-import { enterKeyAction, useHub, useSettings } from "@crystal/client";
-import { Button, Textarea, Tooltip, cn } from "@crystal/ui";
+import { QuestionCard, useHub } from "@crystal/client";
+import { Button, Tooltip } from "@crystal/ui";
 import { useCrossWorkspaceNav } from "./common.js";
+
+type StructuredHubQuestion = HubQuestion & {
+  options?: string[];
+  recommended?: string | null;
+};
 
 /**
  * One question a project stopped for. Answer it here — the answer is recorded
@@ -13,58 +17,40 @@ import { useCrossWorkspaceNav } from "./common.js";
  */
 export function QuestionRow({
   programId,
+  programName,
   question,
-  defaultOpen = false,
 }: {
   programId: string;
-  question: HubQuestion;
-  /** Start with the answer box open — the Questions view does, headers don't. */
-  defaultOpen?: boolean;
+  programName: string;
+  question: StructuredHubQuestion;
 }) {
   const answerQuestion = useHub((s) => s.answerQuestion);
-  const enterToSend = useSettings((s) => s.enterToSend);
   const goToProject = useCrossWorkspaceNav();
-  const [answering, setAnswering] = useState(defaultOpen);
-  const [text, setText] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
-  async function send() {
-    const answer = text.trim();
-    if (!answer || busy) return;
-    setBusy(true);
-    setError(null);
+  async function send(answer: string): Promise<void> {
     const result = await answerQuestion(programId, question.questionId, answer).catch(
       (err: Error) => ({ ok: false as const, reason: err.message }),
     );
-    setBusy(false);
-    if (!result.ok) {
-      setError(result.reason);
-      return;
-    }
-    // On success the question leaves the store and this row unmounts.
-    setText("");
-    setAnswering(false);
+    if (!result.ok) throw new Error(result.reason);
   }
 
   return (
-    <div className="mt-1">
-      <div className="flex items-start gap-1.5">
-        {/* Collapsed rows clamp, never single-line truncate — and answering
-            shows the whole question: you can't answer what you can't read. */}
-        <button
-          type="button"
-          onClick={() => setAnswering((v) => !v)}
-          title={answering ? undefined : question.text}
-          className={cn(
-            "min-w-0 flex-1 text-left text-[11px] leading-snug text-ink hover:underline",
-            !answering && "line-clamp-2",
-          )}
-        >
-          <span className="font-medium text-warn">{question.projectName}</span>{" "}
-          <span className={cn(answering && "whitespace-pre-wrap")}>{question.text}</span>
-          <span className="text-ink-faint"> — {question.taskTitle}</span>
-        </button>
+    <QuestionCard
+      context={
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className="truncate font-semibold text-ink">{programName}</span>
+          <span className="text-ink-faint">/</span>
+          <span className="truncate">{question.projectName}</span>
+          <span className="text-ink-faint">/</span>
+          <span className="truncate">{question.taskTitle}</span>
+        </div>
+      }
+      question={question.text}
+      options={(question.options ?? []).map((option) => ({ value: option, label: option }))}
+      recommended={question.recommended}
+      onAnswer={send}
+      answerLabel={`Answer ${question.projectName}'s question`}
+      action={
         <Tooltip content="Open the task on that project's board">
           <Button
             variant="ghost"
@@ -80,31 +66,7 @@ export function QuestionRow({
             <ExternalLink className="h-3 w-3" />
           </Button>
         </Tooltip>
-      </div>
-      {answering ? (
-        <div className="mt-1 flex items-end gap-2">
-          <Textarea
-            autoFocus={!defaultOpen}
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            onKeyDown={(e) => {
-              if (enterKeyAction(e, enterToSend) === "send") {
-                e.preventDefault();
-                void send();
-              }
-              if (e.key === "Escape") setAnswering(false);
-            }}
-            rows={2}
-            placeholder="Your answer — it goes back to the run that stopped for it"
-            aria-label={`Answer ${question.projectName}'s question`}
-            className="min-h-0 flex-1"
-          />
-          <Button variant="primary" size="sm" disabled={busy || !text.trim()} onClick={() => void send()}>
-            <Send className="h-3 w-3" /> Answer
-          </Button>
-        </div>
-      ) : null}
-      {error ? <p className="mt-1 text-[10px] text-danger">{error}</p> : null}
-    </div>
+      }
+    />
   );
 }
