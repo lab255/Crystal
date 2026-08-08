@@ -54,7 +54,8 @@ export function applyKeymap(
     bind(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyY, run("editor.action.deleteLines"));
     // Ctrl+D — duplicate line/selection
     bind(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyD, run("editor.action.copyLinesDownAction"));
-    // Ctrl+W / Ctrl+Shift+W — expand / shrink selection
+    // Ctrl+W / Ctrl+Shift+W — expand / shrink selection. The editor's window-level
+    // tab-close shortcut yields while IntelliJ has focus, so expand keeps this chord.
     bind(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyW, run("editor.action.smartSelect.expand"));
     bind(
       monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyW,

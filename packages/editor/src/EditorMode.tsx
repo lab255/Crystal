@@ -3,19 +3,25 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Circle, Code2, X } from "lucide-react";
 import { useCrystal, useNav, useNavUpdate } from "@crystal/client";
 import { Button, EmptyState, Kbd, Spinner, cn } from "@crystal/ui";
+import {
+  bufferFromRead,
+  canCloseBuffer,
+  canSaveBuffer,
+  hasDirtyBuffers,
+  isDirty,
+  isWriteConflict,
+  reduceBuffers,
+  sha256Text,
+  shouldCloseFromShortcut,
+  writeRequestFor,
+  type EditorBuffer,
+} from "./editor-state.js";
 import { FileTree } from "./FileTree.js";
 import { QuickOpen } from "./QuickOpen.js";
 import { applyKeymap, KEYMAP_LABELS, type KeymapHandle, type KeymapProfile } from "./keymaps.js";
 import { setupMonaco } from "./monaco-setup.js";
 
 setupMonaco();
-
-interface OpenFile {
-  path: string;
-  content: string;
-  savedContent: string;
-  truncated: boolean;
-}
 
 const KEYMAP_STORAGE_KEY = "crystal.editor.keymap";
 
@@ -29,9 +35,15 @@ function loadKeymap(): KeymapProfile {
   return "vscode";
 }
 
+function isVisible(element: HTMLElement | null): boolean {
+  if (!element) return false;
+  if (typeof element.checkVisibility === "function") return element.checkVisibility();
+  return element.offsetParent !== null;
+}
+
 export function EditorMode() {
   const { client } = useCrystal();
-  const [files, setFiles] = useState<OpenFile[]>([]);
+  const [files, setFiles] = useState<EditorBuffer[]>([]);
   const [activePath, setActivePath] = useState<string | null>(null);
   const [quickOpen, setQuickOpen] = useState(false);
   const [keymap, setKeymap] = useState<KeymapProfile>(loadKeymap);
@@ -39,7 +51,10 @@ export function EditorMode() {
   const [error, setError] = useState<string | null>(null);
 
   const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
+  const editorRootRef = useRef<HTMLDivElement>(null);
   const keymapHandle = useRef<KeymapHandle | null>(null);
+  const keymapProfileRef = useRef(keymap);
+  keymapProfileRef.current = keymap;
   const vimStatusRef = useRef<HTMLDivElement>(null);
 
   const filesRef = useRef(files);
@@ -78,14 +93,14 @@ export function EditorMode() {
       setLoadingFile(true);
       setError(null);
       try {
-        const { content, truncated } = await client.request("fs.read", { path });
+        const read = await client.request("fs.read", { path });
         // Re-check inside the updater: a concurrent openFile for the same path
         // (deep-link effect + open-file event) passes the guard above before
         // either fetch lands, and must not append a second tab.
         setFiles((fs) =>
           fs.some((f) => f.path === path)
             ? fs
-            : [...fs, { path, content, savedContent: content, truncated }],
+            : [...fs, bufferFromRead(path, read)],
         );
         setActivePath(path);
         return true;
@@ -103,30 +118,97 @@ export function EditorMode() {
     tryReveal();
   }, [activePath, files, tryReveal]);
 
-  const saveActive = useCallback(async () => {
+  const saveFile = useCallback(
+    async (path: string, overwrite = false) => {
+      const file = filesRef.current.find((candidate) => candidate.path === path);
+      if (!file || !canSaveBuffer(file)) return;
+      const request = writeRequestFor(file, overwrite);
+      const content = request.content;
+      setError(null);
+      try {
+        const sha = await sha256Text(content);
+        await client.request("fs.write", request);
+        setFiles((fs) =>
+          reduceBuffers(fs, { type: "save-succeeded", path, content, sha }),
+        );
+      } catch (err) {
+        if (isWriteConflict(err)) {
+          setFiles((fs) => reduceBuffers(fs, { type: "save-conflicted", path }));
+        } else {
+          setError((err as Error).message);
+        }
+      }
+    },
+    [client],
+  );
+
+  const saveActive = useCallback(() => {
     const path = activeRef.current;
-    const file = filesRef.current.find((f) => f.path === path);
-    if (!file || !path) return;
-    try {
-      await client.request("fs.write", { path, content: file.content });
-      setFiles((fs) =>
-        fs.map((f) => (f.path === path ? { ...f, savedContent: f.content } : f)),
-      );
-    } catch (err) {
-      setError((err as Error).message);
-    }
-  }, [client]);
+    if (path) void saveFile(path);
+  }, [saveFile]);
+
+  const reloadFromDisk = useCallback(
+    async (path: string, expectedSha?: string) => {
+      setError(null);
+      try {
+        const read = await client.request("fs.read", { path });
+        setFiles((fs) =>
+          reduceBuffers(
+            fs,
+            expectedSha === undefined
+              ? { type: "reload-discarded", path, read }
+              : { type: "disk-reloaded", path, expectedSha, read },
+          ),
+        );
+      } catch (err) {
+        setError((err as Error).message);
+      }
+    },
+    [client],
+  );
 
   const closeFile = useCallback((path: string): void => {
+    const file = filesRef.current.find((candidate) => candidate.path === path);
+    if (!file || !canCloseBuffer(file, (message) => window.confirm(message))) return;
     setFiles((fs) => {
-      const idx = fs.findIndex((f) => f.path === path);
-      const next = fs.filter((f) => f.path !== path);
+      const idx = fs.findIndex((candidate) => candidate.path === path);
+      const next = fs.filter((candidate) => candidate.path !== path);
       if (activeRef.current === path) {
-        setActivePath(next[Math.min(idx, next.length - 1)]?.path ?? null);
+        const nextPath = next[Math.min(idx, next.length - 1)]?.path ?? null;
+        activeRef.current = nextPath;
+        setActivePath(nextPath);
       }
       return next;
     });
   }, []);
+
+  useEffect(() => {
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (!hasDirtyBuffers(filesRef.current)) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, []);
+
+  useEffect(() => {
+    return client.events.on("fs.changed", ({ ws, paths }) => {
+      if (client.scope && ws !== client.scope) return;
+      const changedPaths = new Set(paths);
+      const changedFiles = filesRef.current.filter((file) => changedPaths.has(file.path));
+      if (changedFiles.length === 0) return;
+
+      setFiles((fs) => {
+        let next = fs;
+        for (const file of changedFiles) {
+          next = reduceBuffers(next, { type: "disk-changed", path: file.path });
+        }
+        return next;
+      });
+      for (const file of changedFiles) void reloadFromDisk(file.path, file.sha);
+    });
+  }, [client, reloadFromDisk]);
 
   // Deep links: the URL carries the active file. Opening from the URL only
   // reacts to nav changes (not activePath) so a tab click isn't fought by a
@@ -164,6 +246,15 @@ export function EditorMode() {
       // The desktop menu deliberately leaves Cmd+W unbound (no native Close
       // Window item), so the webview owns it: close the active editor tab.
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "w" && !e.shiftKey && !e.altKey) {
+        if (
+          !shouldCloseFromShortcut({
+            visible: isVisible(editorRootRef.current),
+            keymap: keymapProfileRef.current,
+            editorFocused: editorRef.current?.hasTextFocus() ?? false,
+          })
+        ) {
+          return;
+        }
         e.preventDefault();
         if (activeRef.current) closeFile(activeRef.current);
       }
@@ -234,6 +325,7 @@ export function EditorMode() {
   );
 
   function switchKeymap(profile: KeymapProfile): void {
+    keymapProfileRef.current = profile;
     setKeymap(profile);
     try {
       localStorage.setItem(KEYMAP_STORAGE_KEY, profile);
@@ -246,7 +338,7 @@ export function EditorMode() {
   useEffect(() => () => keymapHandle.current?.dispose(), []);
 
   return (
-    <div className="flex h-full min-h-0">
+    <div ref={editorRootRef} className="flex h-full min-h-0">
       <aside className="w-56 shrink-0 border-r border-edge bg-surface-1">
         <FileTree activePath={activePath} onOpenFile={(p) => void openFile(p)} />
       </aside>
@@ -256,7 +348,7 @@ export function EditorMode() {
           <div className="flex items-center border-b border-edge bg-surface-1">
             <div className="flex min-w-0 flex-1 items-center overflow-x-auto">
               {files.map((file) => {
-                const dirty = file.content !== file.savedContent;
+                const dirty = isDirty(file);
                 const name = file.path.split("/").pop();
                 return (
                   <div
@@ -305,40 +397,72 @@ export function EditorMode() {
 
         <div className="relative min-h-0 flex-1">
           {active ? (
-            <>
+            <div className="flex h-full min-h-0 flex-col">
               {active.truncated ? (
                 <div className="border-b border-warn/30 bg-warn/10 px-3 py-1 text-[11px] text-warn">
-                  Large file — showing the first 2 MB (read-only view recommended).
+                  Large file — showing the first 2 MB. Editing and saving are disabled to protect
+                  the rest of the file.
                 </div>
               ) : null}
-              <Editor
-                path={active.path}
-                value={active.content}
-                onChange={(value) => {
-                  const v = value ?? "";
-                  setFiles((fs) =>
-                    fs.map((f) => (f.path === active.path ? { ...f, content: v } : f)),
-                  );
-                }}
-                onMount={onMount}
-                theme="crystal-dark"
-                keepCurrentModel
-                loading={<Spinner />}
-                options={{
-                  fontSize: 13,
-                  fontFamily: "Cascadia Code, JetBrains Mono, Consolas, monospace",
-                  fontLigatures: true,
-                  minimap: { enabled: true, renderCharacters: false },
-                  smoothScrolling: true,
-                  cursorBlinking: "smooth",
-                  padding: { top: 10 },
-                  scrollBeyondLastLine: false,
-                  renderWhitespace: "selection",
-                  bracketPairColorization: { enabled: true },
-                  automaticLayout: true,
-                }}
-              />
-            </>
+              {active.conflicted ? (
+                <div className="flex items-center gap-2 border-b border-danger/30 bg-danger/10 px-3 py-1 text-[11px] text-danger">
+                  <span className="min-w-0 flex-1">
+                    This file changed on disk. Your edits were kept and have not overwritten it.
+                  </span>
+                  <Button
+                    variant="secondary"
+                    size="xs"
+                    onClick={() => void reloadFromDisk(active.path)}
+                  >
+                    Reload from disk (discard my edits)
+                  </Button>
+                  <Button
+                    variant="danger"
+                    size="xs"
+                    onClick={() => void saveFile(active.path, true)}
+                  >
+                    Save anyway (overwrite)
+                  </Button>
+                </div>
+              ) : null}
+              <div className="min-h-0 flex-1">
+                <Editor
+                  path={active.path}
+                  value={active.content}
+                  onChange={(value) => {
+                    setFiles((fs) =>
+                      reduceBuffers(fs, {
+                        type: "edit",
+                        path: active.path,
+                        content: value ?? "",
+                      }),
+                    );
+                  }}
+                  onMount={onMount}
+                  theme="crystal-dark"
+                  keepCurrentModel
+                  loading={<Spinner />}
+                  options={{
+                    fontSize: 13,
+                    fontFamily: "Cascadia Code, JetBrains Mono, Consolas, monospace",
+                    fontLigatures: true,
+                    minimap: { enabled: true, renderCharacters: false },
+                    smoothScrolling: true,
+                    cursorBlinking: "smooth",
+                    padding: { top: 10 },
+                    scrollBeyondLastLine: false,
+                    renderWhitespace: "selection",
+                    bracketPairColorization: { enabled: true },
+                    automaticLayout: true,
+                    readOnly: active.truncated,
+                    readOnlyMessage: {
+                      value:
+                        "Editing is disabled because only the first 2 MB of this file was loaded.",
+                    },
+                  }}
+                />
+              </div>
+            </div>
           ) : loadingFile ? (
             <div className="flex h-full items-center justify-center">
               <Spinner />
@@ -364,7 +488,14 @@ export function EditorMode() {
         </div>
       </main>
 
-      <QuickOpen open={quickOpen} onOpenChange={setQuickOpen} onPick={(p) => void openFile(p)} />
+      <QuickOpen
+        open={quickOpen}
+        onOpenChange={setQuickOpen}
+        onPick={(path) => {
+          nav({ mode: "code", code: { file: path } });
+          void openFile(path);
+        }}
+      />
     </div>
   );
 }
