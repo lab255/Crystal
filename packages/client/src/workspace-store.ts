@@ -25,10 +25,12 @@ export interface WorkspaceState {
   error: string | null;
   /** Paths with unsaved (debounced, in-flight) changes. */
   pendingSaves: Record<string, boolean>;
+  /** Paths whose latest persistence attempt failed and remain retryable. */
+  failedSaves: Record<string, boolean>;
 
   refresh(): Promise<void>;
-  /** Fetch the architecture overlay once (idempotent while loaded). */
-  loadArchOverlay(): Promise<void>;
+  /** Fetch the architecture overlay once, or refetch it after a remote save. */
+  loadArchOverlay(force?: boolean): Promise<void>;
   /** Optimistically update + debounce-persist the architecture overlay. */
   updateArchOverlay(overlay: ArchOverlay): void;
   saveManifest(manifest: WorkspaceManifest): Promise<void>;
@@ -56,30 +58,68 @@ export type WorkspaceStore = StoreApi<WorkspaceState>;
 export function createWorkspaceStore(client: BridgeClient): WorkspaceStore {
   const timers = new Map<string, ReturnType<typeof setTimeout>>();
   const flushers = new Map<string, () => Promise<void>>();
+  const pathsBySave = new Map<string, string>();
+  const failedSaveKeys = new Set<string>();
+  let refreshEpoch = 0;
+  let overlayEpoch = 0;
 
   const store = createStore<WorkspaceState>((set, get) => {
-    function schedule(path: string, save: () => Promise<void>): void {
-      const existing = timers.get(path);
+    const hasPendingPath = (path: string) =>
+      [...flushers.keys()].some((key) => pathsBySave.get(key) === path);
+    const hasFailedPath = (path: string) =>
+      [...failedSaveKeys].some((key) => pathsBySave.get(key) === path);
+
+    function schedule(ws: string, path: string, save: () => Promise<void>): void {
+      const key = `${ws}\0${path}`;
+      const existing = timers.get(key);
       if (existing) clearTimeout(existing);
-      set((s) => ({ pendingSaves: { ...s.pendingSaves, [path]: true } }));
-      const doSave = async () => {
-        timers.delete(path);
-        flushers.delete(path);
-        try {
-          await save();
-        } catch (err) {
-          set({ error: (err as Error).message });
-        } finally {
+      failedSaveKeys.delete(key);
+      pathsBySave.set(key, path);
+      set((s) => {
+        const failedSaves = { ...s.failedSaves };
+        if (!hasFailedPath(path)) delete failedSaves[path];
+        return { pendingSaves: { ...s.pendingSaves, [path]: true }, failedSaves };
+      });
+      let inFlight: Promise<void> | null = null;
+      const doSave = (): Promise<void> => {
+        if (inFlight) return inFlight;
+        inFlight = (async () => {
+          if (flushers.get(key) === doSave) timers.delete(key);
+          try {
+            await save();
+          } catch (err) {
+            if (flushers.get(key) === doSave) {
+              failedSaveKeys.add(key);
+              set((s) => ({
+                error: err instanceof Error ? err.message : String(err),
+                pendingSaves: { ...s.pendingSaves, [path]: true },
+                failedSaves: { ...s.failedSaves, [path]: true },
+              }));
+            }
+            throw err;
+          }
+          // An edit scheduled during this request owns the new flusher and
+          // remains dirty until its own snapshot has landed.
+          if (flushers.get(key) !== doSave) return;
+          flushers.delete(key);
+          failedSaveKeys.delete(key);
+          pathsBySave.delete(key);
           set((s) => {
-            const { [path]: _, ...rest } = s.pendingSaves;
-            return { pendingSaves: rest };
+            const pendingSaves = { ...s.pendingSaves };
+            const failedSaves = { ...s.failedSaves };
+            if (!hasPendingPath(path)) delete pendingSaves[path];
+            if (!hasFailedPath(path)) delete failedSaves[path];
+            return { pendingSaves, failedSaves };
           });
-        }
+        })().finally(() => {
+          inFlight = null;
+        });
+        return inFlight;
       };
-      flushers.set(path, doSave);
+      flushers.set(key, doSave);
       timers.set(
-        path,
-        setTimeout(() => void doSave(), SAVE_DEBOUNCE_MS),
+        key,
+        setTimeout(() => void doSave().catch(() => {}), SAVE_DEBOUNCE_MS),
       );
     }
 
@@ -90,14 +130,18 @@ export function createWorkspaceStore(client: BridgeClient): WorkspaceStore {
       loading: false,
       error: null,
       pendingSaves: {},
+      failedSaves: {},
 
       async refresh() {
+        const ws = client.scope;
+        const myEpoch = ++refreshEpoch;
         set({ loading: true });
         try {
           const [info, agents] = await Promise.all([
             client.request("workspace.get", {}),
             client.request("agents.get", {}),
           ]);
+          if (refreshEpoch !== myEpoch || client.scope !== ws) return;
           const prev = get().info;
           set({
             info,
@@ -108,16 +152,22 @@ export function createWorkspaceStore(client: BridgeClient): WorkspaceStore {
             ...(prev && prev.id !== info.id ? { archOverlay: null } : {}),
           });
         } catch (err) {
+          if (refreshEpoch !== myEpoch || client.scope !== ws) return;
           set({ loading: false, error: (err as Error).message });
         }
       },
 
-      async loadArchOverlay() {
-        if (get().archOverlay) return;
+      async loadArchOverlay(force = false) {
+        if (!force && get().archOverlay) return;
+        const ws = client.scope;
+        const myEpoch = ++overlayEpoch;
         try {
-          const { overlay } = await client.request("arch.getOverlay", {});
+          const { overlay } = await client.request("arch.getOverlay", ws === null ? {} : { ws });
+          if (overlayEpoch !== myEpoch || client.scope !== ws) return;
+          if (force && get().pendingSaves[ARCH_OVERLAY_FILE]) return;
           set({ archOverlay: overlay });
         } catch (err) {
+          if (overlayEpoch !== myEpoch || client.scope !== ws) return;
           set({ error: (err as Error).message });
         }
       },
@@ -129,12 +179,8 @@ export function createWorkspaceStore(client: BridgeClient): WorkspaceStore {
         // Capture the workspace now: a flush after the user switches
         // workspaces must still write to the one the edit was made in.
         const ws = info.id;
-        schedule(ARCH_OVERLAY_FILE, async () => {
-          // Unlike path-keyed saves, the overlay key is constant across
-          // workspaces — after a switch the store holds the NEW workspace's
-          // overlay, so a late flush must fall back to the captured snapshot.
-          const latest = get().info?.id === ws ? get().archOverlay : overlay;
-          if (latest) await client.request("arch.saveOverlay", { ws, overlay: latest });
+        schedule(ws, ARCH_OVERLAY_FILE, async () => {
+          await client.request("arch.saveOverlay", { ws, overlay });
         });
       },
 
@@ -158,9 +204,8 @@ export function createWorkspaceStore(client: BridgeClient): WorkspaceStore {
         // Capture the workspace now: a flush after the user switches
         // workspaces must still write to the one the edit was made in.
         const ws = info.id;
-        schedule(path, async () => {
-          const latest = get().info?.architectures.find((a) => a.path === path);
-          if (latest) await client.request("arch.save", { ws, path, graph: latest.graph });
+        schedule(ws, path, async () => {
+          await client.request("arch.save", { ws, path, graph });
         });
       },
 
@@ -196,9 +241,8 @@ export function createWorkspaceStore(client: BridgeClient): WorkspaceStore {
           },
         });
         const ws = info.id;
-        schedule(path, async () => {
-          const latest = get().info?.archDrafts.find((d) => d.path === path);
-          if (latest) await client.request("archdraft.save", { ws, path, draft: latest.draft });
+        schedule(ws, path, async () => {
+          await client.request("archdraft.save", { ws, path, draft });
         });
       },
 
@@ -229,9 +273,8 @@ export function createWorkspaceStore(client: BridgeClient): WorkspaceStore {
           },
         });
         const ws = info.id;
-        schedule(path, async () => {
-          const latest = get().info?.projects.find((p) => p.path === path);
-          if (latest) await client.request("project.save", { ws, path, project: latest.project });
+        schedule(ws, path, async () => {
+          await client.request("project.save", { ws, path, project });
         });
       },
 
@@ -247,9 +290,8 @@ export function createWorkspaceStore(client: BridgeClient): WorkspaceStore {
         set({ roster });
         if (!info) return;
         const ws = info.id;
-        schedule(AGENTS_FILE, async () => {
-          const latest = get().roster;
-          if (latest) await client.request("agents.save", { ws, roster: latest });
+        schedule(ws, AGENTS_FILE, async () => {
+          await client.request("agents.save", { ws, roster });
         });
       },
 
@@ -257,8 +299,9 @@ export function createWorkspaceStore(client: BridgeClient): WorkspaceStore {
         const all = [...flushers.values()];
         for (const timer of timers.values()) clearTimeout(timer);
         timers.clear();
-        flushers.clear();
-        await Promise.all(all.map((f) => f()));
+        const results = await Promise.allSettled(all.map((f) => f()));
+        const failed = results.find((result) => result.status === "rejected");
+        if (failed?.status === "rejected") throw failed.reason;
       },
     };
   });

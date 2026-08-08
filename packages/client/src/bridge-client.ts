@@ -180,8 +180,10 @@ export class BridgeClient {
       clearTimeout(this.retryTimer);
       this.retryTimer = null;
     }
-    this.transport?.close();
+    const transport = this.transport;
     this.transport = null;
+    this.failAllPending(new Error("Bridge closed"));
+    transport?.close();
     this.setState("closed");
   }
 

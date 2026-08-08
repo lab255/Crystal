@@ -49,6 +49,7 @@ const EMPTY_MATCHER = buildLensMatcher(null);
 
 export function createLensStore(client: BridgeClient): LensStore {
   let epoch = 0;
+  let facetsEpoch = 0;
 
   return createStore<LensState>((set, get) => {
     async function resolveSpec(ws: string, spec: LensSpec): Promise<LensMembership> {
@@ -140,7 +141,9 @@ export function createLensStore(client: BridgeClient): LensStore {
 
       async loadFacets(ws) {
         if (get().facetsWs === ws) return get().facets;
+        const myEpoch = ++facetsEpoch;
         const { facets } = await client.request("facets.get", { ws });
+        if (facetsEpoch !== myEpoch) return facets;
         set({ facets, facetsWs: ws });
         return facets;
       },

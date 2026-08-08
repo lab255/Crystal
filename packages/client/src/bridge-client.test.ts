@@ -98,6 +98,18 @@ describe("BridgeClient close/retry", () => {
     expect(client.state).toBe("open");
   });
 
+  it("rejects in-flight requests when explicitly closed", async () => {
+    const { client, transports } = harness();
+    client.connect();
+    transports[0]!.onopen?.();
+
+    const request = client.request("workspace.get", {});
+    const rejection = expect(request).rejects.toThrow("Bridge closed");
+    client.close();
+
+    await rejection;
+  });
+
   it("keeps retrying while never opened (factory throws), then stops on close()", () => {
     let attempts = 0;
     const client = new BridgeClient(() => {

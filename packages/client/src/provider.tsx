@@ -8,6 +8,7 @@ import {
 } from "react";
 import { useStore } from "zustand";
 import {
+  ARCH_OVERLAY_FILE,
   BRIDGE_PATH,
   BRIDGE_TOKEN_COOKIE,
   BRIDGE_TOKEN_PARAM,
@@ -218,6 +219,19 @@ interface FleetRuntime {
   disconnect: () => void;
 }
 
+/** Keep a clean local overlay cache in sync with saves from other clients. */
+export function subscribeToArchOverlayChanges(
+  client: BridgeClient,
+  workspaceStore: WorkspaceStore,
+  activeWorkspace: () => string | null,
+): () => void {
+  return client.events.on("arch.overlayChanged", ({ ws }) => {
+    if (ws !== activeWorkspace()) return;
+    if (workspaceStore.getState().pendingSaves[ARCH_OVERLAY_FILE]) return;
+    void workspaceStore.getState().loadArchOverlay(true);
+  });
+}
+
 function createFleetRuntime(defaultTarget: string | BridgeTransportFactory): FleetRuntime {
   const fleet = new FleetClient({ defaultTarget });
   const navStore = createNavStore();
@@ -260,6 +274,11 @@ function createFleetRuntime(defaultTarget: string | BridgeTransportFactory): Fle
     const disposers: (() => void)[] = [
       fleetStore.getState().attach(sid, client),
       terminalsStore.getState().attach(sid, client),
+      subscribeToArchOverlayChanges(
+        client,
+        workspaceStore,
+        () => workspacesStore.getState().activeId,
+      ),
     ];
 
     const refreshScoped = () => {
@@ -302,7 +321,10 @@ function createFleetRuntime(defaultTarget: string | BridgeTransportFactory): Fle
         if (s.activeId === prevActive) return;
         const wasActive = prevActive;
         prevActive = s.activeId;
-        void workspaceStore.getState().flush();
+        void workspaceStore
+          .getState()
+          .flush()
+          .catch(() => {});
         client.setScope(s.activeId);
         // The editor's open document is workspace-relative: left in the link
         // across a real switch, the remounted editor would read the old
@@ -388,7 +410,10 @@ function createFleetRuntime(defaultTarget: string | BridgeTransportFactory): Fle
       lensStore,
       dispose: () => {
         for (const d of disposers) d();
-        void workspaceStore.getState().flush();
+        void workspaceStore
+          .getState()
+          .flush()
+          .catch(() => {});
       },
     });
   }
@@ -407,7 +432,10 @@ function createFleetRuntime(defaultTarget: string | BridgeTransportFactory): Fle
     if (s.activeSid === prevSid) return;
     const prev = bundles.get(prevSid);
     prevSid = s.activeSid;
-    void prev?.workspaceStore.getState().flush();
+    void prev?.workspaceStore
+      .getState()
+      .flush()
+      .catch(() => {});
     const next = bundles.get(s.activeSid);
     const activeId = next?.workspacesStore.getState().activeId;
     // Focusing another server's workspace acknowledges its finished runs.
@@ -470,7 +498,12 @@ function createFleetRuntime(defaultTarget: string | BridgeTransportFactory): Fle
     connect: () => fleet.connectAll(),
     disconnect: () => {
       void fleetStore.getState().flush();
-      for (const bundle of bundles.values()) void bundle.workspaceStore.getState().flush();
+      for (const bundle of bundles.values()) {
+        void bundle.workspaceStore
+          .getState()
+          .flush()
+          .catch(() => {});
+      }
       fleet.disconnectAll();
     },
   };
