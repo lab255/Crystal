@@ -15,13 +15,14 @@ import {
 } from "lucide-react";
 import {
   RUN_PURPOSES,
+  deriveNeedsYou,
   firstAttentionTask,
   openQuestions,
   type OrchestratorTabId,
   type Project,
   type RunPurpose,
 } from "@crystal/core";
-import { useAgents, useNav, useNavUpdate, useNeedsYou, useWorkspace } from "@crystal/client";
+import { useAgents, useNav, useNavUpdate, usePermissions, useWorkspace } from "@crystal/client";
 import {
   Button,
   Dialog,
@@ -119,7 +120,11 @@ export function OrchestratorMode() {
     (p: InsightPeriod) => nav({ orchestrate: { period: p } }),
     [nav],
   );
-  const needsYou = useNeedsYou();
+  const pendingPermissions = usePermissions((s) => s.pending);
+  const needsYou = useMemo(
+    () => deriveNeedsYou(projects, runs, pendingPermissions),
+    [projects, runs, pendingPermissions],
+  );
   const auth = useAgents((s) => s.auth);
   const [createOpen, setCreateOpen] = useState(false);
   const [newName, setNewName] = useState("");
@@ -209,6 +214,7 @@ export function OrchestratorMode() {
             title={
               needsYou.questions
                 .map((q) => `? ${q.question.text}`)
+                .concat(needsYou.permissions.map((p) => `Allow/Deny ${p.tool}: ${p.summary}`))
                 .concat(needsYou.failures.map((f) => `! ${f.failure!.kind.replace("_", " ")}`))
                 .slice(0, 6)
                 .join("\n") || undefined
@@ -219,11 +225,15 @@ export function OrchestratorMode() {
               // its live session beside the list); a failed run lands on its
               // task when it has one, else on the Runs tab.
               const q = needsYou.questions[0];
+              const p = needsYou.permissions[0];
               const f = needsYou.failures[0];
               if (q) {
                 setProjectPath(q.projectPath);
                 selectListTask(q.taskId);
                 setTab("board");
+              } else if (p) {
+                setRunId(p.runId);
+                setTab("runs");
               } else if (f) {
                 const onBoard =
                   f.taskId != null && current?.project.tasks.some((t) => t.id === f.taskId);

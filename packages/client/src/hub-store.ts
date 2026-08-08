@@ -133,7 +133,10 @@ export interface HubState {
    */
   closeManager(programId: string): Promise<void>;
   /** Deliver an owner message into the program-manager session. */
-  message(programId: string, text: string): Promise<{ queued: boolean }>;
+  message(
+    programId: string,
+    text: string,
+  ): Promise<{ queued: boolean } & Partial<SteerReceipt>>;
   loadRunEvents(runId: string): Promise<void>;
   cancelRun(runId: string): Promise<void>;
 }
@@ -287,16 +290,8 @@ export function createHubStore(client: BridgeClient): HubStore {
         deliveryId: seen?.deliveryId ?? null,
         taskId: seen?.taskId ?? null,
       });
-      // The server re-sweeps and pushes hub.questionsChanged; dropping it here
-      // too means the row disappears the moment the answer lands.
-      if (result.ok) {
-        set((s) => ({
-          questions: {
-            ...s.questions,
-            [programId]: (s.questions[programId] ?? []).filter((q) => q.questionId !== questionId),
-          },
-        }));
-      }
+      // The server re-sweeps and pushes hub.questionsChanged. Let that push
+      // remove the row so the card can first render the delivery outcome.
       return result;
     },
 
@@ -351,8 +346,11 @@ export function createHubStore(client: BridgeClient): HubStore {
     },
 
     async message(programId, text) {
-      const { queued } = await client.request("hub.message", { programId, text });
-      return { queued };
+      // Preserve the typed steer receipt on bridges that provide it. Older
+      // bridges expose only `queued`, which must not be embellished client-side.
+      return (await client.request("hub.message", { programId, text })) as {
+        queued: boolean;
+      } & Partial<SteerReceipt>;
     },
 
     async loadRunEvents(runId) {

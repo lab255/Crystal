@@ -10,6 +10,7 @@ import {
   KeyRound,
   RefreshCw,
   Rows3,
+  ShieldAlert,
   Sparkles,
   Timer,
   Trash2,
@@ -48,7 +49,7 @@ import { parseUnifiedDiff, type FileDiff } from "./diff.js";
 import { InteractiveRunBanner } from "./interactive-banner.js";
 import { InteractiveRunTerminal } from "./run-terminal.js";
 import { MessageComposer, type ComposerSendResult } from "./message-composer.js";
-import { useAgents, useCrystal, useWorkspace } from "./provider.js";
+import { useAgents, useCrystal, usePermissions, useWorkspace } from "./provider.js";
 import {
   RunTranscript,
   formatRunCost,
@@ -76,11 +77,18 @@ export type ApplyBranchOutcome =
  */
 export interface MergeControls {
   preview: MergePreviewResult | null;
+  /** Why the latest prediction failed, rendered in place of silent controls. */
+  error: string | null;
   onRefresh: () => Promise<void>;
   onMerge: () => Promise<MergeResult>;
   onResolve: () => Promise<{ run: AgentRun; conflicts: string[] }>;
   onAbort: () => Promise<void>;
 }
+
+export type RunSendResult = ComposerSendResult & {
+  /** Qualifies a queued workflow/hub steer without changing the shared composer contract. */
+  wakeExpected?: boolean;
+};
 
 export interface RunSurfaceProps {
   run: AgentRun;
@@ -95,7 +103,7 @@ export interface RunSurfaceProps {
   /** Worktree merge-back (prediction + land/resolve/abort). Absent = hidden. */
   merge?: MergeControls | null;
   /** Routes the message (workflow/hub/plain — the adopter decides). Absent = no composer. */
-  onSend?: (text: string) => Promise<ComposerSendResult | void>;
+  onSend?: (text: string) => Promise<RunSendResult | void>;
   onCancel?: () => void | Promise<void>;
   /**
    * Close/dismiss the surface (the adopter decides what that means — the
@@ -138,6 +146,29 @@ export function RunSurface({
   const live = run.status === "running" || run.status === "queued";
   const interactive = Boolean(run.terminalId);
   const tokens = usageTotalTokens(run.usage);
+  const [steerNotice, setSteerNotice] = useState<string | null>(null);
+
+  useEffect(() => setSteerNotice(null), [run.id]);
+
+  const send = useCallback(
+    async (text: string): Promise<ComposerSendResult | void> => {
+      if (!onSend) return;
+      setSteerNotice(null);
+      const result = await onSend(text);
+      if (result?.queued && typeof result.wakeExpected === "boolean") {
+        setSteerNotice(
+          result.wakeExpected
+            ? "Queued — the manager wakes on the next settlement."
+            : "Queued — no wake expected; it reads this when next resumed.",
+        );
+        // The receipt-specific notice above replaces the shared composer's
+        // generic "delivers when the turn settles" claim.
+        return { ...result, queued: false };
+      }
+      return result;
+    },
+    [onSend],
+  );
 
   return (
     <div className={cn("flex h-full min-h-0 flex-col", className)}>
@@ -212,6 +243,7 @@ export function RunSurface({
         />
       )}
 
+      <PermissionStrip chain={chain.length > 0 ? chain : [run]} />
       {run.status === "failed" && run.failure ? <FailureBanner run={run} /> : null}
 
       {/* Conversation: pick a turn, steer the session. */}
@@ -228,7 +260,7 @@ export function RunSurface({
           terminal is gone (the chain then steers headlessly via deliver). */}
       {onSend && !(interactive && live) ? (
         <MessageComposer
-          onSend={onSend}
+          onSend={send}
           // Mid-turn sends queue server-side; say so up front instead of
           // surprising the user with the "queued" notice after the fact.
           placeholder={
@@ -238,6 +270,11 @@ export function RunSurface({
           }
           className="border-t border-edge"
         />
+      ) : null}
+      {steerNotice ? (
+        <p className="shrink-0 border-t border-edge bg-surface-1 px-3 py-1 text-[10px] text-ink-faint">
+          {steerNotice}
+        </p>
       ) : null}
 
       {run.worktreePath ? (
@@ -250,6 +287,68 @@ export function RunSurface({
           merge={merge}
         />
       ) : null}
+    </div>
+  );
+}
+
+/** A run-local decision strip: permission prompts must stay actionable while the transcript is open. */
+function PermissionStrip({ chain }: { chain: readonly AgentRun[] }) {
+  const pending = usePermissions((s) => s.pending);
+  const decide = usePermissions((s) => s.decide);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const runIds = useMemo(() => new Set(chain.map((turn) => turn.id)), [chain]);
+  const requests = useMemo(
+    () => pending.filter((request) => runIds.has(request.runId)),
+    [pending, runIds],
+  );
+
+  if (requests.length === 0) return null;
+
+  async function choose(id: string, decision: "allow" | "deny"): Promise<void> {
+    if (busyId) return;
+    setBusyId(id);
+    setError(null);
+    try {
+      const ok = await decide(id, decision);
+      if (!ok) setError("That request already settled or timed out; permissions were refreshed.");
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  return (
+    <div className="shrink-0 border-t border-warn/40 bg-warn/10 px-3 py-2">
+      {requests.map((request) => (
+        <div key={request.id} className="flex items-center gap-2">
+          <ShieldAlert className="h-3.5 w-3.5 shrink-0 animate-pulse text-warn" />
+          <span className="shrink-0 rounded bg-surface-3 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-ink">
+            {request.tool}
+          </span>
+          <span className="min-w-0 flex-1 truncate text-[11px] text-ink" title={request.summary}>
+            Waiting for permission: {request.summary}
+          </span>
+          <Button
+            variant="primary"
+            size="xs"
+            disabled={busyId != null}
+            onClick={() => void choose(request.id, "allow")}
+          >
+            Allow
+          </Button>
+          <Button
+            variant="danger"
+            size="xs"
+            disabled={busyId != null}
+            onClick={() => void choose(request.id, "deny")}
+          >
+            Deny
+          </Button>
+        </div>
+      ))}
+      {error ? <p className="mt-1 text-[10px] text-danger">{error}</p> : null}
     </div>
   );
 }
@@ -384,6 +483,7 @@ function ChangesRegion({
   const [merging, setMerging] = useState<"merge" | "resolve" | "abort" | null>(null);
   const live = run.status === "running" || run.status === "queued";
   const preview = merge?.preview ?? null;
+  const previewError = merge?.error ?? null;
   const conflicted = (preview?.conflicts.length ?? 0) > 0;
 
   async function mergeAct(kind: "merge" | "resolve" | "abort"): Promise<void> {
@@ -416,14 +516,17 @@ function ChangesRegion({
   const files = useMemo(() => (diff ? parseUnifiedDiff(diff.diff) : null), [diff]);
 
   const refresh = useCallback(async () => {
-    if (!onRefreshDiff || refreshing) return;
+    if ((!onRefreshDiff && !merge) || refreshing) return;
     setRefreshing(true);
     try {
-      await onRefreshDiff();
+      await Promise.all([
+        Promise.resolve(onRefreshDiff?.()),
+        merge?.onRefresh() ?? Promise.resolve(),
+      ]);
     } finally {
       setRefreshing(false);
     }
-  }, [onRefreshDiff, refreshing]);
+  }, [merge, onRefreshDiff, refreshing]);
 
   // First render with a worktree and no diff yet: ask for one, once per run.
   const requestedFor = useRef<string | null>(null);
@@ -480,6 +583,14 @@ function ChangesRegion({
         <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-ink-faint">
           {run.worktreePath}
         </span>
+        {merge && !live && previewError ? (
+          <span
+            className="max-w-64 truncate text-[10px] font-medium text-danger"
+            title={previewError}
+          >
+            Merge preview unavailable: {previewError}
+          </span>
+        ) : null}
         {merge && !live && preview?.resolving ? (
           <Button
             variant="ghost"
@@ -517,12 +628,12 @@ function ChangesRegion({
             </Button>
           </Tooltip>
         ) : null}
-        {onRefreshDiff ? (
-          <Tooltip content="Refresh diff">
+        {onRefreshDiff || merge ? (
+          <Tooltip content="Refresh changes and merge preview">
             <Button
               variant="ghost"
               size="icon-sm"
-              aria-label="Refresh diff"
+              aria-label="Refresh changes and merge preview"
               onClick={() => void refresh()}
             >
               <RefreshCw className={cn("h-3 w-3", refreshing && "animate-spin")} />
@@ -845,13 +956,23 @@ export function useRunSurface(runId: string | null): {
   // Merge-back: the prediction loads eagerly once the run settles with a
   // worktree (the header controls hang off it); the verbs re-predict after.
   const [mergePreview, setMergePreview] = useState<MergePreviewResult | null>(null);
-  useEffect(() => setMergePreview(null), [runId]);
+  const [mergeError, setMergeError] = useState<string | null>(null);
+  const [resolverRunId, setResolverRunId] = useState<string | null>(null);
+  useEffect(() => {
+    setMergePreview(null);
+    setMergeError(null);
+    setResolverRunId(null);
+  }, [runId]);
   const refreshMerge = useCallback(async () => {
     if (!runId) return;
-    await client
-      .request("agent.mergePreview", { runId })
-      .then(setMergePreview)
-      .catch(() => setMergePreview(null));
+    setMergeError(null);
+    try {
+      const preview = await client.request("agent.mergePreview", { runId });
+      setMergePreview(preview);
+    } catch (err) {
+      setMergePreview(null);
+      setMergeError((err as Error).message);
+    }
   }, [client, runId]);
   const settledWithWorktree =
     run != null &&
@@ -861,6 +982,17 @@ export function useRunSurface(runId: string | null): {
   useEffect(() => {
     if (settledWithWorktree) void refreshMerge();
   }, [settledWithWorktree, refreshMerge]);
+
+  // Conflict resolution runs in a second agent. Once that run settles, its
+  // commit changes whether run A can merge, so re-predict without waiting for
+  // the operator to revisit or manually refresh the original surface.
+  useEffect(() => {
+    if (!resolverRunId) return;
+    const resolver = runs.find((candidate) => candidate.id === resolverRunId);
+    if (!resolver || resolver.status === "running" || resolver.status === "queued") return;
+    setResolverRunId(null);
+    void Promise.all([refreshMerge(), onRefreshDiff()]);
+  }, [resolverRunId, runs, refreshMerge, onRefreshDiff]);
 
   // A run that just settled has just finished writing: refetch the diff on
   // the live→settled transition (same run only) so the Changes region shows
@@ -878,21 +1010,24 @@ export function useRunSurface(runId: string | null): {
   const merge = useMemo<MergeControls>(
     () => ({
       preview: mergePreview,
+      error: mergeError,
       onRefresh: refreshMerge,
       onMerge: () => {
         if (!runId) return Promise.reject(new Error("No run selected."));
         return client.request("agent.merge", { runId });
       },
-      onResolve: () => {
+      onResolve: async () => {
         if (!runId) return Promise.reject(new Error("No run selected."));
-        return client.request("agent.resolveConflicts", { runId });
+        const result = await client.request("agent.resolveConflicts", { runId });
+        setResolverRunId(result.run.id);
+        return result;
       },
       onAbort: async () => {
         if (!runId) return;
         await client.request("agent.abortResolve", { runId });
       },
     }),
-    [client, runId, mergePreview, refreshMerge],
+    [client, runId, mergePreview, mergeError, refreshMerge],
   );
 
   return { run, events, chain, diff, onRefreshDiff, onApplyBranch, onDiscard, onCancel, merge };

@@ -92,6 +92,19 @@ export function TemplateBuilder({
 
   const scopeOf = draft ? templateScope(draft) : null;
 
+  function confirmDiscard(): boolean {
+    return !dirty || window.confirm("Discard unsaved template edits?");
+  }
+
+  function selectTemplate(id: string): void {
+    if (id === view?.id || !confirmDiscard()) return;
+    onSelectTemplate(id);
+  }
+
+  function close(): void {
+    if (confirmDiscard()) onClose();
+  }
+
   return (
     <div className="flex h-full min-h-0">
       {/* Library */}
@@ -111,7 +124,7 @@ export function TemplateBuilder({
                   <button
                     key={t.id}
                     type="button"
-                    onClick={() => onSelectTemplate(t.id)}
+                    onClick={() => selectTemplate(t.id)}
                     className={cn(
                       "mb-1 block w-full rounded-lg border px-2.5 py-2 text-left transition-colors",
                       t.id === view?.id
@@ -248,7 +261,7 @@ export function TemplateBuilder({
                 </Button>
               </>
             ) : null}
-            <Button variant="ghost" size="xs" onClick={onClose} aria-label="Close builder">
+            <Button variant="ghost" size="xs" onClick={close} aria-label="Close builder">
               <X className="h-3.5 w-3.5" /> Done
             </Button>
           </div>

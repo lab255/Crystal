@@ -5,6 +5,7 @@ import {
   attentionLight,
   automaticWorkflowPauseIds,
   countOpenQuestions,
+  countPendingPermissions,
   countUnrecoveredFailures,
   deriveNeedsYou,
   deriveRunAttention,
@@ -102,6 +103,22 @@ describe("deriveNeedsYou", () => {
     );
     expect(needs.failures.map((r) => r.id)).toEqual(["recent", "old"]);
     expect(needs.count).toBe(3); // 1 question + 2 failures
+  });
+
+  it("includes parked permissions in the attention lane", () => {
+    const permissions = [
+      {
+        id: "permission-1",
+        runId: "run-1",
+        tool: "Bash",
+        summary: "pnpm test",
+        requestedAt: "2026-08-09T00:00:00.000Z",
+      },
+    ];
+    const needs = deriveNeedsYou([], [], permissions);
+    expect(needs.permissions).toEqual(permissions);
+    expect(needs.count).toBe(1);
+    expect(countPendingPermissions(permissions)).toBe(1);
   });
 });
 

@@ -1,4 +1,9 @@
-import { programIdOfRun, workflowIdOfRun, type AgentRun } from "@crystal/core";
+import {
+  programIdOfRun,
+  workflowIdOfRun,
+  type AgentRun,
+  type SteerReceipt,
+} from "@crystal/core";
 import type { BridgeClient } from "@crystal/client";
 
 /**
@@ -23,16 +28,31 @@ export async function messageRun(
   /** Generic route only: the delivery truth — `recorded` = NOT delivered. */
   status?: "resumed" | "queued" | "recorded";
   runId?: string | null;
+  mode?: SteerReceipt["mode"];
+  wakeExpected?: boolean;
 }> {
   const workflowId = workflowIdOfRun(run);
   if (workflowId) {
-    const { queued } = await client.request("workflow.message", { workflowId, text });
-    return { queued };
+    const { queued, mode, wakeExpected } = await client.request("workflow.message", {
+      workflowId,
+      text,
+    });
+    return { queued, mode, wakeExpected };
   }
   const programId = programIdOfRun(run);
   if (programId) {
-    const { queued } = await client.request("hub.message", { programId, text });
-    return { queued };
+    // Older bridges returned only `queued`; preserve the typed receipt when
+    // the route provides it without guessing whether a manager can wake.
+    const receipt = (await client.request("hub.message", { programId, text })) as {
+      queued: boolean;
+    } & Partial<SteerReceipt>;
+    return {
+      queued: receipt.queued,
+      ...(receipt.mode ? { mode: receipt.mode } : {}),
+      ...(typeof receipt.wakeExpected === "boolean"
+        ? { wakeExpected: receipt.wakeExpected }
+        : {}),
+    };
   }
   const { status, runId } = await client.request("agent.message", { runId: run.id, text });
   return { queued: status === "queued", status, runId };

@@ -118,23 +118,29 @@ export function SectionLabel({ children, className }: { children: React.ReactNod
 export function SpendLine({
   costUsd,
   budgetUsd,
-  /** Say "(no budget)" when none is set — for detail views, not dense rows. */
+  stale = false,
+  /** Make an absent ceiling explicit — for detail views, not dense rows. */
   showUnbudgeted = false,
   suffix,
 }: {
   costUsd: number;
   budgetUsd: number | null | undefined;
+  /** The displayed cost is a lower bound because some live spend is unreadable. */
+  stale?: boolean;
   showUnbudgeted?: boolean;
   suffix?: React.ReactNode;
 }) {
   const exhausted = budgetUsd != null && costUsd >= budgetUsd;
   return (
-    <span className="flex items-center gap-1">
-      {formatRunCost(costUsd)}
+    <span
+      className="flex items-center gap-1"
+      title={stale ? "Lower bound — some live delivery spend is currently unreadable" : undefined}
+    >
+      {stale ? `≥${formatRunCost(costUsd)}` : formatRunCost(costUsd)}
       {budgetUsd != null ? (
         <span className={cn(exhausted && "text-danger")}> / ${budgetUsd.toFixed(2)}</span>
       ) : showUnbudgeted ? (
-        <span className="text-ink-faint"> (no budget)</span>
+        <span className="text-ink-faint"> (no budget — unbounded)</span>
       ) : null}
       {suffix}
     </span>
