@@ -572,7 +572,12 @@ fn new_window(app: tauri::AppHandle, url: Option<String>) -> Result<(), String> 
     .min_inner_size(980.0, 620.0)
     .center()
     .theme(Some(tauri::Theme::Dark))
-    .background_color(tauri::webview::Color(10, 12, 17, 255));
+    .background_color(tauri::webview::Color(10, 12, 17, 255))
+    // Tauri's drag-drop handler swallows HTML5 drag events inside the
+    // webview (WKWebView never fires dragstart) — every in-app drag
+    // (nav rearrange, palette drops, infra placement) needs it OFF. Must
+    // match `dragDropEnabled: false` on the main window in tauri.conf.json.
+    .disable_drag_drop_handler();
     #[cfg(target_os = "macos")]
     let builder = builder
         .title_bar_style(tauri::TitleBarStyle::Overlay)
