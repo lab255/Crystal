@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { GitCommit, GitRefsResult } from "@crystal/core";
-import { gitRefOptions } from "./git-refs.js";
+import { gitRefOptions, resolveBaseBranch } from "./git-refs.js";
 
 const refs = (over: Partial<GitRefsResult> = {}): GitRefsResult => ({
   branches: ["feat/x", "main"],
@@ -52,5 +52,25 @@ describe("gitRefOptions", () => {
     const opts = gitRefOptions(null, [commit()]);
     expect(opts).toHaveLength(1);
     expect(opts[0]!.group).toBe("Commits");
+  });
+});
+
+describe("resolveBaseBranch", () => {
+  it("prefers local main, then local master", () => {
+    expect(resolveBaseBranch(refs({ branches: ["master", "main"] }))).toBe("main");
+    expect(resolveBaseBranch(refs({ branches: ["release", "master"] }))).toBe("master");
+  });
+
+  it("falls back to a remote main or master without querying changed files", () => {
+    expect(
+      resolveBaseBranch(
+        refs({ branches: ["feature"], remoteBranches: ["upstream/main", "origin/master"] }),
+      ),
+    ).toBe("upstream/main");
+  });
+
+  it("returns null when no conventional base ref is listed", () => {
+    expect(resolveBaseBranch(refs({ branches: ["trunk"], remoteBranches: [] }))).toBeNull();
+    expect(resolveBaseBranch(null)).toBeNull();
   });
 });
