@@ -36,9 +36,17 @@ export interface PremiseAssert {
   raw: string;
 }
 
+/** An `assert:` marker whose kind or required argument could not be parsed. */
+export interface MalformedPremiseAssert {
+  kind: "malformed";
+  arg: string;
+  raw: string;
+  reason: "missing-kind" | "unknown-kind" | "missing-argument";
+}
+
 /** One probed assertion: what was claimed, and whether the repo agrees. */
 export const PremiseCheckSchema = z.object({
-  kind: PremiseAssertKindSchema,
+  kind: z.union([PremiseAssertKindSchema, z.literal("malformed")]),
   arg: z.string(),
   raw: z.string(),
   ok: z.boolean(),
@@ -55,31 +63,35 @@ export const PremiseReportSchema = z.object({
 });
 export type PremiseReport = z.infer<typeof PremiseReportSchema>;
 
-const ASSERT_LINE = /^assert:\s*(\S+)\s*(.*)$/i;
+const ASSERT_LINE = /^assert:\s*(.*)$/i;
 
 /**
- * Every `assert:` line in a brief/goal, parsed. An unknown kind still comes
- * back — as a `cmd`-shaped never-probed claim it would vanish; instead it is
- * kept with its raw text so the probe can fail it loudly ("unrecognized
- * assertion"), because a claim the checker silently skipped reads as a claim
- * that held.
+ * Every `assert:` line in a brief/goal, parsed. Unknown or incomplete claims
+ * come back as `malformed` so the probe can fail them loudly; a claim the
+ * checker silently skipped would otherwise read as one that held.
  */
-export function parseAsserts(text: string): (PremiseAssert | { kind: null; arg: string; raw: string })[] {
-  const out: (PremiseAssert | { kind: null; arg: string; raw: string })[] = [];
+export function parseAsserts(text: string): (PremiseAssert | MalformedPremiseAssert)[] {
+  const out: (PremiseAssert | MalformedPremiseAssert)[] = [];
   for (const rawLine of text.split(/\r?\n/)) {
     const line = rawLine.trim();
     const m = ASSERT_LINE.exec(line);
     if (!m) continue;
-    const kindRaw = m[1]!.toLowerCase();
-    const arg = (m[2] ?? "").trim();
+    const body = (m[1] ?? "").trim();
+    if (!body) {
+      out.push({ kind: "malformed", arg: "", raw: line, reason: "missing-kind" });
+      continue;
+    }
+    const [kindToken, ...argParts] = body.split(/\s+/);
+    const kindRaw = kindToken!.toLowerCase();
+    const arg = argParts.join(" ");
     const parsed = PremiseAssertKindSchema.safeParse(kindRaw);
     if (!parsed.success) {
-      out.push({ kind: null, arg: `${m[1]} ${arg}`.trim(), raw: line });
+      out.push({ kind: "malformed", arg: body, raw: line, reason: "unknown-kind" });
     } else if (arg) {
       out.push({ kind: parsed.data, arg, raw: line });
     } else {
       // A kind with no argument is a malformed claim, not a held one.
-      out.push({ kind: null, arg: kindRaw, raw: line });
+      out.push({ kind: "malformed", arg: kindRaw, raw: line, reason: "missing-argument" });
     }
   }
   return out;

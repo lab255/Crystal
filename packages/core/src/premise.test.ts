@@ -28,13 +28,20 @@ describe("parseAsserts", () => {
     expect(hasAsserts("no claims here")).toBe(false);
   });
 
-  it("keeps unknown kinds and empty args as unparseable claims, not silently dropped", () => {
-    const parsed = parseAsserts("assert: pr 204 is green\nassert: branch");
-    expect(parsed).toHaveLength(2);
-    expect(parsed[0]!.kind).toBeNull();
-    expect(parsed[0]!.raw).toBe("assert: pr 204 is green");
+  it("keeps bare markers, unknown kinds and empty args as malformed claims", () => {
+    const parsed = parseAsserts("assert:\nassert: pr 204 is green\nassert: branch");
+    expect(parsed).toHaveLength(3);
+    expect(parsed[0]).toMatchObject({
+      kind: "malformed",
+      arg: "",
+      raw: "assert:",
+      reason: "missing-kind",
+    });
+    expect(parsed[1]!.kind).toBe("malformed");
+    expect(parsed[1]!.raw).toBe("assert: pr 204 is green");
     // A kind with no argument is malformed, not a held claim.
-    expect(parsed[1]!.kind).toBeNull();
+    expect(parsed[2]!.kind).toBe("malformed");
+    expect(hasAsserts("assert:")).toBe(true);
   });
 
   it("is case-insensitive on the marker and kind", () => {
