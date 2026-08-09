@@ -1626,3 +1626,33 @@ export function openQuestionsOfWorkflow(
     task.questions.filter((q) => isQuestionOpen(q)).map((question) => ({ task, question })),
   );
 }
+
+/**
+ * The open questions attributable to ONE workflow, exactly. Where
+ * {@link openQuestionsOfWorkflow} is a membership view (whatever hangs off the
+ * workflow's tasks *right now*), this is the attribution the hub bills a
+ * delivery for:
+ *
+ * - a question with a stamped `origin.workflowId` belongs to that workflow and
+ *   no other — it never migrates when a task is re-parented or a second
+ *   workflow later adopts the epic;
+ * - a stamped `origin` whose `workflowId` is null was asked *outside* any
+ *   workflow, so it belongs to no delivery at all (it stays a workspace
+ *   "needs you" concern);
+ * - only a legacy question (no `origin` stamped) falls back to current
+ *   derived task membership.
+ */
+export function attributedOpenQuestions(
+  workflow: Pick<Workflow, "id" | "epicId" | "tracks">,
+  tasks: readonly TaskItem[],
+): { task: TaskItem; question: TaskQuestion }[] {
+  const memberIds = new Set(workflowTasks(workflow, tasks).map((t) => t.id));
+  return tasks.flatMap((task) =>
+    task.questions
+      .filter((q) => isQuestionOpen(q))
+      .filter((q) =>
+        q.origin != null ? q.origin.workflowId === workflow.id : memberIds.has(task.id),
+      )
+      .map((question) => ({ task, question })),
+  );
+}

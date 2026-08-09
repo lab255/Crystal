@@ -299,10 +299,11 @@ export function hubToolHost(hub: HubEngine): HubToolHost {
     dispatch: (programId, deliveryIds) => hub.dispatch(programId, deliveryIds),
     dispatchEpic: (init) => hub.dispatchEpic(init),
     status: (programId) => (programId ? hub.statusText(programId) : hub.portfolioText()),
-    // Hub-manager answers are agent closures (askedBy attribution rides the
-    // question's `closed.by`).
-    answerQuestion: (programId, questionId, answer) =>
-      hub.answerQuestion(programId, questionId, answer, undefined, "agent"),
+    // Hub-manager answers are agent closures (attribution rides the
+    // question's `closed.by`); the MCP args' deliveryId/taskId ride through
+    // as the trusted routing context, exactly like the bridge path.
+    answerQuestion: (programId, questionId, answer, context) =>
+      hub.answerQuestion(programId, questionId, answer, context, "agent"),
     messageDelivery: (programId, deliveryId, text, opts) =>
       hub.messageDelivery(programId, deliveryId, text, opts),
     closeDelivery: (programId, deliveryId, outcome, note) =>

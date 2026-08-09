@@ -15,6 +15,7 @@ import {
   activeBoardStatuses,
   addTrack,
   appendTurnLog,
+  attributedOpenQuestions,
   boardColumnStages,
   budgetState,
   buildWorkflowManagerPrompt,
@@ -743,5 +744,47 @@ describe("marginal-value turn log", () => {
     expect(log).toHaveLength(TURN_LOG_LIMIT);
     expect(log[0]!.runId).toBe("run_5");
     expect(log[log.length - 1]!.runId).toBe(`run_${TURN_LOG_LIMIT + 4}`);
+  });
+});
+
+describe("attributedOpenQuestions", () => {
+  it("attributes by stamped origin exactly; membership is only the legacy fallback", () => {
+    const wfX = { ...makeWorkflow(), epicId: "epic_x" };
+    const wfY = { ...makeWorkflow(), epicId: "epic_y" };
+    // All three live on a task currently under Y's epic: the stamped origin
+    // must win over derived membership in both directions.
+    const stampedX = createTaskQuestion("stamped for X", "run_1", undefined, {
+      origin: { workflowId: wfX.id },
+    });
+    const nonWorkflow = createTaskQuestion("asked outside any workflow", "run_2", undefined, {
+      origin: { workflowId: null },
+    });
+    const legacy = createTaskQuestion("legacy, no origin", "run_3");
+    const taskY = {
+      ...createTask("y task"),
+      epicId: "epic_y",
+      questions: [stampedX, nonWorkflow, legacy],
+    };
+
+    // X gets exactly its stamped question — even though the task belongs to
+    // Y's derivation — and never the non-workflow or legacy ones.
+    expect(attributedOpenQuestions(wfX, [taskY]).map((q) => q.question.text)).toEqual([
+      "stamped for X",
+    ]);
+    // Y gets only the legacy fallback; a question stamped for X never leaks
+    // into Y, and a non-workflow question appears under NO workflow.
+    expect(attributedOpenQuestions(wfY, [taskY]).map((q) => q.question.text)).toEqual([
+      "legacy, no origin",
+    ]);
+  });
+
+  it("lists only open questions", () => {
+    const wf = { ...makeWorkflow(), epicId: "epic_1" };
+    const closed = {
+      ...createTaskQuestion("was open", null, undefined, { origin: { workflowId: wf.id } }),
+      answer: "settled",
+    };
+    const task = { ...createTask("t"), epicId: "epic_1", questions: [closed] };
+    expect(attributedOpenQuestions(wf, [task])).toEqual([]);
   });
 });

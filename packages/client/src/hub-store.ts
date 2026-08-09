@@ -292,6 +292,9 @@ export function createHubStore(client: BridgeClient): HubStore {
         answer,
         deliveryId: seen?.deliveryId ?? null,
         taskId: seen?.taskId ?? null,
+        // The rest of the QuestionRef: routes a record-only answer to the
+        // exact board when the delivery's workflow record is gone.
+        projectId: seen?.projectId ?? null,
       });
       // The server re-sweeps and pushes hub.questionsChanged. Let that push
       // remove the row so the card can first render the delivery outcome.

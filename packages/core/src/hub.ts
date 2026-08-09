@@ -77,23 +77,50 @@ export interface HubDispatchReport {
 export type HubViewId = "programs" | "projects" | "questions";
 
 /**
+ * THE cross-tier question address: enough to route an answer to the exact
+ * board record from any surface (hub UI, bridge context, MCP) without
+ * re-deriving workflow membership — which goes stale the moment a delivery
+ * settles. `projectId` names the board inside the workspace (null = the
+ * workspace's default board, the same convention as `Workflow.projectId`).
+ */
+export interface QuestionRef {
+  ws: string;
+  projectId: string | null;
+  taskId: string;
+  questionId: string;
+}
+
+/**
  * A question a project's orchestrator (or one of its workers) raised and is
  * waiting on a human for — surfaced up to the program that dispatched the
  * work. This is the one thing that genuinely blocks a program: a delivery
  * that has stopped to ask about a shared contract cannot be unblocked by any
  * other project. Derived from the project's board, never stored here.
+ * Carries a {@link QuestionRef} in its flat fields ({@link questionRefOf}).
  */
 export interface HubQuestion {
   deliveryId: string;
   projectName: string;
   /** Workspace the asking project is open as (for the jump to its board). */
   ws: string;
+  /**
+   * Board (project id) inside the workspace — see {@link QuestionRef}.
+   * Optional only for records derived before it was stamped.
+   */
+  projectId?: string | null;
   /** Board task the question hangs off — answering happens there. */
   taskId: string;
   taskTitle: string;
   questionId: string;
   text: string;
   createdAt: string;
+}
+
+/** The addressing ref a HubQuestion carries — its flat fields, gathered. */
+export function questionRefOf(
+  q: Pick<HubQuestion, "ws" | "projectId" | "taskId" | "questionId">,
+): QuestionRef {
+  return { ws: q.ws, projectId: q.projectId ?? null, taskId: q.taskId, questionId: q.questionId };
 }
 
 /* ------------------------------------------------------------------ */
@@ -145,6 +172,13 @@ export const ProgramDeliverySchema = z.object({
    * opened, and ids are only meaningful once a workspace is open.
    */
   ws: z.string().nullish(),
+  /**
+   * Board (project id) inside the workspace the delivery's workflow runs
+   * against, recorded at dispatch from the started workflow. Null until
+   * dispatched — or on records predating the field — in which case the
+   * record-only answer path falls back to the workspace's default board.
+   */
+  projectId: z.string().nullish(),
   /** What this project is being asked to deliver (the workflow's goal). */
   brief: z.string(),
   /** Workflow template the project runs (null = the project's default). */
@@ -723,11 +757,15 @@ export function programStatusText(
     lines.push(
       "",
       "NEEDS AN ANSWER (a project stopped to ask — nothing else unblocks it):",
+      // Every id rendered as a copyable token: answer_question takes the
+      // questionId verbatim, and deliveryId+taskId route the answer to the
+      // exact board record even after the delivery settles.
       ...questions.map(
         (q) =>
-          `- ${q.projectName} (${q.deliveryId}) on task ${q.taskId} "${q.taskTitle}":\n    ${q.text}`,
+          `- ${q.projectName} — deliveryId=${q.deliveryId} taskId=${q.taskId} questionId=${q.questionId} — task "${q.taskTitle}":\n    ${q.text}`,
       ),
-      "Answer with answer_question — that records it on the project's board and hands it back to " +
+      "Answer with answer_question (pass the questionId=… token, plus deliveryId+taskId so it " +
+        "routes exactly) — that records it on the project's board and hands it back to " +
         "the run that stopped, which then carries on. message_delivery only steers; it leaves the " +
         "question open.",
     );
@@ -818,8 +856,11 @@ export function questionsNotice(questions: readonly HubQuestion[]): string {
       : `${questions.length} projects are waiting on answers:`;
   return [
     head,
+    // Same copyable tokens as program_status: answer_question wants the
+    // questionId verbatim, with deliveryId+taskId as its routing context.
     ...questions.map(
-      (q) => `- ${q.projectName} (delivery ${q.deliveryId}, task ${q.taskId}): ${q.text}`,
+      (q) =>
+        `- ${q.projectName} (deliveryId=${q.deliveryId}, taskId=${q.taskId}, questionId=${q.questionId}): ${q.text}`,
     ),
     "",
     "Answer what you can decide yourself with answer_question — that records it on the project's " +

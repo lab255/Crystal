@@ -5,6 +5,7 @@ import {
   isQuestionOpen,
   openQuestions,
   questionClosure,
+  resolveProjectBoard,
   TaskQuestionSchema,
   type TaskQuestion,
 } from "./project.js";
@@ -96,5 +97,27 @@ describe("isQuestionOpen / questionClosure", () => {
     const plain = createTaskQuestion("t", "run_1");
     expect(plain.origin ?? null).toBeNull();
     expect(plain.askedBy).toBe("agent");
+  });
+});
+
+describe("resolveProjectBoard", () => {
+  const boards = [
+    { path: "/a", project: { id: "proj_a" } },
+    { path: "/b", project: { id: "proj_b" } },
+  ];
+
+  it("resolves a named board exactly and loudly refuses an unknown one", () => {
+    expect(resolveProjectBoard(boards, "proj_b").path).toBe("/b");
+    // Never `?? boards[0]`: a typo'd or stale id must error like any bad
+    // ref, not silently read (or write!) another board.
+    expect(() => resolveProjectBoard(boards, "proj_zzz", "workspace ws-1")).toThrow(
+      /Unknown project board proj_zzz in workspace ws-1/,
+    );
+  });
+
+  it("null means the default (first) board; an empty workspace is loud too", () => {
+    expect(resolveProjectBoard(boards, null).path).toBe("/a");
+    expect(resolveProjectBoard(boards, undefined).path).toBe("/a");
+    expect(() => resolveProjectBoard([], null)).toThrow(/No project board/);
   });
 });

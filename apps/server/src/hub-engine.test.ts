@@ -10,6 +10,7 @@ import {
   programBudgetState,
   programTag,
   type AgentRun,
+  type QuestionClosure,
   type RunEvent,
   type Workflow,
   type WorkflowTemplate,
@@ -69,7 +70,14 @@ class FakeProjects implements HubProjects {
 
   async startWorkflow(ws: string, init: { name: string; goal: string; budgetUsd?: number | null }) {
     this.started.push({ ws, init });
-    const workflow = createWorkflow({ name: init.name, goal: init.goal, budgetUsd: init.budgetUsd });
+    const workflow = createWorkflow({
+      name: init.name,
+      goal: init.goal,
+      budgetUsd: init.budgetUsd,
+      // Real workflows carry the board they run against; the hub stamps it
+      // onto the delivery at dispatch (the record-only answer route).
+      projectId: `proj-${ws}`,
+    });
     this.workflows.set(workflow.id, workflow);
     return workflow;
   }
@@ -138,8 +146,16 @@ class FakeProjects implements HubProjects {
 
   /** Open questions per workflow id — a test files them with `ask`. */
   questions = new Map<string, ProjectQuestion[]>();
+  /** Closed questions the board still remembers, for the distinct refusals. */
+  closedQuestions = new Map<string, { taskId: string; closure: QuestionClosure }>();
+  /** Workspaces whose board reads fail (openQuestions throws) — sweep UNKNOWN tests. */
+  unreadableBoards = new Set<string>();
 
   async openQuestions(_ws: string, workflowId: string): Promise<ProjectQuestion[]> {
+    if (this.unreadableBoards.has(_ws)) throw new Error(`board of ${_ws} unreadable`);
+    // Mirrors the real adapter: a gone workflow record derives nothing —
+    // its board questions are only reachable through findQuestion.
+    if (!this.workflows.has(workflowId)) return [];
     return this.questions.get(workflowId) ?? [];
   }
 
@@ -165,20 +181,69 @@ class FakeProjects implements HubProjects {
   }
 
   answered: { questionId: string; answer: string; by: "user" | "agent" }[] = [];
+  /** The route each answer travelled — record-only vs workflow-delivered. */
+  answerRoutes: { questionId: string; workflowId: string | null; projectId?: string | null }[] =
+    [];
+
+  /** The fake's whole board: every workflow's list, whatever its record's fate. */
+  private boardQuestion(questionId: string): ProjectQuestion | null {
+    return (
+      [...this.questions.values()].flat().find((q) => q.questionId === questionId) ?? null
+    );
+  }
+
+  async findQuestion(
+    _ws: string,
+    route: { workflowId: string | null; projectId?: string | null },
+    questionId: string,
+  ): Promise<{ taskId: string; open: boolean; closure: QuestionClosure | null } | null> {
+    const closed = this.closedQuestions.get(questionId);
+    if (closed) return { taskId: closed.taskId, open: false, closure: closed.closure };
+    const hit =
+      route.workflowId != null
+        ? (this.questions.get(route.workflowId) ?? []).find((q) => q.questionId === questionId)
+        : this.boardQuestion(questionId);
+    return hit ? { taskId: hit.taskId, open: true, closure: null } : null;
+  }
 
   async answerQuestion(
     _ws: string,
-    workflowId: string,
+    route: { workflowId: string | null; projectId?: string | null },
     _taskId: string,
     questionId: string,
     answer: string,
     by: "user" | "agent",
   ) {
-    if (!(this.questions.get(workflowId) ?? []).some((q) => q.questionId === questionId)) {
+    const closed = this.closedQuestions.get(questionId);
+    if (closed) {
+      return {
+        ok: false as const,
+        reason: `Question ${questionId} was already closed (${closed.closure.reason} at ${closed.closure.at}).`,
+      };
+    }
+    const close = (workflowId: string | null) => {
+      this.answered.push({ questionId, answer, by });
+      this.answerRoutes.push({ questionId, workflowId, projectId: route.projectId });
+      this.closedQuestions.set(questionId, {
+        taskId: `task_${questionId}`,
+        closure: { at: "2026-01-02T00:00:00.000Z", reason: "answered", note: null, by },
+      });
+    };
+    if (route.workflowId == null) {
+      // Record-only: the board is addressed by projectId, no delivery attempt.
+      const hit = this.boardQuestion(questionId);
+      if (!hit) return { ok: false as const, reason: `Unknown question: ${questionId}` };
+      close(null);
+      for (const [wf, list] of this.questions) {
+        this.questions.set(wf, list.filter((q) => q.questionId !== questionId));
+      }
+      return { ok: true as const, delivery: "recorded" as const, runId: null };
+    }
+    if (!(this.questions.get(route.workflowId) ?? []).some((q) => q.questionId === questionId)) {
       return { ok: false as const, reason: `Unknown question: ${questionId}` };
     }
-    this.answered.push({ questionId, answer, by });
-    this.answer(workflowId, questionId);
+    close(route.workflowId);
+    this.answer(route.workflowId, questionId);
     return { ok: true as const, delivery: "resumed" as const, runId: "run_resumed" };
   }
 
@@ -316,6 +381,9 @@ describe("HubEngine", () => {
     expect(after!.deliveries[0]!.status).toBe("running");
     expect(after!.deliveries[0]!.ws).toBe("ws-auth");
     expect(after!.deliveries[0]!.workflowId).toBe(report.dispatched[0]!.workflowId);
+    // The workflow's board is stamped onto the delivery at dispatch — the
+    // record-only answer route survives the workflow record itself.
+    expect(after!.deliveries[0]!.projectId).toBe("proj-ws-auth");
   });
 
   it("holds a dependent delivery, then auto-dispatches it when its dependency completes", async () => {
@@ -970,8 +1038,12 @@ describe("HubEngine", () => {
       taskId: "task_q1",
     });
     expect(events).toEqual([{ programId: program.id, count: 1 }]);
-    // The manager is woken with it — a question blocks as hard as a settle.
+    // The manager is woken with it — a question blocks as hard as a settle —
+    // and the notice carries the copyable answer_question tokens.
     expect(agents.resumes.at(-1)).toContain("Which token format");
+    expect(agents.resumes.at(-1)).toContain("questionId=q1");
+    expect(agents.resumes.at(-1)).toContain(`deliveryId=${deliveryId}`);
+    expect(agents.resumes.at(-1)).toContain("taskId=task_q1");
 
     // An unchanged board is a no-op, not another wake-up.
     const wakes = agents.resumes.length;
@@ -1014,8 +1086,13 @@ describe("HubEngine", () => {
     expect(await hub.questions(program.id)).toEqual([]);
     expect(answered).toEqual([0]);
 
+    // Answering again is refused with the closure, not a generic "unknown":
+    // the board remembers WHEN and WHY it closed.
     const again = await hub.answerQuestion(program.id, "q1", "again");
-    expect(again).toEqual({ ok: false, reason: expect.stringContaining("already answered") });
+    expect(again).toEqual({
+      ok: false,
+      reason: expect.stringContaining("already closed (answered at"),
+    });
   });
 
   it("answers a question whose delivery already settled — the board, not the live derivation, decides", async () => {
@@ -1058,6 +1135,122 @@ describe("HubEngine", () => {
     });
   });
 
+  it("trusted context routes straight to the board — no live derivation required", async () => {
+    const { hub, projects } = await fresh("answer-context");
+    const program = await hub.create({ name: "P", goal: "g" });
+    await hub.addDelivery(program.id, { projectRoot: "/repos/auth-service", brief: "b" });
+    const report = await hub.dispatch(program.id);
+    const workflowId = report.dispatched[0]!.workflowId;
+    const deliveryId = report.dispatched[0]!.deliveryId;
+    projects.ask(workflowId, "q1", "Contract?");
+
+    // Every board *derivation* fails; only the direct context route works.
+    projects.unreadableBoards.add("ws-auth");
+    const result = await hub.answerQuestion(program.id, "q1", "Settled.", {
+      deliveryId,
+      taskId: "task_q1",
+    });
+    expect(result).toEqual({ ok: true, delivery: "resumed", runId: "run_resumed" });
+    expect(projects.answerRoutes).toEqual([
+      { questionId: "q1", workflowId, projectId: undefined },
+    ]);
+  });
+
+  it("falls back to a record-only answer when the workflow record is gone", async () => {
+    const { hub, projects } = await fresh("answer-record-only");
+    const program = await hub.create({ name: "P", goal: "g" });
+    await hub.addDelivery(program.id, { projectRoot: "/repos/auth-service", brief: "b" });
+    const report = await hub.dispatch(program.id);
+    const workflowId = report.dispatched[0]!.workflowId;
+    const deliveryId = report.dispatched[0]!.deliveryId;
+    projects.ask(workflowId, "q1", "Asked before the records were wiped.");
+    // The workflow RECORD disappears (project rebuilt / records wiped) while
+    // the question stays open on the board — invisible to every derivation.
+    projects.workflows.delete(workflowId);
+
+    // Without context: found by the per-delivery board lookup, recorded via
+    // the delivery's stamped projectId — never delivered into a dead context.
+    const result = await hub.answerQuestion(program.id, "q1", "For the record.");
+    expect(result).toEqual({ ok: true, delivery: "recorded", runId: null });
+    expect(projects.answerRoutes).toEqual([
+      { questionId: "q1", workflowId: null, projectId: "proj-ws-auth" },
+    ]);
+
+    // With context: same record-only route, no scan needed.
+    projects.ask(workflowId, "q2", "One more orphan.");
+    const direct = await hub.answerQuestion(program.id, "q2", "Also recorded.", {
+      deliveryId,
+      taskId: "task_q2",
+    });
+    expect(direct).toEqual({ ok: true, delivery: "recorded", runId: null });
+    expect(projects.answerRoutes.at(-1)).toEqual({
+      questionId: "q2",
+      workflowId: null,
+      projectId: "proj-ws-auth",
+    });
+  });
+
+  it("an unknown question id points at program_status, distinctly from a closed one", async () => {
+    const { hub, projects } = await fresh("answer-unknown");
+    const program = await hub.create({ name: "P", goal: "g" });
+    await hub.addDelivery(program.id, { projectRoot: "/repos/auth-service", brief: "b" });
+    await hub.dispatch(program.id);
+
+    const unknown = await hub.answerQuestion(program.id, "q_nope", "x");
+    expect(unknown.ok).toBe(false);
+    if (!unknown.ok) {
+      expect(unknown.reason).toContain("unknown questionId q_nope");
+      expect(unknown.reason).toContain("program_status");
+      expect(unknown.reason).toContain("deliveryId+taskId");
+    }
+
+    // A closed question is NOT "unknown" — the refusal carries its closure.
+    projects.closedQuestions.set("q_done", {
+      taskId: "task_q_done",
+      closure: { at: "2026-07-01T00:00:00.000Z", reason: "expired", note: "workflow settled", by: "system" },
+    });
+    const closed = await hub.answerQuestion(program.id, "q_done", "too late");
+    expect(closed).toEqual({
+      ok: false,
+      reason:
+        "Question q_done was already closed (expired at 2026-07-01T00:00:00.000Z: workflow settled).",
+    });
+  });
+
+  it("keeps the previous question set and stays silent when a board read fails", async () => {
+    const { hub, projects, agents } = await fresh("sweep-unknown");
+    const program = await hub.create({ name: "P", goal: "g" });
+    await hub.addDelivery(program.id, { projectRoot: "/repos/auth-service", brief: "b" });
+    await hub.startManager(program.id);
+    const report = await hub.dispatch(program.id);
+    const workflowId = report.dispatched[0]!.workflowId;
+    agents.settleLatest();
+    await new Promise((r) => setTimeout(r, 0));
+
+    const events: number[] = [];
+    hub.events.on("questionsChanged", ({ questions }) => events.push(questions.length));
+
+    projects.ask(workflowId, "q1", "Still here?");
+    await hub.onProjectChanged("ws-auth");
+    expect(events).toEqual([1]);
+    const wakes = agents.resumes.length;
+
+    // The board becomes unreadable: an error is UNKNOWN, not "no questions".
+    // Publishing the shrunk (empty) set would hide q1 forever — the asking
+    // agent is blocked and will never write again to re-surface it.
+    projects.unreadableBoards.add("ws-auth");
+    await hub.onProjectChanged("ws-auth");
+    expect(events).toEqual([1]);
+    expect(agents.resumes).toHaveLength(wakes);
+
+    // Readable again, same set: nothing to emit and nothing to re-announce —
+    // proof the error sweep kept the previous entry instead of clearing it.
+    projects.unreadableBoards.delete("ws-auth");
+    await hub.onProjectChanged("ws-auth");
+    expect(events).toEqual([1]);
+    expect(agents.resumes).toHaveLength(wakes);
+  });
+
   it("renders open questions into the agent-facing status", async () => {
     const { hub, projects } = await fresh("question-text");
     const program = await hub.create({ name: "P", goal: "g" });
@@ -1069,6 +1262,10 @@ describe("HubEngine", () => {
     expect(text).toContain("NEEDS AN ANSWER");
     expect(text).toContain("Shared token format?");
     expect(text).toContain("message_delivery");
+    // The full copyable tokens answer_question wants, on the question line.
+    expect(text).toContain("questionId=q1");
+    expect(text).toContain(`deliveryId=${report.dispatched[0]!.deliveryId}`);
+    expect(text).toContain("taskId=task_q1");
   });
 
   it("forgets a finished program, but never a live one", async () => {
