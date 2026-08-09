@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.29.0 (2026-08-09)
+
+### Features
+
+- permissions and allow improvements ([`7b111d0`](https://github.com/lab255/Crystal/commit/7b111d0))
+
 ## v0.28.0 (2026-08-08)
 
 ### Features
