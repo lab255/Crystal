@@ -89,6 +89,8 @@ export interface HubToolHost {
     programId: string,
     questionId: string,
     answer: string,
+    /** Trusted routing context from the question line's tokens, when given. */
+    context?: { deliveryId?: string | null; taskId?: string | null },
   ): Promise<
     | { ok: true; delivery: "resumed" | "queued" | "recorded"; runId: string | null }
     | { ok: false; reason: string }
@@ -371,8 +373,9 @@ const HUB_TOOLS = [
   {
     name: "answer_question",
     description:
-      "Answer a question one of your projects raised (program_status lists them " +
-      "under NEEDS AN ANSWER). The answer is recorded on that project's board " +
+      "Answer a question one of your projects raised — quote the questionId=… " +
+      "token shown in program_status (under NEEDS AN ANSWER) / question notices. " +
+      "The answer is recorded on that project's board " +
       "and handed straight back to the run that stopped for it, which resumes. " +
       "Decide cross-project questions yourself — a shared contract is the " +
       "program's call — and write the same decision into the other projects " +
@@ -380,8 +383,22 @@ const HUB_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        questionId: { type: "string", description: "From program_status." },
+        questionId: {
+          type: "string",
+          description:
+            "The questionId=… token shown in program_status / question notices, verbatim.",
+        },
         answer: { type: "string", description: "The decision, in enough detail to act on." },
+        deliveryId: {
+          type: "string",
+          description:
+            "The deliveryId=… token from the same question line. Pass it (with taskId) so the " +
+            "answer routes to the exact board record even after the delivery settled.",
+        },
+        taskId: {
+          type: "string",
+          description: "The taskId=… token from the same question line (pass with deliveryId).",
+        },
         programId: { type: "string", description: "Optional — defaults to yours." },
       },
       required: ["questionId", "answer"],
@@ -524,6 +541,8 @@ const AnswerQuestionArgs = z.object({
   programId: z.string().optional(),
   questionId: z.string().min(1),
   answer: z.string().min(1),
+  deliveryId: z.string().nullish(),
+  taskId: z.string().nullish(),
 });
 const SetPausedArgs = z.object({
   programId: z.string().optional(),
@@ -804,6 +823,9 @@ export class McpHubServer {
           this.programId(a.data.programId),
           a.data.questionId,
           a.data.answer,
+          // The trusted context (same as the bridge path): with both tokens
+          // the answer routes to the exact board record, no derivation.
+          { deliveryId: a.data.deliveryId ?? null, taskId: a.data.taskId ?? null },
         );
         if (!result.ok) return toolError(id, result.reason);
         // The tri-state delivery outcome stays visible to the manager — never

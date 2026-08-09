@@ -1246,13 +1246,15 @@ export interface BridgeMethods {
       questionId: string;
       answer: string;
       /**
-       * Where the caller saw the question (`HubQuestion.deliveryId`/`taskId`).
-       * Pass both when known: the server then answers that exact board task
-       * instead of re-deriving from live deliveries — which goes stale the
-       * moment a delivery settles with its question still open.
+       * Where the caller saw the question (`HubQuestion.deliveryId`/`taskId`,
+       * i.e. its `QuestionRef`). Pass both when known: the server then answers
+       * that exact board task instead of re-deriving from live deliveries —
+       * which goes stale the moment a delivery settles with its question open.
        */
       deliveryId?: string | null;
       taskId?: string | null;
+      /** Board within the workspace (`HubQuestion.projectId`), when known. */
+      projectId?: string | null;
     };
     result:
       | { ok: true; delivery: "resumed" | "queued" | "recorded"; runId: string | null }

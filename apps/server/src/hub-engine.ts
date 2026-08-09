@@ -45,6 +45,7 @@ import {
   type Program,
   type ProgramDelivery,
   type ProgramSpend,
+  type QuestionClosure,
   type RunEvent,
   type SteerReceipt,
   type Workflow,
@@ -147,20 +148,42 @@ export interface HubProjects {
   /** The project's task board, rendered for an agent. */
   boardSnapshot(ws: string): Promise<string>;
   /**
-   * Unanswered questions raised on the board tasks belonging to `workflow` —
-   * a delivery that stopped to ask. Derived from the project, never stored.
+   * Unanswered questions attributed to `workflow` — a delivery that stopped
+   * to ask. Derived from the project, never stored. Attribution is exact:
+   * a question stamped with an `origin.workflowId` belongs to that workflow
+   * only, and non-workflow questions belong to no delivery at all.
    */
   openQuestions(ws: string, workflowId: string): Promise<ProjectQuestion[]>;
+  /**
+   * One question's record on a board — open or closed — located by id, so the
+   * hub can tell "already closed" and "still open but invisible to the live
+   * derivation" apart from "unknown". Routed like {@link answerQuestion}:
+   * by the workflow record when it still exists, else by `projectId`
+   * (a delivery's stamped board; null = the workspace's default board).
+   * Null when the board has no such question.
+   */
+  findQuestion(
+    ws: string,
+    route: { workflowId: string | null; projectId?: string | null },
+    questionId: string,
+  ): Promise<{ taskId: string; open: boolean; closure: QuestionClosure | null } | null>;
   /**
    * Answer one — recorded on the board *and* handed back to the run that
    * asked, so the delivery carries on instead of staying stopped. The
    * delivery outcome is typed (`resumed`/`queued`/`recorded`) — never
    * collapse it to a boolean. `by` attributes the closure: hub-manager MCP
    * answers pass "agent", the inbox UI passes "user".
+   *
+   * The route decides board resolution: `workflowId` set = the normal path
+   * (the workflow record names the board, the answer is delivered to the
+   * asking chain); `workflowId` null = the record-only fallback for a
+   * delivery whose workflow record is gone — the board is resolved by
+   * `projectId` and the answer is recorded + closed WITHOUT a delivery
+   * attempt (outcome `recorded`).
    */
   answerQuestion(
     ws: string,
-    workflowId: string,
+    route: { workflowId: string | null; projectId?: string | null },
     taskId: string,
     questionId: string,
     answer: string,
@@ -343,23 +366,41 @@ export class HubEngine {
    * lookup reads that project's board.
    */
   async questions(programId: string): Promise<HubQuestion[]> {
+    return (await this.deriveQuestions(programId)).questions;
+  }
+
+  /**
+   * The derivation behind {@link questions}, keeping "could not read" apart
+   * from "asked nothing": a delivery whose board read failed is listed in
+   * `unreadable` instead of contributing an empty list. The sweep needs the
+   * distinction — publishing a set shrunk by a read error would silently
+   * hide a question nothing will ever re-surface.
+   */
+  private async deriveQuestions(
+    programId: string,
+  ): Promise<{ questions: HubQuestion[]; unreadable: string[] }> {
     const program = await this.get(programId);
-    if (!program) return [];
+    if (!program) return { questions: [], unreadable: [] };
+    const unreadable: string[] = [];
     const perDelivery = await Promise.all(
       program.deliveries.map(async (delivery): Promise<HubQuestion[]> => {
         if (!delivery.ws || !delivery.workflowId || isDeliveryTerminal(delivery.status)) return [];
         const raw = await this.projects
           .openQuestions(delivery.ws, delivery.workflowId)
-          .catch(() => [] as ProjectQuestion[]);
+          .catch(() => {
+            unreadable.push(delivery.id);
+            return [] as ProjectQuestion[];
+          });
         return raw.map((q) => ({
           ...q,
           deliveryId: delivery.id,
           projectName: delivery.projectName,
           ws: delivery.ws!,
+          projectId: q.projectId ?? delivery.projectId ?? null,
         }));
       }),
     );
-    return perDelivery.flat();
+    return { questions: perDelivery.flat(), unreadable };
   }
 
   /** Open questions for every live program, keyed by program id (the UI's first load). */
@@ -638,6 +679,10 @@ export class HubEngine {
             });
             const next = patchDelivery(program, delivery.id, {
               ws: project.ws,
+              // The board the workflow runs against, durable on the delivery:
+              // the record-only answer path routes by it once the workflow
+              // record itself is gone.
+              projectId: workflow.projectId ?? null,
               projectName: project.name,
               workflowId: workflow.id,
               status: "running",
@@ -792,13 +837,14 @@ export class HubEngine {
     questionId: string,
     answer: string,
     /**
-     * Where the caller saw the question (the UI holds the full HubQuestion).
-     * Trusted first: the derived set below only covers *live* deliveries and
-     * current workflow membership, so a question still open on the board
-     * reads "unknown" here the moment its delivery settles — the board
-     * itself stays the validator (an answered question is refused there).
+     * Where the caller saw the question (the UI holds the full HubQuestion,
+     * i.e. its QuestionRef). Trusted first: the derived set below only covers
+     * *live* deliveries and exact attribution, so a question still open on
+     * the board reads "unknown" here the moment its delivery settles — the
+     * board itself stays the validator (an answered question is refused
+     * there, with its closure as the reason).
      */
-    context?: { deliveryId?: string | null; taskId?: string | null },
+    context?: { deliveryId?: string | null; taskId?: string | null; projectId?: string | null },
     /** Closure attribution: hub-manager MCP answers pass "agent"; the inbox UI "user". */
     by: "user" | "agent" = "user",
   ): Promise<
@@ -808,10 +854,24 @@ export class HubEngine {
     const program = await this.get(programId);
     if (!program) return { ok: false, reason: `Unknown program: ${programId}` };
 
-    const send = async (delivery: ProgramDelivery, taskId: string) => {
+    // Route to one delivery's board. The workflow record — when it still
+    // exists — names the board and the answer is delivered to the asking
+    // chain; a gone record downgrades to the record-only path over the
+    // delivery's stamped projectId: the durable board record is the outcome.
+    const send = async (
+      delivery: ProgramDelivery,
+      taskId: string,
+      projectId?: string | null,
+    ) => {
+      const workflow = delivery.workflowId
+        ? await this.projects.workflow(delivery.ws!, delivery.workflowId).catch(() => null)
+        : null;
+      const route = workflow
+        ? { workflowId: delivery.workflowId! }
+        : { workflowId: null, projectId: projectId ?? delivery.projectId ?? null };
       const result = await this.projects.answerQuestion(
         delivery.ws!,
-        delivery.workflowId!,
+        route,
         taskId,
         questionId,
         answer,
@@ -825,7 +885,7 @@ export class HubEngine {
 
     if (context?.deliveryId && context.taskId) {
       const delivery = deliveryById(program, context.deliveryId);
-      if (delivery?.ws && delivery.workflowId) return send(delivery, context.taskId);
+      if (delivery?.ws) return send(delivery, context.taskId, context.projectId);
     }
 
     let question = (await this.questions(programId)).find((q) => q.questionId === questionId);
@@ -845,17 +905,57 @@ export class HubEngine {
             deliveryId: delivery.id,
             projectName: delivery.projectName,
             ws: delivery.ws,
+            projectId: hit.projectId ?? delivery.projectId ?? null,
           };
           break;
         }
       }
     }
-    if (!question) return { ok: false, reason: `Unknown (or already answered) question: ${questionId}` };
-    const delivery = deliveryById(program, question.deliveryId);
-    if (!delivery?.ws || !delivery.workflowId) {
-      return { ok: false, reason: `Delivery ${question.deliveryId} is no longer live.` };
+    if (question) {
+      const delivery = deliveryById(program, question.deliveryId);
+      if (!delivery?.ws) {
+        return { ok: false, reason: `Delivery ${question.deliveryId} is no longer live.` };
+      }
+      return send(delivery, question.taskId, question.projectId);
     }
-    return send(delivery, question.taskId);
+
+    // Still nothing. Two states hide behind that, and each gets its own
+    // answer: the question may be CLOSED (open-question derivations never
+    // list it), or open on a board whose workflow record is gone (invisible
+    // to derivation — legacy/no-origin questions). Look it up by id on each
+    // dispatched delivery's own board — bounded to this program, never a
+    // blind portfolio-wide scan.
+    for (const delivery of program.deliveries) {
+      if (!delivery.ws || !delivery.workflowId) continue;
+      const workflow = await this.projects
+        .workflow(delivery.ws, delivery.workflowId)
+        .catch(() => null);
+      const route = workflow
+        ? { workflowId: delivery.workflowId }
+        : { workflowId: null, projectId: delivery.projectId ?? null };
+      const hit = await this.projects
+        .findQuestion(delivery.ws, route, questionId)
+        .catch(() => null);
+      if (!hit) continue;
+      if (!hit.open) {
+        const closure = hit.closure;
+        return {
+          ok: false,
+          reason: closure
+            ? `Question ${questionId} was already closed (${closure.reason} at ${closure.at}${closure.note ? `: ${closure.note}` : ""}).`
+            : `Question ${questionId} was already closed.`,
+        };
+      }
+      // Open on the board, invisible to the derivation: its workflow record
+      // is gone, so this is the record-only path (send() detects the same).
+      return send(delivery, hit.taskId);
+    }
+    return {
+      ok: false,
+      reason:
+        `unknown questionId ${questionId} — list open questions with program_status, ` +
+        `or pass deliveryId+taskId from where you saw it.`,
+    };
   }
 
   /**
@@ -1513,7 +1613,17 @@ export class HubEngine {
     try {
       const program = this.store.peek(programId);
       if (!program) return;
-      const questions = await this.questions(program.id);
+      const { questions, unreadable } = await this.deriveQuestions(program.id);
+      if (unreadable.length) {
+        // UNKNOWN, not empty: a failed board read must never publish a
+        // shrunk set — keep the previous entry and let a later sweep (every
+        // board write schedules one) publish from a clean read.
+        console.warn(
+          `[crystal] hub question sweep for ${programId}: could not read ` +
+            `${unreadable.join(", ")} — keeping the previous question set`,
+        );
+        return;
+      }
       const ids = questions.map((q) => q.questionId).sort().join("|");
       // Unseen and empty are the same thing — a program that has never had a
       // question must not emit one saying so on the first board write.

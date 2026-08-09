@@ -19,7 +19,10 @@ import {
   programSpend,
   programStatusText,
   programTag,
+  questionRefOf,
+  questionsNotice,
   readyDeliveries,
+  type HubQuestion,
   type Program,
 } from "./hub.js";
 
@@ -259,6 +262,41 @@ describe("agent-facing rendering", () => {
       `LOCKED by program "Release train" delivery ${lockDelivery.delivery.id}`,
     );
     expect(text).not.toContain(`Ready to dispatch: ${waitingDelivery.delivery.id}`);
+  });
+
+  it("renders every question id as a copyable token, in status and in the wake notice", () => {
+    const { program, authId } = twoProjectProgram();
+    const question: HubQuestion = {
+      deliveryId: authId,
+      projectName: "auth-service",
+      ws: "ws-auth",
+      projectId: "proj-1",
+      taskId: "task-1",
+      taskTitle: "Token contract",
+      questionId: "q_abc123",
+      text: "RS256 or ES256?",
+      createdAt: "2026-08-01T00:00:00.000Z",
+    };
+    // answer_question takes the questionId verbatim and routes by
+    // deliveryId+taskId — all three must be copyable from every rendering.
+    const status = programStatusText(program, programSpend({}), [question]);
+    expect(status).toContain("questionId=q_abc123");
+    expect(status).toContain(`deliveryId=${authId}`);
+    expect(status).toContain("taskId=task-1");
+
+    const notice = questionsNotice([question]);
+    expect(notice).toContain("questionId=q_abc123");
+    expect(notice).toContain(`deliveryId=${authId}`);
+    expect(notice).toContain("taskId=task-1");
+
+    // The flat fields gather into the one cross-tier addressing shape.
+    expect(questionRefOf(question)).toEqual({
+      ws: "ws-auth",
+      projectId: "proj-1",
+      taskId: "task-1",
+      questionId: "q_abc123",
+    });
+    expect(questionRefOf({ ...question, projectId: undefined }).projectId).toBeNull();
   });
 
   it("gives the program manager its standing protocol", () => {

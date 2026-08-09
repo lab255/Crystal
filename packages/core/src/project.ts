@@ -278,6 +278,29 @@ export function openQuestions(task: TaskItem): TaskQuestion[] {
   return task.questions.filter((q) => isQuestionOpen(q));
 }
 
+/**
+ * THE strict board resolver: pick the project board a `projectId` addresses
+ * out of a workspace's loaded boards. A named id resolves exactly or throws —
+ * silently falling back to another board (`?? projects[0]`) once routed a
+ * question answer onto the wrong board and made a typo'd id read as an empty
+ * question list. `null` means the workspace's default (first) board, the same
+ * convention as run/workflow `projectId`; an empty workspace is loud too.
+ */
+export function resolveProjectBoard<T extends { project: Pick<Project, "id"> }>(
+  boards: readonly T[],
+  projectId: string | null | undefined,
+  where = "workspace",
+): T {
+  if (projectId != null) {
+    const hit = boards.find((b) => b.project.id === projectId);
+    if (!hit) throw new Error(`Unknown project board ${projectId} in ${where}.`);
+    return hit;
+  }
+  const first = boards[0];
+  if (!first) throw new Error(`No project board in ${where}.`);
+  return first;
+}
+
 export function createTask(title: string, status: TaskStatus = "backlog"): TaskItem {
   const ts = nowIso();
   return TaskItemSchema.parse({

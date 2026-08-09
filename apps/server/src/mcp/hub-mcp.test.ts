@@ -7,6 +7,7 @@ import {
   type Program,
 } from "@crystal/core";
 import type { DispatchReport, HubProjectRef } from "../hub-engine.js";
+import { hubToolHost } from "./http.js";
 import { McpHubServer, type HubToolHost } from "./hub-mcp.js";
 
 const PROJECTS: HubProjectRef[] = [
@@ -371,12 +372,47 @@ describe("program scoping", () => {
       questionId: "q_1",
       answer: "Version the payload.",
     });
-    expect(host.answerQuestion).toHaveBeenCalledWith(prog.id, "q_1", "Version the payload.");
+    expect(host.answerQuestion).toHaveBeenCalledWith(prog.id, "q_1", "Version the payload.", {
+      deliveryId: null,
+      taskId: null,
+    });
     expect(text).toMatch(/resumed as run_9/);
 
     const gone = await call(server, "answer_question", { questionId: "q_gone", answer: "x" });
     expect(gone.isError).toBe(true);
     expect(gone.text).toMatch(/already answered/);
+  });
+
+  it("passes the deliveryId/taskId tokens through as the trusted answer context", async () => {
+    const { host, prog } = fakeHost();
+    const server = new McpHubServer({ hub: host, boundProgramId: prog.id });
+    await call(server, "answer_question", {
+      questionId: "q_1",
+      answer: "Route it exactly.",
+      deliveryId: "dlv_ctx",
+      taskId: "task_ctx",
+    });
+    expect(host.answerQuestion).toHaveBeenCalledWith(prog.id, "q_1", "Route it exactly.", {
+      deliveryId: "dlv_ctx",
+      taskId: "task_ctx",
+    });
+  });
+
+  it("hub MCP answers stamp the closure as an agent's, with the context riding along", async () => {
+    const calls: unknown[][] = [];
+    const engine = {
+      answerQuestion: (...args: unknown[]) => {
+        calls.push(args);
+        return Promise.resolve({ ok: true as const, delivery: "resumed" as const, runId: "r1" });
+      },
+    };
+    const host = hubToolHost(engine as unknown as Parameters<typeof hubToolHost>[0]);
+    await host.answerQuestion("prog_1", "q_1", "yes", { deliveryId: "dlv_1", taskId: "task_1" });
+    // The engine sees the trusted context AND `by: "agent"` — a hub-manager
+    // answer is an agent closure, never mistaken for the owner's.
+    expect(calls).toEqual([
+      ["prog_1", "q_1", "yes", { deliveryId: "dlv_1", taskId: "task_1" }, "agent"],
+    ]);
   });
 
   it("complete_program records the manager's verdict", async () => {

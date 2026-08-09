@@ -20,15 +20,16 @@ import {
 } from "@crystal/core";
 import {
   applyProfileOverlay,
+  attributedOpenQuestions,
   buildSystemOverview,
   computeReviewFindings,
   facetIndexProjection,
+  isQuestionOpen,
   migrateLegacyToOverlay,
-  openQuestions,
-  openQuestionsOfWorkflow,
   profileOverlay,
+  questionClosure,
+  resolveProjectBoard,
   suggestFacets,
-  workflowTasks,
 } from "@crystal/core";
 import { LineBuffer } from "@crystal/core";
 import { browseDirs } from "./browse.js";
@@ -169,36 +170,70 @@ function registryProjects(registry: WorkspaceRegistry): HubProjects {
       // Only the boards: `store.load()` would also parse every architecture
       // and draft, and this runs on every board write.
       const projects = await rt.store.loadProjects();
-      const project =
-        projects.find((p) => p.project.id === workflow.projectId) ?? projects[0];
-      if (!project) return [];
-      const workflows = await rt.workflows.list();
-      const workflowTaskIds = new Set(
-        workflows.flatMap((candidate) =>
-          workflowTasks(candidate, project.project.tasks).map((task) => task.id),
-        ),
-      );
-      const questions = [
-        ...openQuestionsOfWorkflow(workflow, project.project.tasks),
-        ...project.project.tasks
-          .filter((task) => !workflowTaskIds.has(task.id))
-          .flatMap((task) => openQuestions(task).map((question) => ({ task, question }))),
-      ];
-      return questions.map((q) => ({
+      // Strict: a workflow naming a board that is gone must error like every
+      // other bad ref, never read as an empty (= nothing asked) list.
+      const project = resolveProjectBoard(projects, workflow.projectId, `workspace ${ws}`);
+      // Exact attribution: `origin.workflowId` decides when stamped (a
+      // question asked for workflow X never surfaces under workflow Y, and a
+      // non-workflow question surfaces under NO delivery — it stays a
+      // workspace needs-you concern); only legacy unstamped questions fall
+      // back to current derived task membership.
+      return attributedOpenQuestions(workflow, project.project.tasks).map((q) => ({
         taskId: q.task.id,
         taskTitle: q.task.title,
         questionId: q.question.id,
         text: q.question.text,
         createdAt: q.question.createdAt,
+        projectId: project.project.id,
         options: q.question.options,
         recommended: q.question.recommended,
       }));
     },
-    answerQuestion: async (ws, workflowId, taskId, questionId, answer, by) => {
+    findQuestion: async (ws, route, questionId) => {
       const rt = registry.get(ws);
-      const workflow = await rt.workflows.get(workflowId);
-      const projectPath = await rt.orchestration.projectPathFor(workflow?.projectId ?? null);
-      return rt.orchestration.answerQuestion(projectPath, taskId, questionId, answer, { by });
+      const projects = await rt.store.loadProjects();
+      // Same strict resolution as answering: by the workflow record's board
+      // when it still exists, else by the delivery's stamped projectId.
+      const workflow = route.workflowId ? await rt.workflows.get(route.workflowId) : null;
+      const project = resolveProjectBoard(
+        projects,
+        workflow ? workflow.projectId : (route.projectId ?? null),
+        `workspace ${ws}`,
+      );
+      for (const task of project.project.tasks) {
+        const question = task.questions.find((q) => q.id === questionId);
+        if (!question) continue;
+        return {
+          taskId: task.id,
+          open: isQuestionOpen(question),
+          closure: questionClosure(question),
+        };
+      }
+      return null;
+    },
+    answerQuestion: async (ws, route, taskId, questionId, answer, by) => {
+      const rt = registry.get(ws);
+      if (route.workflowId != null) {
+        const workflow = await rt.workflows.get(route.workflowId);
+        // Loud, not `?? projects[0]`: answering through a workflow whose
+        // record is gone must be an explicit record-only route (projectId),
+        // never a silent fallback onto whatever board happens to be first.
+        if (!workflow) {
+          throw new Error(
+            `Workflow ${route.workflowId} no longer exists in workspace ${ws} — route the answer by projectId instead.`,
+          );
+        }
+        const projectPath = await rt.orchestration.projectPathFor(workflow.projectId ?? null);
+        return rt.orchestration.answerQuestion(projectPath, taskId, questionId, answer, { by });
+      }
+      // Record-only: the workflow record is gone, so the board write is the
+      // outcome — no delivery attempt against a context that no longer exists.
+      const projects = await rt.store.loadProjects();
+      const project = resolveProjectBoard(projects, route.projectId ?? null, `workspace ${ws}`);
+      return rt.orchestration.answerQuestion(project.path, taskId, questionId, answer, {
+        by,
+        recordOnly: true,
+      });
     },
   };
 }
@@ -1058,8 +1093,8 @@ export async function startCrystalServer(opts: {
     }),
     "hub.message": ({ programId, text }) => requireHub().message(programId, text),
     "hub.questions": async () => ({ questions: await requireHub().allQuestions() }),
-    "hub.answerQuestion": ({ programId, questionId, answer, deliveryId, taskId }) =>
-      requireHub().answerQuestion(programId, questionId, answer, { deliveryId, taskId }),
+    "hub.answerQuestion": ({ programId, questionId, answer, deliveryId, taskId, projectId }) =>
+      requireHub().answerQuestion(programId, questionId, answer, { deliveryId, taskId, projectId }),
     "hub.endpoint": async () => ({
       url: hubMcpUrl,
       mcpConfig: JSON.stringify(

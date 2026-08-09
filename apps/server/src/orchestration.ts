@@ -435,6 +435,12 @@ export class OrchestrationService {
     opts?: {
       /** Who answered — the bridge passes "user"; hub-manager MCP answers pass "agent". */
       by?: "user" | "agent";
+      /**
+       * Record + close on the board without attempting delivery to the asking
+       * chain — the hub's fallback for a question whose delivery's workflow
+       * record is gone: the durable board record IS the outcome.
+       */
+      recordOnly?: boolean;
     },
   ): Promise<
     | { ok: true; delivery: "resumed" | "queued" | "recorded"; runId: string | null }
@@ -472,7 +478,9 @@ export class OrchestrationService {
       };
     });
     if (!recorded.ok) return recorded;
-    if (!recorded.runId) return { ok: true, delivery: "recorded", runId: null };
+    if (opts?.recordOnly || !recorded.runId) {
+      return { ok: true, delivery: "recorded", runId: null };
+    }
 
     // Answer-vs-terminal race: the question's workflow may have settled while
     // the answer was in flight. Its context is gone — re-check the origin
