@@ -4,6 +4,7 @@ import {
   Bot,
   Check,
   CircleDollarSign,
+  CircleHelp,
   Copy,
   MoreHorizontal,
   Pause,
@@ -16,6 +17,7 @@ import {
 } from "lucide-react";
 import {
   deliveryReadiness,
+  headline,
   isDeliveryTerminal,
   isProgramTerminal,
   type AgentRun,
@@ -25,6 +27,7 @@ import {
 } from "@crystal/core";
 import {
   EMPTY_HUB_EVENTS,
+  EMPTY_HUB_QUESTIONS,
   RunSurface,
   chainOf,
   useHub,
@@ -352,6 +355,7 @@ function DeliveryCard({
 }) {
   const retryDelivery = useHub((s) => s.retryDelivery);
   const closeDelivery = useHub((s) => s.closeDelivery);
+  const programQuestions = useHub((s) => s.questions[program.id] ?? EMPTY_HUB_QUESTIONS);
   const [closing, setClosing] = useState(false);
   const [outcome, setOutcome] = useState<"completed" | "failed">("completed");
   const [note, setNote] = useState("");
@@ -367,6 +371,10 @@ function DeliveryCard({
       : null;
   const ownSpend = spend?.byDelivery[delivery.id];
   const retryable = isDeliveryTerminal(delivery.status) && delivery.status !== "completed";
+  const deliveryQuestions = useMemo(
+    () => programQuestions.filter((question) => question.deliveryId === delivery.id),
+    [delivery.id, programQuestions],
+  );
 
   async function retry(): Promise<void> {
     if (busy) return;
@@ -403,6 +411,17 @@ function DeliveryCard({
           {delivery.projectName}
         </span>
         <StatusBadge status={delivery.status} />
+        {deliveryQuestions.length > 0 ? (
+          <span
+            className="flex shrink-0 items-center gap-0.5 text-[10px] text-warn"
+            title={headline(deliveryQuestions[0]!.text, 80)}
+            aria-label={`${deliveryQuestions.length} open question${
+              deliveryQuestions.length === 1 ? "" : "s"
+            }`}
+          >
+            <CircleHelp className="h-3 w-3" /> {deliveryQuestions.length}
+          </span>
+        ) : null}
         <span className="text-[10px] text-ink-faint">
           <SpendLine
             costUsd={ownSpend?.costUsd ?? 0}

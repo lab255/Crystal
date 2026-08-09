@@ -14,6 +14,7 @@ import {
   formatRecapAge,
   formatUsd,
   formatWsRef,
+  sumCostRollups,
   unrecoveredFailures,
   workspaceLight,
   TRAFFIC_LIGHT_LABELS,
@@ -21,8 +22,10 @@ import {
 } from "@crystal/core";
 import {
   EMPTY_RUNS,
+  EMPTY_PROJECT_ENTRIES,
   EMPTY_QUESTIONS,
   EMPTY_TODOS,
+  formatRunCost,
   useCrystal,
   useFleet,
   useHub,
@@ -62,6 +65,7 @@ export function WorkspaceCard({
   const updateNav = useNavUpdate();
   const key = wsKey(sid, ws.id);
   const runs = useFleet((s) => s.runsByWs[key] ?? EMPTY_RUNS);
+  const projects = useFleet((s) => s.projectsByWs[key] ?? EMPTY_PROJECT_ENTRIES);
   const todos = useFleet((s) => s.todosByWs[key] ?? EMPTY_TODOS);
   const seenAt = useFleet((s) => s.seenAtByWs[key] ?? null);
   const questions = useFleet((s) =>
@@ -72,6 +76,13 @@ export function WorkspaceCard({
   const light = workspaceLight(todos, runs, seenAt, questions);
   // Where you left off — derived from the run list, no model call.
   const recap = useMemo(() => buildWorkspaceRecap(runs), [runs]);
+  const totalCostUsd = useMemo(
+    () =>
+      sumCostRollups(
+        projects.flatMap(({ project }) => project.tasks.map((task) => task.cost)),
+      )?.costUsd ?? null,
+    [projects],
+  );
   // Chips come from the same attention policy as the light (attention.ts in
   // core), so a card can never say something its own dot doesn't.
   const attn = useMemo(() => deriveRunAttention(runs, seenAt), [runs, seenAt]);
@@ -295,6 +306,11 @@ export function WorkspaceCard({
             <span className="shrink-0 tabular-nums">
               24h: {recap.last24h.runCount} runs · {formatUsd(recap.last24h.costUsd)}
               {recap.last24h.failed > 0 ? ` · ${recap.last24h.failed} failed` : ""}
+            </span>
+          ) : null}
+          {totalCostUsd != null && totalCostUsd > 0 ? (
+            <span className="shrink-0 tabular-nums text-ink-faint">
+              total {formatRunCost(totalCostUsd)}
             </span>
           ) : null}
         </button>

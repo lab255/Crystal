@@ -4,6 +4,8 @@ import {
   TASK_LIST_GROUP_LABELS,
   createTask,
   groupTasksForList,
+  groupRunsByManager,
+  headline,
   isQuestionActionable,
   livenessIndex,
   matchAgent,
@@ -57,6 +59,20 @@ export function TasksColumn({
       if (r.taskId && (r.status === "running" || r.status === "queued")) ids.add(r.taskId);
     }
     return ids;
+  }, [runs]);
+  const sessionCounts = useMemo(() => {
+    const byTask = new Map<string, typeof runs>();
+    for (const run of runs) {
+      if (!run.taskId) continue;
+      const taskRuns = byTask.get(run.taskId);
+      if (taskRuns) taskRuns.push(run);
+      else byTask.set(run.taskId, [run]);
+    }
+    const counts = new Map<string, number>();
+    for (const [taskId, taskRuns] of byTask) {
+      counts.set(taskId, groupRunsByManager(taskRuns).length);
+    }
+    return counts;
   }, [runs]);
 
   function addTask(title: string): void {
@@ -136,6 +152,8 @@ export function TasksColumn({
                       attention={group.attention?.[i] ?? null}
                       live={liveTaskIds.has(task.id)}
                       runsById={runsById}
+                      sessionCount={sessionCounts.get(task.id) ?? 0}
+                      project={project}
                       selected={task.id === selectedTaskId}
                       onSelect={() => onSelectTask(task.id)}
                     />
@@ -204,6 +222,8 @@ function TaskRow({
   attention,
   live,
   runsById,
+  sessionCount,
+  project,
   selected,
   onSelect,
 }: {
@@ -212,12 +232,23 @@ function TaskRow({
   attention: TaskAttention | null;
   live: boolean;
   runsById: ReturnType<typeof livenessIndex>;
+  sessionCount: number;
+  project: Project;
   selected: boolean;
   onSelect: () => void;
 }) {
   const questionCount = openQuestions(task).filter((question) =>
     isQuestionActionable(question, runsById),
   ).length;
+  const blockers =
+    group === "blocked"
+      ? task.blockedBy
+          .map((id) => project.tasks.find((candidate) => candidate.id === id))
+          .filter(
+            (candidate): candidate is TaskItem =>
+              candidate != null && candidate.status !== "done",
+          )
+      : [];
   return (
     <button
       type="button"
@@ -274,6 +305,15 @@ function TaskRow({
       ) : null}
       {group === "blocked" ? (
         <Lock className="h-3 w-3 shrink-0 text-ink-faint" aria-label="blocked" />
+      ) : null}
+      {blockers.length > 0 ? (
+        <span className="shrink-0 text-[10px] text-ink-faint">
+          blocked by {headline(blockers[0]!.title, 24)}
+          {blockers.length > 1 ? ` +${blockers.length - 1}` : ""}
+        </span>
+      ) : null}
+      {sessionCount > 1 ? (
+        <span className="shrink-0 text-[10px] text-ink-faint">{sessionCount} sessions</span>
       ) : null}
       {live && !attention ? (
         <span className="shrink-0 text-[10px] text-info">working</span>
