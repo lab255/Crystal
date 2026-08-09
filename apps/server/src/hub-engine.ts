@@ -153,7 +153,10 @@ export interface HubProjects {
   openQuestions(ws: string, workflowId: string): Promise<ProjectQuestion[]>;
   /**
    * Answer one — recorded on the board *and* handed back to the run that
-   * asked, so the delivery carries on instead of staying stopped.
+   * asked, so the delivery carries on instead of staying stopped. The
+   * delivery outcome is typed (`resumed`/`queued`/`recorded`) — never
+   * collapse it to a boolean. `by` attributes the closure: hub-manager MCP
+   * answers pass "agent", the inbox UI passes "user".
    */
   answerQuestion(
     ws: string,
@@ -161,7 +164,11 @@ export interface HubProjects {
     taskId: string,
     questionId: string,
     answer: string,
-  ): Promise<{ ok: true; resumedRunId: string | null } | { ok: false; reason: string }>;
+    by: "user" | "agent",
+  ): Promise<
+    | { ok: true; delivery: "resumed" | "queued" | "recorded"; runId: string | null }
+    | { ok: false; reason: string }
+  >;
 }
 
 /** Outcome of one dispatch wave (the protocol type lives in core). */
@@ -514,6 +521,32 @@ export class HubEngine {
    * with and re-block them.
    */
   async retryDelivery(programId: string, deliveryId: string): Promise<Program> {
+    // Cancel the prior attempt's workflow (if still live) BEFORE the delivery
+    // clears its reference: the cancellation's terminal write is what expires
+    // the questions that workflow originated — the one workflow-terminal
+    // expiry path, instead of a hub-side sweep against a dangling id. A
+    // cancel failure is logged, never fatal (the project's startup reconcile
+    // repairs the closure once the record is terminal).
+    const before = await this.get(programId);
+    const prior = before ? deliveryById(before, deliveryId) : null;
+    if (prior?.ws && prior.workflowId) {
+      const workflow = await this.projects
+        .workflow(prior.ws, prior.workflowId)
+        .catch(() => null);
+      const live =
+        workflow != null &&
+        workflow.status !== "completed" &&
+        workflow.status !== "failed" &&
+        workflow.status !== "cancelled";
+      if (live) {
+        await this.projects.cancelWorkflow(prior.ws, prior.workflowId).catch((err) => {
+          console.warn(
+            `[crystal] could not cancel prior workflow ${prior.workflowId} before retry:`,
+            (err as Error).message,
+          );
+        });
+      }
+    }
     const program = await this.mutate(programId, (current) => {
       const delivery = deliveryById(current, deliveryId);
       if (!delivery) throw new Error(`Unknown delivery: ${deliveryId}`);
@@ -766,7 +799,12 @@ export class HubEngine {
      * itself stays the validator (an answered question is refused there).
      */
     context?: { deliveryId?: string | null; taskId?: string | null },
-  ): Promise<{ ok: true; resumedRunId: string | null } | { ok: false; reason: string }> {
+    /** Closure attribution: hub-manager MCP answers pass "agent"; the inbox UI "user". */
+    by: "user" | "agent" = "user",
+  ): Promise<
+    | { ok: true; delivery: "resumed" | "queued" | "recorded"; runId: string | null }
+    | { ok: false; reason: string }
+  > {
     const program = await this.get(programId);
     if (!program) return { ok: false, reason: `Unknown program: ${programId}` };
 
@@ -777,6 +815,7 @@ export class HubEngine {
         taskId,
         questionId,
         answer,
+        by,
       );
       // The board write broadcasts, which re-sweeps — but doing it here means
       // the caller's own refetch already sees the question gone.

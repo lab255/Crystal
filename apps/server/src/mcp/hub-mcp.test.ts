@@ -58,7 +58,7 @@ function fakeHost(over: Partial<HubToolHost> = {}) {
     answerQuestion: vi.fn(async (_p: string, questionId: string) =>
       questionId === "q_gone"
         ? { ok: false as const, reason: "Unknown (or already answered) question: q_gone" }
-        : { ok: true as const, resumedRunId: "run_9" },
+        : { ok: true as const, delivery: "resumed" as const, runId: "run_9" },
     ),
     messageDelivery: vi.fn(async () => ({
       queued: true,

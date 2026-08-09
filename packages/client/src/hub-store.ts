@@ -110,7 +110,10 @@ export interface HubState {
     programId: string,
     questionId: string,
     answer: string,
-  ): Promise<{ ok: true; resumedRunId: string | null } | { ok: false; reason: string }>;
+  ): Promise<
+    | { ok: true; delivery: "resumed" | "queued" | "recorded"; runId: string | null }
+    | { ok: false; reason: string }
+  >;
   setPaused(programId: string, paused: boolean, reason?: string | null): Promise<void>;
   setBudget(programId: string, budgetUsd: number | null): Promise<void>;
   setDeliveryBudget(programId: string, deliveryId: string, budgetUsd: number | null): Promise<void>;

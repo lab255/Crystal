@@ -103,6 +103,7 @@ function StripQuestion({
       answer,
     });
     if (!result.ok) throw new Error(result.reason);
+    const at = nowIso();
     onProjectChange({
       ...project,
       tasks: project.tasks.map((t) =>
@@ -110,18 +111,30 @@ function StripQuestion({
           ? {
               ...t,
               questions: t.questions.map((q) =>
-                q.id === question.id ? { ...q, answer, answeredAt: nowIso() } : q,
+                q.id === question.id
+                  ? {
+                      ...q,
+                      answer,
+                      answeredAt: at,
+                      closed: { at, reason: "answered" as const, note: null, by: "user" as const },
+                    }
+                  : q,
               ),
-              updatedAt: nowIso(),
+              updatedAt: at,
             }
           : t,
       ),
     });
-    if (result.resumedRunId) onOpenRun(result.resumedRunId);
-    if (!result.resumedRunId) {
+    // Typed delivery outcome — never collapsed to a boolean.
+    if (result.delivery === "resumed" && result.runId) onOpenRun(result.runId);
+    if (result.delivery === "queued") {
       return {
-        notice:
-          "Recorded on the board — the asking session will pick it up if it resumes.",
+        notice: "Queued — the asking session is mid-turn and takes it when the turn settles.",
+      };
+    }
+    if (result.delivery === "recorded") {
+      return {
+        notice: "Recorded on the board — the asking session can no longer receive it.",
       };
     }
   }

@@ -9,8 +9,10 @@ import { WorkspaceStore } from "./workspace-store.js";
 
 /** Records what was delivered back to an asking run, and to which run. */
 const delivered: { runId: string; prompt: string }[] = [];
-/** What `deliver` should hand back — null stands in for "queued, not resumed". */
+/** What `deliverToChain` should hand back — a run means "resumed". */
 let deliverResult: AgentRun | null = null;
+/** The typed outcome when no run comes back ("queued" or "recorded"). */
+let deliverStatus: "queued" | "recorded" = "recorded";
 /** Chain membership for updateTaskAsRun (run id → the runs of its chain). */
 const chainsByRun = new Map<string, AgentRun[]>();
 
@@ -19,9 +21,11 @@ function fakeAgents(runs: AgentRun[]): AgentManager {
     list: async () => runs,
     chainRuns: async (runId: string) =>
       chainsByRun.get(runId) ?? runs.filter((r) => r.id === runId),
-    deliver: async (runId: string, prompt: string) => {
+    deliverToChain: async (runId: string, prompt: string) => {
       delivered.push({ runId, prompt });
-      return deliverResult;
+      return deliverResult
+        ? { run: deliverResult, status: "resumed" as const }
+        : { run: null, status: deliverStatus };
     },
   } as unknown as AgentManager;
 }
@@ -240,8 +244,8 @@ describe("OrchestrationService", () => {
 
   it("files questions on tasks, deduped per run and text", async () => {
     const task = await svc.createTask(projectPath, { title: "curious" });
-    await svc.addQuestion(projectPath, task.id, "Which schema?", "run_q");
-    await svc.addQuestion(projectPath, task.id, "Which schema?", "run_q"); // duplicate
+    await svc.addQuestion(projectPath, task.id, "Which schema?", { id: "run_q" });
+    await svc.addQuestion(projectPath, task.id, "Which schema?", { id: "run_q" }); // duplicate
     const saved = (await loadProject()).tasks.find((t) => t.id === task.id)!;
     expect(saved.questions).toHaveLength(1);
     expect(saved.questions[0]!.text).toBe("Which schema?");
@@ -251,11 +255,11 @@ describe("OrchestrationService", () => {
 
   it("stores structured questions and drops recommendations not in the options", async () => {
     const task = await svc.createTask(projectPath, { title: "structured" });
-    await svc.addQuestion(projectPath, task.id, "Which store?", "run_s", {
+    await svc.addQuestion(projectPath, task.id, "Which store?", { id: "run_s" }, {
       options: ["postgres", "sqlite"],
       recommended: "sqlite",
     });
-    await svc.addQuestion(projectPath, task.id, "Which cache?", "run_s", {
+    await svc.addQuestion(projectPath, task.id, "Which cache?", { id: "run_s" }, {
       options: ["redis"],
       recommended: "memcached", // not offered — must be dropped
     });
@@ -277,13 +281,13 @@ describe("OrchestrationService", () => {
     const asker = createAgentRun({ prompt: "work" });
     runs.push(asker);
     const task = await svc.createTask(projectPath, { title: "needs a decision" });
-    await svc.addQuestion(projectPath, task.id, "Version the payload?", asker.id);
+    await svc.addQuestion(projectPath, task.id, "Version the payload?", asker);
     const question = (await loadProject()).tasks.find((t) => t.id === task.id)!.questions[0]!;
 
     const resumed = createAgentRun({ prompt: "answer", resumedFromRunId: asker.id });
     deliverResult = resumed;
     const result = await svc.answerQuestion(projectPath, task.id, question.id, "Version it.");
-    expect(result).toEqual({ ok: true, resumedRunId: resumed.id });
+    expect(result).toEqual({ ok: true, delivery: "resumed", runId: resumed.id });
 
     // Recorded on the board…
     const answered = (await loadProject()).tasks.find((t) => t.id === task.id)!.questions[0]!;
@@ -297,24 +301,150 @@ describe("OrchestrationService", () => {
     // …and the resumed turn is linked to the task.
     expect((await loadProject()).tasks.find((t) => t.id === task.id)!.runIds).toContain(resumed.id);
 
+    // The closure stamp landed alongside the legacy answer fields.
+    expect(answered.closed).toMatchObject({ reason: "answered", by: "user" });
+
     // Answering twice is refused rather than resuming the agent again.
     const again = await svc.answerQuestion(projectPath, task.id, question.id, "Again.");
-    expect(again).toEqual({ ok: false, reason: expect.stringContaining("already answered") });
+    expect(again).toEqual({ ok: false, reason: expect.stringContaining("already closed") });
     expect(delivered).toHaveLength(1);
   });
 
   it("records an answer even when the asking run cannot be resumed", async () => {
     const task = await svc.createTask(projectPath, { title: "asked by a dead run" });
-    await svc.addQuestion(projectPath, task.id, "Still there?", "run_gone");
+    await svc.addQuestion(projectPath, task.id, "Still there?", { id: "run_gone" });
     const question = (await loadProject()).tasks.find((t) => t.id === task.id)!.questions[0]!;
 
-    deliverResult = null; // queued, or the chain is gone — either way, no run back
+    deliverResult = null;
+    deliverStatus = "recorded"; // the chain is definitively gone
     const result = await svc.answerQuestion(projectPath, task.id, question.id, "Yes.");
-    expect(result).toEqual({ ok: true, resumedRunId: null });
+    expect(result).toEqual({ ok: true, delivery: "recorded", runId: null });
     // The board is the durable record; the answer is not lost.
     expect(
       (await loadProject()).tasks.find((t) => t.id === task.id)!.questions[0]!.answer,
     ).toBe("Yes.");
+  });
+
+  it("returns 'queued' (with the asking chain's id) when the asker is mid-turn", async () => {
+    const task = await svc.createTask(projectPath, { title: "asked by a busy run" });
+    await svc.addQuestion(projectPath, task.id, "Busy?", { id: "run_busy" });
+    const question = (await loadProject()).tasks.find((t) => t.id === task.id)!.questions[0]!;
+
+    deliverResult = null;
+    deliverStatus = "queued"; // live chain — flushes on settlement
+    const result = await svc.answerQuestion(projectPath, task.id, question.id, "Later.");
+    expect(result).toEqual({ ok: true, delivery: "queued", runId: "run_busy" });
+    deliverStatus = "recorded";
+  });
+
+  it("stamps origin.workflowId from the asking run's workflow tag at creation", async () => {
+    const task = await svc.createTask(projectPath, { title: "attributed" });
+    const tagged = createAgentRun({ prompt: "w", tags: ["workflow:wf_origin1"] });
+    await svc.addQuestion(projectPath, task.id, "From a workflow run?", tagged);
+    await svc.addQuestion(projectPath, task.id, "From a plain run?", { id: "run_plain" });
+    await svc.addQuestion(projectPath, task.id, "Asked manually?", null);
+    const saved = (await loadProject()).tasks.find((t) => t.id === task.id)!;
+    expect(saved.questions[0]!.origin).toEqual({ workflowId: "wf_origin1" });
+    expect(saved.questions[1]!.origin).toEqual({ workflowId: null });
+    expect(saved.questions[2]!.origin ?? null).toBeNull();
+
+    // The taskless path stamps origin the same way.
+    const asker = createAgentRun({ prompt: "ask", purpose: "design", tags: ["workflow:wf_origin2"] });
+    const filed = await svc.addQuestionForRun(projectPath, asker, "Taskless origin?");
+    if (!filed.ok) throw new Error(filed.reason);
+    const minted = (await loadProject()).tasks.find((t) => t.id === filed.taskId)!;
+    expect(minted.questions[0]!.origin).toEqual({ workflowId: "wf_origin2" });
+  });
+
+  it("skips delivery entirely when the origin workflow settled after the ask", async () => {
+    const asker = createAgentRun({ prompt: "w", tags: ["workflow:wf_dead"] });
+    runs.push(asker);
+    const task = await svc.createTask(projectPath, { title: "racing terminal" });
+    await svc.addQuestion(projectPath, task.id, "Race?", asker);
+    const question = (await loadProject()).tasks.find((t) => t.id === task.id)!.questions[0]!;
+
+    svc.workflowStatusLookup = async (id) => (id === "wf_dead" ? "cancelled" : null);
+    deliverResult = createAgentRun({ prompt: "should never spawn" });
+    const before = delivered.length;
+    const result = await svc.answerQuestion(projectPath, task.id, question.id, "Too late.");
+    expect(result).toEqual({ ok: true, delivery: "recorded", runId: null });
+    expect(delivered).toHaveLength(before); // no paid delivery against a dead context
+    // The answer is still the durable record.
+    expect(
+      (await loadProject()).tasks.find((t) => t.id === task.id)!.questions[0]!.answer,
+    ).toBe("Too late.");
+    svc.workflowStatusLookup = null;
+    deliverResult = null;
+  });
+
+  it("dismisses an open question; a second dismiss is refused with the closure", async () => {
+    const task = await svc.createTask(projectPath, { title: "stale ask" });
+    await svc.addQuestion(projectPath, task.id, "Nobody home?", { id: "run_dead" });
+    const question = (await loadProject()).tasks.find((t) => t.id === task.id)!.questions[0]!;
+
+    const dismissed = await svc.dismissQuestion(projectPath, task.id, question.id, "asker retired");
+    expect(dismissed).toEqual({ ok: true });
+    const closed = (await loadProject()).tasks.find((t) => t.id === task.id)!.questions[0]!;
+    expect(closed.closed).toMatchObject({
+      reason: "dismissed",
+      by: "user",
+      note: "asker retired",
+    });
+    expect(closed.answer ?? null).toBeNull(); // dismissal never fabricates an answer
+
+    const again = await svc.dismissQuestion(projectPath, task.id, question.id);
+    expect(again).toEqual({
+      ok: false,
+      reason: expect.stringContaining("already closed (dismissed"),
+    });
+    // Answering a dismissed question is refused the same way.
+    const answer = await svc.answerQuestion(projectPath, task.id, question.id, "late");
+    expect(answer).toEqual({
+      ok: false,
+      reason: expect.stringContaining("already closed (dismissed"),
+    });
+    // Unknown ids are typed refusals.
+    await expect(svc.dismissQuestion(projectPath, task.id, "q_nope")).resolves.toEqual({
+      ok: false,
+      reason: expect.stringContaining("Unknown question"),
+    });
+  });
+
+  it("expires exactly the open questions of a settled workflow, idempotently", async () => {
+    const mine = createAgentRun({ prompt: "w", tags: ["workflow:wf_exp"] });
+    const other = createAgentRun({ prompt: "w", tags: ["workflow:wf_alive"] });
+    const task = await svc.createTask(projectPath, { title: "expiry" });
+    await svc.addQuestion(projectPath, task.id, "Mine, open", mine);
+    await svc.addQuestion(projectPath, task.id, "Other workflow", other);
+    await svc.addQuestion(projectPath, task.id, "No workflow", { id: "run_free" });
+    // An already-answered origin question must not be rewritten by expiry.
+    await svc.addQuestion(projectPath, task.id, "Mine, answered", mine);
+    const preAnswered = (await loadProject()).tasks
+      .find((t) => t.id === task.id)!
+      .questions.find((q) => q.text === "Mine, answered")!;
+    deliverResult = null;
+    await svc.answerQuestion(projectPath, task.id, preAnswered.id, "done");
+
+    const first = await svc.expireWorkflowQuestions("wf_exp", "cancelled");
+    expect(first.closed).toBe(1);
+    const after = (await loadProject()).tasks.find((t) => t.id === task.id)!;
+    const byText = (text: string) => after.questions.find((q) => q.text === text)!;
+    expect(byText("Mine, open").closed).toMatchObject({
+      reason: "expired",
+      by: "system",
+      note: "workflow wf_exp settled (cancelled)",
+    });
+    expect(byText("Other workflow").closed ?? null).toBeNull();
+    expect(byText("No workflow").closed ?? null).toBeNull();
+    expect(byText("Mine, answered").closed).toMatchObject({ reason: "answered" });
+
+    // Run twice: idempotent — nothing further closes, stamps unchanged.
+    const second = await svc.expireWorkflowQuestions("wf_exp", "cancelled");
+    expect(second.closed).toBe(0);
+    const again = (await loadProject()).tasks.find((t) => t.id === task.id)!;
+    expect(again.questions.find((q) => q.text === "Mine, open")!.closed).toEqual(
+      byText("Mine, open").closed,
+    );
   });
 
   it("creates a task for a taskless ask and routes its answer back to the run", async () => {
@@ -366,7 +496,7 @@ describe("OrchestrationService", () => {
     deliverResult = resumed;
     await expect(
       svc.answerQuestion(projectPath, filed.taskId, filed.questionId, "JSON"),
-    ).resolves.toEqual({ ok: true, resumedRunId: resumed.id });
+    ).resolves.toEqual({ ok: true, delivery: "resumed", runId: resumed.id });
     expect(delivered).toHaveLength(deliveredBefore + 1);
     expect(delivered.at(-1)).toMatchObject({ runId: asker.id });
     expect(delivered.at(-1)!.prompt).toContain("JSON");
@@ -404,8 +534,8 @@ describe("OrchestrationService", () => {
 
   it("resolve_question closes the run's own open question without resuming anyone", async () => {
     const task = await svc.createTask(projectPath, { title: "Interactive task" });
-    await svc.addQuestion(projectPath, task.id, "Ship now?", "run_int");
-    await svc.addQuestion(projectPath, task.id, "Also this?", "run_int");
+    await svc.addQuestion(projectPath, task.id, "Ship now?", { id: "run_int" });
+    await svc.addQuestion(projectPath, task.id, "Also this?", { id: "run_int" });
     const before = delivered.length;
 
     const missing = await svc.resolveQuestion(projectPath, task.id, "run_int", "yes", "q_nope");

@@ -164,7 +164,7 @@ class FakeProjects implements HubProjects {
     );
   }
 
-  answered: { questionId: string; answer: string }[] = [];
+  answered: { questionId: string; answer: string; by: "user" | "agent" }[] = [];
 
   async answerQuestion(
     _ws: string,
@@ -172,13 +172,14 @@ class FakeProjects implements HubProjects {
     _taskId: string,
     questionId: string,
     answer: string,
+    by: "user" | "agent",
   ) {
     if (!(this.questions.get(workflowId) ?? []).some((q) => q.questionId === questionId)) {
       return { ok: false as const, reason: `Unknown question: ${questionId}` };
     }
-    this.answered.push({ questionId, answer });
+    this.answered.push({ questionId, answer, by });
     this.answer(workflowId, questionId);
-    return { ok: true as const, resumedRunId: "run_resumed" };
+    return { ok: true as const, delivery: "resumed" as const, runId: "run_resumed" };
   }
 
   async workflowTemplates(): Promise<WorkflowTemplate[]> {
@@ -911,6 +912,32 @@ describe("HubEngine", () => {
     await expect(hub.removeDelivery(other.id, q.id)).rejects.toThrow(/already dispatched/);
   });
 
+  it("retry cancels a still-live prior workflow BEFORE clearing the reference", async () => {
+    const { hub, projects } = await fresh("retry-cancel-live");
+    const program = await hub.create({ name: "P", goal: "g" });
+    const only = await hub.addDelivery(program.id, {
+      projectRoot: "/repos/auth-service",
+      brief: "b",
+    });
+    const wf = (await hub.dispatch(program.id)).dispatched[0]!.workflowId;
+    // The delivery settled externally but the workflow cancel failed (crash,
+    // closed workspace): the record is still live when the retry comes.
+    await hub.closeDelivery(program.id, only.id, "failed", "premise died");
+    projects.workflows.get(wf)!.status = "running";
+    const before = projects.cancelled.length;
+
+    await hub.retryDelivery(program.id, only.id);
+    // Cancelled through the project's workflow engine — the terminal write is
+    // what expires the questions that workflow originated.
+    expect(projects.cancelled.slice(before)).toEqual([wf]);
+    // A settled prior workflow is left alone on the next retry of the chain.
+    const second = (await hub.dispatch(program.id)).dispatched[0]!.workflowId;
+    await hub.onWorkflowChanged("ws-auth", projects.settle(second, "failed"));
+    const cancels = projects.cancelled.length;
+    await hub.retryDelivery(program.id, only.id);
+    expect(projects.cancelled).toHaveLength(cancels);
+  });
+
   it("surfaces project questions, wakes the manager on new ones, and drops answered ones", async () => {
     const { hub, projects, agents } = await fresh("questions");
     const program = await hub.create({ name: "P", goal: "g" });
@@ -978,8 +1005,10 @@ describe("HubEngine", () => {
     hub.events.on("questionsChanged", ({ questions }) => answered.push(questions.length));
 
     const result = await hub.answerQuestion(program.id, "q1", "Add fields in place.");
-    expect(result).toEqual({ ok: true, resumedRunId: "run_resumed" });
-    expect(projects.answered).toEqual([{ questionId: "q1", answer: "Add fields in place." }]);
+    expect(result).toEqual({ ok: true, delivery: "resumed", runId: "run_resumed" });
+    expect(projects.answered).toEqual([
+      { questionId: "q1", answer: "Add fields in place.", by: "user" },
+    ]);
     // The caller's own refetch already sees it gone — no waiting for the
     // board's broadcast to come back around.
     expect(await hub.questions(program.id)).toEqual([]);
@@ -1006,16 +1035,27 @@ describe("HubEngine", () => {
 
     // No context (external MCP caller): the board-scan fallback finds it.
     const result = await hub.answerQuestion(program.id, "q1", "Here you go.");
-    expect(result).toEqual({ ok: true, resumedRunId: "run_resumed" });
-    expect(projects.answered).toEqual([{ questionId: "q1", answer: "Here you go." }]);
+    expect(result).toEqual({ ok: true, delivery: "resumed", runId: "run_resumed" });
+    expect(projects.answered).toEqual([
+      { questionId: "q1", answer: "Here you go.", by: "user" },
+    ]);
 
     // With context (what the UI sends from its HubQuestion): a direct hit.
+    // A manager-attributed answer carries its `by` through to the board.
     projects.ask(workflowId, "q2", "One more.");
-    const direct = await hub.answerQuestion(program.id, "q2", "Answered.", {
-      deliveryId,
-      taskId: "task_q2",
+    const direct = await hub.answerQuestion(
+      program.id,
+      "q2",
+      "Answered.",
+      { deliveryId, taskId: "task_q2" },
+      "agent",
+    );
+    expect(direct).toEqual({ ok: true, delivery: "resumed", runId: "run_resumed" });
+    expect(projects.answered.at(-1)).toEqual({
+      questionId: "q2",
+      answer: "Answered.",
+      by: "agent",
     });
-    expect(direct).toEqual({ ok: true, resumedRunId: "run_resumed" });
   });
 
   it("renders open questions into the agent-facing status", async () => {

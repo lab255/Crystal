@@ -3,6 +3,7 @@ import {
   toolAllowedByPatterns,
   type AgentRun,
   type PendingPermission,
+  type QuestionClosure,
 } from "@crystal/core";
 
 /**
@@ -64,8 +65,15 @@ export interface PermissionBrokerHost {
     options: string[],
     recommended: string,
   ): Promise<BoardQuestionRef | null>;
-  /** The question's answer text, when the owner has answered; null while open. */
-  readAnswer(ref: BoardQuestionRef): Promise<string | null>;
+  /**
+   * The question's closure (with the answer text when there is one); null
+   * while the question is still open. Closure-aware, not answer-string
+   * presence: a question dismissed (or expired) without an answer must settle
+   * the parked request as a deny, never park it until the timeout.
+   */
+  readClosure(
+    ref: BoardQuestionRef,
+  ): Promise<(QuestionClosure & { answer: string | null }) | null | undefined>;
   /** Close a still-open question after the broker settled without an answer. */
   closeQuestion(ref: BoardQuestionRef, runId: string, note: string): Promise<void>;
   /** Fold a denial into the grants ledger tally (the AgentsTab panel reads it). */
@@ -271,18 +279,22 @@ export class PermissionBroker {
   }
 
   /**
-   * The board changed — read every parked request's question; an answer
-   * starting with "allow" (case-insensitive) allows, anything else denies
-   * with the owner's words. Wired to the orchestration change seam.
+   * The board changed — read every parked request's question closure. An
+   * answer starting with "allow" (case-insensitive) allows, any other answer
+   * denies with the owner's words — and a question closed WITHOUT an answer
+   * (dismissed in the inbox, expired with its workflow) deterministically
+   * denies too: closure is the decision surface, whatever form it took.
+   * Wired to the orchestration change seam.
    */
   async onBoardChanged(): Promise<void> {
     for (const [id, entry] of [...this.pending]) {
       if (!entry.board) continue;
-      const answer = await this.host.readAnswer(entry.board).catch(() => null);
-      if (answer == null) continue;
-      if (/^\s*allow/i.test(answer)) {
+      const closure = await this.host.readClosure(entry.board).catch(() => null);
+      if (closure == null) continue;
+      const answer = closure.answer;
+      if (answer != null && /^\s*allow/i.test(answer)) {
         this.settleEntry(id, { behavior: "allow" }, `owner answered: ${answer}`);
-      } else {
+      } else if (answer != null) {
         this.settleEntry(
           id,
           {
@@ -290,6 +302,17 @@ export class PermissionBroker {
             message: `The owner declined this tool use ("${answer}"). Proceed another way or use ask_question.`,
           },
           `owner answered: ${answer}`,
+        );
+      } else {
+        this.settleEntry(
+          id,
+          {
+            behavior: "deny",
+            message:
+              `The permission question was ${closure.reason} without an answer` +
+              `${closure.note ? ` (${closure.note})` : ""}. Proceed another way or use ask_question.`,
+          },
+          `question ${closure.reason} without an answer`,
         );
       }
     }

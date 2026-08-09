@@ -604,14 +604,20 @@ export function costSlices(
  *  - tasks only in the incoming save are added (user-created);
  *  - epics merge the same way (no updatedAt — incoming wins the row).
  *
- * Server-owned columns (lease, cost) always come from disk regardless of
- * which side wins a row; `rev` is never taken from the client.
+ * Server-owned columns (lease, cost, questions, runIds) always come from disk
+ * regardless of which side wins a row; `rev` is never taken from the client.
+ * Questions and runIds are lifecycle metadata written through their own verbs
+ * (answer/dismiss/expiry, run settlement) — a stale client snapshot must not
+ * resurrect a closed question or drop a run attribution. A task the server has
+ * never seen keeps the client's copies (there is nothing on disk to own yet).
  */
 export function mergeProjectSave(onDisk: Project, incoming: Project): Project {
   const serverColumns = (task: TaskItem, disk: TaskItem | undefined): TaskItem => ({
     ...task,
     lease: disk?.lease ?? null,
     cost: disk?.cost ?? null,
+    questions: disk ? disk.questions : task.questions,
+    runIds: disk ? disk.runIds : task.runIds,
   });
   const diskTasks = new Map(onDisk.tasks.map((t) => [t.id, t]));
   const stale = incoming.rev !== onDisk.rev;

@@ -23,6 +23,7 @@ import {
   boardColumnStages,
   budgetState,
   envGaps,
+  isQuestionOpen,
   premiseGaps,
   presetById,
   templateOf,
@@ -314,7 +315,7 @@ function WorkflowDetail({
       )
       .flatMap((t) =>
         t.questions
-          .filter((q) => q.answer == null)
+          .filter((q) => isQuestionOpen(q))
           .map((q) => ({ taskId: t.id, taskTitle: t.title, text: q.text })),
       );
   }, [projects, workflow.projectId, workflow.epicId, workflow.tracks]);

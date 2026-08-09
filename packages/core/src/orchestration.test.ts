@@ -14,7 +14,13 @@ import {
   taskLiveUsage,
   transferLease,
 } from "./orchestration.js";
-import { createProject, createTask, readyTasks, type TaskLease } from "./project.js";
+import {
+  createProject,
+  createTask,
+  createTaskQuestion,
+  readyTasks,
+  type TaskLease,
+} from "./project.js";
 
 const NOW = Date.parse("2026-07-16T12:00:00Z");
 
@@ -368,6 +374,52 @@ describe("mergeProjectSave", () => {
     expect(titles).toContain("agent created this"); // not deleted by the stale save
     expect(titles).toContain("user created this"); // user's new task still lands
     expect(merged.tasks.find((t) => t.id === contested.id)!.status).toBe("done"); // newer write wins
+  });
+
+  it("questions and runIds are server-owned: a stale save cannot resurrect a closed question", () => {
+    const disk = boardWith(7);
+    const task = createTask("asked");
+    task.updatedAt = "2026-07-17T10:00:00Z";
+    const question = createTaskQuestion("Ship it?", "run_1");
+    question.answer = "yes";
+    question.answeredAt = "2026-07-17T11:00:00Z";
+    question.closed = { at: "2026-07-17T11:00:00Z", reason: "answered", note: null, by: "user" };
+    task.questions = [question];
+    task.runIds = ["run_1", "run_resumed"];
+    disk.tasks = [task];
+
+    // The client snapshot predates the answer AND wins the row on updatedAt —
+    // its open copy of the question (and shorter runIds) must still lose.
+    const incoming = boardWith(3);
+    incoming.id = disk.id;
+    const staleTask = structuredClone(task);
+    staleTask.updatedAt = "2026-07-17T12:00:00Z"; // user edited the title later
+    staleTask.title = "asked (renamed)";
+    staleTask.questions = [{ ...question, answer: null, answeredAt: null, closed: null }];
+    staleTask.runIds = ["run_1"];
+    incoming.tasks = [staleTask];
+
+    const merged = mergeProjectSave(disk, incoming);
+    const row = merged.tasks[0]!;
+    expect(row.title).toBe("asked (renamed)"); // client-owned edit applied
+    expect(row.questions[0]!.answer).toBe("yes"); // closure survived
+    expect(row.questions[0]!.closed).toMatchObject({ reason: "answered" });
+    expect(row.runIds).toEqual(["run_1", "run_resumed"]);
+
+    // Fresh-rev saves defer to disk the same way (questions have their own verbs).
+    const fresh = structuredClone(incoming);
+    fresh.rev = 7;
+    expect(mergeProjectSave(disk, fresh).tasks[0]!.questions[0]!.answer).toBe("yes");
+
+    // A task the server has never seen keeps the client's copies.
+    const newTask = createTask("brand new");
+    newTask.questions = [createTaskQuestion("From the client?", null)];
+    const withNew = structuredClone(incoming);
+    withNew.tasks = [...withNew.tasks, newTask];
+    const mergedNew = mergeProjectSave(disk, withNew);
+    expect(
+      mergedNew.tasks.find((t) => t.id === newTask.id)!.questions.map((q) => q.text),
+    ).toEqual(["From the client?"]);
   });
 
   it("a stale save still applies the user's newer per-task edits", () => {

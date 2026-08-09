@@ -32,10 +32,15 @@ export function QuestionRow({
       (err: Error) => ({ ok: false as const, reason: err.message }),
     );
     if (!result.ok) throw new Error(result.reason);
-    if (!result.resumedRunId) {
+    // Typed delivery outcome — never collapsed to a boolean.
+    if (result.delivery === "queued") {
       return {
-        notice:
-          "Recorded on the board — the asking session will pick it up if it resumes.",
+        notice: "Queued — the asking session is mid-turn and takes it when the turn settles.",
+      };
+    }
+    if (result.delivery === "recorded") {
+      return {
+        notice: "Recorded on the board — the asking session can no longer receive it.",
       };
     }
   }

@@ -4,7 +4,9 @@ import {
   AttentionTracker,
   attentionLight,
   automaticWorkflowPauseIds,
+  countActionableQuestions,
   countOpenQuestions,
+  fleetNeedsYouCount,
   countPendingPermissions,
   countUnrecoveredFailures,
   deriveNeedsYou,
@@ -20,6 +22,7 @@ import {
   type ProjectEntry,
 } from "./attention.js";
 import { createProject, createTask, createTaskQuestion, type Project } from "./project.js";
+import { livenessIndex } from "./question-liveness.js";
 import { createAgentRun, type AgentRun } from "./agent.js";
 import { createTodoItem, type TodoItem } from "./todo.js";
 import type { RunFailure } from "./run-failure.js";
@@ -147,6 +150,37 @@ describe("count helpers (selector-safe primitives)", () => {
     expect(unrecoveredFailures(runs).map((r) => r.id)).toEqual(
       deriveNeedsYou([], runs).failures.map((r) => r.id),
     );
+  });
+
+  it("countActionableQuestions drops stale (open+undeliverable) questions, keeps unknown", () => {
+    // projectWithQuestions files everything under runId "run_x".
+    const projects = [
+      projectWithQuestions("a", [{ text: "Q1" }, { text: "Q2", answered: true }]),
+      projectWithQuestions("b", [{ text: "Q3" }]),
+    ];
+    // No run "run_x" in the index — both open questions are stale.
+    expect(countActionableQuestions(projects, livenessIndex([]))).toBe(0);
+    // A live asking chain keeps them counted.
+    const live = livenessIndex([
+      { id: "run_x", status: "running", createdAt: "t1" },
+    ]);
+    expect(countActionableQuestions(projects, live)).toBe(2);
+    // An unavailable index is not evidence of death — same as the plain count.
+    expect(countActionableQuestions(projects, null)).toBe(countOpenQuestions(projects));
+  });
+
+  it("fleetNeedsYouCount sums workspace rows with their pending permissions", () => {
+    const rows = [
+      { key: "c1:ws1", count: 2 },
+      { key: "c1:ws2", count: 0 },
+    ];
+    const permissions = {
+      "c1:ws2": [
+        { id: "p1", runId: "r", tool: "Bash", summary: "s", requestedAt: "t" },
+      ],
+    };
+    expect(fleetNeedsYouCount(rows, permissions)).toBe(3);
+    expect(fleetNeedsYouCount(rows, {})).toBe(2);
   });
 });
 

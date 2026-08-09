@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import type { AgentRun } from "@crystal/core";
+import type { AgentRun, QuestionClosure } from "@crystal/core";
 import { GrantsStore } from "./grants-store.js";
 import {
   PermissionBroker,
@@ -52,7 +52,10 @@ function fakeRun(over: Partial<AgentRun> = {}): AgentRun {
 interface HostState {
   grants: string[];
   allowAll?: boolean;
+  /** Board answer text; readClosure synthesizes an answered closure from it. */
   answer: string | null;
+  /** Explicit closure override (dismissed/expired paths); wins over `answer`. */
+  closure?: (QuestionClosure & { answer: string | null }) | null;
   noted: { runId: string; tool: string; state: string; detail?: string }[];
   filed: { text: string; options: string[]; recommended: string }[];
   closed: string[];
@@ -74,7 +77,18 @@ function makeHost(state: HostState): PermissionBrokerHost {
         ? state.fileResult
         : { projectPath: "proj.json", taskId: "task_1", questionId: "q_1" };
     },
-    readAnswer: async () => state.answer,
+    readClosure: async () =>
+      state.closure !== undefined
+        ? state.closure
+        : state.answer != null
+          ? {
+              at: "t1",
+              reason: "answered" as const,
+              note: null,
+              by: "user" as const,
+              answer: state.answer,
+            }
+          : null,
     closeQuestion: async (_ref, _runId, note) => {
       state.closed.push(note);
     },
@@ -241,6 +255,28 @@ describe("PermissionBroker", () => {
     // The denial reaches the grants ledger tally.
     expect(state.denied).toEqual(["WebFetch"]);
     expect(state.noted.at(-1)).toMatchObject({ state: "denied" });
+  });
+
+  it("denies deterministically when the question is dismissed without an answer", async () => {
+    const state = baseState();
+    const broker = new PermissionBroker(makeHost(state), BASELINE, 10_000);
+    const pending = broker.request("run_1", "WebFetch", { url: "https://x" });
+    await new Promise((r) => setTimeout(r, 10));
+    // The owner dismissed the board question (closed, no answer text): the
+    // parked request must settle as a deny, not wait out the timeout.
+    state.closure = {
+      at: "t1",
+      reason: "dismissed",
+      note: "stale ask",
+      by: "user",
+      answer: null,
+    };
+    await broker.onBoardChanged();
+    const decision = await pending;
+    expect(decision.behavior).toBe("deny");
+    expect((decision as { message: string }).message).toContain("dismissed");
+    expect(state.denied).toEqual(["WebFetch"]);
+    expect(broker.pendingCount).toBe(0);
   });
 
   it("denies on timeout with instructions to proceed differently", async () => {

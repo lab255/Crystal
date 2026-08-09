@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { CircleHelp, Send } from "lucide-react";
-import type { TaskQuestion } from "@crystal/core";
+import { questionClosure, type TaskQuestion } from "@crystal/core";
 import { enterKeyAction, useSettings } from "@crystal/client";
 import { Button, Textarea, cn } from "@crystal/ui";
 
@@ -21,7 +21,10 @@ export function QuestionRow({
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const enterToSend = useSettings((s) => s.enterToSend);
-  const answered = question.answer != null;
+  // Closure-aware: dismissed/expired questions render closed too, with the
+  // closure note instead of an answer line.
+  const closure = questionClosure(question);
+  const answered = closure != null;
 
   return (
     <div
@@ -35,7 +38,11 @@ export function QuestionRow({
         <span className="whitespace-pre-wrap">{question.text}</span>
       </div>
       {answered ? (
-        <div className="mt-1 pl-4.5 text-[11px] text-ink-muted">↳ {question.answer}</div>
+        <div className="mt-1 pl-4.5 text-[11px] text-ink-muted">
+          {closure!.reason === "answered"
+            ? `↳ ${question.answer}`
+            : `↳ ${closure!.reason}${closure!.note ? ` — ${closure!.note}` : ""}`}
+        </div>
       ) : (
         <>
           {question.options.length > 0 ? (

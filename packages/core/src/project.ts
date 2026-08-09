@@ -46,6 +46,20 @@ export const TaskOwnersSchema = z.object({
 export type TaskOwners = z.infer<typeof TaskOwnersSchema>;
 
 /**
+ * How a question left the open state. `answered` carries the reply back to the
+ * asker; `dismissed` is the human's "this no longer needs an answer";
+ * `expired` is system evidence — the workflow the question belonged to reached
+ * a terminal state, so its answer has nowhere to go.
+ */
+export const QuestionClosureSchema = z.object({
+  at: z.string(),
+  reason: z.enum(["answered", "dismissed", "expired"]),
+  note: z.string().nullish(),
+  by: z.enum(["user", "agent", "system"]),
+});
+export type QuestionClosure = z.infer<typeof QuestionClosureSchema>;
+
+/**
  * An async request for user input. Agents raise these mid-run (see
  * QUESTION_MARKER in agent.ts); the human owner answers on the board, and the
  * answer resumes the originating session as a follow-up turn.
@@ -54,6 +68,15 @@ export const TaskQuestionSchema = z.object({
   id: z.string(),
   /** Run that raised the question (null when asked manually). */
   runId: z.string().nullish(),
+  /**
+   * Durable creation attribution: the workflow the asking run belonged to
+   * (from its `workflow:` tag), stamped at creation so lifecycle ties survive
+   * the run and workflow records. Null workflowId = a run outside any
+   * workflow; null origin = legacy or manually asked.
+   */
+  origin: z.object({ workflowId: z.string().nullable() }).nullish(),
+  /** Who raised it — everything through MCP/broker paths is "agent". */
+  askedBy: z.enum(["agent", "user"]).default("agent"),
   text: z.string(),
   /** Structured answer choices (one-click answers); free text stays allowed. */
   options: z.array(z.string()).default([]),
@@ -62,8 +85,40 @@ export const TaskQuestionSchema = z.object({
   answer: z.string().nullish(),
   createdAt: z.string(),
   answeredAt: z.string().nullish(),
+  /**
+   * Lifecycle closure (see {@link QuestionClosureSchema}). Read through
+   * {@link questionClosure}, never raw — legacy answered records predate this
+   * field. Open = `answer == null && closed == null` ({@link isQuestionOpen}).
+   */
+  closed: QuestionClosureSchema.nullish(),
 });
 export type TaskQuestion = z.infer<typeof TaskQuestionSchema>;
+
+/**
+ * THE open-question predicate — every "waiting on you" surface derives from
+ * this. Legacy precedence: a record with `answer != null` but no `closed`
+ * stamp (written before closures existed) reads as closed; a `closed` stamp
+ * without an answer (dismissed/expired) also reads as closed.
+ */
+export function isQuestionOpen(q: Pick<TaskQuestion, "answer" | "closed">): boolean {
+  return q.answer == null && q.closed == null;
+}
+
+/**
+ * Normalized closure accessor: the question's `closed` record, synthesizing
+ * `{reason:"answered", by:"user"}` for legacy answered records that predate
+ * the field. Null while the question is open. Consumers read closure through
+ * this, never the raw fields.
+ */
+export function questionClosure(
+  q: Pick<TaskQuestion, "answer" | "answeredAt" | "createdAt" | "closed">,
+): QuestionClosure | null {
+  if (q.closed != null) return q.closed;
+  if (q.answer != null) {
+    return { at: q.answeredAt ?? q.createdAt, reason: "answered", note: null, by: "user" };
+  }
+  return null;
+}
 
 /**
  * An exclusive write lease on a task — the board's borrow checker. One writer
@@ -197,11 +252,18 @@ export function createTaskQuestion(
   text: string,
   runId?: string | null,
   opts?: AskOptions,
+  meta?: {
+    /** Creation attribution (see TaskQuestionSchema.origin). */
+    origin?: { workflowId: string | null } | null;
+    askedBy?: "agent" | "user";
+  },
 ): TaskQuestion {
   const options = (opts?.options ?? []).map((o) => o.trim()).filter(Boolean);
   return TaskQuestionSchema.parse({
     id: uid("q"),
     runId: runId ?? null,
+    origin: meta?.origin ?? null,
+    askedBy: meta?.askedBy ?? "agent",
     text,
     options,
     // A recommendation that names no offered option is dropped, not trusted.
@@ -213,7 +275,7 @@ export function createTaskQuestion(
 
 /** Questions still waiting on the human owner. */
 export function openQuestions(task: TaskItem): TaskQuestion[] {
-  return task.questions.filter((q) => q.answer == null);
+  return task.questions.filter((q) => isQuestionOpen(q));
 }
 
 export function createTask(title: string, status: TaskStatus = "backlog"): TaskItem {

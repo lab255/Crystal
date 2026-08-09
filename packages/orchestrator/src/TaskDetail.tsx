@@ -113,12 +113,21 @@ export function TaskDetail({
     // worse, any later edit from this stale snapshot would whole-project-save
     // `answer: null` back over the server's record (newest-updatedAt merge),
     // silently reopening a question whose asker already consumed the answer.
+    const at = nowIso();
     patchTask({
       questions: task.questions.map((q) =>
-        q.id === question.id ? { ...q, answer, answeredAt: nowIso() } : q,
+        q.id === question.id
+          ? {
+              ...q,
+              answer,
+              answeredAt: at,
+              closed: { at, reason: "answered" as const, note: null, by: "user" as const },
+            }
+          : q,
       ),
     });
-    if (result.resumedRunId) onOpenRun(result.resumedRunId);
+    // Typed delivery outcome: only a resumed turn moves the surface.
+    if (result.delivery === "resumed" && result.runId) onOpenRun(result.runId);
   }
 
   return (
