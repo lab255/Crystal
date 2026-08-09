@@ -394,6 +394,11 @@ export interface BridgeMethods {
     params: WsScope & { tools: string[] };
     result: { ledger: GrantsLedger };
   };
+  /** Flip allow-all mode: the broker auto-approves every headless permission prompt. */
+  "grants.setAllowAll": {
+    params: WsScope & { on: boolean };
+    result: { ledger: GrantsLedger };
+  };
   /** Tool calls currently parked on an owner decision in this workspace. */
   "permissions.pending": {
     params: WsScope;

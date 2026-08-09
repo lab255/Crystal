@@ -48,6 +48,11 @@ export interface PermissionBrokerHost {
   run(runId: string): Promise<AgentRun | null>;
   /** The grants ledger's current patterns (re-read on every check). */
   grantPatterns(): Promise<string[]>;
+  /**
+   * The grants ledger's allow-all mode (re-read on every check). Optional so
+   * narrow hosts stay valid; absent reads as off.
+   */
+  allowAll?(): Promise<boolean>;
   /** The run's profile allowlist (static per request — profiles rarely move mid-run). */
   profilePatterns(agentId: string | null): Promise<string[]>;
   /** Mirror a state change onto the run's live event stream. */
@@ -169,6 +174,11 @@ export class PermissionBroker {
       ...this.baselinePatterns,
       ...(await this.host.profilePatterns(run.agentId ?? null).catch(() => [] as string[])),
     ];
+    // Allow-all is a broker decision, not an --allowedTools pattern: checked
+    // per request so flipping it off restores prompting for the very next call.
+    if (await this.host.allowAll?.().catch(() => false)) {
+      return this.allowOf(input);
+    }
     const grants = await this.host.grantPatterns().catch(() => [] as string[]);
     if (toolAllowedByPatterns(tool, input, [...staticPatterns, ...grants])) {
       return this.allowOf(input);
@@ -246,6 +256,12 @@ export class PermissionBroker {
    */
   async recheckGrants(): Promise<void> {
     if (!this.pending.size) return;
+    if (await this.host.allowAll?.().catch(() => false)) {
+      for (const [id] of [...this.pending]) {
+        this.settleEntry(id, { behavior: "allow" }, "allowed — workspace allow-all enabled");
+      }
+      return;
+    }
     const grants = await this.host.grantPatterns().catch(() => [] as string[]);
     for (const [id, entry] of [...this.pending]) {
       if (toolAllowedByPatterns(entry.tool, entry.input, [...entry.staticPatterns, ...grants])) {

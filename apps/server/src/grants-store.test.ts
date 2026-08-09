@@ -27,6 +27,17 @@ describe("GrantsStore", () => {
     expect(await reloaded.allowedTools()).toEqual(["WebFetch", "Bash(gh:*)"]);
   });
 
+  it("persists allow-all mode and reads it back on reload", async () => {
+    const store = new GrantsStore(dir);
+    expect(await store.allowAllEnabled()).toBe(false);
+    await store.setAllowAll(true);
+    expect(await store.allowAllEnabled()).toBe(true);
+    const reloaded = new GrantsStore(dir);
+    expect(await reloaded.allowAllEnabled()).toBe(true);
+    await store.setAllowAll(false);
+    expect(await store.allowAllEnabled()).toBe(false);
+  });
+
   it("folds denials and emits change events after the write lands", async () => {
     const store = new GrantsStore(dir);
     let events = 0;

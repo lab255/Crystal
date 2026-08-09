@@ -597,6 +597,9 @@ export async function startCrystalServer(opts: {
     "grants.setTools": async ({ ws, tools }) => ({
       ledger: await registry.get(ws).grants.setTools(tools),
     }),
+    "grants.setAllowAll": async ({ ws, on }) => ({
+      ledger: await registry.get(ws).grants.setAllowAll(on),
+    }),
     "permissions.pending": async ({ ws }) => ({
       pending: registry.get(ws).permissions.listPending(),
     }),

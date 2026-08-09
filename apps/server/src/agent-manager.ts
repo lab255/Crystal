@@ -599,6 +599,14 @@ export class AgentManager {
    * dispatch params can *ask* for bypass, only workspace policy grants it.
    */
   bypassResolver: (() => Promise<boolean>) | null = null;
+  /**
+   * Set by the workspace runtime: the roster's `defaultPermissionMode` — the
+   * mode for spawns where neither the dispatch params nor the profile named
+   * one. Read per spawn (resumed turns re-resolve), and still subject to the
+   * bypass gate above: a workspace default of bypassPermissions without
+   * `allowBypassPermissions` consent downgrades like any other request.
+   */
+  defaultModeResolver: (() => Promise<AgentPermissionMode | null>) | null = null;
   /** Mount window before an interactive session takes deliveries (test seam). */
   interactiveReadyMs = INTERACTIVE_READY_MS;
 
@@ -607,9 +615,11 @@ export class AgentManager {
     run: AgentRun,
     requested: AgentPermissionMode | null | undefined,
   ): Promise<AgentPermissionMode | null> {
-    if (requested !== "bypassPermissions") return requested ?? null;
+    const effective =
+      requested ?? (await this.defaultModeResolver?.().catch(() => null)) ?? null;
+    if (effective !== "bypassPermissions") return effective;
     const allowed = await this.bypassResolver?.().catch(() => false);
-    if (allowed) return requested;
+    if (allowed) return effective;
     this.record(run, {
       type: "stderr",
       text: "bypassPermissions requested but not enabled for this workspace — running with acceptEdits.",

@@ -234,6 +234,36 @@ export function AgentsTab({
             </label>
             <label
               className="flex items-center gap-2 text-[11px] text-ink-muted"
+              title="Default --permission-mode for runs where neither the dispatch nor the profile named one. bypassPermissions runs with --dangerously-skip-permissions — it is also the only mode that lifts the headless file sandbox (reads outside the run's working directories are hard-blocked, never prompted). Choosing it also grants the Bypass consent below."
+            >
+              <span className="w-16 shrink-0">Mode</span>
+              <Select
+                size="xs"
+                className="min-w-0 flex-1"
+                value={roster.defaultPermissionMode ?? ""}
+                onChange={(e) => {
+                  const mode = (e.target.value || null) as AgentPermissionMode | null;
+                  updateRoster({
+                    ...roster,
+                    defaultPermissionMode: mode,
+                    // A default of bypass without the consent flag would
+                    // silently downgrade every run — set both together.
+                    allowBypassPermissions:
+                      mode === "bypassPermissions" ? true : roster.allowBypassPermissions,
+                  });
+                }}
+                aria-label="Default permission mode"
+              >
+                <option value="">acceptEdits (default)</option>
+                {AGENT_PERMISSION_MODES.filter((m) => m !== "acceptEdits").map((m) => (
+                  <option key={m} value={m}>
+                    {m === "bypassPermissions" ? "bypassPermissions — skip all prompts" : m}
+                  </option>
+                ))}
+              </Select>
+            </label>
+            <label
+              className="flex items-center gap-2 text-[11px] text-ink-muted"
               title="Allow profiles with permission mode 'bypassPermissions' to run with all permission prompts skipped (--dangerously-skip-permissions). Off, such runs are downgraded to acceptEdits. Workspace-wide consent — leave off unless you trust every dispatch in this workspace."
             >
               <span className="w-16 shrink-0">Bypass</span>
@@ -242,7 +272,16 @@ export function AgentsTab({
                   type="checkbox"
                   checked={roster.allowBypassPermissions}
                   onChange={(e) =>
-                    updateRoster({ ...roster, allowBypassPermissions: e.target.checked })
+                    updateRoster({
+                      ...roster,
+                      allowBypassPermissions: e.target.checked,
+                      // Revoking consent with a bypass default would leave a
+                      // dial that silently downgrades — clear it too.
+                      defaultPermissionMode:
+                        !e.target.checked && roster.defaultPermissionMode === "bypassPermissions"
+                          ? null
+                          : roster.defaultPermissionMode,
+                    })
                   }
                   aria-label="Allow bypass-permissions runs in this workspace"
                 />
@@ -405,6 +444,7 @@ function permissionRunTitle(prompt: string): string {
 function GrantsPanel() {
   const ledger = useGrants((s) => s.ledger);
   const setTools = useGrants((s) => s.setTools);
+  const setAllowAll = useGrants((s) => s.setAllowAll);
   const workflows = useWorkflows((s) => s.workflows);
   const [draft, setDraft] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -441,6 +481,29 @@ function GrantsPanel() {
           workspace-wide, applied to every run at spawn
         </span>
       </div>
+      <label
+        className="mb-2 flex items-center gap-1.5 text-[11px] text-ink-muted"
+        title="Auto-approve every permission prompt from this workspace's headless runs — nothing parks in 'Needs permission' anymore. Prompts only: reads outside the run's working directories stay hard-blocked (that needs the roster's bypassPermissions mode). Flipping it off restores prompting for the next call."
+      >
+        <input
+          type="checkbox"
+          checked={ledger?.allowAll ?? false}
+          disabled={busy || !ledger}
+          onChange={(e) => {
+            setBusy(true);
+            setError(null);
+            setAllowAll(e.target.checked)
+              .catch((err) => setError((err as Error).message))
+              .finally(() => setBusy(false));
+          }}
+          aria-label="Allow all tools"
+        />
+        <span className={ledger?.allowAll ? "font-medium text-warn" : undefined}>
+          {ledger?.allowAll
+            ? "Allow all — every tool prompt is auto-approved"
+            : "Allow all tools (auto-approve every prompt)"}
+        </span>
+      </label>
       <Field
         label="Granted tools"
         hint="One --allowedTools pattern per line (e.g. WebFetch, Bash(gh:*)) — additive over profile allowlists; applies to the next run"

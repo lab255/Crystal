@@ -6,6 +6,7 @@ import {
   isPermissionDenial,
   matchesToolPattern,
   recordDenial,
+  setAllowAll,
   setGrantedTools,
   toolAllowedByPatterns,
 } from "./grants.js";
@@ -126,6 +127,18 @@ describe("setGrantedTools", () => {
     );
     expect(ledger.allowedTools).toEqual(["WebFetch", "Bash(gh:*)"]);
     expect(ledger.updatedAt).toBe("t1");
+  });
+});
+
+describe("setAllowAll", () => {
+  it("flips the flag without touching the pattern list", () => {
+    const base = setGrantedTools(emptyGrantsLedger("t0"), ["WebFetch"], "t1");
+    expect(base.allowAll).toBe(false);
+    const on = setAllowAll(base, true, "t2");
+    expect(on.allowAll).toBe(true);
+    expect(on.allowedTools).toEqual(["WebFetch"]);
+    expect(on.updatedAt).toBe("t2");
+    expect(setAllowAll(on, false, "t3").allowAll).toBe(false);
   });
 });
 

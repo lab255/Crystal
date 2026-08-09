@@ -314,6 +314,16 @@ export const AgentRosterSchema = z.object({
    * data — a library profile must not smuggle bypass into every project.
    */
   allowBypassPermissions: z.boolean().default(false),
+  /**
+   * The `--permission-mode` for runs where neither the dispatch nor the
+   * profile named one (today's implicit acceptEdits). Setting it to
+   * `bypassPermissions` is the workspace's "run everything unsandboxed"
+   * dial — it also lifts the CLI's working-directory file restriction that
+   * hard-blocks headless runs (no permission prompt is ever offered for
+   * those, so grants can't help). Still routed through the bypass gate:
+   * without `allowBypassPermissions` consent it downgrades to acceptEdits.
+   */
+  defaultPermissionMode: AgentPermissionModeSchema.nullish(),
 });
 export type AgentRoster = z.infer<typeof AgentRosterSchema>;
 

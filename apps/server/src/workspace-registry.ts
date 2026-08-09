@@ -133,6 +133,10 @@ export class WorkspaceRuntime {
     // read per spawn, so flipping the toggle applies to the next run.
     this.agents.bypassResolver = async () =>
       (await this.agentLibrary.roster()).allowBypassPermissions;
+    // The workspace's default --permission-mode for runs that don't set one
+    // (roster dial; bypass still gated by the consent flag above).
+    this.agents.defaultModeResolver = async () =>
+      (await this.agentLibrary.roster()).defaultPermissionMode ?? null;
     // Approvals as first-class workspace data: granted tools ride every
     // spawn, and permission denials land in the ledger with their workflow
     // attribution — "delivery X requested tool Y, denied N times".
@@ -165,6 +169,7 @@ export class WorkspaceRuntime {
       {
         run: (runId) => this.agents.get(runId),
         grantPatterns: () => this.grants.allowedTools(),
+        allowAll: () => this.grants.allowAllEnabled(),
         profilePatterns: async (agentId) =>
           agentId ? ((await this.resolveProfile(agentId))?.allowedTools ?? []) : [],
         note: (runId, event) => this.agents.notePermission(runId, event),

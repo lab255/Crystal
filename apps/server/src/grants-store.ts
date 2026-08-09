@@ -6,6 +6,7 @@ import {
   emptyGrantsLedger,
   nowIso,
   recordDenial,
+  setAllowAll,
   setGrantedTools,
   type GrantsLedger,
 } from "@crystal/core";
@@ -45,6 +46,11 @@ export class GrantsStore {
     return (await this.get()).allowedTools;
   }
 
+  /** Allow-all mode, for the permission broker (re-read per request). */
+  async allowAllEnabled(): Promise<boolean> {
+    return (await this.get()).allowAll;
+  }
+
   /** Serialized read-modify-write; the change event fires after the write lands. */
   private mutate(fn: (ledger: GrantsLedger) => GrantsLedger): Promise<GrantsLedger> {
     const task = this.queue.then(async () => {
@@ -63,6 +69,11 @@ export class GrantsStore {
   /** Replace the granted tool list (the IDE's editable half of the ledger). */
   setTools(tools: string[]): Promise<GrantsLedger> {
     return this.mutate((ledger) => setGrantedTools(ledger, tools, nowIso()));
+  }
+
+  /** Flip allow-all mode (broker auto-approve; see core/grants.ts). */
+  setAllowAll(on: boolean): Promise<GrantsLedger> {
+    return this.mutate((ledger) => setAllowAll(ledger, on, nowIso()));
   }
 
   /** Fold one observed permission denial into the tally. */

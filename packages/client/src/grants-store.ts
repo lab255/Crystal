@@ -15,6 +15,8 @@ export interface GrantsState {
   refresh(): Promise<void>;
   /** Replace the granted tool list (denials are recorded, not edited). */
   setTools(tools: string[]): Promise<void>;
+  /** Flip allow-all mode (broker auto-approves every headless prompt). */
+  setAllowAll(on: boolean): Promise<void>;
 }
 
 export type GrantsStore = StoreApi<GrantsState>;
@@ -30,6 +32,11 @@ export function createGrantsStore(client: BridgeClient): GrantsStore {
 
     async setTools(tools) {
       const { ledger } = await client.request("grants.setTools", { tools });
+      set({ ledger });
+    },
+
+    async setAllowAll(on) {
+      const { ledger } = await client.request("grants.setAllowAll", { on });
       set({ ledger });
     },
   }));

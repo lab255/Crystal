@@ -51,6 +51,7 @@ function fakeRun(over: Partial<AgentRun> = {}): AgentRun {
 
 interface HostState {
   grants: string[];
+  allowAll?: boolean;
   answer: string | null;
   noted: { runId: string; tool: string; state: string; detail?: string }[];
   filed: { text: string; options: string[]; recommended: string }[];
@@ -64,6 +65,7 @@ function makeHost(state: HostState): PermissionBrokerHost {
   return {
     run: async () => state.run,
     grantPatterns: async () => state.grants,
+    allowAll: async () => state.allowAll ?? false,
     profilePatterns: async () => [],
     note: (runId, event) => state.noted.push({ runId, ...event }),
     fileQuestion: async (_run, text, options, recommended) => {
@@ -111,6 +113,33 @@ describe("PermissionBroker", () => {
     const broker = new PermissionBroker(makeHost(state), BASELINE, 50);
     const decision = await broker.request("run_1", "WebFetch", { url: "https://x" });
     expect(decision.behavior).toBe("allow");
+  });
+
+  it("auto-allows any call when workspace allow-all mode is on, without parking", async () => {
+    const state = baseState();
+    state.allowAll = true;
+    const broker = new PermissionBroker(makeHost(state), BASELINE, 50);
+    const input = { command: "rm -rf node_modules" };
+    const decision = await broker.request("run_1", "Bash", input);
+    expect(decision).toEqual({ behavior: "allow", updatedInput: input });
+    expect(state.filed).toHaveLength(0);
+    expect(broker.pendingCount).toBe(0);
+  });
+
+  it("flipping allow-all on settles already-parked requests via recheckGrants", async () => {
+    const state = baseState();
+    const broker = new PermissionBroker(makeHost(state), BASELINE, 10_000);
+    const pending = broker.request("run_1", "WebFetch", { url: "https://x" });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(broker.pendingCount).toBe(1);
+
+    state.allowAll = true;
+    await broker.recheckGrants();
+    const decision = await pending;
+    expect(decision).toEqual({ behavior: "allow", updatedInput: { url: "https://x" } });
+    expect(broker.pendingCount).toBe(0);
+    expect(state.noted.at(-1)).toMatchObject({ state: "allowed" });
+    expect(state.denied).toHaveLength(0);
   });
 
   it("parks an uncovered call, files the board question, and allows on a grants change", async () => {

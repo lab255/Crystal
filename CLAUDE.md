@@ -415,7 +415,17 @@ build/sign (+notarize on macOS) → signed updater `latest.json`).
   `allowBypassPermissions` flag is workspace consent — `AgentManager.gatedPermissionMode`
   downgrades ungranted requests to acceptEdits at every spawn choke point (start,
   prepareInteractive, resumed turns re-resolve per turn). The hub's manager never gets
-  bypass (it resolves against the global library, not a workspace roster).
+  bypass (it resolves against the global library, not a workspace roster). Two
+  workspace-wide dials sit on top: the roster's `defaultPermissionMode`
+  (`defaultModeResolver`) is the mode for runs where neither dispatch nor profile named
+  one — setting it to bypass is the "run everything unsandboxed" switch and the only
+  lever that lifts the CLI's headless working-directory file restriction (hard-blocked,
+  never prompted; still rides the bypass gate) — and the grants ledger's `allowAll` makes
+  the permission broker auto-approve every headless prompt (broker policy only: it never
+  widens `--allowedTools`, and flipping it on settles already-parked requests via
+  `recheckGrants`). The AgentsTab hosts both (roster Mode select, grants panel toggle);
+  the UI keeps `defaultPermissionMode: bypassPermissions` and `allowBypassPermissions`
+  in step in both directions.
 
 ## Gotchas
 

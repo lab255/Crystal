@@ -227,6 +227,24 @@ describe("agent wake-ups", () => {
     );
   });
 
+  it("applies the workspace default permission mode, still behind the bypass gate", async () => {
+    const mgr = await makeManager(50);
+    mgr.defaultModeResolver = async () => "bypassPermissions";
+    // The roster default asks for bypass, but consent is off — downgraded.
+    const denied = await mgr.prepareInteractive({ prompt: "x" });
+    expect(denied.args[denied.args.indexOf("--permission-mode") + 1]).toBe("acceptEdits");
+
+    mgr.bypassResolver = async () => true;
+    const granted = await mgr.prepareInteractive({ prompt: "x" });
+    expect(granted.args[granted.args.indexOf("--permission-mode") + 1]).toBe(
+      "bypassPermissions",
+    );
+
+    // An explicit mode on the dispatch always wins over the workspace default.
+    const explicit = await mgr.prepareInteractive({ prompt: "x", permissionMode: "plan" });
+    expect(explicit.args[explicit.args.indexOf("--permission-mode") + 1]).toBe("plan");
+  });
+
   it("delivers a message queued on a worker's own chain when the worker settles", async () => {
     // Regression: a worker's settlement only ever flushed its *manager's*
     // queue, so an answer to a question the worker asked was lost forever.
