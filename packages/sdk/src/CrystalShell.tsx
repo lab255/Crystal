@@ -64,6 +64,7 @@ import { GitPanel } from "./GitPanel.js";
 import { NeedsYouPill } from "./NeedsYouPill.js";
 import { ProjectNav } from "./ProjectNav.js";
 import { ProjectMenu, ProjectSwitcher } from "./ProjectSwitcher.js";
+import { RestorePrompt } from "./RestorePrompt.js";
 import { SettingsDialog, type SettingsSection } from "./SettingsDialog.js";
 import { TerminalPanel } from "./TerminalPanel.js";
 import { WorkspaceRail } from "./WorkspaceRail.js";
@@ -621,6 +622,9 @@ export function CrystalShell({
         />
 
         <KeyboardShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
+
+        {/* Safe mode: the last boot's workspace restore crashed — ask before retrying. */}
+        <RestorePrompt />
 
         {/* The palette lists the ACTIVE connection's workspaces (fleet v1). */}
         <CommandPalette

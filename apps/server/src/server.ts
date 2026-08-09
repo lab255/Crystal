@@ -477,6 +477,7 @@ export async function startCrystalServer(opts: {
       defaultWs: registry.defaultWs,
       recents: await registry.recents(),
       server: { serverId, name: serverName },
+      ...(registry.pendingRestore() ? { pendingRestore: registry.pendingRestore()! } : {}),
     }),
     "workspaces.open": async ({ root }) => ({
       workspace: (await registry.open(root)).descriptor(),
@@ -489,6 +490,14 @@ export async function startCrystalServer(opts: {
         console.warn("[crystal] hub workspace-close settle failed:", (err as Error).message);
       });
       await registry.close(ws);
+      return { ok: true };
+    },
+    "workspaces.restorePending": async () => {
+      await registry.restorePending();
+      return { ok: true };
+    },
+    "workspaces.dismissRestore": async () => {
+      await registry.dismissPendingRestore();
       return { ok: true };
     },
     "workspaces.browse": ({ path: p }) => browseDirs(p),

@@ -11,6 +11,12 @@ export interface WorkspacesState {
   workspaces: WorkspaceDescriptor[];
   /** Server-side reopen list, most recent first (includes open workspaces). */
   recents: RecentWorkspace[];
+  /**
+   * Safe mode: roots the server held back because the previous boot's restore
+   * never completed (it most likely crashed opening one of them). Non-null
+   * means the shell should prompt to restore or start without.
+   */
+  pendingRestore: string[] | null;
   activeId: string | null;
   error: string | null;
 
@@ -18,6 +24,10 @@ export interface WorkspacesState {
   /** Open a workspace by absolute path on the host and switch to it. */
   openWorkspace(root: string): Promise<WorkspaceDescriptor>;
   closeWorkspace(id: string): Promise<void>;
+  /** Safe mode "restore anyway": reopen the held-back roots. */
+  restorePending(): Promise<void>;
+  /** Safe mode "start without": drop the held-back roots (they stay in recents). */
+  dismissRestore(): Promise<void>;
   setActive(id: string): void;
 }
 
@@ -27,17 +37,22 @@ export function createWorkspacesStore(client: BridgeClient): WorkspacesStore {
   const store = createStore<WorkspacesState>((set, get) => ({
     workspaces: [],
     recents: [],
+    pendingRestore: null,
     activeId: null,
     error: null,
 
     async refresh() {
       try {
-        const { workspaces, defaultWs, recents } = await client.request("workspaces.list", {});
+        const { workspaces, defaultWs, recents, pendingRestore } = await client.request(
+          "workspaces.list",
+          {},
+        );
         const activeId = get().activeId;
         const stillOpen = activeId != null && workspaces.some((w) => w.id === activeId);
         set({
           workspaces,
           recents: recents ?? [],
+          pendingRestore: pendingRestore?.length ? pendingRestore : null,
           activeId: stillOpen ? activeId : defaultWs,
           error: null,
         });
@@ -67,6 +82,16 @@ export function createWorkspacesStore(client: BridgeClient): WorkspacesStore {
           activeId: s.activeId === id ? (workspaces[0]?.id ?? null) : s.activeId,
         };
       });
+    },
+
+    async restorePending() {
+      await client.request("workspaces.restorePending", {});
+      await get().refresh();
+    },
+
+    async dismissRestore() {
+      await client.request("workspaces.dismissRestore", {});
+      await get().refresh();
     },
 
     setActive(id) {

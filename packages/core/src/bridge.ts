@@ -270,10 +270,22 @@ export interface BridgeMethods {
        * servers still typecheck.
        */
       server?: { serverId: string; name: string };
+      /**
+       * Safe mode: roots the server held back because the previous boot's
+       * workspace restore never completed (it most likely crashed opening one
+       * of them). Clients should prompt — `workspaces.restorePending` opens
+       * them, `workspaces.dismissRestore` starts without them. Optional so
+       * responses from older servers still typecheck.
+       */
+      pendingRestore?: string[];
     };
   };
   "workspaces.open": { params: { root: string }; result: { workspace: WorkspaceDescriptor } };
   "workspaces.close": { params: { ws: string }; result: { ok: true } };
+  /** Safe mode: reopen the roots a crashed restore held back (see `workspaces.list`). */
+  "workspaces.restorePending": { params: Record<string, never>; result: { ok: true } };
+  /** Safe mode: start without the held-back roots (they stay in recents). */
+  "workspaces.dismissRestore": { params: Record<string, never>; result: { ok: true } };
   /**
    * List the sub-directories of an absolute host path (home dir when omitted) —
    * powers the open-workspace folder browser. Never fails on permission errors;
@@ -1275,6 +1287,8 @@ export const UNSCOPED_METHODS: readonly BridgeMethodName[] = [
   "workspaces.open",
   "workspaces.close",
   "workspaces.browse",
+  "workspaces.restorePending",
+  "workspaces.dismissRestore",
   "codemap.cross",
   // The hub sits above workspaces: its programs span them, so none of its
   // methods may have the active workspace injected.

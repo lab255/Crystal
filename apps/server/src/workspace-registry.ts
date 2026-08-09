@@ -546,6 +546,21 @@ export class WorkspaceRegistry {
     return path.join(path.dirname(this.persistFile), `${base}.${safe}.json`);
   }
 
+  /**
+   * Crash sentinel around restore: written (with the roots being reopened)
+   * just before the restore loop starts and removed when it completes, so a
+   * marker found at boot means the previous restore never finished — the
+   * server most likely died opening one of these roots (native watcher or
+   * analyzer crash, OOM on a huge repo). Per flavor, like the open set.
+   */
+  private restoreMarkerFile(): string | null {
+    const base = this.flavorFile() ?? this.persistFile;
+    return base ? `${base}.restoring` : null;
+  }
+
+  /** Roots held back by safe mode (the previous restore crashed); null when none. */
+  private safeModeRoots: string[] | null = null;
+
   /** Open (or return the already-open) workspace at `root`. */
   async open(root: string): Promise<WorkspaceRuntime> {
     const canonical = canonicalRoot(root);
@@ -668,7 +683,13 @@ export class WorkspaceRegistry {
     await Promise.allSettled(runtimes.map((runtime) => runtime.close()));
   }
 
-  /** Reopen workspaces persisted by a previous run (silently skips gone dirs). */
+  /**
+   * Reopen workspaces persisted by a previous run (silently skips gone dirs).
+   * Safe mode: when the previous boot's restore marker is still on disk (that
+   * restore never completed — it most likely crashed the server), the roots
+   * are held back as `pendingRestore()` for the client to prompt on instead
+   * of walking straight into the same crash.
+   */
   async restorePersisted(): Promise<void> {
     if (!this.persistFile) return;
     const readRoots = async (file: string): Promise<string[] | null> => {
@@ -684,8 +705,30 @@ export class WorkspaceRegistry {
     // boot after migration (once this flavor persists, its own file exists —
     // and an empty list there is a statement, not an absence).
     const flavor = this.flavorFile();
-    const roots =
+    const persisted =
       (flavor ? await readRoots(flavor) : null) ?? (await readRoots(this.persistFile)) ?? [];
+    const alreadyOpen = new Set([...this.runtimes.values()].map((r) => r.root));
+    const markerRoots = await this.readRestoreMarker();
+    if (markerRoots) {
+      // The marker's roots are what was being restored when the server died; a
+      // corrupt/empty marker falls back to the persisted set. CLI-opened roots
+      // are already live and proven harmless — only the rest are held back.
+      const pending = (markerRoots.length > 0 ? markerRoots : persisted).filter(
+        (r) => !alreadyOpen.has(r),
+      );
+      if (pending.length > 0) {
+        this.safeModeRoots = pending;
+        return;
+      }
+      await this.clearRestoreMarker();
+    }
+    await this.openGuarded(persisted.filter((r) => !alreadyOpen.has(r)));
+  }
+
+  /** Marker-guarded open loop: a hard crash mid-loop leaves the marker behind. */
+  private async openGuarded(roots: string[]): Promise<void> {
+    if (roots.length === 0) return;
+    await this.writeRestoreMarker(roots);
     for (const root of roots) {
       try {
         await this.open(root);
@@ -693,6 +736,81 @@ export class WorkspaceRegistry {
         console.warn(`[crystal] skipping persisted workspace ${root}:`, (err as Error).message);
       }
     }
+    await this.clearRestoreMarker();
+  }
+
+  /**
+   * Marker contents, or null when no marker exists (the last restore completed
+   * cleanly). A marker that exists but doesn't parse still means a crashed
+   * restore — it returns `[]` so the caller falls back to the persisted set.
+   */
+  private async readRestoreMarker(): Promise<string[] | null> {
+    const marker = this.restoreMarkerFile();
+    if (!marker) return null;
+    let raw: string;
+    try {
+      raw = await fs.readFile(marker, "utf8");
+    } catch {
+      return null; // no marker — the previous restore finished
+    }
+    try {
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed?.roots)) return [];
+      return parsed.roots.filter((r: unknown) => typeof r === "string");
+    } catch {
+      return [];
+    }
+  }
+
+  private async writeRestoreMarker(roots: string[]): Promise<void> {
+    const marker = this.restoreMarkerFile();
+    if (!marker) return;
+    try {
+      await fs.mkdir(path.dirname(marker), { recursive: true });
+      await fs.writeFile(marker, JSON.stringify({ roots }, null, 2), "utf8");
+    } catch (err) {
+      console.warn("[crystal] could not write restore marker:", (err as Error).message);
+    }
+  }
+
+  private async clearRestoreMarker(): Promise<void> {
+    const marker = this.restoreMarkerFile();
+    if (!marker) return;
+    await fs.rm(marker, { force: true }).catch(() => {});
+  }
+
+  /** Roots held back by safe mode (see `restorePersisted`); null when none. */
+  pendingRestore(): string[] | null {
+    return this.safeModeRoots;
+  }
+
+  /**
+   * Safe-mode "restore anyway": open the held-back roots. Marker-guarded, so
+   * if the crash repeats the next boot prompts again rather than crash-looping.
+   */
+  async restorePending(): Promise<void> {
+    const roots = this.safeModeRoots;
+    this.safeModeRoots = null;
+    if (!roots) return;
+    const alreadyOpen = new Set([...this.runtimes.values()].map((r) => r.root));
+    await this.openGuarded(roots.filter((r) => !alreadyOpen.has(r)));
+    // open() broadcasts per root, but every root failing cleanly would leave
+    // clients still showing the prompt — announce the resolution regardless.
+    this.broadcast("workspaces.changed", {});
+  }
+
+  /**
+   * Safe-mode "start without": drop the held-back roots from the open set
+   * (they stay in recents, so nothing is lost) and clear the marker.
+   */
+  async dismissPendingRestore(): Promise<void> {
+    if (!this.safeModeRoots) return;
+    this.safeModeRoots = null;
+    await this.clearRestoreMarker();
+    // Overwrite the stored open set with what is actually open, so the
+    // dropped roots don't come back on the next boot.
+    await this.persist();
+    this.broadcast("workspaces.changed", {});
   }
 
   /** One-shot read of the persisted reopen list (pre-recents files just yield an empty list). */

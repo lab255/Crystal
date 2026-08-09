@@ -280,6 +280,92 @@ describe("WorkspaceRegistry per-flavor persistence", () => {
   });
 });
 
+describe("WorkspaceRegistry safe-mode restore", () => {
+  const cleanups: (() => Promise<void> | void)[] = [];
+  afterEach(async () => {
+    for (const cleanup of cleanups.splice(0)) await cleanup();
+  });
+
+  async function tmpDir(): Promise<string> {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "crystal-safemode-"));
+    cleanups.push(() => fs.rm(dir, { recursive: true, force: true }));
+    return dir;
+  }
+
+  /** Persisted set + a simulated crash marker (the previous restore never finished). */
+  async function crashedSetup(): Promise<{ persistFile: string; roots: string[] }> {
+    const tmp = await tmpDir();
+    await fs.mkdir(path.join(tmp, "alpha"));
+    await fs.mkdir(path.join(tmp, "beta"));
+    const persistFile = path.join(tmp, "open-workspaces.json");
+    const seed = new WorkspaceRegistry(() => {}, persistFile);
+    await seed.open(path.join(tmp, "alpha"));
+    await seed.open(path.join(tmp, "beta"));
+    await seed.closeAll();
+    const { roots } = JSON.parse(await fs.readFile(persistFile, "utf8"));
+    await fs.writeFile(`${persistFile}.restoring`, JSON.stringify({ roots }), "utf8");
+    return { persistFile, roots };
+  }
+
+  it("holds roots back behind a leftover crash marker until the user restores", async () => {
+    const { persistFile, roots } = await crashedSetup();
+
+    const registry = new WorkspaceRegistry(() => {}, persistFile);
+    cleanups.push(() => registry.closeAll());
+    await registry.restorePersisted();
+    // Safe mode: nothing opened, the crashed set is held for the prompt.
+    expect(registry.list()).toEqual([]);
+    expect(registry.pendingRestore()).toEqual(roots);
+
+    await registry.restorePending();
+    expect(registry.list().map((w) => w.name).sort()).toEqual(["alpha", "beta"]);
+    expect(registry.pendingRestore()).toBeNull();
+    // The marker is gone — the retried restore completed.
+    await expect(fs.stat(`${persistFile}.restoring`)).rejects.toThrow();
+    await registry.closeAll();
+
+    // Next boot restores normally again, and leaves no marker behind.
+    const registry2 = new WorkspaceRegistry(() => {}, persistFile);
+    cleanups.push(() => registry2.closeAll());
+    await registry2.restorePersisted();
+    expect(registry2.list().map((w) => w.name).sort()).toEqual(["alpha", "beta"]);
+    expect(registry2.pendingRestore()).toBeNull();
+    await expect(fs.stat(`${persistFile}.restoring`)).rejects.toThrow();
+  });
+
+  it("dismissing safe mode drops the held-back roots but keeps them in recents", async () => {
+    const { persistFile } = await crashedSetup();
+
+    const registry = new WorkspaceRegistry(() => {}, persistFile);
+    cleanups.push(() => registry.closeAll());
+    await registry.restorePersisted();
+    expect(registry.pendingRestore()).not.toBeNull();
+
+    await registry.dismissPendingRestore();
+    expect(registry.pendingRestore()).toBeNull();
+    await expect(fs.stat(`${persistFile}.restoring`)).rejects.toThrow();
+    // The stored open set now reflects reality (nothing open)…
+    expect(JSON.parse(await fs.readFile(persistFile, "utf8")).roots).toEqual([]);
+    // …so the next boot starts clean, but the reopen list still has both.
+    const registry2 = new WorkspaceRegistry(() => {}, persistFile);
+    cleanups.push(() => registry2.closeAll());
+    await registry2.restorePersisted();
+    expect(registry2.list()).toEqual([]);
+    expect((await registry2.recents()).map((r) => r.name).sort()).toEqual(["alpha", "beta"]);
+  });
+
+  it("a corrupt marker still counts as a crashed restore, falling back to the persisted set", async () => {
+    const { persistFile, roots } = await crashedSetup();
+    await fs.writeFile(`${persistFile}.restoring`, "not json", "utf8");
+
+    const registry = new WorkspaceRegistry(() => {}, persistFile);
+    cleanups.push(() => registry.closeAll());
+    await registry.restorePersisted();
+    expect(registry.list()).toEqual([]);
+    expect(registry.pendingRestore()).toEqual(roots);
+  });
+});
+
 describe("WorkspaceRegistry terminal restore", () => {
   const cleanups: (() => Promise<void> | void)[] = [];
   afterEach(async () => {
