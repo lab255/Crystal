@@ -7,8 +7,10 @@ import {
   apiRatePerMin,
   createEpic,
   leaseValid,
+  livenessIndex,
   nowIso,
   openQuestions,
+  questionDeliverability,
   rollupRunsUsage,
   taskLiveUsage,
   type Project,
@@ -18,7 +20,14 @@ import {
   type TaskSize,
   type TaskStatus,
 } from "@crystal/core";
-import { formatRunCost, formatRunTokens, useAgents, useCrystal, useWorkspace } from "@crystal/client";
+import {
+  formatRunCost,
+  formatRunTokens,
+  questionDeliveryNotice,
+  useAgents,
+  useCrystal,
+  useWorkspace,
+} from "@crystal/client";
 import { Badge, Button, Field, Select, StatusDot, TagInput, Textarea, cn } from "@crystal/ui";
 import { QuestionRow } from "./QuestionRow.js";
 import { RunAgentCard } from "./RunAgentCard.js";
@@ -54,15 +63,18 @@ export function TaskDetail({
   const [description, setDescription] = useState(task.description);
   const [human, setHuman] = useState(task.owners.human ?? "");
   const [epicDraft, setEpicDraft] = useState<string | null>(null);
+  const [questionNotice, setQuestionNotice] = useState<string | null>(null);
 
   useEffect(() => {
     setTitle(task.title);
     setDescription(task.description);
     setHuman(task.owners.human ?? "");
     setEpicDraft(null);
+    setQuestionNotice(null);
   }, [task.id]);
 
   const taskRuns = runs.filter((r) => r.taskId === task.id);
+  const runsById = useMemo(() => livenessIndex(runs), [runs]);
   const rollup = useMemo(() => rollupRunsUsage(taskRuns), [taskRuns]);
   const callRate = apiRatePerMin(rollup.usage, rollup.activeMs);
   // Durable rollup + live runs — run history in app data ages out, the board's
@@ -128,6 +140,27 @@ export function TaskDetail({
     });
     // Typed delivery outcome: only a resumed turn moves the surface.
     if (result.delivery === "resumed" && result.runId) onOpenRun(result.runId);
+    setQuestionNotice(questionDeliveryNotice(result.delivery));
+  }
+
+  async function dismissQuestion(question: TaskQuestion): Promise<void> {
+    const result = await client.request("task.dismissQuestion", {
+      path: projectPath,
+      taskId: task.id,
+      questionId: question.id,
+    });
+    if (!result.ok) throw new Error(result.reason);
+    const at = nowIso();
+    patchTask({
+      questions: task.questions.map((q) =>
+        q.id === question.id
+          ? {
+              ...q,
+              closed: { at, reason: "dismissed" as const, note: null, by: "user" as const },
+            }
+          : q,
+      ),
+    });
   }
 
   return (
@@ -394,8 +427,19 @@ export function TaskDetail({
         {task.questions.length > 0 ? (
           <Field label={`Questions (${openQuestions(task).length} open)`}>
             <div className="space-y-1.5">
+              {questionNotice ? (
+                <p className="rounded-md bg-surface-2 px-2 py-1.5 text-[10px] text-ink-muted">
+                  {questionNotice}
+                </p>
+              ) : null}
               {task.questions.map((q) => (
-                <QuestionRow key={q.id} question={q} onAnswer={answerQuestion} />
+                <QuestionRow
+                  key={q.id}
+                  question={q}
+                  deliverability={questionDeliverability(q, runsById)}
+                  onAnswer={answerQuestion}
+                  onDismiss={dismissQuestion}
+                />
               ))}
             </div>
           </Field>

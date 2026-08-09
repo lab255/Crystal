@@ -1,11 +1,11 @@
 import { useCallback, useMemo } from "react";
 import {
   formatWsRef,
+  partitionQuestionRows,
   unrecoveredFailures,
   type AgentRun,
-  type NeedsYouQuestion,
 } from "@crystal/core";
-import { EMPTY_QUESTIONS, EMPTY_RUNS } from "./fleet-store.js";
+import { EMPTY_QUESTIONS, EMPTY_RUNS, type FleetQuestion } from "./fleet-store.js";
 import { wsKey } from "./fleet-client.js";
 import { useCrystal, useFleet, useFleetConnections } from "./provider.js";
 
@@ -27,7 +27,10 @@ export interface WorkspaceNeedsYou {
   serverLabel: string | null;
   /** Full fleet run snapshot, used by transition consumers beyond needs-you. */
   runs: AgentRun[];
-  questions: NeedsYouQuestion[];
+  /** Every open row, including stale questions for inbox surfaces. */
+  questions: FleetQuestion[];
+  actionableQuestions: FleetQuestion[];
+  staleQuestions: FleetQuestion[];
   failures: AgentRun[];
   count: number;
   /** False until the workspace's board / run list has been read at least
@@ -46,6 +49,7 @@ export interface FleetNeedsYou {
 export function useFleetNeedsYou(): FleetNeedsYou {
   const connections = useFleetConnections();
   const runsByWs = useFleet((s) => s.runsByWs);
+  const runsLoadedByWs = useFleet((s) => s.runsLoadedByWs);
   const questionsByWs = useFleet((s) => s.questionsByWs);
   // Derivation stays outside the selectors (zustand v5 stable-reference rule).
   return useMemo(() => {
@@ -56,8 +60,10 @@ export function useFleetNeedsYou(): FleetNeedsYou {
       for (const w of c.workspaces) {
         const key = wsKey(c.sid, w.id);
         const questions = questionsByWs[key] ?? EMPTY_QUESTIONS;
+        const partitioned = partitionQuestionRows(questions);
         const runs = runsByWs[key];
-        const failures = runs === undefined ? EMPTY_RUNS : unrecoveredFailures(runs);
+        const runsRead = runsLoadedByWs[key] === true;
+        const failures = runsRead ? unrecoveredFailures(runs ?? EMPTY_RUNS) : EMPTY_RUNS;
         rows.push({
           sid: c.sid,
           ws: w.id,
@@ -66,21 +72,23 @@ export function useFleetNeedsYou(): FleetNeedsYou {
           serverLabel: multiServer ? c.label : null,
           runs: runs ?? EMPTY_RUNS,
           questions,
+          actionableQuestions: partitioned.actionable,
+          staleQuestions: partitioned.stale,
           failures,
-          count: questions.length + failures.length,
+          count: partitioned.actionable.length + failures.length,
           questionsRead: questionsByWs[key] !== undefined,
-          runsRead: runs !== undefined,
+          runsRead,
         });
-        count += questions.length + failures.length;
+        count += partitioned.actionable.length + failures.length;
       }
     }
     return { rows, count };
-  }, [connections, runsByWs, questionsByWs]);
+  }, [connections, runsByWs, runsLoadedByWs, questionsByWs]);
 }
 
 /** One notification item, addressed well enough to jump to it from anywhere. */
 export type AttentionTarget =
-  | { kind: "question"; sid: string; ws: string; question: NeedsYouQuestion }
+  | { kind: "question"; sid: string; ws: string; question: FleetQuestion }
   | { kind: "failure"; sid: string; ws: string; run: AgentRun }
   | { kind: "run"; sid: string; ws: string; run: AgentRun }
   | { kind: "workflow"; sid: string; ws: string; workflowId: string };

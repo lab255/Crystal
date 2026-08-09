@@ -7,10 +7,13 @@ import {
   TASK_STATUS_LABELS,
   createEpic,
   createTask,
+  isQuestionActionableWithDeliverability,
   leaseValid,
+  livenessIndex,
   matchAgent,
   nowIso,
   openQuestions,
+  questionDeliverability,
   readyTasks,
   tagDimension,
   tagDimensions,
@@ -19,6 +22,7 @@ import {
   tasksInColumn,
   templateOf,
   type AgentRoster,
+  type LivenessRun,
   type Project,
   type TaskItem,
   type TaskStatus,
@@ -92,6 +96,7 @@ export function Board({
   onSelectTask: (taskId: string | null) => void;
 }) {
   const runs = useAgents((s) => s.runs);
+  const runsById = useMemo(() => livenessIndex(runs), [runs]);
   const startRun = useAgents((s) => s.start);
   const roster = useWorkspace((s) => s.roster);
   const workflows = useWorkflows((s) => s.workflows);
@@ -678,6 +683,7 @@ export function Board({
               selected={task.id === selectedTaskId}
               agentRunning={running.has(task.id)}
               blocked={blockedTasks.has(task.id)}
+              runsById={runsById}
               dropBefore={dragOverCard === task.id}
               onClick={() => onSelectTask(task.id)}
               onDragOverCard={(over) => setDragOverCard(over ? task.id : null)}
@@ -813,6 +819,7 @@ function TaskCard({
   selected,
   agentRunning,
   blocked,
+  runsById,
   dropBefore,
   onClick,
   onDragOverCard,
@@ -825,6 +832,7 @@ function TaskCard({
   selected: boolean;
   agentRunning: boolean;
   blocked: boolean;
+  runsById: ReadonlyMap<string, LivenessRun>;
   dropBefore: boolean;
   onClick: () => void;
   onDragOverCard: (over: boolean) => void;
@@ -901,6 +909,12 @@ function TaskCard({
                   {openQs.slice(0, 3).map((q) => (
                     <p key={q.id} className="text-[11px] leading-snug">
                       {q.text.length > 200 ? `${q.text.slice(0, 200)}…` : q.text}
+                      {!isQuestionActionableWithDeliverability(
+                        q,
+                        questionDeliverability(q, runsById),
+                      ) ? (
+                        <span className="text-ink-faint"> (stale)</span>
+                      ) : null}
                     </p>
                   ))}
                   {openQs.length > 3 ? (

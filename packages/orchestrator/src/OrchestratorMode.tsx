@@ -15,9 +15,10 @@ import {
 } from "lucide-react";
 import {
   RUN_PURPOSES,
+  countActionableQuestions,
   deriveNeedsYou,
   firstAttentionTask,
-  openQuestions,
+  livenessIndex,
   type OrchestratorTabId,
   type Project,
   type RunPurpose,
@@ -125,6 +126,7 @@ export function OrchestratorMode() {
     () => deriveNeedsYou(projects, runs, pendingPermissions),
     [projects, runs, pendingPermissions],
   );
+  const runsById = useMemo(() => livenessIndex(runs), [runs]);
   const auth = useAgents((s) => s.auth);
   const [createOpen, setCreateOpen] = useState(false);
   const [newName, setNewName] = useState("");
@@ -156,9 +158,7 @@ export function OrchestratorMode() {
   }, [tab, boardView, current, selectedTask, runs, selectListTask]);
 
   const runningCount = runs.filter((r) => r.status === "running").length;
-  const waitingCount = current
-    ? current.project.tasks.reduce((n, t) => n + openQuestions(t).length, 0)
-    : 0;
+  const waitingCount = current ? countActionableQuestions([current], runsById) : 0;
 
   // Only purposes actually present become chips, in RUN_PURPOSES order.
   const presentPurposes = useMemo(() => {

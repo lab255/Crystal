@@ -15,12 +15,14 @@ import {
 } from "lucide-react";
 import {
   DEFAULT_SERVER_SID,
+  countActionableQuestionRows,
   workspaceLight,
   type RecentWorkspace,
   type TrafficLight,
 } from "@crystal/core";
 import {
   EMPTY_RUNS,
+  EMPTY_QUESTIONS,
   EMPTY_TODOS,
   useCrystal,
   useFleet,
@@ -124,7 +126,7 @@ export function WorkspaceRail({
       todosByWs[key] ?? EMPTY_TODOS,
       runsByWs[key] ?? EMPTY_RUNS,
       seenAtByWs[key] ?? null,
-      questionsByWs[key]?.length ?? 0,
+      countActionableQuestionRows(questionsByWs[key] ?? EMPTY_QUESTIONS),
     );
   };
   const multiServer = connections.length > 1;

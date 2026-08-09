@@ -9,9 +9,10 @@ import {
   TerminalSquare,
   X,
 } from "lucide-react";
-import { workspaceLight } from "@crystal/core";
+import { countActionableQuestionRows, workspaceLight } from "@crystal/core";
 import {
   EMPTY_RUNS,
+  EMPTY_QUESTIONS,
   EMPTY_TODOS,
   openNewWindow,
   useCrystal,
@@ -144,7 +145,7 @@ export function ProjectSwitcher({
                 todosByWs[key] ?? EMPTY_TODOS,
                 runsByWs[key] ?? EMPTY_RUNS,
                 seenAtByWs[key] ?? null,
-                questionsByWs[key]?.length ?? 0,
+                countActionableQuestionRows(questionsByWs[key] ?? EMPTY_QUESTIONS),
               );
               return (
                 <DropdownMenuItem

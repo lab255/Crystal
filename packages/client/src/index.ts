@@ -70,7 +70,9 @@ export {
   EMPTY_QUESTIONS,
   EMPTY_RUNS,
   EMPTY_TODOS,
+  annotateFleetQuestions,
   createFleetStore,
+  type FleetQuestion,
   type FleetState,
   type FleetStore,
 } from "./fleet-store.js";
@@ -83,6 +85,10 @@ export {
   type TerminalsStore,
 } from "./terminal-store.js";
 export { agentEventToChunk, type AgentEventChunk } from "./agent-event-chunk.js";
+export {
+  questionDeliveryNotice,
+  type QuestionDelivery,
+} from "./question-delivery.js";
 export {
   createWorkflowStore,
   type WorkflowState,

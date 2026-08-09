@@ -1,11 +1,12 @@
 import { Fragment } from "react";
-import { AlertTriangle, MessageCircleQuestion, ShieldAlert } from "lucide-react";
+import { AlertTriangle, Inbox, MessageCircleQuestion, ShieldAlert } from "lucide-react";
 import {
   EMPTY_PENDING_PERMISSIONS,
   useAttentionJump,
   useAttentionNotifications,
   useFleet,
   useFleetNeedsYou,
+  useNavUpdate,
 } from "@crystal/client";
 import { fleetNeedsYouCount } from "@crystal/core";
 import {
@@ -18,11 +19,12 @@ import {
 } from "@crystal/ui";
 
 /**
- * The global "N need you" pill (operator-oss's titlebar pill): open questions,
+ * The global "N need you" pill (operator-oss's titlebar pill): actionable questions,
  * parked permissions and unrecovered failures rolled up across every open
  * workspace on every connection. The dropdown groups items per workspace;
  * each row jumps straight to the waiting task or run — cross-server, from any
- * mode. The orchestrator keeps its own per-workspace pill with the same count.
+ * mode. Stale rows collapse to one Overview-inbox link after the actionable
+ * groups. The orchestrator keeps its own per-workspace pill with the same count.
  *
  * This component also hosts the attention notifier: it subscribes to the same
  * fleet slices anyway, and a leaf keeps those re-renders out of the shell.
@@ -32,8 +34,10 @@ export function NeedsYouPill() {
   const { rows } = useFleetNeedsYou();
   const permissionsByWs = useFleet((s) => s.permissionsByWs);
   const count = fleetNeedsYouCount(rows, permissionsByWs);
+  const staleCount = rows.reduce((total, row) => total + row.staleQuestions.length, 0);
   const jump = useAttentionJump();
-  if (count === 0) return null;
+  const nav = useNavUpdate();
+  if (count === 0 && staleCount === 0) return null;
   const waiting = rows.filter(
     (row) => row.count + (permissionsByWs[row.key]?.length ?? 0) > 0,
   );
@@ -45,7 +49,7 @@ export function NeedsYouPill() {
           className="flex shrink-0 items-center gap-1.5 rounded-full border border-warn/40 bg-warn/10 px-2.5 py-0.5 text-[11px] font-medium text-warn transition-colors hover:bg-warn/20"
         >
           <MessageCircleQuestion className="h-3.5 w-3.5" />
-          {count} need{count === 1 ? "s" : ""} you
+          {count > 0 ? `${count} need${count === 1 ? "s" : ""} you` : "Questions"}
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="max-h-96 w-80 overflow-y-auto">
@@ -60,7 +64,7 @@ export function NeedsYouPill() {
                 </span>
               ) : null}
             </DropdownMenuLabel>
-            {row.questions.map((q) => (
+            {row.actionableQuestions.map((q) => (
               <DropdownMenuItem
                 key={q.question.id}
                 onSelect={() =>
@@ -112,6 +116,21 @@ export function NeedsYouPill() {
             ))}
           </Fragment>
         ))}
+        {staleCount > 0 ? (
+          <>
+            {waiting.length > 0 ? <DropdownMenuSeparator /> : null}
+            <DropdownMenuItem
+              onSelect={() => nav({ mode: "projects", projects: { view: "inbox" } })}
+              title="Open the Overview inbox"
+              className="text-ink-faint"
+            >
+              <Inbox className="h-3.5 w-3.5 shrink-0" />
+              <span>
+                {staleCount} stale question{staleCount === 1 ? "" : "s"}
+              </span>
+            </DropdownMenuItem>
+          </>
+        ) : null}
       </DropdownMenuContent>
     </DropdownMenu>
   );

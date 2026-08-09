@@ -1,12 +1,14 @@
 import { ExternalLink } from "lucide-react";
-import type { HubQuestion } from "@crystal/core";
-import { QuestionCard, useHub } from "@crystal/client";
+import type { HubQuestion, QuestionDeliverability } from "@crystal/core";
+import { QuestionCard, questionDeliveryNotice, useHub } from "@crystal/client";
 import { Button, Tooltip } from "@crystal/ui";
 import { useCrossWorkspaceNav } from "./common.js";
 
 type StructuredHubQuestion = HubQuestion & {
   options?: string[];
   recommended?: string | null;
+  /** Hub liveness is populated by a separate work package; absent = unknown. */
+  deliverability?: QuestionDeliverability;
 };
 
 /**
@@ -33,16 +35,7 @@ export function QuestionRow({
     );
     if (!result.ok) throw new Error(result.reason);
     // Typed delivery outcome — never collapsed to a boolean.
-    if (result.delivery === "queued") {
-      return {
-        notice: "Queued — the asking session is mid-turn and takes it when the turn settles.",
-      };
-    }
-    if (result.delivery === "recorded") {
-      return {
-        notice: "Recorded on the board — the asking session can no longer receive it.",
-      };
-    }
+    return { notice: questionDeliveryNotice(result.delivery) };
   }
 
   return (
@@ -60,6 +53,11 @@ export function QuestionRow({
       options={(question.options ?? []).map((option) => ({ value: option, label: option }))}
       recommended={question.recommended}
       onAnswer={send}
+      title={
+        question.deliverability == null || question.deliverability === "unknown"
+          ? "liveness unavailable"
+          : undefined
+      }
       answerLabel={`Answer ${question.projectName}'s question`}
       action={
         <Tooltip content="Open the task on that project's board">

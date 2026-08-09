@@ -26,6 +26,14 @@ export interface LivenessRun {
 
 export type QuestionDeliverability = "deliverable" | "undeliverable" | "unknown";
 
+type ActionableQuestion = Pick<TaskQuestion, "runId" | "answer" | "closed" | "askedBy">;
+
+/** A question paired with liveness already resolved by its owning store. */
+export interface QuestionDeliverabilityRow {
+  question: ActionableQuestion;
+  deliverability: QuestionDeliverability;
+}
+
 /** Root of a run's resume chain (local generic twin of agent.ts `chainRootId`). */
 function rootOf(runId: string, runsById: ReadonlyMap<string, LivenessRun>): string {
   let id = runId;
@@ -109,8 +117,61 @@ export function livenessIndex(runs: readonly LivenessRun[]): Map<string, Livenes
  * of death).
  */
 export function isQuestionActionable(
-  q: Pick<TaskQuestion, "runId" | "answer" | "closed">,
+  q: ActionableQuestion,
   runsById: ReadonlyMap<string, LivenessRun> | null | undefined,
 ): boolean {
-  return isQuestionOpen(q) && questionDeliverability(q, runsById) !== "undeliverable";
+  // A user-authored board question has a human recipient, not an agent run.
+  // questionDeliverability deliberately calls runId==null undeliverable, so
+  // attribution must win before consulting that run-only verdict.
+  if (q.askedBy === "user") {
+    return isQuestionActionableWithDeliverability(q, "unknown");
+  }
+  return isQuestionActionableWithDeliverability(
+    q,
+    questionDeliverability(q, runsById),
+  );
+}
+
+/**
+ * The same actionable policy when a store has already annotated liveness.
+ * Keeping this beside `isQuestionActionable` prevents fleet counts and inbox
+ * partitions from growing a second interpretation of manual questions.
+ */
+export function isQuestionActionableWithDeliverability(
+  q: ActionableQuestion,
+  deliverability: QuestionDeliverability,
+): boolean {
+  if (!isQuestionOpen(q)) return false;
+  if (q.askedBy === "user") return true;
+  return deliverability !== "undeliverable";
+}
+
+/** Selector-safe primitive count over fleet-style annotated question rows. */
+export function countActionableQuestionRows(
+  rows: readonly QuestionDeliverabilityRow[],
+): number {
+  let count = 0;
+  for (const row of rows) {
+    if (isQuestionActionableWithDeliverability(row.question, row.deliverability)) count += 1;
+  }
+  return count;
+}
+
+/**
+ * Split an inbox without losing stale rows. `actionable` includes unknown
+ * liveness and user-authored questions; `stale` is therefore definitive only.
+ */
+export function partitionQuestionRows<T extends QuestionDeliverabilityRow>(
+  rows: readonly T[],
+): { actionable: T[]; stale: T[] } {
+  const actionable: T[] = [];
+  const stale: T[] = [];
+  for (const row of rows) {
+    if (!isQuestionOpen(row.question)) continue;
+    (isQuestionActionableWithDeliverability(row.question, row.deliverability)
+      ? actionable
+      : stale
+    ).push(row);
+  }
+  return { actionable, stale };
 }
