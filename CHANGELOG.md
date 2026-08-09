@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.30.0 (2026-08-09)
+
+### Features
+
+- safe-mode workspace restore behind a crash sentinel ([`9cad86d`](https://github.com/lab255/Crystal/commit/9cad86d))
+
 ## v0.29.0 (2026-08-09)
 
 ### Features
