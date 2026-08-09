@@ -715,6 +715,12 @@ export async function startCrystalServer(opts: {
       registry.get(ws).agents.mergePreview(runId, target),
     "agent.merge": ({ ws, runId, target, message }) =>
       registry.get(ws).agents.mergeWorktreeOf(runId, { target, message }),
+    "agent.syncPreview": ({ ws, runId }) =>
+      registry.get(ws).agents.syncPreview(runId),
+    "agent.sync": ({ ws, runId }) =>
+      registry.get(ws).agents.syncWorktreeOf(runId),
+    "agent.createPr": ({ ws, runId }) =>
+      registry.get(ws).agents.createPr(runId),
     "agent.resolveConflicts": ({ ws, runId, target }) =>
       registry.get(ws).agents.resolveConflicts(runId, target),
     "agent.abortResolve": async ({ ws, runId }) => {

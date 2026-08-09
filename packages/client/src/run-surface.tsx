@@ -7,6 +7,7 @@ import {
   FileDiff as FileDiffIcon,
   GitBranch,
   GitMerge,
+  GitPullRequest,
   KeyRound,
   RefreshCw,
   Rows3,
@@ -23,9 +24,12 @@ import {
   usageTotalTokens,
   type AgentProfile,
   type AgentRun,
+  type CreatePrResult,
   type MergePreviewResult,
   type MergeResult,
   type RunEvent,
+  type SyncPreviewResult,
+  type SyncResult,
 } from "@crystal/core";
 
 // zustand v5: selectors must return stable references.
@@ -77,11 +81,14 @@ export type ApplyBranchOutcome =
  */
 export interface MergeControls {
   preview: MergePreviewResult | null;
+  syncPreview: SyncPreviewResult | null;
   /** Why the latest prediction failed, rendered in place of silent controls. */
   error: string | null;
   onRefresh: () => Promise<void>;
   onMerge: () => Promise<MergeResult>;
-  onResolve: () => Promise<{ run: AgentRun; conflicts: string[] }>;
+  onSync: () => Promise<SyncResult>;
+  onCreatePr: () => Promise<CreatePrResult>;
+  onResolve: (target?: string | null) => Promise<{ run: AgentRun; conflicts: string[] }>;
   onAbort: () => Promise<void>;
 }
 
@@ -478,13 +485,21 @@ function ChangesRegion({
 }) {
   const [refreshing, setRefreshing] = useState(false);
   const [note, setNote] = useState<string | null>(null);
+  const [pr, setPr] = useState<{ url: string; number: number } | null>(null);
   const [confirmingDiscard, setConfirmingDiscard] = useState(false);
   const [discarding, setDiscarding] = useState(false);
-  const [merging, setMerging] = useState<"merge" | "resolve" | "abort" | null>(null);
+  const [merging, setMerging] = useState<"merge" | "sync" | "pr" | "resolve" | "abort" | null>(null);
   const live = run.status === "running" || run.status === "queued";
   const preview = merge?.preview ?? null;
+  const syncPreview = merge?.syncPreview ?? null;
   const previewError = merge?.error ?? null;
   const conflicted = (preview?.conflicts.length ?? 0) > 0;
+  const syncConflicted = (syncPreview?.conflicts.length ?? 0) > 0;
+
+  useEffect(() => {
+    setPr(null);
+    setNote(null);
+  }, [run.id]);
 
   async function mergeAct(kind: "merge" | "resolve" | "abort"): Promise<void> {
     if (!merge) return;
@@ -506,6 +521,53 @@ function ChangesRegion({
         setNote("Conflict resolution aborted — the worktree is back to its own work.");
       }
       await Promise.all([merge.onRefresh(), Promise.resolve(onRefreshDiff?.())]);
+    } catch (err) {
+      setNote((err as Error).message);
+    } finally {
+      setMerging(null);
+    }
+  }
+
+  async function syncAct(): Promise<void> {
+    if (!merge) return;
+    setMerging("sync");
+    setNote(null);
+    try {
+      const result = await merge.onSync();
+      if (!result.ok) {
+        setNote(result.error);
+        return;
+      }
+      if (result.conflicts.length > 0) {
+        const resolution = await merge.onResolve(result.target);
+        setNote(
+          `Sync paused on ${result.conflicts.length} conflicted file${result.conflicts.length === 1 ? "" : "s"}; resolution agent ${resolution.run.id.slice(0, 10)} started.`,
+        );
+      } else {
+        setNote(
+          `Synced ${result.target} into the worktree${result.fastForward ? " (fast-forward)" : " (merge commit)"}.`,
+        );
+      }
+    } catch (err) {
+      setNote((err as Error).message);
+    } finally {
+      await Promise.all([merge.onRefresh(), Promise.resolve(onRefreshDiff?.())]).catch(() => {});
+      setMerging(null);
+    }
+  }
+
+  async function prAct(): Promise<void> {
+    if (!merge) return;
+    setMerging("pr");
+    setNote(null);
+    try {
+      const result = await merge.onCreatePr();
+      if (!result.ok) {
+        setNote(result.error);
+        return;
+      }
+      setPr({ url: result.url, number: result.number });
+      setNote(`${result.existing ? "Updated" : "Created"} pull request #${result.number}.`);
     } catch (err) {
       setNote((err as Error).message);
     } finally {
@@ -628,12 +690,30 @@ function ChangesRegion({
             </Button>
           </Tooltip>
         ) : null}
+        {merge && !live && !preview?.resolving ? (
+          <Tooltip content="Push this worktree branch and create or update its pull request">
+            <Button
+              variant="ghost"
+              size="xs"
+              disabled={merging !== null}
+              onClick={() => void prAct()}
+            >
+              {merging === "pr" ? (
+                <Spinner className="h-3 w-3" />
+              ) : (
+                <GitPullRequest className="h-3 w-3" />
+              )}
+              {pr ? "Update PR" : "Create PR"}
+            </Button>
+          </Tooltip>
+        ) : null}
         {onRefreshDiff || merge ? (
           <Tooltip content="Refresh changes and merge preview">
             <Button
               variant="ghost"
               size="icon-sm"
               aria-label="Refresh changes and merge preview"
+              disabled={merging !== null}
               onClick={() => void refresh()}
             >
               <RefreshCw className={cn("h-3 w-3", refreshing && "animate-spin")} />
@@ -661,7 +741,7 @@ function ChangesRegion({
               <Button
                 variant="danger"
                 size="xs"
-                disabled={discarding}
+                disabled={discarding || merging !== null}
                 onClick={() => {
                   setDiscarding(true);
                   void Promise.resolve(onDiscard())
@@ -692,7 +772,43 @@ function ChangesRegion({
           )
         ) : null}
       </div>
+      {merge && !live && merging === null && !preview?.resolving && (syncPreview?.behind ?? 0) > 0 ? (
+        <div className="flex shrink-0 items-center gap-2 border-t border-edge/60 bg-surface-2/50 px-3 py-1.5 text-[10px] text-ink-muted">
+          <span>
+            {syncPreview!.behind} behind <span className="font-mono text-ink">{syncPreview!.target}</span>
+          </span>
+          {syncConflicted ? (
+            <Tooltip content={syncPreview!.conflicts.join("\n")}>
+              <Badge tone="rose">
+                conflicts in {syncPreview!.conflicts.length} file{syncPreview!.conflicts.length === 1 ? "" : "s"}
+              </Badge>
+            </Tooltip>
+          ) : null}
+          <span aria-hidden="true">·</span>
+          <Button
+            variant={syncConflicted ? "ghost" : "primary"}
+            size="xs"
+            onClick={() => void syncAct()}
+          >
+            <RefreshCw className="h-3 w-3" />
+            {syncConflicted ? "Sync (resolve conflicts)" : "Sync"}
+          </Button>
+        </div>
+      ) : null}
       {note ? <p className="shrink-0 px-3 pb-1.5 text-[10px] text-ink-muted">{note}</p> : null}
+      {pr ? (
+        <p className="shrink-0 px-3 pb-1.5 text-[10px] text-ink-muted">
+          PR #{pr.number}: {" "}
+          <a
+            href={pr.url}
+            target="_blank"
+            rel="noreferrer"
+            className="text-accent-cyan underline underline-offset-2"
+          >
+            {pr.url}
+          </a>
+        </p>
+      ) : null}
       <div className="min-h-0 overflow-y-auto border-t border-edge">
         {files === null ? (
           <div className="flex items-center gap-2 px-3 py-2 text-xs text-ink-faint">
@@ -956,10 +1072,12 @@ export function useRunSurface(runId: string | null): {
   // Merge-back: the prediction loads eagerly once the run settles with a
   // worktree (the header controls hang off it); the verbs re-predict after.
   const [mergePreview, setMergePreview] = useState<MergePreviewResult | null>(null);
+  const [syncPreview, setSyncPreview] = useState<SyncPreviewResult | null>(null);
   const [mergeError, setMergeError] = useState<string | null>(null);
   const [resolverRunId, setResolverRunId] = useState<string | null>(null);
   useEffect(() => {
     setMergePreview(null);
+    setSyncPreview(null);
     setMergeError(null);
     setResolverRunId(null);
   }, [runId]);
@@ -967,10 +1085,15 @@ export function useRunSurface(runId: string | null): {
     if (!runId) return;
     setMergeError(null);
     try {
-      const preview = await client.request("agent.mergePreview", { runId });
-      setMergePreview(preview);
+      const [mergePrediction, syncPrediction] = await Promise.all([
+        client.request("agent.mergePreview", { runId }),
+        client.request("agent.syncPreview", { runId }),
+      ]);
+      setMergePreview(mergePrediction);
+      setSyncPreview(syncPrediction);
     } catch (err) {
       setMergePreview(null);
+      setSyncPreview(null);
       setMergeError((err as Error).message);
     }
   }, [client, runId]);
@@ -1010,15 +1133,24 @@ export function useRunSurface(runId: string | null): {
   const merge = useMemo<MergeControls>(
     () => ({
       preview: mergePreview,
+      syncPreview,
       error: mergeError,
       onRefresh: refreshMerge,
       onMerge: () => {
         if (!runId) return Promise.reject(new Error("No run selected."));
         return client.request("agent.merge", { runId });
       },
-      onResolve: async () => {
+      onSync: () => {
         if (!runId) return Promise.reject(new Error("No run selected."));
-        const result = await client.request("agent.resolveConflicts", { runId });
+        return client.request("agent.sync", { runId });
+      },
+      onCreatePr: () => {
+        if (!runId) return Promise.reject(new Error("No run selected."));
+        return client.request("agent.createPr", { runId });
+      },
+      onResolve: async (target?: string | null) => {
+        if (!runId) return Promise.reject(new Error("No run selected."));
+        const result = await client.request("agent.resolveConflicts", { runId, target });
         setResolverRunId(result.run.id);
         return result;
       },
@@ -1027,7 +1159,7 @@ export function useRunSurface(runId: string | null): {
         await client.request("agent.abortResolve", { runId });
       },
     }),
-    [client, runId, mergePreview, mergeError, refreshMerge],
+    [client, runId, mergePreview, syncPreview, mergeError, refreshMerge],
   );
 
   return { run, events, chain, diff, onRefreshDiff, onApplyBranch, onDiscard, onCancel, merge };

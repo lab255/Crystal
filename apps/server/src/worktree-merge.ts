@@ -1,4 +1,9 @@
-import type { MergePreviewResult, MergeResult } from "@crystal/core";
+import type {
+  MergePreviewResult,
+  MergeResult,
+  SyncPreviewResult,
+  SyncResult,
+} from "@crystal/core";
 import { gitCurrentBranch, gitWorktrees, runGit } from "./git.js";
 
 /**
@@ -28,7 +33,8 @@ import { gitCurrentBranch, gitWorktrees, runGit } from "./git.js";
 
 /** The bridge type is the single source of truth — this module implements it. */
 export type MergePreview = MergePreviewResult;
-export type { MergeResult };
+export type SyncPreview = SyncPreviewResult;
+export type { MergeResult, SyncResult };
 
 /** Thrown by `mergeWorktree` when the (re-)prediction finds conflicts. */
 export class MergeConflictError extends Error {
@@ -77,6 +83,27 @@ async function isDirty(worktreeAbs: string): Promise<boolean> {
 
 async function isResolving(worktreeAbs: string): Promise<boolean> {
   return (await revParse(worktreeAbs, "MERGE_HEAD")) != null;
+}
+
+async function conflictedPaths(worktreeAbs: string): Promise<string[]> {
+  const out = await runGit(worktreeAbs, ["diff", "--name-only", "--diff-filter=U"]).catch(() => "");
+  return out.split("\n").filter(Boolean);
+}
+
+/** left-only = behind, right-only = ahead. */
+async function divergence(
+  cwd: string,
+  left: string,
+  right: string,
+): Promise<{ behind: number; ahead: number }> {
+  const counts = (await runGit(cwd, [
+    "rev-list",
+    "--left-right",
+    "--count",
+    `${left}...${right}`,
+  ]).catch(() => "0\t0")).trim();
+  const [behind = 0, ahead = 0] = counts.split(/\s+/).map((n) => Number(n) || 0);
+  return { behind, ahead };
 }
 
 /**
@@ -172,13 +199,7 @@ async function mergePreviewEx(
     };
   }
   // left = commits only in target (behind), right = only in HEAD (ahead).
-  const counts = (await runGit(worktreeAbs, [
-    "rev-list",
-    "--left-right",
-    "--count",
-    `${baseTip}...${head}`,
-  ]).catch(() => "0\t0")).trim();
-  const [behind = 0, ahead = 0] = counts.split(/\s+/).map((n) => Number(n) || 0);
+  const { behind, ahead } = await divergence(worktreeAbs, baseTip, head);
 
   if (resolving) {
     return {
@@ -217,6 +238,140 @@ async function mergePreviewEx(
           : null,
     },
     tree: prediction.tree ?? null,
+  };
+}
+
+/**
+ * Predict merging the merge target INTO the run's worktree. Like
+ * `mergePreview`, this only reads refs/the worktree and asks merge-tree for a
+ * result; it never moves a ref, index, or working-tree file.
+ */
+export async function syncPreview(
+  repoAbs: string,
+  worktreeAbs: string,
+  explicitTarget?: string | null,
+): Promise<SyncPreview> {
+  return (await syncPreviewEx(repoAbs, worktreeAbs, explicitTarget)).preview;
+}
+
+async function syncPreviewEx(
+  repoAbs: string,
+  worktreeAbs: string,
+  explicitTarget?: string | null,
+): Promise<{
+  preview: SyncPreview;
+  head: string;
+}> {
+  const resolved = await resolveTarget(repoAbs, explicitTarget);
+  if (resolved.target == null) throw new Error(resolved.reason);
+  const target = resolved.target;
+  const [baseTip, head, dirty] = await Promise.all([
+    revParse(repoAbs, target),
+    revParse(worktreeAbs, "HEAD"),
+    isDirty(worktreeAbs),
+  ]);
+  if (!baseTip || !head) throw new Error("Could not resolve the branch tips.");
+  const { behind, ahead } = await divergence(worktreeAbs, baseTip, head);
+  // A worktree with no unique commits can move directly to the target. Dirty
+  // state deliberately disables that tier even when git might preserve it.
+  const canFastForward = ahead === 0 && !dirty;
+  const prediction =
+    behind > 0 && ahead > 0
+      ? await predictMerge(worktreeAbs, head, baseTip)
+      : { tree: null, conflicts: [], unavailable: false };
+  return {
+    preview: {
+      target,
+      baseTip,
+      ahead,
+      behind,
+      dirty,
+      canFastForward,
+      conflicts: prediction.conflicts,
+    },
+    head,
+  };
+}
+
+/**
+ * Explicitly merge the target branch into the run's worktree. Clean
+ * fast-forwards use `--ff-only`; divergent clean histories receive a merge
+ * commit; conflicts remain materialized for the existing resolver/abort
+ * flow. Dirty or untracked work is a typed refusal in v1.
+ */
+export async function syncWorktree(
+  repoAbs: string,
+  worktreeAbs: string,
+  explicitTarget?: string | null,
+): Promise<SyncResult> {
+  await abortIfResolvingForSync(worktreeAbs);
+  const { preview, head } = await syncPreviewEx(
+    repoAbs,
+    worktreeAbs,
+    explicitTarget,
+  );
+  const { target, baseTip, behind, dirty, canFastForward, conflicts } = preview;
+  if (behind === 0) {
+    return { ok: true, target, syncedCommit: head, fastForward: true, conflicts: [] };
+  }
+  if (dirty) {
+    return {
+      ok: false,
+      error: "The worktree has uncommitted or untracked changes — commit or discard first.",
+    };
+  }
+  if (conflicts.length > 0) {
+    const prep = await prepareConflictResolution(repoAbs, worktreeAbs, {
+      commitMessage: `Sync ${target} into run worktree`,
+      target,
+    });
+    return {
+      ok: true,
+      target,
+      syncedCommit: prep.conflicts.length === 0 ? await revParse(worktreeAbs, "HEAD") : null,
+      fastForward: false,
+      conflicts: prep.conflicts,
+    };
+  }
+  if (canFastForward) {
+    await runGit(worktreeAbs, ["merge", "--ff-only", baseTip]);
+    return {
+      ok: true,
+      target,
+      syncedCommit: await revParse(worktreeAbs, "HEAD"),
+      fastForward: true,
+      conflicts: [],
+    };
+  }
+
+  try {
+    await runGit(worktreeAbs, [
+      "-c", "user.name=Crystal",
+      "-c", "user.email=crystal@local",
+      "merge", "--no-ff", "-m", `Merge ${target} into run worktree`, baseTip,
+    ]);
+  } catch (err) {
+    // The target may have raced the prediction. Preserve real conflicts for
+    // the resolver; clean up failures that did not produce a merge state.
+    const actualConflicts = await conflictedPaths(worktreeAbs);
+    if (actualConflicts.length > 0) {
+      return {
+        ok: true,
+        target,
+        syncedCommit: null,
+        fastForward: false,
+        conflicts: actualConflicts,
+      };
+    }
+    await runGit(worktreeAbs, ["merge", "--abort"]).catch(() => {});
+    throw new Error(`Could not sync ${target} into the worktree: ${(err as Error).message}`);
+  }
+  return {
+    ok: true,
+    target,
+    syncedCommit: await revParse(worktreeAbs, "HEAD"),
+    fastForward: false,
+    conflicts: [],
   };
 }
 
@@ -313,6 +468,12 @@ async function abortIfResolving(worktreeAbs: string): Promise<void> {
   }
 }
 
+async function abortIfResolvingForSync(worktreeAbs: string): Promise<void> {
+  if (await isResolving(worktreeAbs)) {
+    throw new Error("Conflict resolution is in progress — commit it (or abort) before syncing.");
+  }
+}
+
 /**
  * Start conflict resolution: replay the merge the other direction (target
  * INTO the run's worktree), leaving standard conflict markers for an agent —
@@ -325,19 +486,30 @@ export async function prepareConflictResolution(
   worktreeAbs: string,
   opts: { commitMessage: string; target?: string | null },
 ): Promise<{ target: string; conflicts: string[] }> {
-  await abortIfResolving(worktreeAbs);
   const resolved = await resolveTarget(repoAbs, opts.target);
   if (resolved.target == null) throw new Error(resolved.reason);
   const target = resolved.target;
+  // A sync may already have materialized this exact reverse merge. Reuse its
+  // standard git state instead of trying to begin a second merge.
+  if (await isResolving(worktreeAbs)) {
+    const conflicts = await conflictedPaths(worktreeAbs);
+    if (conflicts.length === 0) {
+      throw new Error("A merge is already in progress, but it has no unresolved files.");
+    }
+    return { target, conflicts };
+  }
   const baseTip = await revParse(repoAbs, target);
   if (!baseTip) throw new Error(`Could not resolve branch ${target}.`);
   await autoCommit(worktreeAbs, opts.commitMessage);
   try {
-    await runGit(worktreeAbs, ["merge", "--no-ff", "-m", `Merge ${target} into run worktree`, baseTip]);
+    await runGit(worktreeAbs, [
+      "-c", "user.name=Crystal",
+      "-c", "user.email=crystal@local",
+      "merge", "--no-ff", "-m", `Merge ${target} into run worktree`, baseTip,
+    ]);
     return { target, conflicts: [] }; // applied clean after all
   } catch {
-    const out = await runGit(worktreeAbs, ["diff", "--name-only", "--diff-filter=U"]).catch(() => "");
-    const conflicts = out.split("\n").filter(Boolean);
+    const conflicts = await conflictedPaths(worktreeAbs);
     if (conflicts.length === 0) {
       // The merge failed for some other reason (not conflicts) — clean up.
       await runGit(worktreeAbs, ["merge", "--abort"]).catch(() => {});

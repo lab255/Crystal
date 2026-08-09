@@ -230,6 +230,44 @@ export interface MergeResult {
   fastForward: boolean;
 }
 
+/**
+ * Non-destructive prediction for syncing the merge target INTO a run's
+ * worktree branch (`agent.syncPreview`).
+ */
+export interface SyncPreviewResult {
+  target: string;
+  /** Tip commit of the target branch used for this prediction. */
+  baseTip: string;
+  /** Commits on the worktree not on target. */
+  ahead: number;
+  /** Commits on target not on the worktree. */
+  behind: number;
+  /** Tracked or untracked work in the worktree. */
+  dirty: boolean;
+  /** Whether a clean worktree can move directly to `baseTip`. */
+  canFastForward: boolean;
+  /** Predicted conflicted paths for a divergent sync. */
+  conflicts: string[];
+}
+
+/** Result of syncing the target branch into a run's worktree branch. */
+export type SyncResult =
+  | {
+      ok: true;
+      target: string;
+      /** New HEAD, or null while a conflicted merge awaits resolution. */
+      syncedCommit: string | null;
+      fastForward: boolean;
+      /** Non-empty when the merge was materialized with conflict markers. */
+      conflicts: string[];
+    }
+  | { ok: false; error: string };
+
+/** Result of pushing a run branch and creating or updating its pull request. */
+export type CreatePrResult =
+  | { ok: true; url: string; number: number; existing: boolean }
+  | { ok: false; error: string };
+
 /** One commit from `git.log` — enough to pick a review point. */
 export interface GitCommit {
   hash: string;
@@ -625,6 +663,24 @@ export interface BridgeMethods {
   "agent.merge": {
     params: WsScope & { runId: string; target?: string | null; message?: string | null };
     result: MergeResult;
+  };
+  /** Predict syncing the merge target into the run's worktree. Mutates nothing. */
+  "agent.syncPreview": {
+    params: WsScope & { runId: string };
+    result: SyncPreviewResult;
+  };
+  /**
+   * Explicitly sync the merge target into the run's worktree. Conflicts are
+   * left in the worktree for the existing resolution flow.
+   */
+  "agent.sync": {
+    params: WsScope & { runId: string };
+    result: SyncResult;
+  };
+  /** Push the run's branch and create or update its open pull request. */
+  "agent.createPr": {
+    params: WsScope & { runId: string };
+    result: CreatePrResult;
   };
   /**
    * Start AI conflict resolution: the target branch is merged INTO the run's
