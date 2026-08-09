@@ -1,6 +1,7 @@
 import type { AgentRun, AgentRunStatus } from "./agent.js";
 import type { PendingPermission } from "./bridge.js";
 import { openQuestions, type Project, type TaskQuestion } from "./project.js";
+import { isQuestionActionable, type LivenessRun } from "./question-liveness.js";
 import type { RunFailure } from "./run-failure.js";
 import { todosLight, worstLight, type TodoItem, type TrafficLight } from "./todo.js";
 import type { Workflow } from "./workflow.js";
@@ -130,6 +131,44 @@ export function countOpenQuestions(projects: readonly ProjectEntry[]): number {
 
 export function countPendingPermissions(permissions: readonly PendingPermission[]): number {
   return permissions.length;
+}
+
+/**
+ * Open questions whose answer can still reach someone — the run-aware
+ * counterpart of {@link countOpenQuestions}. Stale questions (open, but the
+ * asking chain is definitively gone — see question-liveness.ts) are not
+ * attention: answering them goes nowhere. Pass `null` for `runsById` when the
+ * runs index is unavailable — unknown liveness stays counted, an unreadable
+ * index is not evidence of death.
+ */
+export function countActionableQuestions(
+  projects: readonly ProjectEntry[],
+  runsById: ReadonlyMap<string, LivenessRun> | null | undefined,
+): number {
+  let count = 0;
+  for (const { project } of projects) {
+    for (const task of project.tasks) {
+      for (const q of task.questions) {
+        if (isQuestionActionable(q, runsById)) count += 1;
+      }
+    }
+  }
+  return count;
+}
+
+/**
+ * The navbar pill's fleet-wide total: per-workspace needs-you counts plus the
+ * pending permissions that arrive on a separate feed. Lives here (not in the
+ * SDK) so the one attention policy owns every count a surface renders.
+ */
+export function fleetNeedsYouCount(
+  rows: readonly { key: string; count: number }[],
+  permissionsByWs: Readonly<Record<string, readonly PendingPermission[]>>,
+): number {
+  return rows.reduce(
+    (count, row) => count + row.count + (permissionsByWs[row.key]?.length ?? 0),
+    0,
+  );
 }
 
 export function countUnrecoveredFailures(runs: readonly AttentionRun[]): number {

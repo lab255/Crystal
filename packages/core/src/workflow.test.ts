@@ -627,6 +627,21 @@ describe("typed turn outcomes (progress fingerprint)", () => {
       questions: [{ ...asked.questions[0]!, answer: "keycloak" }],
     };
     expect(workflowProgressFingerprint(wf, 0, [answered, other])).not.toBe(withQuestion);
+    // An expired closure (closed without an answer) reads as closed the same
+    // way — an expiry sweep moves the fingerprint exactly like an answer.
+    const expired = {
+      ...asked,
+      questions: [
+        {
+          ...asked.questions[0]!,
+          closed: { at: "t", reason: "expired" as const, note: null, by: "system" as const },
+        },
+      ],
+    };
+    expect(workflowProgressFingerprint(wf, 0, [expired, other])).not.toBe(withQuestion);
+    expect(workflowProgressFingerprint(wf, 0, [expired, other])).toBe(
+      workflowProgressFingerprint(wf, 0, [answered, other]),
+    );
   });
 
   it("the manager prompt states the typed-outcome contract", () => {

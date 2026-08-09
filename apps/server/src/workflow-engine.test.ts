@@ -163,6 +163,63 @@ describe("WorkflowEngine", () => {
     expect(stored.noProgressTurns).toBe(1);
   });
 
+  it("terminal transitions invoke question expiry AFTER the terminal write commits", async () => {
+    const { engine } = makeEngine();
+    const expired: { id: string; status: string; recordStatus: string | undefined }[] = [];
+    engine.questionExpiry = async (id, status) => {
+      // The record must already be terminal when the closure runs — the
+      // durable status is the evidence the closure cites.
+      expired.push({ id, status, recordStatus: (await engine.get(id))?.status });
+    };
+
+    const { workflow } = await engine.start({ name: "X", goal: "g" });
+    await engine.cancel(workflow.id);
+    expect(expired).toEqual([
+      { id: workflow.id, status: "cancelled", recordStatus: "cancelled" },
+    ]);
+
+    // Cancelling again re-runs the (idempotent) closure against the same state.
+    await engine.cancel(workflow.id);
+    expect(expired[1]).toEqual({ id: workflow.id, status: "cancelled", recordStatus: "cancelled" });
+
+    const second = await engine.start({ name: "Y", goal: "g" });
+    await engine.complete(second.workflow.id, "failed", "stuck");
+    expect(expired.at(-1)).toEqual({
+      id: second.workflow.id,
+      status: "failed",
+      recordStatus: "failed",
+    });
+  });
+
+  it("a failing expiry closure never fails the terminal transition", async () => {
+    const { engine } = makeEngine();
+    engine.questionExpiry = async () => {
+      throw new Error("board unavailable");
+    };
+    const { workflow } = await engine.start({ name: "X", goal: "g" });
+    const done = await engine.complete(workflow.id, "completed", "shipped");
+    expect(done.status).toBe("completed");
+  });
+
+  it("reconcileQuestionExpiry closes for persisted terminal records only", async () => {
+    const { engine } = makeEngine();
+    const expired: string[] = [];
+    engine.questionExpiry = async (id, status) => {
+      expired.push(`${id}:${status}`);
+    };
+    const live = (await engine.start({ name: "Live", goal: "g" })).workflow;
+    const dead = (await engine.start({ name: "Dead", goal: "g" })).workflow;
+    await engine.cancel(dead.id);
+    expired.length = 0;
+
+    await engine.reconcileQuestionExpiry();
+    // Only the terminal RECORD expires. The running workflow closes nothing,
+    // and a workflow with no record at all (e.g. the incident's wf_ac924…)
+    // never appears here — absence is not evidence of death.
+    expect(expired).toEqual([`${dead.id}:cancelled`]);
+    expect(expired).not.toContain(`${live.id}:running`);
+  });
+
   async function makeRepo(): Promise<string> {
     const repo = path.join(dir, `repo${Math.random().toString(36).slice(2)}`);
     await fs.mkdir(repo, { recursive: true });

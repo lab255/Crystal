@@ -1662,6 +1662,11 @@ export class AgentManager {
    * can never be delivered (cancelled chain, or a settled session that never
    * materialized) and the caller should treat the durable record (board
    * answer) as the outcome.
+   *
+   * LOCKSTEP: `questionDeliverability` in core/question-liveness.ts is the
+   * pure read-side twin of this resolution (chain root via resumedFromRunId,
+   * handoff forwarding via forwardedChainRoot, the same "recorded" verdicts).
+   * A change to the chain walk here must be mirrored there.
    */
   async deliverToChain(
     fromRunId: string,

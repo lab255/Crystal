@@ -6,9 +6,8 @@ import {
   useAttentionNotifications,
   useFleet,
   useFleetNeedsYou,
-  type WorkspaceNeedsYou,
 } from "@crystal/client";
-import type { PendingPermission } from "@crystal/core";
+import { fleetNeedsYouCount } from "@crystal/core";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -118,12 +117,6 @@ export function NeedsYouPill() {
   );
 }
 
-export function fleetNeedsYouCount(
-  rows: readonly Pick<WorkspaceNeedsYou, "key" | "count">[],
-  permissionsByWs: Readonly<Record<string, readonly PendingPermission[]>>,
-): number {
-  return rows.reduce(
-    (count, row) => count + row.count + (permissionsByWs[row.key]?.length ?? 0),
-    0,
-  );
-}
+// The count policy moved to core/attention.ts with the rest of the attention
+// lane; re-exported here for existing SDK importers.
+export { fleetNeedsYouCount };

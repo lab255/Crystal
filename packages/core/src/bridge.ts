@@ -343,13 +343,27 @@ export interface BridgeMethods {
   /** Lease-checked task mutation. `force` is the human owner's override. */
   /**
    * Answer a question an agent raised on a task: recorded on the board and
-   * handed back to the run that asked, which resumes where it stopped
-   * (queued if that run is still mid-turn). Uncontended — the asker is by
-   * definition waiting — so it needs no claim.
+   * handed back to the run that asked. The delivery outcome is typed —
+   * `resumed` (a turn is going again), `queued` (flushes when the live turn
+   * settles), `recorded` (the asker can never receive it; the board record IS
+   * the outcome) — never collapse it to a boolean. `runId` is the chain the
+   * answer reached (resumed turn, or the asking run a queued answer waits
+   * on). Uncontended — the asker is by definition waiting — so no claim.
    */
   "task.answer": {
     params: WsScope & { path: string; taskId: string; questionId: string; answer: string };
-    result: { ok: true; resumedRunId: string | null } | { ok: false; reason: string };
+    result:
+      | { ok: true; delivery: "resumed" | "queued" | "recorded"; runId: string | null }
+      | { ok: false; reason: string };
+  };
+  /**
+   * Close a question without answering — the human's verb for stale asks
+   * whose context is gone (dead runs, retired workflows). Deliberately NOT
+   * exposed over any MCP surface: managers answer, humans dismiss.
+   */
+  "task.dismissQuestion": {
+    params: WsScope & { path: string; taskId: string; questionId: string; note?: string | null };
+    result: { ok: true } | { ok: false; reason: string };
   };
   "task.update": {
     params: WsScope & {
@@ -1240,7 +1254,9 @@ export interface BridgeMethods {
       deliveryId?: string | null;
       taskId?: string | null;
     };
-    result: { ok: true; resumedRunId: string | null } | { ok: false; reason: string };
+    result:
+      | { ok: true; delivery: "resumed" | "queued" | "recorded"; runId: string | null }
+      | { ok: false; reason: string };
   };
   /** The MCP endpoint a central agent points at to drive the hub. */
   "hub.endpoint": {

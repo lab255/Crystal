@@ -13,6 +13,7 @@ import { PremiseReportSchema, premiseGapPromptNote, premiseGaps } from "./premis
 import {
   TASK_STATUSES,
   TaskStatusSchema,
+  isQuestionOpen,
   type TaskItem,
   type TaskQuestion,
   type TaskStatus,
@@ -1333,7 +1334,7 @@ export function workflowProgressFingerprint(
     workers: workerRunCount,
     tasks: mine.map((t) => `${t.id}:${t.status}`).sort(),
     openQuestions: mine
-      .flatMap((t) => t.questions.filter((q) => q.answer == null).map((q) => q.id))
+      .flatMap((t) => t.questions.filter((q) => isQuestionOpen(q)).map((q) => q.id))
       .sort(),
   });
 }
@@ -1622,6 +1623,6 @@ export function openQuestionsOfWorkflow(
   tasks: readonly TaskItem[],
 ): { task: TaskItem; question: TaskQuestion }[] {
   return workflowTasks(workflow, tasks).flatMap((task) =>
-    task.questions.filter((q) => q.answer == null).map((question) => ({ task, question })),
+    task.questions.filter((q) => isQuestionOpen(q)).map((question) => ({ task, question })),
   );
 }

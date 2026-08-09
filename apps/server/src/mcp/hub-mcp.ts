@@ -89,7 +89,10 @@ export interface HubToolHost {
     programId: string,
     questionId: string,
     answer: string,
-  ): Promise<{ ok: true; resumedRunId: string | null } | { ok: false; reason: string }>;
+  ): Promise<
+    | { ok: true; delivery: "resumed" | "queued" | "recorded"; runId: string | null }
+    | { ok: false; reason: string }
+  >;
   messageDelivery(
     programId: string,
     deliveryId: string,
@@ -803,11 +806,15 @@ export class McpHubServer {
           a.data.answer,
         );
         if (!result.ok) return toolError(id, result.reason);
+        // The tri-state delivery outcome stays visible to the manager — never
+        // collapse it to answered/not-answered.
         return toolText(
           id,
-          result.resumedRunId
-            ? `Answered. The run that asked resumed as ${result.resumedRunId}.`
-            : "Answered and recorded on the board (the asking run was already gone).",
+          result.delivery === "resumed"
+            ? `Answered. The run that asked resumed as ${result.runId}.`
+            : result.delivery === "queued"
+              ? `Answered. The asking run (${result.runId}) is mid-turn — the answer is queued and flushes when it settles.`
+              : "Answered and recorded on the board (the asking session can no longer receive it).",
         );
       }
       case "set_program_paused": {

@@ -93,7 +93,8 @@ export async function handleMcpRequest(
       (await boardCtx()).projectPath,
       taskId,
       text,
-      runId,
+      // The run's tags stamp the question's origin.workflowId at creation.
+      run ?? { id: runId },
       ask,
     );
     if (result.ok) rt.agents.noteQuestion(runId, text, ask);
@@ -298,8 +299,10 @@ export function hubToolHost(hub: HubEngine): HubToolHost {
     dispatch: (programId, deliveryIds) => hub.dispatch(programId, deliveryIds),
     dispatchEpic: (init) => hub.dispatchEpic(init),
     status: (programId) => (programId ? hub.statusText(programId) : hub.portfolioText()),
+    // Hub-manager answers are agent closures (askedBy attribution rides the
+    // question's `closed.by`).
     answerQuestion: (programId, questionId, answer) =>
-      hub.answerQuestion(programId, questionId, answer),
+      hub.answerQuestion(programId, questionId, answer, undefined, "agent"),
     messageDelivery: (programId, deliveryId, text, opts) =>
       hub.messageDelivery(programId, deliveryId, text, opts),
     closeDelivery: (programId, deliveryId, outcome, note) =>

@@ -4,22 +4,28 @@ import {
   createEpic,
   createTask,
   createTaskQuestion,
+  isQuestionOpen,
   leaseValid,
   mergeProjectSave,
   nowIso,
   openQuestions,
+  questionClosure,
   readyTasks,
   rollupCost,
   sumCostRollups,
   transferLease,
+  workflowIdOfRun,
   TaskPatchSchema,
   type AgentRun,
   type AskOptions,
   type ClaimResult,
   type Epic,
   type Project,
+  type QuestionClosure,
   type TaskItem,
   type TaskPatch,
+  type TaskQuestion,
+  type WorkflowStatus,
 } from "@crystal/core";
 import type { AgentManager } from "./agent-manager.js";
 import type { WorkspaceStore } from "./workspace-store.js";
@@ -39,6 +45,15 @@ import type { WorkspaceStore } from "./workspace-store.js";
  */
 export class OrchestrationService {
   private queue: Promise<unknown> = Promise.resolve();
+
+  /**
+   * Injected workflow-status lookup (the registry wires it to this
+   * workspace's WorkflowEngine). `answerQuestion` re-checks a question's
+   * origin workflow after recording: an answer racing the workflow's terminal
+   * write must not pay for a delivery its context can no longer use. Null
+   * (tests, headless embeddings) skips the check.
+   */
+  workflowStatusLookup: ((workflowId: string) => Promise<WorkflowStatus | null>) | null = null;
 
   constructor(
     private readonly store: WorkspaceStore,
@@ -244,20 +259,28 @@ export class OrchestrationService {
     });
   }
 
-  /** File an async question for a task's human owner (deduped per run+text). */
+  /**
+   * File an async question for a task's human owner (deduped per run+text).
+   * `run` carries the asking run's identity AND tags so the question's
+   * `origin.workflowId` is stamped from the `workflow:` tag at creation —
+   * zero record lookups, and the lifecycle tie survives the run record.
+   */
   addQuestion(
     projectPath: string,
     taskId: string,
     text: string,
-    runId?: string | null,
+    run?: Pick<AgentRun, "id"> & Partial<Pick<AgentRun, "tags">> | null,
     opts?: AskOptions,
   ): Promise<{ ok: true; questionId: string } | { ok: false; reason: string }> {
     return this.mutate(projectPath, (project) => {
       const task = project.tasks.find((t) => t.id === taskId);
       if (!task) return { ok: false as const, reason: `Unknown task: ${taskId}` };
+      const runId = run?.id ?? null;
       const existing = task.questions.find((q) => q.runId === runId && q.text === text);
       if (existing) return { ok: true as const, questionId: existing.id };
-      const question = createTaskQuestion(text, runId, opts);
+      const question = createTaskQuestion(text, runId, opts, {
+        origin: run ? { workflowId: workflowIdOfRun({ tags: run.tags ?? [] }) } : null,
+      });
       task.questions.push(question);
       task.updatedAt = nowIso();
       return { ok: true as const, questionId: question.id };
@@ -272,7 +295,7 @@ export class OrchestrationService {
    */
   addQuestionForRun(
     projectPath: string,
-    run: Pick<AgentRun, "id" | "taskId" | "purpose">,
+    run: Pick<AgentRun, "id" | "taskId" | "purpose"> & Partial<Pick<AgentRun, "tags">>,
     text: string,
     opts?: AskOptions,
     attach?: { epicId?: string | null },
@@ -307,7 +330,9 @@ export class OrchestrationService {
           taskCreated,
         };
       }
-      const question = createTaskQuestion(text, run.id, opts);
+      const question = createTaskQuestion(text, run.id, opts, {
+        origin: { workflowId: workflowIdOfRun({ tags: run.tags ?? [] }) },
+      });
       task.questions.push(question);
       task.updatedAt = nowIso();
       return {
@@ -320,21 +345,24 @@ export class OrchestrationService {
   }
 
   /**
-   * One question's answer, read outside the write queue (same read path as
+   * One question's closure, read outside the write queue (same read path as
    * `snapshot`). `null` while the question is open — the permission broker
    * polls this on board changes; `undefined` when the task/question is gone.
+   * Closure-aware (not answer-string presence): a dismissed permission
+   * question must deterministically deny, not park forever.
    */
-  async questionAnswer(
+  async questionClosureOf(
     projectPath: string,
     taskId: string,
     questionId: string,
-  ): Promise<string | null | undefined> {
+  ): Promise<(QuestionClosure & { answer: string | null }) | null | undefined> {
     const project = await this.loadProjectAt(projectPath).catch(() => null);
     const question = project?.tasks
       .find((t) => t.id === taskId)
       ?.questions.find((q) => q.id === questionId);
     if (!question) return undefined;
-    return question.answer ?? null;
+    const closure = questionClosure(question);
+    return closure ? { ...closure, answer: question.answer ?? null } : null;
   }
 
   /**
@@ -363,7 +391,7 @@ export class OrchestrationService {
       const task = project.tasks.find((t) => t.id === taskId);
       if (!task) return { ok: false as const, reason: `Unknown task: ${taskId}` };
       const open = task.questions.filter(
-        (q) => q.answer == null && q.runId != null && chainIds.has(q.runId),
+        (q) => isQuestionOpen(q) && q.runId != null && chainIds.has(q.runId),
       );
       const question = questionId ? open.find((q) => q.id === questionId) : open.at(-1);
       if (!question) {
@@ -376,6 +404,12 @@ export class OrchestrationService {
       }
       question.answer = `(answered interactively) ${resolution}`;
       question.answeredAt = nowIso();
+      question.closed = {
+        at: question.answeredAt,
+        reason: "answered",
+        note: null,
+        by: "agent",
+      };
       task.updatedAt = question.answeredAt;
       return { ok: true as const };
     });
@@ -387,15 +421,25 @@ export class OrchestrationService {
    * stopped. Answering is uncontended — it is the human side of the exchange,
    * and the asker is by definition waiting — so it needs no lease.
    *
-   * Returns the raising run id when one was resumed, so callers can surface
-   * "the agent is going again" separately from "recorded for later".
+   * The delivery outcome is typed end-to-end (`resumed`/`queued`/`recorded` —
+   * `recorded` means the text can never reach the asker and the board record
+   * IS the outcome); never collapse it back into a boolean. `runId` is the
+   * chain the answer reached: the resumed turn's id, or the asking run's id
+   * when the answer queued on its live chain.
    */
   async answerQuestion(
     projectPath: string,
     taskId: string,
     questionId: string,
     answer: string,
-  ): Promise<{ ok: true; resumedRunId: string | null } | { ok: false; reason: string }> {
+    opts?: {
+      /** Who answered — the bridge passes "user"; hub-manager MCP answers pass "agent". */
+      by?: "user" | "agent";
+    },
+  ): Promise<
+    | { ok: true; delivery: "resumed" | "queued" | "recorded"; runId: string | null }
+    | { ok: false; reason: string }
+  > {
     // Record inside the lock; resume *outside* it. `resumeChain` spawns a
     // Claude process, and `mutate` serializes the whole board — holding the
     // lock across a spawn would queue every claim/update/release behind it.
@@ -404,33 +448,137 @@ export class OrchestrationService {
       if (!task) return { ok: false as const, reason: `Unknown task: ${taskId}` };
       const question = task.questions.find((q) => q.id === questionId);
       if (!question) return { ok: false as const, reason: `Unknown question: ${questionId}` };
-      if (question.answer != null) {
-        return { ok: false as const, reason: `Question ${questionId} was already answered.` };
+      const closure = questionClosure(question);
+      if (closure) {
+        return {
+          ok: false as const,
+          reason: `Question ${questionId} was already closed (${closure.reason} at ${closure.at}${closure.note ? `: ${closure.note}` : ""}).`,
+        };
       }
       question.answer = answer;
       question.answeredAt = nowIso();
+      question.closed = {
+        at: question.answeredAt,
+        reason: "answered",
+        note: null,
+        by: opts?.by ?? "user",
+      };
       task.updatedAt = question.answeredAt;
-      return { ok: true as const, runId: question.runId ?? null, text: question.text };
+      return {
+        ok: true as const,
+        runId: question.runId ?? null,
+        text: question.text,
+        workflowId: question.origin?.workflowId ?? null,
+      };
     });
     if (!recorded.ok) return recorded;
-    if (!recorded.runId) return { ok: true, resumedRunId: null };
+    if (!recorded.runId) return { ok: true, delivery: "recorded", runId: null };
 
-    // Hand the answer back to whoever asked. `deliver`, not `resumeChain`:
-    // agents are told not to block on an answer, so the asker is usually still
-    // working — a bare resume would return null and the answer would be lost.
-    const resumed = await this.agents
-      .deliver(
+    // Answer-vs-terminal race: the question's workflow may have settled while
+    // the answer was in flight. Its context is gone — re-check the origin
+    // workflow after recording and skip the (paid) delivery entirely when it
+    // is terminal; the record on the board is the outcome.
+    if (recorded.workflowId && this.workflowStatusLookup) {
+      const status = await this.workflowStatusLookup(recorded.workflowId).catch(() => null);
+      if (status === "completed" || status === "failed" || status === "cancelled") {
+        return { ok: true, delivery: "recorded", runId: null };
+      }
+    }
+
+    // Hand the answer back to whoever asked. `deliverToChain`, not a bare
+    // resume: agents are told not to block on an answer, so the asker is
+    // usually still working — mid-turn text queues and flushes on settlement.
+    const delivered = await this.agents
+      .deliverToChain(
         recorded.runId,
         `Answer to your question "${recorded.text}":\n\n${answer}\n\nContinue the task.`,
       )
-      .catch(() => null);
-    if (resumed) {
+      .catch(() => ({ run: null, status: "recorded" as const }));
+    if (delivered.run) {
+      const resumedId = delivered.run.id;
       await this.mutate(projectPath, (project) => {
         const task = project.tasks.find((t) => t.id === taskId);
-        if (task && !task.runIds.includes(resumed.id)) task.runIds.push(resumed.id);
+        if (task && !task.runIds.includes(resumedId)) task.runIds.push(resumedId);
       });
     }
-    return { ok: true, resumedRunId: resumed?.id ?? null };
+    return {
+      ok: true,
+      delivery: delivered.status,
+      runId:
+        delivered.run?.id ?? (delivered.status === "queued" ? recorded.runId : null),
+    };
+  }
+
+  /**
+   * Close a question without answering — the human's "this no longer needs an
+   * answer" verb for stale asks whose runs and workflows are long gone.
+   * Bridge/UI only, never exposed over MCP: managers answer, humans dismiss.
+   */
+  async dismissQuestion(
+    projectPath: string,
+    taskId: string,
+    questionId: string,
+    note?: string | null,
+  ): Promise<{ ok: true } | { ok: false; reason: string }> {
+    return this.mutate(projectPath, (project) => {
+      const task = project.tasks.find((t) => t.id === taskId);
+      if (!task) return { ok: false as const, reason: `Unknown task: ${taskId}` };
+      const question = task.questions.find((q) => q.id === questionId);
+      if (!question) return { ok: false as const, reason: `Unknown question: ${questionId}` };
+      const closure = questionClosure(question);
+      if (closure) {
+        return {
+          ok: false as const,
+          reason: `Question ${questionId} is already closed (${closure.reason} at ${closure.at}${closure.note ? `: ${closure.note}` : ""}).`,
+        };
+      }
+      question.closed = {
+        at: nowIso(),
+        reason: "dismissed",
+        note: note?.trim() ? note.trim() : null,
+        by: "user",
+      };
+      task.updatedAt = question.closed.at;
+      return { ok: true as const };
+    });
+  }
+
+  /**
+   * Evidence-based expiry: a workflow reached a terminal state, so every open
+   * question it originated (`origin.workflowId`) is closed with that evidence
+   * — its answer has no live context to return to. Idempotent (only open
+   * questions close, and the note is stable), so the workflow engine calls it
+   * both on the terminal transition and from its startup reconcile. Boards
+   * without matches are never written.
+   */
+  async expireWorkflowQuestions(
+    workflowId: string,
+    status: "completed" | "failed" | "cancelled",
+  ): Promise<{ closed: number }> {
+    const projects = await this.store.loadProjects().catch(() => []);
+    const isTarget = (q: TaskQuestion) =>
+      isQuestionOpen(q) && q.origin?.workflowId === workflowId;
+    let closed = 0;
+    for (const entry of projects) {
+      if (!entry.project.tasks.some((task) => task.questions.some(isTarget))) continue;
+      await this.mutate(entry.path, (project) => {
+        for (const task of project.tasks) {
+          for (const question of task.questions) {
+            // Re-checked under the queue — answers race expiry.
+            if (!isTarget(question)) continue;
+            question.closed = {
+              at: nowIso(),
+              reason: "expired",
+              note: `workflow ${workflowId} settled (${status})`,
+              by: "system",
+            };
+            task.updatedAt = question.closed.at;
+            closed += 1;
+          }
+        }
+      });
+    }
+    return { closed };
   }
 
   /** Creating a task is uncontended (fresh id) — no lease required. */
@@ -582,7 +730,16 @@ export class OrchestrationService {
       lines.push("", "Questions:");
       for (const q of task.questions) {
         const opts = q.options.length ? ` (options: ${q.options.join(" | ")})` : "";
-        lines.push(`- ${q.answer != null ? `answered: "${q.text}" → ${q.answer}` : `OPEN: "${q.text}"${opts}`}`);
+        const closure = questionClosure(q);
+        lines.push(
+          `- ${
+            closure == null
+              ? `OPEN: "${q.text}"${opts}`
+              : closure.reason === "answered"
+                ? `answered: "${q.text}" → ${q.answer}`
+                : `${closure.reason}: "${q.text}"${closure.note ? ` (${closure.note})` : ""}`
+          }`,
+        );
       }
     }
     if (task.runIds.length) lines.push("", `Runs so far: ${task.runIds.join(", ")}`);

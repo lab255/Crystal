@@ -125,12 +125,21 @@ export function TaskSession({
       answer,
     });
     if (!result.ok) throw new Error(result.reason);
+    const at = nowIso();
     patchTask({
       questions: task.questions.map((q) =>
-        q.id === question.id ? { ...q, answer, answeredAt: nowIso() } : q,
+        q.id === question.id
+          ? {
+              ...q,
+              answer,
+              answeredAt: at,
+              closed: { at, reason: "answered" as const, note: null, by: "user" as const },
+            }
+          : q,
       ),
     });
-    if (result.resumedRunId) onSelectRun(result.resumedRunId);
+    // Typed delivery outcome: only a resumed turn moves the surface.
+    if (result.delivery === "resumed" && result.runId) onSelectRun(result.runId);
   }
 
   const waiting = openQuestions(task);

@@ -122,6 +122,18 @@ export class WorkflowEngine {
    * Claude session on one of this workspace's PTYs (see launchInteractiveRun).
    * Null (tests, headless embeddings) means `start` always spawns headless.
    */
+  /**
+   * Set by the workspace runtime: close the open board questions a settling
+   * workflow originated (`origin.workflowId`), with the terminal status as
+   * the evidence — see OrchestrationService.expireWorkflowQuestions. Invoked
+   * after every terminal write commits, and again from the startup reconcile
+   * (`reconcileQuestionExpiry`) so a transition missed while the server was
+   * down is still honoured. Null (tests, headless embeddings) skips expiry.
+   */
+  questionExpiry:
+    | ((workflowId: string, status: "completed" | "failed" | "cancelled") => Promise<unknown>)
+    | null = null;
+
   interactiveLauncher:
     | ((params: {
         prompt: string;
@@ -664,18 +676,21 @@ export class WorkflowEngine {
           // A run that settled while we iterated is already dead — fine.
         });
       }
-      return this.mutate(workflowId, (current) => {
+      const workflow = await this.mutate(workflowId, (current) => {
         // Idempotent under the queue: a workflow that reached another terminal
         // state while we were killing runs keeps that state.
         const terminal =
           current.status === "completed" ||
           current.status === "failed" ||
           current.status === "cancelled";
-        const workflow: Workflow = terminal
+        const next: Workflow = terminal
           ? current
           : { ...current, status: "cancelled", pausedBy: null, pausedReason: null };
-        return { workflow, result: workflow };
+        return { workflow: next, result: next };
       });
+      // Terminal write committed — expire the questions it stranded.
+      await this.expireQuestions(workflowId, workflow.status);
+      return workflow;
     });
   }
 
@@ -820,17 +835,51 @@ export class WorkflowEngine {
           `the workers before completing it.`,
         );
       }
-      return this.mutate(workflowId, (wf) => {
-        const workflow: Workflow = {
+      const workflow = await this.mutate(workflowId, (wf) => {
+        const next: Workflow = {
           ...wf,
           status: outcome,
           summary,
           pausedBy: null,
           pausedReason: null,
         };
-        return { workflow, result: workflow };
+        return { workflow: next, result: next };
       });
+      // Terminal write committed — expire the questions it stranded.
+      await this.expireQuestions(workflowId, workflow.status);
+      return workflow;
     });
+  }
+
+  /**
+   * Close open origin questions of a settled workflow — after the terminal
+   * write is durable, never before (the record IS the evidence). A failed
+   * closure is logged, not fatal: the startup reconcile repairs it.
+   */
+  private async expireQuestions(workflowId: string, status: Workflow["status"]): Promise<void> {
+    if (status !== "completed" && status !== "failed" && status !== "cancelled") return;
+    try {
+      await this.questionExpiry?.(workflowId, status);
+    } catch (err) {
+      console.warn(
+        `[crystal] question expiry failed for workflow ${workflowId}:`,
+        (err as Error).message,
+      );
+    }
+  }
+
+  /**
+   * Startup reconcile: every PERSISTED workflow record that is terminal runs
+   * the same idempotent question closure — a transition that happened while
+   * the server was down (or whose closure write failed) is still honoured.
+   * The absence of a record never expires anything, by design: only a
+   * durable terminal status is evidence of death. No periodic GC.
+   */
+  async reconcileQuestionExpiry(): Promise<void> {
+    await this.ensureLoaded();
+    for (const workflow of await this.list()) {
+      await this.expireQuestions(workflow.id, workflow.status);
+    }
   }
 
   /* ---------------- enforcement ---------------- */

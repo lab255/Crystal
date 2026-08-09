@@ -194,11 +194,11 @@ function registryProjects(registry: WorkspaceRegistry): HubProjects {
         recommended: q.question.recommended,
       }));
     },
-    answerQuestion: async (ws, workflowId, taskId, questionId, answer) => {
+    answerQuestion: async (ws, workflowId, taskId, questionId, answer, by) => {
       const rt = registry.get(ws);
       const workflow = await rt.workflows.get(workflowId);
       const projectPath = await rt.orchestration.projectPathFor(workflow?.projectId ?? null);
-      return rt.orchestration.answerQuestion(projectPath, taskId, questionId, answer);
+      return rt.orchestration.answerQuestion(projectPath, taskId, questionId, answer, { by });
     },
   };
 }
@@ -584,7 +584,9 @@ export async function startCrystalServer(opts: {
     "task.release": ({ ws, path: p, taskId, claimId, force }) =>
       registry.get(ws).orchestration.releaseTask(p, taskId, { claimId, force }),
     "task.answer": ({ ws, path: p, taskId, questionId, answer }) =>
-      registry.get(ws).orchestration.answerQuestion(p, taskId, questionId, answer),
+      registry.get(ws).orchestration.answerQuestion(p, taskId, questionId, answer, { by: "user" }),
+    "task.dismissQuestion": ({ ws, path: p, taskId, questionId, note }) =>
+      registry.get(ws).orchestration.dismissQuestion(p, taskId, questionId, note),
     "task.update": ({ ws, path: p, taskId, patch, claimId, force }) =>
       registry.get(ws).orchestration.updateTask(p, taskId, patch, { claimId, force }),
     // The roster methods all speak the *merged* project+library view; the

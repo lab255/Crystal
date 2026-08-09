@@ -180,16 +180,17 @@ export class WorkspaceRuntime {
             projectPath,
             run.taskId,
             text,
-            run.id,
+            // The full run rides along so the question's origin.workflowId is
+            // stamped from its workflow: tag at creation.
+            run,
             { options, recommended },
           );
           return result.ok
             ? { projectPath, taskId: run.taskId, questionId: result.questionId }
             : null;
         },
-        readAnswer: async (ref) =>
-          (await this.orchestration.questionAnswer(ref.projectPath, ref.taskId, ref.questionId)) ??
-          null,
+        readClosure: (ref) =>
+          this.orchestration.questionClosureOf(ref.projectPath, ref.taskId, ref.questionId),
         closeQuestion: async (ref, runId, note) => {
           await this.orchestration.resolveQuestion(
             ref.projectPath,
@@ -219,6 +220,13 @@ export class WorkspaceRuntime {
       globalTemplates,
       this.agentLibrary,
     );
+    // A settling workflow expires the open board questions it originated —
+    // and answering re-checks the origin workflow so an answer racing the
+    // terminal write records instead of paying for a context-less delivery.
+    this.workflows.questionExpiry = (workflowId, status) =>
+      this.orchestration.expireWorkflowQuestions(workflowId, status);
+    this.orchestration.workflowStatusLookup = async (workflowId) =>
+      (await this.workflows.get(workflowId))?.status ?? null;
     // Workflow managers can be hosted as native interactive Claude sessions
     // on this workspace's PTYs.
     this.workflows.interactiveLauncher = (params) =>
@@ -403,6 +411,15 @@ export class WorkspaceRuntime {
       ),
     ];
     this.standing.start();
+    // Question-expiry reconcile: terminal transitions that happened (or whose
+    // closure write failed) while the server was down still close their
+    // stranded board questions. Idempotent; absence of a record closes nothing.
+    void this.workflows.reconcileQuestionExpiry().catch((err) => {
+      console.warn(
+        `[crystal] question-expiry reconcile failed for ${this.root}:`,
+        (err as Error).message,
+      );
+    });
     // Reap crashed-server orphans and restart what the user left running.
     void this.services.restoreDesired().catch((err) => {
       console.warn(`[crystal] service restore failed for ${this.root}:`, (err as Error).message);
