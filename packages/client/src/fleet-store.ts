@@ -1,12 +1,15 @@
 import { createStore, type StoreApi } from "zustand/vanilla";
 import {
   DEFAULT_SERVER_SID,
+  livenessIndex,
   needsYouQuestions,
   nowIso,
+  questionDeliverability,
   type AgentRun,
   type NeedsYouQuestion,
   type PendingPermission,
   type ProjectEntry,
+  type QuestionDeliverability,
   type TodoItem,
 } from "@crystal/core";
 import type { BridgeClient } from "./bridge-client.js";
@@ -22,7 +25,39 @@ const SEEN_STORAGE_KEY = "crystal.seenRuns";
 export const EMPTY_RUNS: AgentRun[] = [];
 export const EMPTY_TODOS: TodoItem[] = [];
 export const EMPTY_PROJECT_ENTRIES: ProjectEntry[] = [];
-export const EMPTY_QUESTIONS: NeedsYouQuestion[] = [];
+
+/** An open fleet question with liveness resolved from that workspace's run snapshot. */
+export type FleetQuestion = NeedsYouQuestion & { deliverability: QuestionDeliverability };
+
+export const EMPTY_QUESTIONS: FleetQuestion[] = [];
+
+/**
+ * Annotate open question rows without churning a selector-visible reference.
+ * Question identity + deliverability are the observable fleet contract: board
+ * recounts with the same set, and run updates that do not change a verdict,
+ * are no-ops even when their input arrays were replaced.
+ */
+export function annotateFleetQuestions(
+  questions: readonly NeedsYouQuestion[],
+  runs: readonly AgentRun[] | undefined,
+  previous?: readonly FleetQuestion[],
+): FleetQuestion[] {
+  const runsById = runs === undefined ? null : livenessIndex(runs);
+  const annotated = questions.map((row) => ({
+    ...row,
+    deliverability: questionDeliverability(row.question, runsById),
+  }));
+  if (previous && previous.length === annotated.length) {
+    const nextById = new Map(
+      annotated.map((row) => [row.question.id, row.deliverability] as const),
+    );
+    const same = previous.every(
+      (row) => nextById.get(row.question.id) === row.deliverability,
+    );
+    if (same) return previous as FleetQuestion[];
+  }
+  return annotated;
+}
 
 /**
  * Fleet view — cross-workspace state for the projects overview, aggregated
@@ -45,16 +80,19 @@ export const EMPTY_QUESTIONS: NeedsYouQuestion[] = [];
 export interface FleetState {
   /** Keyed by `"<sid>/<wsId>"` — see `wsKey`/`parseWsKey`. */
   runsByWs: Record<string, AgentRun[]>;
+  /** A run event can arrive before the complete `agent.list` snapshot. */
+  runsLoadedByWs: Record<string, true>;
   todosByWs: Record<string, TodoItem[]>;
   /**
    * Open board questions per workspace — agents waiting on the human, with
    * the task context needed to jump to them. Drives the yellow "waiting on
-   * you" attention on lights and overview cards (via `.length`) and the
-   * shell's cross-workspace needs-you pill. A key absent from this map means
+   * you" attention on lights and overview cards (via the core actionable-row
+   * counter) and the shell's cross-workspace needs-you pill. Stale rows remain
+   * here for inboxes. A key absent from this map means
    * "not read yet", not "no questions" — the attention notifier seeds on
    * first read (see AttentionTracker in @crystal/core).
    */
-  questionsByWs: Record<string, NeedsYouQuestion[]>;
+  questionsByWs: Record<string, FleetQuestion[]>;
   /** Tool calls parked on an owner decision, keyed by compound workspace key. */
   permissionsByWs: Record<string, PendingPermission[]>;
   /**
@@ -192,19 +230,16 @@ export function createFleetStore(): FleetStore {
           .then((info) => {
             const questions = needsYouQuestions(info.projects);
             store.setState((s) => {
-              // Same open-question ids → keep the old reference (selectors and
-              // the attention notifier both see recounts as no-ops). The board
-              // snapshot always lands — boards can change without moving the
-              // question set.
               const prev = s.questionsByWs[key];
-              const same =
-                prev !== undefined &&
-                prev.length === questions.length &&
-                prev.every((q, i) => q.question.id === questions[i]!.question.id);
+              const annotated = annotateFleetQuestions(
+                questions,
+                s.runsLoadedByWs[key] ? (s.runsByWs[key] ?? EMPTY_RUNS) : undefined,
+                prev,
+              );
               return {
-                questionsByWs: same
+                questionsByWs: annotated === prev
                   ? s.questionsByWs
-                  : { ...s.questionsByWs, [key]: questions },
+                  : { ...s.questionsByWs, [key]: annotated },
                 projectsByWs: { ...s.projectsByWs, [key]: info.projects },
               };
             });
@@ -218,6 +253,7 @@ export function createFleetStore(): FleetStore {
 
   const store = createStore<FleetState>((set, get) => ({
     runsByWs: {},
+    runsLoadedByWs: {},
     todosByWs: {},
     questionsByWs: {},
     permissionsByWs: {},
@@ -236,7 +272,21 @@ export function createFleetStore(): FleetStore {
             const idx = runs.findIndex((r) => r.id === run.id);
             const next =
               idx === -1 ? [run, ...runs] : runs.map((r, i) => (i === idx ? run : r));
-            return { runsByWs: { ...s.runsByWs, [key]: next } };
+            const previousQuestions = s.questionsByWs[key];
+            const questions = previousQuestions
+              ? annotateFleetQuestions(
+                  previousQuestions,
+                  s.runsLoadedByWs[key] ? next : undefined,
+                  previousQuestions,
+                )
+              : undefined;
+            return {
+              runsByWs: { ...s.runsByWs, [key]: next },
+              questionsByWs:
+                questions && questions !== previousQuestions
+                  ? { ...s.questionsByWs, [key]: questions }
+                  : s.questionsByWs,
+            };
           });
         }),
         client.events.on("todos.changed", ({ ws, todos }) => {
@@ -261,6 +311,7 @@ export function createFleetStore(): FleetStore {
           Object.fromEntries(Object.entries(map).filter(([k]) => !k.startsWith(prefix)));
         set((s) => ({
           runsByWs: strip(s.runsByWs),
+          runsLoadedByWs: strip(s.runsLoadedByWs),
           todosByWs: strip(s.todosByWs),
           questionsByWs: strip(s.questionsByWs),
           permissionsByWs: strip(s.permissionsByWs),
@@ -296,10 +347,13 @@ export function createFleetStore(): FleetStore {
         const runsByWs: Record<string, AgentRun[]> = Object.fromEntries(
           Object.entries(s.runsByWs).filter(([k]) => !k.startsWith(prefix)),
         );
+        const runsLoadedByWs: Record<string, true> = Object.fromEntries(
+          Object.entries(s.runsLoadedByWs).filter(([k]) => !k.startsWith(prefix)),
+        );
         const todosByWs: Record<string, TodoItem[]> = Object.fromEntries(
           Object.entries(s.todosByWs).filter(([k]) => !k.startsWith(prefix)),
         );
-        const questionsByWs: Record<string, NeedsYouQuestion[]> = Object.fromEntries(
+        const questionsByWs: Record<string, FleetQuestion[]> = Object.fromEntries(
           Object.entries(s.questionsByWs).filter(([k]) => !k.startsWith(prefix)),
         );
         const permissionsByWs: Record<string, PendingPermission[]> = Object.fromEntries(
@@ -310,11 +364,14 @@ export function createFleetStore(): FleetStore {
         );
         for (const { key, runs, todos, permissions, permissionSeq } of results) {
           runsByWs[key] = runs;
+          runsLoadedByWs[key] = true;
           // Carry the recount path's values; closed workspaces drop out. An
           // unread workspace stays ABSENT (not []) — absence is what tells
           // the attention notifier to seed rather than announce.
           const carried = s.questionsByWs[key];
-          if (carried !== undefined) questionsByWs[key] = carried;
+          if (carried !== undefined) {
+            questionsByWs[key] = annotateFleetQuestions(carried, runs, carried);
+          }
           const boards = s.projectsByWs[key];
           if (boards !== undefined) projectsByWs[key] = boards;
           // An event-driven read that started later wins over this refresh.
@@ -326,7 +383,14 @@ export function createFleetStore(): FleetStore {
           // A pending local edit is newer than what the server just returned.
           todosByWs[key] = s.pendingTodoSaves[key] ? (s.todosByWs[key] ?? todos) : todos;
         }
-        return { runsByWs, todosByWs, questionsByWs, permissionsByWs, projectsByWs };
+        return {
+          runsByWs,
+          runsLoadedByWs,
+          todosByWs,
+          questionsByWs,
+          permissionsByWs,
+          projectsByWs,
+        };
       });
       // Question counts have exactly ONE writer — the recount below — so a
       // slow refresh can never overwrite a fresher event-driven count with

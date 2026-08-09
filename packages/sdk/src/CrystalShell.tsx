@@ -15,8 +15,10 @@ import {
   X,
 } from "lucide-react";
 import {
-  countOpenQuestions,
+  countActionableQuestionRows,
+  countActionableQuestions,
   countUnrecoveredFailures,
+  livenessIndex,
   parseDeepLink,
   workspaceLight,
   worstLight,
@@ -26,6 +28,7 @@ import {
 } from "@crystal/core";
 
 import {
+  EMPTY_QUESTIONS,
   EMPTY_RUNS,
   EMPTY_TODOS,
   checkForDesktopUpdateNow,
@@ -223,9 +226,12 @@ export function CrystalShell({
   const overviewView = useNav((l) => l.projects?.view);
   // Count-only selectors (primitives): the shell must not re-render on every
   // stream event that replaces the runs array — only when a count changes.
+  const activeProjects = useWorkspace((s) => s.info?.projects ?? EMPTY_PROJECT_ENTRIES);
+  const actionableQuestionCount = useAgents((s) =>
+    countActionableQuestions(activeProjects, livenessIndex(s.runs)),
+  );
   const needsYouCount =
-    useAgents((s) => countUnrecoveredFailures(s.runs)) +
-    useWorkspace((s) => countOpenQuestions(s.info?.projects ?? EMPTY_PROJECT_ENTRIES));
+    useAgents((s) => countUnrecoveredFailures(s.runs)) + actionableQuestionCount;
 
   const switchMode = useCallback(
     (next: CrystalMode): void => {
@@ -708,7 +714,7 @@ function useFleetAttention(activeSid: string, activeWsId: string | null): Traffi
             todosByWs[key] ?? EMPTY_TODOS,
             runsByWs[key] ?? EMPTY_RUNS,
             seenAtByWs[key] ?? null,
-            questionsByWs[key]?.length ?? 0,
+            countActionableQuestionRows(questionsByWs[key] ?? EMPTY_QUESTIONS),
           );
         }),
     ),

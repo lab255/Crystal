@@ -32,7 +32,7 @@ function taskRun(taskId: string, patch: Partial<AgentRun> = {}): AgentRun {
 }
 
 function withQuestion(t: TaskItem, createdAt: string, answered = false): TaskItem {
-  const q = createTaskQuestion("Which flavor?", "run_q");
+  const q = createTaskQuestion("Which flavor?", null, undefined, { askedBy: "user" });
   q.createdAt = createdAt;
   if (answered) q.answer = "vanilla";
   return { ...t, questions: [...t.questions, q] };
@@ -95,6 +95,38 @@ describe("deriveTaskAttention", () => {
     const att = deriveTaskAttention(t, [failed]);
     expect(att?.kinds.sort()).toEqual(["failure", "question"]);
     expect(att?.waitingSince).toBe("2026-08-02T07:00:00.000Z");
+  });
+
+  it("ignores stale agent questions and keeps actionable and user questions", () => {
+    const stale = createTaskQuestion("old ask", "run_gone");
+    stale.createdAt = "2026-08-02T06:00:00.000Z";
+    const liveQuestion = createTaskQuestion("live ask", "run_live");
+    liveQuestion.createdAt = "2026-08-02T09:00:00.000Z";
+    const liveRun = taskRun("other", {
+      id: "run_live",
+      status: "running",
+      createdAt: "2026-08-02T08:00:00.000Z",
+    });
+    const t = task("t", "in_progress", { questions: [stale, liveQuestion] });
+    expect(deriveTaskAttention(t, [liveRun])).toEqual({
+      kinds: ["question"],
+      waitingSince: liveQuestion.createdAt,
+    });
+
+    const userQuestion = createTaskQuestion("manual", null, undefined, { askedBy: "user" });
+    expect(
+      deriveTaskAttention(task("manual", "backlog", { questions: [userQuestion] }), []),
+    ).toMatchObject({ kinds: ["question"] });
+  });
+
+  it("groups a stale-only task by its plain status and does not pulse", () => {
+    const stale = createTaskQuestion("gone", "run_gone");
+    const t = task("stale only", "in_progress", { questions: [stale] });
+    expect(deriveTaskAttention(t, [])).toBeNull();
+    expect(taskPulse(t, [])).toBe("idle");
+    const groups = groupTasksForList(projectOf(t), []);
+    expect(groups.find((group) => group.id === "attention")!.tasks).toEqual([]);
+    expect(groups.find((group) => group.id === "in_progress")!.tasks).toEqual([t]);
   });
 });
 

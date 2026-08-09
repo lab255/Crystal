@@ -42,6 +42,7 @@ import {
   TASK_ATTENTION_LABELS,
   compareTaskAttention,
   formatWsRef,
+  livenessIndex,
   liveRunIds,
   taskAttention,
   type AgentRun,
@@ -175,6 +176,7 @@ export function CommandPalette({
   // re-renders with the agent firehose.
   const activeRuns = useAgents((s) => (open ? s.runs : CLOSED_RUNS));
   const fleetRuns = useFleet((s) => (open ? s.runsByWs : CLOSED_MAP));
+  const fleetRunsLoaded = useFleet((s) => (open ? s.runsLoadedByWs : CLOSED_MAP));
   const fleetProjects = useFleet((s) => (open ? s.projectsByWs : CLOSED_MAP));
   const [query, setQuery] = useState("");
 
@@ -190,6 +192,7 @@ export function CommandPalette({
     const entries: TaskJumpEntry[] = [];
     if (activeWsId) {
       const live = liveRunIds(activeRuns);
+      const runsById = livenessIndex(activeRuns);
       for (const p of projects) {
         for (const task of p.project.tasks) {
           entries.push({
@@ -199,7 +202,7 @@ export function CommandPalette({
             projectPath: p.path,
             projectName: p.project.name,
             task,
-            group: taskAttention(task, live),
+            group: taskAttention(task, live, runsById),
           });
         }
       }
@@ -210,7 +213,9 @@ export function CommandPalette({
         const key = wsKey(conn.sid, w.id);
         const boards = fleetProjects[key];
         if (!boards?.length) continue;
-        const live = liveRunIds(fleetRuns[key] ?? EMPTY_RUNS);
+        const workspaceRuns = fleetRuns[key] ?? EMPTY_RUNS;
+        const live = liveRunIds(workspaceRuns);
+        const runsById = fleetRunsLoaded[key] ? livenessIndex(workspaceRuns) : null;
         for (const p of boards) {
           for (const task of p.project.tasks) {
             entries.push({
@@ -220,14 +225,23 @@ export function CommandPalette({
               projectPath: p.path,
               projectName: p.project.name,
               task,
-              group: taskAttention(task, live),
+              group: taskAttention(task, live, runsById),
             });
           }
         }
       }
     }
     return entries.sort(compareTaskAttention);
-  }, [projects, activeRuns, connections, fleetProjects, fleetRuns, activeSid, activeWsId]);
+  }, [
+    projects,
+    activeRuns,
+    connections,
+    fleetProjects,
+    fleetRuns,
+    fleetRunsLoaded,
+    activeSid,
+    activeWsId,
+  ]);
 
   const commands: Command[] = useMemo(() => {
     const openRoots = new Set(workspaces.map((w) => w.root));

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   Emitter,
+  countActionableQuestionRows,
   type AgentRun,
   type BridgeEvents,
   type PendingPermission,
@@ -35,12 +36,24 @@ class FakeStorage {
   }
 }
 
-function run(id: string): AgentRun {
-  return { id, status: "completed" } as unknown as AgentRun;
+function run(id: string, patch: Partial<AgentRun> = {}): AgentRun {
+  return {
+    id,
+    status: "completed",
+    createdAt: "2026-08-09T00:00:00.000Z",
+    ...patch,
+  } as AgentRun;
 }
 
 /** A minimal board project holding open/answered questions. */
-function projectWith(questions: { id: string; answer?: string }[]) {
+function projectWith(
+  questions: {
+    id: string;
+    answer?: string;
+    runId?: string | null;
+    askedBy?: "agent" | "user";
+  }[],
+) {
   return {
     path: ".crystal/projects/p.crystal",
     project: {
@@ -51,8 +64,11 @@ function projectWith(questions: { id: string; answer?: string }[]) {
           title: "Task",
           questions: questions.map((q) => ({
             id: q.id,
+            runId: q.runId ?? null,
+            askedBy: q.askedBy ?? "agent",
             text: `Q ${q.id}`,
             answer: q.answer ?? null,
+            closed: null,
           })),
         },
       ],
@@ -192,12 +208,59 @@ describe("question details per workspace", () => {
     const questions = store.getState().questionsByWs["default/w1"]!;
     expect(questions.map((q) => q.question.id)).toEqual(["q1"]); // answered one filtered
     expect(questions[0]!.taskId).toBe("t1");
+    expect(questions[0]!.deliverability).toBe("unknown");
 
     // Same open-question ids → the stored reference must not churn (selector
     // stability + the attention notifier reading recounts as no-ops).
     client.events.emit("workspace.changed", { ws: "w1" } as never);
     await vi.advanceTimersByTimeAsync(500);
     expect(store.getState().questionsByWs["default/w1"]).toBe(questions);
+  });
+
+  it("annotates from the complete run snapshot and preserves references until a verdict changes", async () => {
+    const store = createFleetStore();
+    const client = fakeClient({
+      runsByWs: {
+        w1: [run("asking", { sessionId: "session-1" })],
+      },
+      projectsByWs: {
+        w1: [
+          projectWith([
+            { id: "q-live", runId: "asking" },
+            { id: "q-stale", runId: "missing" },
+            { id: "q-user", runId: null, askedBy: "user" },
+          ]),
+        ],
+      },
+    });
+    store.getState().attach("default", client);
+
+    await store.getState().refresh("default", ["w1"]);
+    await vi.advanceTimersByTimeAsync(500);
+    const annotated = store.getState().questionsByWs["default/w1"]!;
+    expect(annotated.map((row) => [row.question.id, row.deliverability])).toEqual([
+      ["q-live", "deliverable"],
+      ["q-stale", "undeliverable"],
+      ["q-user", "undeliverable"],
+    ]);
+    expect(countActionableQuestionRows(annotated)).toBe(2);
+
+    client.events.emit("agent.runChanged", {
+      ws: "w1",
+      run: run("asking", { sessionId: "session-1" }),
+    } as never);
+    expect(store.getState().questionsByWs["default/w1"]).toBe(annotated);
+
+    client.events.emit("agent.runChanged", {
+      ws: "w1",
+      run: run("asking", { status: "cancelled", sessionId: "session-1" }),
+    } as never);
+    const changed = store.getState().questionsByWs["default/w1"]!;
+    expect(changed).not.toBe(annotated);
+    expect(changed.find((row) => row.question.id === "q-live")!.deliverability).toBe(
+      "undeliverable",
+    );
+    expect(countActionableQuestionRows(changed)).toBe(1); // user-authored stays actionable
   });
 
   it("leaves unread workspaces ABSENT so seeding can tell unknown from empty", async () => {

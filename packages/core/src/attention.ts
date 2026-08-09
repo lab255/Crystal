@@ -1,7 +1,7 @@
 import type { AgentRun, AgentRunStatus } from "./agent.js";
 import type { PendingPermission } from "./bridge.js";
 import { openQuestions, type Project, type TaskQuestion } from "./project.js";
-import { isQuestionActionable, type LivenessRun } from "./question-liveness.js";
+import { isQuestionActionable, livenessIndex, type LivenessRun } from "./question-liveness.js";
 import type { RunFailure } from "./run-failure.js";
 import { todosLight, worstLight, type TodoItem, type TrafficLight } from "./todo.js";
 import type { Workflow } from "./workflow.js";
@@ -107,7 +107,10 @@ export function deriveNeedsYou(
   runs: readonly AgentRun[],
   permissions: readonly PendingPermission[] = [],
 ): NeedsYou {
-  const questions = needsYouQuestions(projects);
+  const runsById = livenessIndex(runs);
+  const questions = needsYouQuestions(projects).filter((row) =>
+    isQuestionActionable(row.question, runsById),
+  );
   const failures = unrecoveredFailures(runs);
   return {
     questions,

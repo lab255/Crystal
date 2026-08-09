@@ -22,7 +22,7 @@ import {
   type ProjectEntry,
 } from "./attention.js";
 import { createProject, createTask, createTaskQuestion, type Project } from "./project.js";
-import { livenessIndex } from "./question-liveness.js";
+import { countActionableQuestionRows, livenessIndex } from "./question-liveness.js";
 import { createAgentRun, type AgentRun } from "./agent.js";
 import { createTodoItem, type TodoItem } from "./todo.js";
 import type { RunFailure } from "./run-failure.js";
@@ -31,7 +31,7 @@ function projectWithQuestions(name: string, questions: { text: string; answered?
   const project: Project = createProject(name);
   const task = createTask("A task");
   task.questions = questions.map((q) => {
-    const question = createTaskQuestion(q.text, "run_x");
+    const question = createTaskQuestion(q.text, null, undefined, { askedBy: "user" });
     if (q.answered) question.answer = "done";
     return question;
   });
@@ -153,11 +153,16 @@ describe("count helpers (selector-safe primitives)", () => {
   });
 
   it("countActionableQuestions drops stale (open+undeliverable) questions, keeps unknown", () => {
-    // projectWithQuestions files everything under runId "run_x".
     const projects = [
       projectWithQuestions("a", [{ text: "Q1" }, { text: "Q2", answered: true }]),
       projectWithQuestions("b", [{ text: "Q3" }]),
     ];
+    for (const { project } of projects) {
+      for (const question of project.tasks.flatMap((task) => task.questions)) {
+        question.askedBy = "agent";
+        question.runId = "run_x";
+      }
+    }
     // No run "run_x" in the index — both open questions are stale.
     expect(countActionableQuestions(projects, livenessIndex([]))).toBe(0);
     // A live asking chain keeps them counted.
@@ -167,6 +172,17 @@ describe("count helpers (selector-safe primitives)", () => {
     expect(countActionableQuestions(projects, live)).toBe(2);
     // An unavailable index is not evidence of death — same as the plain count.
     expect(countActionableQuestions(projects, null)).toBe(countOpenQuestions(projects));
+  });
+
+  it("counts annotated rows with the same user-before-run policy", () => {
+    const user = createTaskQuestion("manual", null, undefined, { askedBy: "user" });
+    const agent = createTaskQuestion("agent", "gone");
+    expect(
+      countActionableQuestionRows([
+        { question: user, deliverability: "undeliverable" },
+        { question: agent, deliverability: "undeliverable" },
+      ]),
+    ).toBe(1);
   });
 
   it("fleetNeedsYouCount sums workspace rows with their pending permissions", () => {

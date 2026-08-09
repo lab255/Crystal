@@ -27,6 +27,7 @@ export interface QuestionCardProps {
   action?: ReactNode;
   answerLabel?: string;
   className?: string;
+  title?: string;
 }
 
 /**
@@ -44,6 +45,7 @@ export function QuestionCard({
   action,
   answerLabel = "Answer question",
   className,
+  title,
 }: QuestionCardProps) {
   const [draft, setDraft] = useState("");
   const [otherOpen, setOtherOpen] = useState(options.length === 0);
@@ -75,6 +77,7 @@ export function QuestionCard({
 
   return (
     <article
+      title={title}
       className={cn(
         "rounded-xl border border-edge bg-surface-1 p-3",
         className,

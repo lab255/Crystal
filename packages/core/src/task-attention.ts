@@ -1,11 +1,13 @@
 import { runsForTask, type AgentRun } from "./agent.js";
 import { recoveredRunIds } from "./attention.js";
 import { PRIORITY_RANK, openQuestions, type Project, type TaskItem } from "./project.js";
+import { isQuestionActionable, livenessIndex, type LivenessRun } from "./question-liveness.js";
 
 /**
  * Per-task attention — the operator-style "needs your input" model. A task
- * demands attention when a run asked a question nobody answered, or when one
- * of its runs failed recoverably and nothing resumed or handed off from it.
+ * demands attention when a reachable run asked a question nobody answered,
+ * or when one of its runs failed recoverably and nothing resumed or handed
+ * off from it. Stale questions stay on the board but do not pin the task.
  * The task list pins these first (longest-waiting first), the status dot
  * shows attention *over* running ("a session parked on a question is
  * technically live but really waiting on you"), and the needs-you pill
@@ -37,7 +39,10 @@ export function deriveTaskAttention(
     if (since === null || ts < since) since = ts;
   };
 
-  const questions = openQuestions(task);
+  const runsById = livenessIndex(runs);
+  const questions = openQuestions(task).filter((question) =>
+    isQuestionActionable(question, runsById),
+  );
   if (questions.length > 0) {
     kinds.push("question");
     for (const q of questions) consider(q.createdAt);
@@ -113,7 +118,7 @@ function byPriorityThenRecency(a: TaskItem, b: TaskItem): number {
 
 /**
  * Every task of the project in exactly one list group, attention pinned
- * first. A task with an open question or unrecovered failure leaves its
+ * first. A task with an actionable question or unrecovered failure leaves its
  * status group entirely (the derived group replaces the label, not
  * decorates it); done tasks never demand attention — an answered-later
  * question on a shipped task is noise, not a stopped agent. Attention is
@@ -247,8 +252,14 @@ export function liveRunIds(runs: readonly Pick<AgentRun, "id" | "status">[]): Se
  * done task — the question clears only by answering, same rule as the
  * workspace traffic light (`questionsLight`).
  */
-export function taskAttention(task: TaskItem, live: ReadonlySet<string>): TaskAttentionGroup {
-  if (openQuestions(task).length > 0) return "waiting";
+export function taskAttention(
+  task: TaskItem,
+  live: ReadonlySet<string>,
+  runsById?: ReadonlyMap<string, LivenessRun> | null,
+): TaskAttentionGroup {
+  if (openQuestions(task).some((question) => isQuestionActionable(question, runsById))) {
+    return "waiting";
+  }
   if (task.runIds.some((id) => live.has(id))) return "running";
   if (task.status === "review") return "review";
   if (task.status === "in_progress") return "in_progress";
@@ -276,9 +287,10 @@ export function compareTaskAttention(
 export function sortTasksByAttention(
   tasks: readonly TaskItem[],
   live: ReadonlySet<string>,
+  runsById?: ReadonlyMap<string, LivenessRun> | null,
 ): TaskItem[] {
   return tasks
-    .map((task) => ({ group: taskAttention(task, live), task }))
+    .map((task) => ({ group: taskAttention(task, live, runsById), task }))
     .sort(compareTaskAttention)
     .map((e) => e.task);
 }

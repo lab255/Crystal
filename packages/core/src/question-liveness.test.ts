@@ -82,7 +82,12 @@ describe("questionDeliverability", () => {
 });
 
 describe("isQuestionActionable", () => {
-  const openQ = { runId: "run_dead", answer: null, closed: null };
+  const openQ = {
+    runId: "run_dead",
+    answer: null,
+    closed: null,
+    askedBy: "agent" as const,
+  };
 
   it("excludes open+undeliverable (stale), keeps unknown counted", () => {
     const index = livenessIndex([run("run_live", { status: "running" })]);
@@ -91,16 +96,29 @@ describe("isQuestionActionable", () => {
     expect(isQuestionActionable({ ...openQ, runId: "run_live" }, index)).toBe(true);
   });
 
+  it("keeps user-authored questions actionable before checking run deliverability", () => {
+    expect(
+      isQuestionActionable(
+        { runId: null, answer: null, closed: null, askedBy: "user" },
+        livenessIndex([]),
+      ),
+    ).toBe(true);
+  });
+
   it("closed questions are never actionable", () => {
     const index = livenessIndex([run("run_live", { status: "running" })]);
     expect(
-      isQuestionActionable({ runId: "run_live", answer: "done", closed: null }, index),
+      isQuestionActionable(
+        { runId: "run_live", answer: "done", closed: null, askedBy: "agent" },
+        index,
+      ),
     ).toBe(false);
     expect(
       isQuestionActionable(
         {
           runId: "run_live",
           answer: null,
+          askedBy: "agent",
           closed: { at: "t", reason: "expired", note: null, by: "system" },
         },
         index,

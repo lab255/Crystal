@@ -4,6 +4,8 @@ import {
   TASK_LIST_GROUP_LABELS,
   createTask,
   groupTasksForList,
+  isQuestionActionable,
+  livenessIndex,
   matchAgent,
   openQuestions,
   tasksInColumn,
@@ -48,6 +50,7 @@ export function TasksColumn({
   }, []);
 
   const groups = useMemo(() => groupTasksForList(project, runs), [project, runs]);
+  const runsById = useMemo(() => livenessIndex(runs), [runs]);
   const liveTaskIds = useMemo(() => {
     const ids = new Set<string>();
     for (const r of runs) {
@@ -132,6 +135,7 @@ export function TasksColumn({
                       group={group.id}
                       attention={group.attention?.[i] ?? null}
                       live={liveTaskIds.has(task.id)}
+                      runsById={runsById}
                       selected={task.id === selectedTaskId}
                       onSelect={() => onSelectTask(task.id)}
                     />
@@ -199,6 +203,7 @@ function TaskRow({
   group,
   attention,
   live,
+  runsById,
   selected,
   onSelect,
 }: {
@@ -206,10 +211,13 @@ function TaskRow({
   group: TaskListGroupId;
   attention: TaskAttention | null;
   live: boolean;
+  runsById: ReturnType<typeof livenessIndex>;
   selected: boolean;
   onSelect: () => void;
 }) {
-  const questionCount = openQuestions(task).length;
+  const questionCount = openQuestions(task).filter((question) =>
+    isQuestionActionable(question, runsById),
+  ).length;
   return (
     <button
       type="button"

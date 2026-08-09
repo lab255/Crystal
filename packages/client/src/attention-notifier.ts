@@ -238,13 +238,14 @@ export function useAttentionNotifications(): void {
       // Absent slices are "not read yet": feeding them would seed on nothing
       // and then announce the real initial state as a transition.
       if (row.questionsRead) {
+        const questions = row.actionableQuestions;
         const newIds = new Set(
           tracker.next(
             `${row.key}:questions`,
-            row.questions.map((q) => questionAttentionId(q.question)),
+            questions.map((q) => questionAttentionId(q.question)),
           ),
         );
-        for (const q of row.questions) {
+        for (const q of questions) {
           if (newIds.has(questionAttentionId(q.question))) {
             freshAttention.push({
               target: { kind: "question", sid: row.sid, ws: row.ws, question: q },

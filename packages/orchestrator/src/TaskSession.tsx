@@ -1,13 +1,15 @@
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Lock, PanelRight } from "lucide-react";
 import {
   TASK_STATUSES,
   TASK_STATUS_LABELS,
   deriveTaskAttention,
   groupRunsByManager,
+  livenessIndex,
   nowIso,
   openQuestions,
   promptHeadline,
+  questionDeliverability,
   type Project,
   type TaskItem,
   type TaskQuestion,
@@ -16,6 +18,7 @@ import {
 import {
   RunSurface,
   formatRunCost,
+  questionDeliveryNotice,
   useAgents,
   useCrystal,
   useRunSurface,
@@ -57,6 +60,9 @@ export function TaskSession({
 }) {
   const { client } = useCrystal();
   const runs = useAgents((s) => s.runs);
+  const runsById = useMemo(() => livenessIndex(runs), [runs]);
+  const [questionNotice, setQuestionNotice] = useState<string | null>(null);
+  useEffect(() => setQuestionNotice(null), [task.id]);
 
   const taskRuns = useMemo(
     () =>
@@ -140,6 +146,27 @@ export function TaskSession({
     });
     // Typed delivery outcome: only a resumed turn moves the surface.
     if (result.delivery === "resumed" && result.runId) onSelectRun(result.runId);
+    setQuestionNotice(questionDeliveryNotice(result.delivery));
+  }
+
+  async function dismissQuestion(question: TaskQuestion): Promise<void> {
+    const result = await client.request("task.dismissQuestion", {
+      path: projectPath,
+      taskId: task.id,
+      questionId: question.id,
+    });
+    if (!result.ok) throw new Error(result.reason);
+    const at = nowIso();
+    patchTask({
+      questions: task.questions.map((q) =>
+        q.id === question.id
+          ? {
+              ...q,
+              closed: { at, reason: "dismissed" as const, note: null, by: "user" as const },
+            }
+          : q,
+      ),
+    });
   }
 
   const waiting = openQuestions(task);
@@ -193,8 +220,19 @@ export function TaskSession({
       {waiting.length > 0 ? (
         <div className="shrink-0 space-y-1.5 border-b border-warn/25 bg-warn/5 px-3 py-2">
           {waiting.map((q) => (
-            <QuestionRow key={q.id} question={q} onAnswer={answerQuestion} />
+            <QuestionRow
+              key={q.id}
+              question={q}
+              deliverability={questionDeliverability(q, runsById)}
+              onAnswer={answerQuestion}
+              onDismiss={dismissQuestion}
+            />
           ))}
+        </div>
+      ) : null}
+      {questionNotice ? (
+        <div className="shrink-0 border-b border-edge bg-surface-2 px-3 py-1.5 text-[11px] text-ink-muted">
+          {questionNotice}
         </div>
       ) : null}
 

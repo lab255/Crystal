@@ -1,6 +1,11 @@
 import { useState } from "react";
 import { CircleHelp, Send } from "lucide-react";
-import { questionClosure, type TaskQuestion } from "@crystal/core";
+import {
+  isQuestionActionableWithDeliverability,
+  questionClosure,
+  type QuestionDeliverability,
+  type TaskQuestion,
+} from "@crystal/core";
 import { enterKeyAction, useSettings } from "@crystal/client";
 import { Button, Textarea, cn } from "@crystal/ui";
 
@@ -13,9 +18,13 @@ import { Button, Textarea, cn } from "@crystal/ui";
 export function QuestionRow({
   question,
   onAnswer,
+  deliverability,
+  onDismiss,
 }: {
   question: TaskQuestion;
   onAnswer: (question: TaskQuestion, answer: string) => Promise<void>;
+  deliverability?: QuestionDeliverability;
+  onDismiss?: (question: TaskQuestion) => Promise<void>;
 }) {
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
@@ -25,17 +34,59 @@ export function QuestionRow({
   // closure note instead of an answer line.
   const closure = questionClosure(question);
   const answered = closure != null;
+  const stale =
+    !answered &&
+    deliverability != null &&
+    !isQuestionActionableWithDeliverability(question, deliverability);
+  const livenessUnavailable =
+    !answered && (deliverability == null || deliverability === "unknown");
 
   return (
     <div
+      title={livenessUnavailable ? "liveness unavailable" : undefined}
       className={cn(
         "rounded-lg border px-2.5 py-2",
-        answered ? "border-edge bg-surface-2 opacity-70" : "border-warn/30 bg-warn/5",
+        answered
+          ? "border-edge bg-surface-2 opacity-70"
+          : stale
+            ? "border-edge bg-surface-2"
+            : "border-warn/30 bg-warn/5",
       )}
     >
-      <div className="flex items-start gap-1.5 text-[11px] leading-snug text-ink">
-        <CircleHelp className={cn("mt-0.5 h-3 w-3 shrink-0", answered ? "text-ink-faint" : "text-warn")} />
-        <span className="whitespace-pre-wrap">{question.text}</span>
+      <div
+        className={cn(
+          "flex items-start gap-1.5 text-[11px] leading-snug",
+          stale ? "text-ink-faint" : "text-ink",
+        )}
+      >
+        <CircleHelp
+          className={cn(
+            "mt-0.5 h-3 w-3 shrink-0",
+            answered || stale ? "text-ink-faint" : "text-warn",
+          )}
+        />
+        <span className="min-w-0 flex-1 whitespace-pre-wrap">{question.text}</span>
+        {stale ? (
+          <span className="shrink-0 rounded-full border border-edge px-1.5 py-0.5 text-[9px] font-medium text-ink-faint">
+            asker gone
+          </span>
+        ) : null}
+        {stale && onDismiss ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={sending}
+            onClick={() => {
+              setSending(true);
+              setError(null);
+              void onDismiss(question)
+                .catch((err: Error) => setError(err.message))
+                .finally(() => setSending(false));
+            }}
+          >
+            Dismiss
+          </Button>
+        ) : null}
       </div>
       {answered ? (
         <div className="mt-1 pl-4.5 text-[11px] text-ink-muted">
@@ -43,7 +94,7 @@ export function QuestionRow({
             ? `↳ ${question.answer}`
             : `↳ ${closure!.reason}${closure!.note ? ` — ${closure!.note}` : ""}`}
         </div>
-      ) : (
+      ) : stale ? null : (
         <>
           {question.options.length > 0 ? (
             <div className="mt-1.5 flex flex-wrap gap-1.5 pl-4.5">
@@ -109,7 +160,7 @@ export function QuestionRow({
                   .catch((err: Error) => setError(err.message))
                   .finally(() => setSending(false));
               }}
-              aria-label="Send answer and resume the agent"
+              aria-label="Submit answer"
             >
               <Send className="h-3 w-3" />
             </Button>

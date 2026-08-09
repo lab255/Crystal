@@ -6,7 +6,7 @@ import { useAgents, useWorkspace } from "./provider.js";
  * "Needs you" for the active workspace — open questions + unrecovered
  * recoverable failures. The policy is pure in @crystal/core (attention.ts,
  * the single attention policy); this hook just binds it to the stores. Components that only need the badge
- * COUNT should not use this hook — select `countOpenQuestions` /
+ * COUNT should not use this hook — select `countActionableQuestions` /
  * `countUnrecoveredFailures` (primitives) instead so they don't re-render on
  * every stream event (see CrystalShell).
  */
