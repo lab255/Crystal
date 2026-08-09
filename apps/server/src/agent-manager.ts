@@ -31,6 +31,7 @@ import {
   type AgentRole,
   type AgentRun,
   type AskOptions,
+  type CreatePrResult,
   type ModelPreset,
   type ProfileResolutionInput,
   type RunEvent,
@@ -43,6 +44,7 @@ import { runGit } from "./git.js";
 import { HUB_MCP_ID } from "./mcp/http.js";
 import { exists, resolveInRoot } from "./paths.js";
 import { PendingQueue } from "./pending-queue.js";
+import { createPr as createPullRequest, PrStore } from "./pr-manager.js";
 import { killProcessTree } from "./process-tree.js";
 import {
   abortConflictResolution,
@@ -50,9 +52,14 @@ import {
   mergePreview,
   mergeWorktree,
   prepareConflictResolution,
+  syncPreview,
+  syncWorktree,
   type MergePreview,
   type MergeResult,
+  type SyncPreview,
+  type SyncResult,
 } from "./worktree-merge.js";
+import { WorktreeOperationMutex } from "./worktree-operation-mutex.js";
 
 export interface AgentStartParams {
   prompt: string;
@@ -518,6 +525,10 @@ export class AgentManager {
   private resumeLocks = new Map<string, Promise<unknown>>();
   /** Per-branch serialization of track-worktree adopt-or-create (see start). */
   private branchLocks = new Map<string, Promise<unknown>>();
+  /** Mutating merge/sync/PR/cleanup operations, serialized per worktree path. */
+  private readonly worktreeOperations = new WorktreeOperationMutex();
+  /** Workspace-owned PR identities; run records deliberately carry no URL. */
+  private readonly prStore: PrStore;
   /**
    * Set while the CLI login is broken (an auth-classified failure with no
    * later success). Every delivery would fail identically, so queued chain
@@ -669,7 +680,9 @@ export class AgentManager {
      * the CRYSTAL_DISPATCH marker.
      */
     private readonly mcp: { baseUrl: string; scope: string } | null = null,
-  ) {}
+  ) {
+    this.prStore = new PrStore(dataDir);
+  }
 
   private runsDir(): string {
     return path.join(this.dataDir, "runs");
@@ -1913,29 +1926,32 @@ export class AgentManager {
     await this.ensureLoaded();
     const run = this.runs.get(runId);
     if (!run?.worktreePath) return;
-    // Track worktrees are shared across a branch's successive workers — the
-    // directory may be another run's live cwd, and removing it would pull
-    // the floor out from under that process.
-    const sharers = [...this.runs.values()].filter(
-      (r) => r.id !== run.id && r.worktreePath === run.worktreePath,
-    );
-    const live = sharers.find((r) => r.status === "running" || r.status === "queued");
-    if (live) {
-      throw new Error(`Worktree is in use by live run ${live.id} — cancel it first.`);
-    }
-    const base = resolveInRoot(this.root, run.cwd);
-    await runGit(base, ["worktree", "remove", "--force", run.worktreePath]).catch(async () => {
-      // Fall back to manual removal + prune if git refuses (e.g. locked files).
-      await fs.rm(run.worktreePath!, { recursive: true, force: true });
-      await runGit(base, ["worktree", "prune"]).catch(() => {});
+    const worktreePath = run.worktreePath;
+    await this.worktreeOperations.run(worktreePath, async () => {
+      // Track worktrees are shared across a branch's successive workers — the
+      // directory may be another run's live cwd, and removing it would pull
+      // the floor out from under that process.
+      const sharers = [...this.runs.values()].filter(
+        (r) => r.id !== run.id && r.worktreePath === worktreePath,
+      );
+      const live = sharers.find((r) => r.status === "running" || r.status === "queued");
+      if (live) {
+        throw new Error(`Worktree is in use by live run ${live.id} — cancel it first.`);
+      }
+      const base = resolveInRoot(this.root, run.cwd);
+      await runGit(base, ["worktree", "remove", "--force", worktreePath]).catch(async () => {
+        // Fall back to manual removal + prune if git refuses (e.g. locked files).
+        await fs.rm(worktreePath, { recursive: true, force: true });
+        await runGit(base, ["worktree", "prune"]).catch(() => {});
+      });
+      // Clear every record pointing at the removed directory, not just this
+      // run's — a dangling worktreePath would offer diffs of a deleted dir.
+      for (const r of [run, ...sharers]) {
+        r.worktreePath = null;
+        this.emitRunChanged(r);
+        await this.persist(r);
+      }
     });
-    // Clear every record pointing at the removed directory, not just this
-    // run's — a dangling worktreePath would offer diffs of a deleted dir.
-    for (const r of [run, ...sharers]) {
-      r.worktreePath = null;
-      this.emitRunChanged(r);
-      await this.persist(r);
-    }
   }
 
   /* ---------------- worktree merge-back ---------------- */
@@ -1952,10 +1968,27 @@ export class AgentManager {
     return { run, repoAbs: resolveInRoot(this.root, run.cwd), worktreeAbs: run.worktreePath };
   }
 
+  /** Resolve the path, queue behind its current mutation, then revalidate it. */
+  private async withWorktreeOperation<T>(
+    runId: string,
+    operation: (dirs: { run: AgentRun; repoAbs: string; worktreeAbs: string }) => Promise<T>,
+  ): Promise<T> {
+    const { worktreeAbs } = await this.worktreeDirs(runId);
+    return this.worktreeOperations.run(worktreeAbs, async () =>
+      operation(await this.worktreeDirs(runId)),
+    );
+  }
+
   /** Non-destructive merge prediction for a run's worktree (see worktree-merge.ts). */
   async mergePreview(runId: string, target?: string | null): Promise<MergePreview> {
     const { repoAbs, worktreeAbs } = await this.worktreeDirs(runId);
     return mergePreview(repoAbs, worktreeAbs, target);
+  }
+
+  /** Non-destructive target-into-worktree prediction. */
+  async syncPreview(runId: string): Promise<SyncPreview> {
+    const { repoAbs, worktreeAbs } = await this.worktreeDirs(runId);
+    return syncPreview(repoAbs, worktreeAbs);
   }
 
   /**
@@ -1967,23 +2000,70 @@ export class AgentManager {
     runId: string,
     opts: { target?: string | null; message?: string | null },
   ): Promise<MergeResult> {
-    const { run, repoAbs, worktreeAbs } = await this.worktreeDirs(runId);
-    const live = this.liveWorktreeSharer(worktreeAbs);
-    if (live) throw new Error(`Worktree is in use by live run ${live.id} — wait or cancel it.`);
-    const headline = promptHeadline(run.prompt, 72) || run.id;
-    const result = await mergeWorktree(repoAbs, worktreeAbs, {
-      message: opts.message?.trim() || `Merge agent run: ${headline}`,
-      commitMessage: `Agent run ${run.id}: ${headline}`,
-      target: opts.target,
+    return this.withWorktreeOperation(runId, async ({ run, repoAbs, worktreeAbs }) => {
+      const live = this.liveWorktreeSharer(worktreeAbs);
+      if (live) throw new Error(`Worktree is in use by live run ${live.id} — wait or cancel it.`);
+      const headline = promptHeadline(run.prompt, 72) || run.id;
+      const result = await mergeWorktree(repoAbs, worktreeAbs, {
+        message: opts.message?.trim() || `Merge agent run: ${headline}`,
+        commitMessage: `Agent run ${run.id}: ${headline}`,
+        target: opts.target,
+      });
+      this.record(run, {
+        type: "status",
+        status: run.status,
+        message: `Merged into ${result.target} as ${result.mergedCommit.slice(0, 10)}${result.fastForward ? " (fast-forward)" : ""}`,
+      });
+      this.emitRunChanged(run);
+      await this.persist(run);
+      return result;
     });
-    this.record(run, {
-      type: "status",
-      status: run.status,
-      message: `Merged into ${result.target} as ${result.mergedCommit.slice(0, 10)}${result.fastForward ? " (fast-forward)" : ""}`,
+  }
+
+  /** Explicitly sync the merge target into the run's branch/worktree. */
+  async syncWorktreeOf(runId: string): Promise<SyncResult> {
+    return this.withWorktreeOperation(runId, async ({ run, repoAbs, worktreeAbs }) => {
+      const live = this.liveWorktreeSharer(worktreeAbs);
+      if (live) throw new Error(`Worktree is in use by live run ${live.id} — wait or cancel it.`);
+      const result = await syncWorktree(repoAbs, worktreeAbs);
+      if (result.ok) {
+        const detail = result.conflicts.length
+          ? `Sync from ${result.target} needs resolution in ${result.conflicts.length} file${result.conflicts.length === 1 ? "" : "s"}.`
+          : `Synced ${result.target} into the worktree${result.fastForward ? " (fast-forward)" : ""}.`;
+        this.record(run, { type: "status", status: run.status, message: detail });
+        this.emitRunChanged(run);
+        await this.persist(run);
+      }
+      return result;
     });
-    this.emitRunChanged(run);
-    await this.persist(run);
-    return result;
+  }
+
+  /** Push the run's branch and create or update its open PR. */
+  async createPr(runId: string): Promise<CreatePrResult> {
+    return this.withWorktreeOperation(runId, async ({ run, repoAbs, worktreeAbs }) => {
+      const live = this.liveWorktreeSharer(worktreeAbs);
+      if (live) throw new Error(`Worktree is in use by live run ${live.id} — wait or cancel it.`);
+      const preview = await mergePreview(repoAbs, worktreeAbs);
+      if (!preview.target) {
+        return { ok: false, error: preview.reason ?? "Could not resolve the pull request base." };
+      }
+      const result = await createPullRequest(this.prStore, {
+        worktreeAbs,
+        base: preview.target,
+        runId: run.id,
+        prompt: run.prompt,
+      });
+      if (result.ok) {
+        this.record(run, {
+          type: "status",
+          status: run.status,
+          message: `${result.existing ? "Updated" : "Created"} pull request #${result.number}: ${result.url}`,
+        });
+        this.emitRunChanged(run);
+        await this.persist(run);
+      }
+      return result;
+    });
   }
 
   /**
@@ -1996,48 +2076,50 @@ export class AgentManager {
     runId: string,
     target?: string | null,
   ): Promise<{ run: AgentRun; conflicts: string[] }> {
-    const { run, repoAbs, worktreeAbs } = await this.worktreeDirs(runId);
-    const live = this.liveWorktreeSharer(worktreeAbs);
-    if (live) throw new Error(`Worktree is in use by live run ${live.id} — wait or cancel it.`);
-    const prep = await prepareConflictResolution(repoAbs, worktreeAbs, {
-      commitMessage: `Agent run ${run.id}: work in progress`,
-      target,
-    });
-    if (prep.conflicts.length === 0) {
-      // The reverse merge applied clean — nothing for an agent to resolve.
-      throw new Error(
-        `No conflicts after merging ${prep.target} into the worktree — merge normally now.`,
+    return this.withWorktreeOperation(runId, async ({ run, repoAbs, worktreeAbs }) => {
+      const live = this.liveWorktreeSharer(worktreeAbs);
+      if (live) throw new Error(`Worktree is in use by live run ${live.id} — wait or cancel it.`);
+      const prep = await prepareConflictResolution(repoAbs, worktreeAbs, {
+        commitMessage: `Agent run ${run.id}: work in progress`,
+        target,
+      });
+      if (prep.conflicts.length === 0) {
+        // The reverse merge applied clean — nothing for an agent to resolve.
+        throw new Error(
+          `No conflicts after merging ${prep.target} into the worktree — merge normally now.`,
+        );
+      }
+      const overlay =
+        run.agentId && this.profileResolver
+          ? await this.profileResolver(run.agentId, { purpose: "merge" }).catch(() => null)
+          : null;
+      const resolver = await this.start(
+        applyProfileOverlay(
+          {
+            prompt: buildConflictPrompt(prep.target, prep.conflicts),
+            cwd: run.cwd,
+            taskId: run.taskId,
+            projectId: run.projectId,
+            repoId: run.repoId,
+            agentId: run.agentId,
+            purpose: "merge" as const,
+            tags: run.tags,
+            worktreeOfRunId: runId,
+          },
+          overlay,
+        ),
       );
-    }
-    const overlay =
-      run.agentId && this.profileResolver
-        ? await this.profileResolver(run.agentId, { purpose: "merge" }).catch(() => null)
-        : null;
-    const resolver = await this.start(
-      applyProfileOverlay(
-        {
-          prompt: buildConflictPrompt(prep.target, prep.conflicts),
-          cwd: run.cwd,
-          taskId: run.taskId,
-          projectId: run.projectId,
-          repoId: run.repoId,
-          agentId: run.agentId,
-          purpose: "merge" as const,
-          tags: run.tags,
-          worktreeOfRunId: runId,
-        },
-        overlay,
-      ),
-    );
-    return { run: resolver, conflicts: prep.conflicts };
+      return { run: resolver, conflicts: prep.conflicts };
+    });
   }
 
   /** Abort an in-progress conflict resolution in the run's worktree. */
   async abortResolve(runId: string): Promise<void> {
-    const { worktreeAbs } = await this.worktreeDirs(runId);
-    const live = this.liveWorktreeSharer(worktreeAbs);
-    if (live) throw new Error(`Resolution run ${live.id} is live — cancel it first.`);
-    await abortConflictResolution(worktreeAbs);
+    await this.withWorktreeOperation(runId, async ({ worktreeAbs }) => {
+      const live = this.liveWorktreeSharer(worktreeAbs);
+      if (live) throw new Error(`Resolution run ${live.id} is live — cancel it first.`);
+      await abortConflictResolution(worktreeAbs);
+    });
   }
 
   async cancel(runId: string): Promise<void> {

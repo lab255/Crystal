@@ -12,7 +12,10 @@ import {
   mergeWorktree,
   parseMergeTreeOutput,
   prepareConflictResolution,
+  syncPreview,
+  syncWorktree,
 } from "./worktree-merge.js";
+import { WorktreeOperationMutex } from "./worktree-operation-mutex.js";
 
 let repo: string;
 let worktree: string;
@@ -158,6 +161,159 @@ describe("mergeWorktree", () => {
     expect(files).toContain("b.txt");
     // The user's checkout stayed untouched on its own branch.
     expect((await git(repo, "rev-parse", "--abbrev-ref", "HEAD")).trim()).toBe("elsewhere");
+  });
+});
+
+describe("syncPreview", () => {
+  it("reports a clean fast-forward when only the target advanced", async () => {
+    await write(repo, "target.txt", "target\n");
+    await commit(repo, "target side");
+    const before = (await git(worktree, "rev-parse", "HEAD")).trim();
+
+    const preview = await syncPreview(repo, worktree);
+
+    expect(preview).toMatchObject({
+      target: "main",
+      behind: 1,
+      ahead: 0,
+      dirty: false,
+      canFastForward: true,
+      conflicts: [],
+    });
+    expect((await git(worktree, "rev-parse", "HEAD")).trim()).toBe(before);
+    await expect(fs.access(path.join(worktree, "target.txt"))).rejects.toThrow();
+  });
+
+  it("counts both sides and predicts a clean divergent merge without mutating", async () => {
+    await write(worktree, "run.txt", "run\n");
+    await commit(worktree, "run side");
+    await write(repo, "target.txt", "target\n");
+    await commit(repo, "target side");
+    const before = (await git(worktree, "rev-parse", "HEAD")).trim();
+
+    const preview = await syncPreview(repo, worktree);
+
+    expect(preview.behind).toBe(1);
+    expect(preview.ahead).toBe(1);
+    expect(preview.canFastForward).toBe(false);
+    expect(preview.conflicts).toEqual([]);
+    expect((await git(worktree, "rev-parse", "HEAD")).trim()).toBe(before);
+    await expect(fs.access(path.join(worktree, "target.txt"))).rejects.toThrow();
+  });
+
+  it("predicts conflict files without changing HEAD, index, or file contents", async () => {
+    await write(worktree, "a.txt", "run\n");
+    await commit(worktree, "run side");
+    await write(repo, "a.txt", "target\n");
+    await commit(repo, "target side");
+    const before = (await git(worktree, "rev-parse", "HEAD")).trim();
+
+    const preview = await syncPreview(repo, worktree);
+
+    expect(preview.behind).toBe(1);
+    expect(preview.ahead).toBe(1);
+    expect(preview.canFastForward).toBe(false);
+    expect(preview.conflicts).toContain("a.txt");
+    expect((await git(worktree, "rev-parse", "HEAD")).trim()).toBe(before);
+    expect(await git(worktree, "status", "--porcelain")).toBe("");
+    expect(await fs.readFile(path.join(worktree, "a.txt"), "utf8")).toBe("run\n");
+  });
+});
+
+describe("syncWorktree", () => {
+  it("uses the ff-only tier for a clean worktree behind its target", async () => {
+    await write(repo, "target.txt", "target\n");
+    await commit(repo, "target side");
+
+    const result = await syncWorktree(repo, worktree);
+
+    expect(result).toMatchObject({ ok: true, target: "main", fastForward: true, conflicts: [] });
+    expect((await git(worktree, "rev-parse", "HEAD")).trim()).toBe(
+      (await git(repo, "rev-parse", "main")).trim(),
+    );
+    expect(await fs.readFile(path.join(worktree, "target.txt"), "utf8")).toBe("target\n");
+  });
+
+  it("creates a merge commit in the worktree for clean divergence", async () => {
+    await write(worktree, "run.txt", "run\n");
+    await commit(worktree, "run side");
+    await write(repo, "target.txt", "target\n");
+    await commit(repo, "target side");
+
+    const result = await syncWorktree(repo, worktree);
+
+    expect(result).toMatchObject({ ok: true, target: "main", fastForward: false, conflicts: [] });
+    expect(await fs.readFile(path.join(worktree, "run.txt"), "utf8")).toBe("run\n");
+    expect(await fs.readFile(path.join(worktree, "target.txt"), "utf8")).toBe("target\n");
+    expect((await git(worktree, "log", "-1", "--pretty=%P")).trim().split(" ")).toHaveLength(2);
+  });
+
+  it("materializes conflicts for the existing resolution and abort flow", async () => {
+    await write(worktree, "a.txt", "run\n");
+    await commit(worktree, "run side");
+    await write(repo, "a.txt", "target\n");
+    await commit(repo, "target side");
+
+    const result = await syncWorktree(repo, worktree);
+
+    expect(result).toMatchObject({ ok: true, target: "main", fastForward: false });
+    if (!result.ok) throw new Error(result.error);
+    expect(result.conflicts).toContain("a.txt");
+    expect(await fs.readFile(path.join(worktree, "a.txt"), "utf8")).toContain("<<<<<<<");
+    expect((await git(worktree, "rev-parse", "MERGE_HEAD")).trim()).toBeTruthy();
+    // resolveConflicts calls this same primitive after sync; it must adopt,
+    // not reject, the already-materialized merge state.
+    const adopted = await prepareConflictResolution(repo, worktree, { commitMessage: "unused" });
+    expect(adopted.conflicts).toContain("a.txt");
+    await abortConflictResolution(worktree);
+    expect(await fs.readFile(path.join(worktree, "a.txt"), "utf8")).toBe("run\n");
+  });
+
+  it("returns a typed refusal for dirty or untracked work", async () => {
+    await write(repo, "target.txt", "target\n");
+    await commit(repo, "target side");
+    await write(worktree, "untracked.txt", "local\n");
+    const before = (await git(worktree, "rev-parse", "HEAD")).trim();
+
+    const result = await syncWorktree(repo, worktree);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected refusal");
+    expect(result.error).toMatch(/commit or discard first/i);
+    expect((await git(worktree, "rev-parse", "HEAD")).trim()).toBe(before);
+    expect(await fs.readFile(path.join(worktree, "untracked.txt"), "utf8")).toBe("local\n");
+  });
+
+  it("serializes two concurrent syncs through the per-worktree mutex", async () => {
+    await write(repo, "target.txt", "target\n");
+    await commit(repo, "target side");
+    const mutex = new WorktreeOperationMutex();
+    const order: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    const first = mutex.run(worktree, async () => {
+      order.push("first:start");
+      await gate;
+      const result = await syncWorktree(repo, worktree);
+      order.push("first:end");
+      return result;
+    });
+    const second = mutex.run(worktree, async () => {
+      order.push("second:start");
+      const result = await syncWorktree(repo, worktree);
+      order.push("second:end");
+      return result;
+    });
+
+    await expect.poll(() => order).toEqual(["first:start"]);
+    release();
+    const [one, two] = await Promise.all([first, second]);
+    expect(one.ok).toBe(true);
+    expect(two.ok).toBe(true);
+    expect(order).toEqual(["first:start", "first:end", "second:start", "second:end"]);
   });
 });
 
