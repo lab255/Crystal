@@ -145,8 +145,9 @@ pnpm --filter @crystal/desktop build          # dmg / NSIS installer via Tauri
 ```
 
 A release-style build requires the updater signing env (this is intentional — it
-mirrors CI); see [docs/releasing.md](docs/releasing.md). The packaged app serves
-`$CRYSTAL_ROOT` if set, else `~/CrystalWorkspace`.
+mirrors CI); see [docs/releasing.md](docs/releasing.md). The packaged app opens
+`$CRYSTAL_ROOT` when that is set; otherwise it reopens whatever the last
+session had open and a first launch starts empty, on the workspace picker.
 
 ## Embedding Crystal
 

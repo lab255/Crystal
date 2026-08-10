@@ -32,7 +32,7 @@ import {
   suggestFacets,
 } from "@crystal/core";
 import { LineBuffer } from "@crystal/core";
-import { browseDirs } from "./browse.js";
+import { browseDirs, expandHome } from "./browse.js";
 import { createConsoleHandler, resolveConsoleDir } from "./console-static.js";
 import {
   claimPipePath,
@@ -63,7 +63,7 @@ import { overviewSourcesAtRef, surfacesSnapshotAtRef } from "./ref-snapshot.js";
 import { pasteInput } from "./terminal-manager.js";
 import { PublishManager } from "./publish-manager.js";
 import { sendApiRequest } from "./api-client-store.js";
-import { WorkspaceRegistry, type WorkspaceRuntime } from "./workspace-registry.js";
+import { WorkspaceRegistry, canonicalRoot, type WorkspaceRuntime } from "./workspace-registry.js";
 
 type Handlers = {
   [M in BridgeMethodName]: (
@@ -239,7 +239,12 @@ function registryProjects(registry: WorkspaceRegistry): HubProjects {
 }
 
 export async function startCrystalServer(opts: {
-  /** Roots to open at startup; the first becomes the default workspace. */
+  /**
+   * Roots to open at startup; the first becomes the default workspace. May be
+   * empty (`[]`): the desktop shell boots its sidecar with no root at all so a
+   * first launch lands on the workspace picker instead of a folder nobody
+   * asked for. Persisted workspaces are restored regardless.
+   */
   root: string | string[];
   /**
    * Opt-in TCP listener for the web console and remote access. When omitted
@@ -296,7 +301,16 @@ export async function startCrystalServer(opts: {
   // a fleet client can tell N local bridges apart. Both are stamped into the
   // instance file and returned by `workspaces.list`.
   const serverId = crypto.randomUUID();
-  const primaryRoot = path.resolve(Array.isArray(opts.root) ? opts.root[0]! : opts.root);
+  const startupRoots = (Array.isArray(opts.root) ? opts.root : [opts.root]).filter((r) => !!r);
+  // Server *identity* (name, pipe name, persisted-open-set flavor key) — not a
+  // workspace: it is never opened or created. With no startup root it falls
+  // back to the historical desktop default (`~/CrystalWorkspace`) precisely
+  // because that path used to be passed as `--root`: the flavor key is derived
+  // from it, and a key that moved would orphan every existing desktop user's
+  // persisted open set on upgrade.
+  const primaryRoot = path.resolve(
+    startupRoots[0] ?? canonicalRoot(path.join(os.homedir(), "CrystalWorkspace")),
+  );
   const serverName = `${os.hostname()}:${path.basename(primaryRoot)}`;
 
   // Instance-file state, also ahead of the registry: the startup opens already
@@ -414,7 +428,10 @@ export async function startCrystalServer(opts: {
   registryRef = registry;
 
   // Open CLI roots first (first one is the default), then persisted ones.
-  for (const root of Array.isArray(opts.root) ? opts.root : [opts.root]) {
+  // There may be no CLI root at all (`--no-default-root`); restore still runs,
+  // so a returning user gets their workspaces back and only a true first
+  // launch lands on zero.
+  for (const root of startupRoots) {
     await registry.open(root);
   }
   if (opts.restorePersisted !== false) await registry.restorePersisted();
@@ -514,8 +531,10 @@ export async function startCrystalServer(opts: {
       server: { serverId, name: serverName },
       ...(registry.pendingRestore() ? { pendingRestore: registry.pendingRestore()! } : {}),
     }),
+    // `root` is user-typed as often as it is clicked, so it gets the same `~`
+    // expansion the browser does — the two must agree on what a path means.
     "workspaces.open": async ({ root }) => ({
-      workspace: (await registry.open(root)).descriptor(),
+      workspace: (await registry.open(expandHome(root.trim()))).descriptor(),
     }),
     "workspaces.close": async ({ ws }) => {
       // Interactive program managers hosted on this workspace's PTYs must
@@ -1428,8 +1447,11 @@ export async function startCrystalServer(opts: {
   }
 
   const roots = registry.list().map((w) => path.resolve(w.root));
+  // "none" is a real boot outcome (no CLI root, nothing persisted) — an empty
+  // list in the log reads like a bug.
+  const rootsLabel = roots.length > 0 ? roots.join(", ") : "none — waiting for the picker";
   if (pipePath) {
-    console.log(`[crystal] bridge on ipc:${pipePath} (workspaces: ${roots.join(", ")})`);
+    console.log(`[crystal] bridge on ipc:${pipePath} (workspaces: ${rootsLabel})`);
   }
   console.log(`[crystal] mcp endpoint on ${mcpBaseUrl}/mcp (loopback only)`);
   if (hub) {

@@ -53,7 +53,9 @@ export function createWorkspacesStore(client: BridgeClient): WorkspacesStore {
           workspaces,
           recents: recents ?? [],
           pendingRestore: pendingRestore?.length ? pendingRestore : null,
-          activeId: stillOpen ? activeId : defaultWs,
+          // No workspaces open (first launch) → no active one; the shell's
+          // Overview and its picker are the whole UI until one is opened.
+          activeId: stillOpen ? activeId : (defaultWs ?? null),
           error: null,
         });
       } catch (err) {

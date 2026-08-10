@@ -1,19 +1,11 @@
 import { DEFAULT_BRIDGE_PORT } from "@crystal/core";
+import { resolveStartupRoots } from "./boot-args.js";
 import { canonicalRoot } from "./workspace-registry.js";
 import { startCrystalServer, type CrystalServer } from "./server.js";
 
 function argValue(flag: string): string | undefined {
   const idx = process.argv.indexOf(flag);
   return idx >= 0 ? process.argv[idx + 1] : undefined;
-}
-
-/** All values of a repeatable flag, e.g. `--root a --root b`. */
-function argValues(flag: string): string[] {
-  const out: string[] = [];
-  for (let i = 0; i < process.argv.length - 1; i++) {
-    if (process.argv[i] === flag && process.argv[i + 1]) out.push(process.argv[i + 1]!);
-  }
-  return out;
 }
 
 // Last-resort guards: the bridge hosts every workspace, terminal and live
@@ -28,8 +20,10 @@ process.on("unhandledRejection", (reason) => {
   console.error("[crystal] unhandled rejection (server kept alive):", reason);
 });
 
-const roots = argValues("--root").map(canonicalRoot);
-if (roots.length === 0) roots.push(canonicalRoot(process.cwd()));
+// `--root` (repeatable) else the cwd — unless `--no-default-root` /
+// CRYSTAL_NO_DEFAULT_ROOT drops that fallback, which is how the desktop shell
+// boots a sidecar that opens nothing but the persisted set (see boot-args.ts).
+const roots = resolveStartupRoots(process.argv, process.env, process.cwd()).map(canonicalRoot);
 
 /**
  * The TCP listener is opt-in: `--listen [host:]port` (or CRYSTAL_LISTEN), with

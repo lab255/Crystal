@@ -715,8 +715,11 @@ export class WorkspaceRegistry {
     return [...this.runtimes.values()].map((r) => r.descriptor());
   }
 
-  get defaultWs(): string {
-    if (!this.defaultId) throw new Error("No workspaces open");
+  /**
+   * The workspace a `ws`-less call resolves to, or null when none is open —
+   * a legitimate state (a first launch with no persisted set), not an error.
+   */
+  get defaultWs(): string | null {
     return this.defaultId;
   }
 

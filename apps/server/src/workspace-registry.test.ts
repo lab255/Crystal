@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createAgentRun } from "@crystal/core";
-import { browseDirs } from "./browse.js";
+import { browseDirs, expandHome } from "./browse.js";
 import { packageNameOf, type CrossSurface } from "./code-map.js";
 import type { TerminalSeed } from "./terminal-manager.js";
 import { WorkspaceRegistry, WorkspaceRuntime, computeCrossEdges } from "./workspace-registry.js";
@@ -181,6 +181,47 @@ describe("WorkspaceRegistry recents", () => {
       ["beta", true],
       ["alpha", false],
     ]);
+  });
+
+  it("keeps a closed workspace in the persisted reopen list across a restart", async () => {
+    const tmp = await tmpDir();
+    const wsA = path.join(tmp, "alpha");
+    const wsB = path.join(tmp, "beta");
+    await fs.mkdir(wsA);
+    await fs.mkdir(wsB);
+    const persistFile = path.join(tmp, "open-workspaces.json");
+
+    const registry = new WorkspaceRegistry(() => {}, persistFile);
+    cleanups.push(() => registry.closeAll());
+    const a = await registry.open(wsA);
+    await registry.open(wsB);
+    await registry.close(a.id);
+    // Closed: out of the open set, still in the reopen list.
+    expect(registry.list().map((w) => w.name)).toEqual(["beta"]);
+    await registry.closeAll();
+
+    // A full restart (fresh registry, same file): the closed workspace is
+    // still offered, and reopening it works.
+    const restarted = new WorkspaceRegistry(() => {}, persistFile);
+    cleanups.push(() => restarted.closeAll());
+    const recent = (await restarted.recents()).find((r) => r.name === "alpha");
+    expect(recent?.root).toBe(await fs.realpath(wsA));
+    expect(recent?.missing).toBeFalsy();
+    const reopened = await restarted.open(recent!.root);
+    expect(reopened.name).toBe("alpha");
+  });
+
+  it("has no default workspace until one is open", async () => {
+    const tmp = await tmpDir();
+    const wsA = path.join(tmp, "alpha");
+    await fs.mkdir(wsA);
+    const registry = new WorkspaceRegistry(() => {}, null);
+    cleanups.push(() => registry.closeAll());
+    // Zero workspaces is a state, not an error — `workspaces.list` reports it.
+    expect(registry.defaultWs).toBeNull();
+    expect(registry.list()).toEqual([]);
+    const a = await registry.open(wsA);
+    expect(registry.defaultWs).toBe(a.id);
   });
 
   it("reads legacy persist files that predate recents", async () => {
@@ -480,6 +521,10 @@ describe("browseDirs", () => {
       const { path: listed, parent, entries } = await browseDirs(tmp);
       expect(listed).toBe(path.resolve(tmp));
       expect(parent).toBe(path.dirname(path.resolve(tmp)));
+      // Any absolute path is listable and `parent` walks to the filesystem
+      // root, so the picker can reach folders outside home.
+      const root = await browseDirs(path.parse(path.resolve(tmp)).root);
+      expect(root.parent).toBeNull();
       expect(entries.map((e) => [e.name, e.marker ?? null])).toEqual([
         ["crystal-ws", "crystal"],
         ["pkg", "package"],
@@ -489,5 +534,12 @@ describe("browseDirs", () => {
     } finally {
       await fs.rm(tmp, { recursive: true, force: true });
     }
+  });
+
+  it("expands a leading ~ (typed paths never meet a shell)", async () => {
+    expect((await browseDirs("~")).path).toBe(path.resolve(os.homedir()));
+    expect(expandHome("~/x/y")).toBe(path.join(os.homedir(), "x/y"));
+    expect(expandHome("~notme/x")).toBe("~notme/x");
+    expect(expandHome("/abs/path")).toBe("/abs/path");
   });
 });

@@ -82,18 +82,17 @@ fn hard_kill(pid: u32) {
     }
 }
 
-/// Workspace the desktop app serves: `CRYSTAL_ROOT` env, else
-/// `~/CrystalWorkspace` (created on first launch).
-fn workspace_root() -> std::path::PathBuf {
-    if let Ok(root) = std::env::var("CRYSTAL_ROOT") {
-        return std::path::PathBuf::from(root);
+/// Workspace the desktop app is *forced* to open, if any: the `CRYSTAL_ROOT`
+/// env var, an explicit escape hatch kept for scripted/CI launches. Without it
+/// the app opens nothing of its own — the sidecar restores whatever the last
+/// session had open, and a genuine first launch lands on the in-app workspace
+/// picker instead of a `~/CrystalWorkspace` nobody asked for.
+fn forced_workspace_root() -> Option<std::path::PathBuf> {
+    let root = std::env::var("CRYSTAL_ROOT").ok()?;
+    if root.trim().is_empty() {
+        return None;
     }
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .unwrap_or_else(|_| ".".into());
-    let root = std::path::Path::new(&home).join("CrystalWorkspace");
-    let _ = std::fs::create_dir_all(&root);
-    root
+    Some(std::path::PathBuf::from(root))
 }
 
 /// Append-mode file under `~/.crystal/logs`. The desktop app has no console
@@ -215,6 +214,19 @@ fn plan_bridge_command(module_base: Option<&std::path::Path>) -> Option<(Command
                 pipe
             }
         };
+        // Same root rule as the packaged branch, unless the custom command
+        // line already names one: a GUI launch must not silently adopt the
+        // app's cwd as a workspace.
+        if !args.iter().any(|a| a == "--root" || a == "--no-default-root") {
+            match forced_workspace_root() {
+                Some(root) => {
+                    cmd.args(["--root", &root.to_string_lossy()]);
+                }
+                None => {
+                    cmd.arg("--no-default-root");
+                }
+            }
+        }
         (cmd, pipe)
     } else {
         let exe_dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
@@ -224,10 +236,20 @@ fn plan_bridge_command(module_base: Option<&std::path::Path>) -> Option<(Command
             // tauri dev — the workspace dev server owns the bridge.
             return None;
         }
-        let root = workspace_root();
         let pipe = desktop_pipe_path();
         let mut cmd = Command::new(&sidecar);
-        cmd.args(["--root", &root.to_string_lossy(), "--pipe", &pipe]);
+        // No CRYSTAL_ROOT ⇒ no root at all: `--no-default-root` stops the
+        // server falling back to its cwd (which, for a GUI launch, is
+        // meaningless) so boot opens only the persisted set.
+        match forced_workspace_root() {
+            Some(root) => {
+                cmd.args(["--root", &root.to_string_lossy()]);
+            }
+            None => {
+                cmd.arg("--no-default-root");
+            }
+        }
+        cmd.args(["--pipe", &pipe]);
         (cmd, pipe)
     };
     if let Some(base) = module_base {

@@ -298,7 +298,12 @@ export interface BridgeMethods {
     params: Record<string, never>;
     result: {
       workspaces: WorkspaceDescriptor[];
-      defaultWs: string;
+      /**
+       * The workspace a `ws`-less call resolves to; null when the server has
+       * none open (a first launch before anything is picked — the client shows
+       * the Overview and its picker rather than treating it as an error).
+       */
+      defaultWs: string | null;
       /** Most-recently-opened first; includes currently-open workspaces. */
       recents: RecentWorkspace[];
       /**
