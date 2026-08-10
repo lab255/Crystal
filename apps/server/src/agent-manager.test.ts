@@ -555,6 +555,46 @@ describe("applyWorktree", () => {
     const again = await mgr.applyWorktree(record.id, {});
     expect(again.ok).toBe(false);
   });
+
+  it.skipIf(process.platform === "win32")(
+    "refuses with a typed reason while a live run shares the worktree",
+    async () => {
+      tmp = await fs.mkdtemp(path.join(os.tmpdir(), "crystal-apply-guard-"));
+      const root = path.join(tmp, "repo");
+      await fs.mkdir(root, { recursive: true });
+      await git(root, ["init", "-b", "main"]);
+      await git(root, ["config", "user.email", "test@crystal"]);
+      await git(root, ["config", "user.name", "Crystal Test"]);
+      await fs.writeFile(path.join(root, "a.txt"), "one\n");
+      await git(root, ["add", "-A"]);
+      await git(root, ["commit", "-m", "init"]);
+
+      // A fake that stays alive so the run holds its worktree in "running".
+      const bin = path.join(tmp, "slow.sh");
+      await fs.writeFile(
+        bin,
+        [
+          "#!/bin/sh",
+          "cat > /dev/null",
+          `echo '{"type":"system","subtype":"init","session_id":"s","model":"m","cwd":".","tools":[]}'`,
+          "sleep 5",
+        ].join("\n"),
+        { mode: 0o755 },
+      );
+      const mgr = new AgentManager(root, path.join(tmp, "data"), bin);
+      const run = await mgr.start({ prompt: "long", isolation: "worktree" });
+      await expect.poll(async () => (await mgr.get(run.id))?.worktreePath).toBeTruthy();
+
+      const result = await mgr.applyWorktree(run.id, {});
+      expect(result).toMatchObject({
+        ok: false,
+        reason: expect.stringMatching(/in use by live run/i),
+      });
+
+      await mgr.cancel(run.id);
+      await mgr.waitForSettled(run.id);
+    },
+  );
 });
 
 describe("composeNoticePrompt", () => {
