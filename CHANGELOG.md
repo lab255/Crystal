@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.31.1 (2026-08-10)
+
+### Bug Fixes
+
+- stop boot-time CLI open from clobbering the persisted open set ([`830b65f`](https://github.com/lab255/Crystal/commit/830b65f))
+
 ## v0.31.0 (2026-08-10)
 
 ### Features
