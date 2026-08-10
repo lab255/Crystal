@@ -578,6 +578,35 @@ export class WorkspaceRegistry {
   /** Roots held back by safe mode (the previous restore crashed); null when none. */
   private safeModeRoots: string[] | null = null;
 
+  /**
+   * One-shot snapshot of the previous session's persisted open set, taken
+   * before this server's first write. Boot opens the CLI root (which
+   * persists) *before* `restorePersisted()` runs — reading the file at
+   * restore time would see that write, not the set the last session left
+   * behind, and every other workspace would be silently dropped.
+   */
+  private storedRootsLoad: Promise<string[]> | null = null;
+
+  private loadStoredRoots(): Promise<string[]> {
+    return (this.storedRootsLoad ??= (async () => {
+      if (!this.persistFile) return [];
+      const readRoots = async (file: string): Promise<string[] | null> => {
+        try {
+          const parsed = JSON.parse(await fs.readFile(file, "utf8"));
+          if (!Array.isArray(parsed?.roots)) return null;
+          return parsed.roots.filter((r: unknown) => typeof r === "string");
+        } catch {
+          return null;
+        }
+      };
+      // The per-flavor file wins; the shared legacy file only seeds the first
+      // boot after migration (once this flavor persists, its own file exists —
+      // and an empty list there is a statement, not an absence).
+      const flavor = this.flavorFile();
+      return (flavor ? await readRoots(flavor) : null) ?? (await readRoots(this.persistFile)) ?? [];
+    })());
+  }
+
   /** Open (or return the already-open) workspace at `root`. */
   async open(root: string): Promise<WorkspaceRuntime> {
     const canonical = canonicalRoot(root);
@@ -709,21 +738,7 @@ export class WorkspaceRegistry {
    */
   async restorePersisted(): Promise<void> {
     if (!this.persistFile) return;
-    const readRoots = async (file: string): Promise<string[] | null> => {
-      try {
-        const parsed = JSON.parse(await fs.readFile(file, "utf8"));
-        if (!Array.isArray(parsed?.roots)) return null;
-        return parsed.roots.filter((r: unknown) => typeof r === "string");
-      } catch {
-        return null;
-      }
-    };
-    // The per-flavor file wins; the shared legacy file only seeds the first
-    // boot after migration (once this flavor persists, its own file exists —
-    // and an empty list there is a statement, not an absence).
-    const flavor = this.flavorFile();
-    const persisted =
-      (flavor ? await readRoots(flavor) : null) ?? (await readRoots(this.persistFile)) ?? [];
+    const persisted = await this.loadStoredRoots();
     const alreadyOpen = new Set([...this.runtimes.values()].map((r) => r.root));
     const markerRoots = await this.readRestoreMarker();
     if (markerRoots) {
@@ -880,6 +895,9 @@ export class WorkspaceRegistry {
     if (!file) return;
     // Loading first means a close() before any open() can't clobber stored recents.
     await this.ensureRecentsLoaded();
+    // Snapshot the previous session's open set before overwriting it — the
+    // boot-time CLI open persists before restorePersisted() gets to read.
+    await this.loadStoredRoots();
     const roots = [...this.runtimes.values()].map((r) => r.root);
     try {
       await fs.mkdir(path.dirname(file), { recursive: true });

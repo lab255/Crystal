@@ -249,6 +249,39 @@ describe("WorkspaceRegistry per-flavor persistence", () => {
     ]);
   });
 
+  it("restores the persisted set even when a CLI root opens (and persists) first", async () => {
+    // The real boot sequence: server.ts opens the CLI/primary root — which
+    // persists, overwriting the flavor file — and only then restores. The
+    // restore must see the previous session's set, not that fresh write.
+    const tmp = await tmpDir();
+    const wsA = path.join(tmp, "alpha");
+    const wsB = path.join(tmp, "beta");
+    const primary = path.join(tmp, "primary");
+    await fs.mkdir(wsA);
+    await fs.mkdir(wsB);
+    await fs.mkdir(primary);
+    const shared = path.join(tmp, "open-workspaces.json");
+
+    const prev = new WorkspaceRegistry(() => {}, shared, null, "flav-a");
+    cleanups.push(() => prev.closeAll());
+    await prev.open(wsA);
+    await prev.open(wsB);
+    await prev.closeAll();
+
+    const next = new WorkspaceRegistry(() => {}, shared, null, "flav-a");
+    cleanups.push(() => next.closeAll());
+    await next.open(primary);
+    await next.restorePersisted();
+    expect(next.list().map((w) => w.name).sort()).toEqual(["alpha", "beta", "primary"]);
+    // The CLI root opened first stays the default.
+    expect(next.get().root).toBe(await fs.realpath(primary));
+
+    // And the file now holds the full merged set for the next restart.
+    const flavorFile = path.join(tmp, "open-workspaces.flav-a.json");
+    const persisted = JSON.parse(await fs.readFile(flavorFile, "utf8"));
+    expect(persisted.roots.sort()).toEqual(next.list().map((w) => w.root).sort());
+  });
+
   it("migrates from the legacy shared file, then prefers its own flavor file", async () => {
     const tmp = await tmpDir();
     const wsA = path.join(tmp, "alpha");
