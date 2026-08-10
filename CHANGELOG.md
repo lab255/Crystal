@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.31.0 (2026-08-10)
+
+### Features
+
+- session, blocked-by, question-count and cost chips ([`28d2270`](https://github.com/lab255/Crystal/commit/28d2270))
+- stale-aware attention counts + inbox dismiss surfaces ([`34f466a`](https://github.com/lab255/Crystal/commit/34f466a))
+- hub answer path — id tokens, trusted context, exact attribution, typed failures ([`a48fdb4`](https://github.com/lab255/Crystal/commit/a48fdb4))
+- run worktree sync tiers + create/update PR with per-worktree op mutex ([`1719177`](https://github.com/lab255/Crystal/commit/1719177))
+- typed question lifecycle — origin attribution, closure verbs, evidence-based expiry, deliverability ([`3445fea`](https://github.com/lab255/Crystal/commit/3445fea))
+
 ## v0.30.0 (2026-08-09)
 
 ### Features
