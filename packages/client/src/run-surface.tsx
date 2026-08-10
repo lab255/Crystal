@@ -484,7 +484,7 @@ function ChangesRegion({
   merge?: MergeControls | null;
 }) {
   const [refreshing, setRefreshing] = useState(false);
-  const [note, setNote] = useState<string | null>(null);
+  const [note, setNote] = useState<{ text: string; error: boolean } | null>(null);
   const [pr, setPr] = useState<{ url: string; number: number } | null>(null);
   const [confirmingDiscard, setConfirmingDiscard] = useState(false);
   const [discarding, setDiscarding] = useState(false);
@@ -508,21 +508,23 @@ function ChangesRegion({
     try {
       if (kind === "merge") {
         const result = await merge.onMerge();
-        setNote(
-          `Merged into ${result.target} as ${result.mergedCommit.slice(0, 10)}${result.fastForward ? " (fast-forward)" : ""}.`,
-        );
+        setNote({
+          text: `Merged into ${result.target} as ${result.mergedCommit.slice(0, 10)}${result.fastForward ? " (fast-forward)" : ""}.`,
+          error: false,
+        });
       } else if (kind === "resolve") {
         const result = await merge.onResolve();
-        setNote(
-          `Resolution agent ${result.run.id.slice(0, 10)} started on ${result.conflicts.length} conflicted file${result.conflicts.length === 1 ? "" : "s"}.`,
-        );
+        setNote({
+          text: `Resolution agent ${result.run.id.slice(0, 10)} started on ${result.conflicts.length} conflicted file${result.conflicts.length === 1 ? "" : "s"}.`,
+          error: false,
+        });
       } else {
         await merge.onAbort();
-        setNote("Conflict resolution aborted — the worktree is back to its own work.");
+        setNote({ text: "Conflict resolution aborted — the worktree is back to its own work.", error: false });
       }
       await Promise.all([merge.onRefresh(), Promise.resolve(onRefreshDiff?.())]);
     } catch (err) {
-      setNote((err as Error).message);
+      setNote({ text: (err as Error).message, error: true });
     } finally {
       setMerging(null);
     }
@@ -535,21 +537,23 @@ function ChangesRegion({
     try {
       const result = await merge.onSync();
       if (!result.ok) {
-        setNote(result.error);
+        setNote({ text: result.error, error: true });
         return;
       }
       if (result.conflicts.length > 0) {
         const resolution = await merge.onResolve(result.target);
-        setNote(
-          `Sync paused on ${result.conflicts.length} conflicted file${result.conflicts.length === 1 ? "" : "s"}; resolution agent ${resolution.run.id.slice(0, 10)} started.`,
-        );
+        setNote({
+          text: `Sync paused on ${result.conflicts.length} conflicted file${result.conflicts.length === 1 ? "" : "s"}; resolution agent ${resolution.run.id.slice(0, 10)} started.`,
+          error: false,
+        });
       } else {
-        setNote(
-          `Synced ${result.target} into the worktree${result.fastForward ? " (fast-forward)" : " (merge commit)"}.`,
-        );
+        setNote({
+          text: `Synced ${result.target} into the worktree${result.fastForward ? " (fast-forward)" : " (merge commit)"}.`,
+          error: false,
+        });
       }
     } catch (err) {
-      setNote((err as Error).message);
+      setNote({ text: (err as Error).message, error: true });
     } finally {
       await Promise.all([merge.onRefresh(), Promise.resolve(onRefreshDiff?.())]).catch(() => {});
       setMerging(null);
@@ -563,13 +567,16 @@ function ChangesRegion({
     try {
       const result = await merge.onCreatePr();
       if (!result.ok) {
-        setNote(result.error);
+        setNote({ text: result.error, error: true });
         return;
       }
       setPr({ url: result.url, number: result.number });
-      setNote(`${result.existing ? "Updated" : "Created"} pull request #${result.number}.`);
+      setNote({
+        text: `${result.existing ? "Updated" : "Created"} pull request #${result.number}.`,
+        error: false,
+      });
     } catch (err) {
-      setNote((err as Error).message);
+      setNote({ text: (err as Error).message, error: true });
     } finally {
       setMerging(null);
     }
@@ -727,8 +734,11 @@ function ChangesRegion({
             onApplied={(outcome) => {
               setNote(
                 outcome.ok
-                  ? `Committed ${outcome.commit.slice(0, 10)} on ${outcome.branch} — merge or PR it from the repo.`
-                  : outcome.reason,
+                  ? {
+                      text: `Committed ${outcome.commit.slice(0, 10)} on ${outcome.branch} — merge or PR it from the repo.`,
+                      error: false,
+                    }
+                  : { text: outcome.reason, error: true },
               );
               if (outcome.ok) void refresh();
             }}
@@ -745,7 +755,7 @@ function ChangesRegion({
                 onClick={() => {
                   setDiscarding(true);
                   void Promise.resolve(onDiscard())
-                    .catch((err: Error) => setNote(err.message))
+                    .catch((err: Error) => setNote({ text: err.message, error: true }))
                     .finally(() => {
                       setDiscarding(false);
                       setConfirmingDiscard(false);
@@ -795,7 +805,16 @@ function ChangesRegion({
           </Button>
         </div>
       ) : null}
-      {note ? <p className="shrink-0 px-3 pb-1.5 text-[10px] text-ink-muted">{note}</p> : null}
+      {note ? (
+        <p
+          className={cn(
+            "shrink-0 px-3 pb-1.5 text-[10px]",
+            note.error ? "font-medium text-danger" : "text-ink-muted",
+          )}
+        >
+          {note.text}
+        </p>
+      ) : null}
       {pr ? (
         <p className="shrink-0 px-3 pb-1.5 text-[10px] text-ink-muted">
           PR #{pr.number}: {" "}
