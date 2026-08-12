@@ -1,6 +1,20 @@
-import { describe, expect, it } from "vitest";
+import path from "node:path";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TerminalInfo } from "@crystal/core";
+import { resolveInRoot } from "./paths.js";
 import { TerminalManager, pasteInput, type TerminalSeed } from "./terminal-manager.js";
+
+const { spawnPty } = vi.hoisted(() => ({ spawnPty: vi.fn() }));
+
+vi.mock("@lydell/node-pty", () => ({ spawn: spawnPty }));
+
+beforeEach(() => {
+  spawnPty.mockReset();
+  spawnPty.mockReturnValue({
+    onData: vi.fn(),
+    onExit: vi.fn(),
+  });
+});
 
 describe("pasteInput", () => {
   it("wraps text in bracketed-paste markers and submits with a carriage return", () => {
@@ -13,6 +27,38 @@ describe("pasteInput", () => {
     const wrapped = pasteInput("line one\nline two");
     expect(wrapped).toBe("\x1b[200~line one\nline two\x1b[201~\r");
     expect(wrapped.indexOf("\r")).toBe(wrapped.length - 1);
+  });
+});
+
+describe("TerminalManager cwd confinement", () => {
+  it("clamps a command terminal's absolute cwd into the workspace without trustedCwd", () => {
+    const root = path.resolve("workspace-root");
+    const outside = path.resolve(root, "..", "outside-worktree");
+    const mgr = new TerminalManager(root);
+
+    mgr.create({
+      cwd: outside,
+      command: { file: "agent", args: [] },
+    });
+
+    const options = spawnPty.mock.calls[0]![2] as { cwd: string };
+    expect(options.cwd).toBe(resolveInRoot(root, outside));
+    expect(options.cwd).not.toBe(outside);
+  });
+
+  it("honors a server-resolved absolute cwd only with trustedCwd", () => {
+    const root = path.resolve("workspace-root");
+    const worktree = path.resolve(root, "..", "trusted-worktree");
+    const mgr = new TerminalManager(root);
+
+    mgr.create({
+      cwd: worktree,
+      trustedCwd: true,
+      command: { file: "agent", args: [] },
+    });
+
+    const options = spawnPty.mock.calls[0]![2] as { cwd: string };
+    expect(options.cwd).toBe(worktree);
   });
 });
 

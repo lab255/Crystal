@@ -405,6 +405,23 @@ describe("round trips", () => {
     expect(roundTrip(runs)).toEqual(runs);
   });
 
+  it("round-trips sessions rail scope and selection", () => {
+    const sessions: DeepLink = {
+      ws: "abc",
+      mode: "orchestrate",
+      orchestrate: {
+        tab: "sessions",
+        project: ".crystal/projects/q3 work.crystal",
+        run: "run-123",
+        sessionProject: "proj-payments",
+        sessionEpic: "epic-checkout",
+      },
+    };
+    const parsed = parseDeepLink(formatDeepLink(sessions));
+    expect(parsed).toEqual(sessions);
+    expect(parseDeepLink(formatDeepLink(parsed))).toEqual(parsed);
+  });
+
   it("orchestrate insights with its period", () => {
     const insights: DeepLink = {
       ws: "abc",

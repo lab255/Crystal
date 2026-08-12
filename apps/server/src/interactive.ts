@@ -27,6 +27,7 @@ export async function launchInteractiveRun(
   const plan = await agents.prepareInteractive(startParams);
   const terminal = terminals.create({
     cwd: plan.cwd,
+    trustedCwd: true,
     cols,
     rows,
     command: { file: plan.file, args: plan.args, env: plan.env },
@@ -38,6 +39,8 @@ export async function launchInteractiveRun(
     await agents.settleInteractive(terminal.id, terminal.exitCode);
     return { run: (await agents.get(run.id)) ?? run, terminal };
   }
-  terminals.writeWhenReady(terminal.id, plan.prompt, INTERACTIVE_PROMPT_DELAY_MS);
+  if (plan.prompt) {
+    terminals.writeWhenReady(terminal.id, plan.prompt, INTERACTIVE_PROMPT_DELAY_MS);
+  }
   return { run, terminal };
 }

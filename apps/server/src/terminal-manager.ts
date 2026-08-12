@@ -1,4 +1,5 @@
 import { spawn as spawnProcess } from "node:child_process";
+import path from "node:path";
 import { spawn as spawnPty, type IPty } from "@lydell/node-pty";
 import {
   Emitter,
@@ -84,6 +85,12 @@ export interface TerminalCreateOptions {
   cwd?: string;
   cols?: number;
   rows?: number;
+  /**
+   * Internal-only capability for server-resolved absolute paths (notably an
+   * adopted agent worktree outside the workspace root). Never expose or
+   * forward this through the terminal.create bridge method.
+   */
+  trustedCwd?: boolean;
   /** Run this program on the PTY instead of the default shell. */
   command?: TerminalCommand;
   /** Tab label override (command terminals — interactive agent sessions). */
@@ -113,7 +120,13 @@ export class TerminalManager {
   }
 
   create(opts: TerminalCreateOptions = {}): TerminalInfo {
-    const cwdAbs = resolveInRoot(this.root, opts.cwd ?? ".");
+    // Only an explicit internal capability may re-enter an agent chain's
+    // server-resolved worktree outside the workspace root. A command alone
+    // proves nothing about who supplied its cwd.
+    const cwdAbs =
+      opts.trustedCwd === true && opts.cwd && path.isAbsolute(opts.cwd)
+        ? path.resolve(opts.cwd)
+        : resolveInRoot(this.root, opts.cwd ?? ".");
     // A .cmd/.bat command can't be CreateProcess'd directly — route it through
     // cmd.exe. NOT as argv: node-pty would quote the spaced shim path AND the
     // spaced args (--allowedTools always has spaces), and with >2 quotes after

@@ -38,6 +38,16 @@ describe("codexInteractiveArgs", () => {
     const args = codexInteractiveArgs({ model: "gpt-5.2", permissionMode: "acceptEdits" });
     expect(args).toEqual(["--sandbox", "workspace-write", "--model", "gpt-5.2"]);
   });
+
+  it("places resume options before the positional session id", () => {
+    expect(
+      codexInteractiveArgs({
+        model: "gpt-5.2-codex",
+        resumeSessionId: "th_9",
+        permissionMode: "plan",
+      }),
+    ).toEqual(["resume", "--sandbox", "read-only", "--model", "gpt-5.2-codex", "th_9"]);
+  });
 });
 
 describe("codexFallbackDirs", () => {

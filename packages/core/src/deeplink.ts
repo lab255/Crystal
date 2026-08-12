@@ -68,7 +68,14 @@ export type CrystalModeId =
  * never emitted.
  */
 export type ArchitectViewId = "architecture" | "codebase" | "infra";
-export type OrchestratorTabId = "board" | "runs" | "agents" | "workflows" | "costs" | "insights";
+export type OrchestratorTabId =
+  | "board"
+  | "sessions"
+  | "runs"
+  | "agents"
+  | "workflows"
+  | "costs"
+  | "insights";
 
 /** Mirrors the code map's drill levels (all workspaces → workspace → module → file). */
 export type CodeMapLevelLink =
@@ -171,8 +178,12 @@ export interface OrchestrateLink {
    * task's live session — the default working view), "board" = the kanban.
    */
   view?: "list" | "board";
-  /** Selected agent run id (runs tab). */
+  /** Selected agent run id (board, sessions, runs, or agents tab). */
   run?: string;
+  /** Project scope selected in the sessions rail. */
+  sessionProject?: string;
+  /** Epic scope selected in the sessions rail. */
+  sessionEpic?: string;
   /** Runs-tab purpose filter chip (unset = all purposes). */
   purpose?: RunPurpose;
   /** Selected workflow id (workflows tab). */
@@ -387,7 +398,10 @@ export function formatDeepLink(link: DeepLink): string {
     if (tab === "board" && o.owner) add("owner", o.owner);
     // The board tab owns `run` too: the list view's session pane can pin a
     // specific turn of the selected task (unset = follow the newest).
-    if ((tab === "runs" || tab === "agents" || tab === "board") && o.run) add("run", o.run);
+    if ((tab === "sessions" || tab === "runs" || tab === "agents" || tab === "board") && o.run)
+      add("run", o.run);
+    if (tab === "sessions" && o.sessionProject) add("sessionProject", o.sessionProject);
+    if (tab === "sessions" && o.sessionEpic) add("sessionEpic", o.sessionEpic);
     if (tab === "runs" && o.purpose) add("purpose", o.purpose);
     if (tab === "workflows" && o.workflow) add("workflow", o.workflow);
     if (tab === "workflows" && o.builder) add("builder", "1");
@@ -569,6 +583,7 @@ export function parseDeepLink(hash: string): DeepLink {
     const tab = segments[1];
     if (
       tab === "board" ||
+      tab === "sessions" ||
       tab === "runs" ||
       tab === "agents" ||
       tab === "workflows" ||
@@ -594,6 +609,12 @@ export function parseDeepLink(hash: string): DeepLink {
     if (owner) o.owner = owner;
     const run = params.get("run");
     if (run) o.run = run;
+    if (tab === "sessions") {
+      const sessionProject = params.get("sessionProject");
+      if (sessionProject) o.sessionProject = sessionProject;
+      const sessionEpic = params.get("sessionEpic");
+      if (sessionEpic) o.sessionEpic = sessionEpic;
+    }
     const purpose = params.get("purpose");
     if (purpose && (RUN_PURPOSES as readonly string[]).includes(purpose))
       o.purpose = purpose as RunPurpose;
@@ -714,6 +735,7 @@ const ARCHITECT_VIEW_FIELDS: Record<ArchitectViewId, readonly (keyof ArchitectLi
 
 const ORCHESTRATE_TAB_FIELDS: Record<OrchestratorTabId, readonly (keyof OrchestrateLink)[]> = {
   board: ["tab", "project", "task", "view", "run", "group", "swim", "sort"],
+  sessions: ["tab", "project", "run", "sessionProject", "sessionEpic"],
   runs: ["tab", "project", "run", "purpose"],
   agents: ["tab", "project", "run"],
   workflows: ["tab", "project", "workflow", "builder", "template"],
