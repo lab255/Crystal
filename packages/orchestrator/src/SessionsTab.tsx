@@ -33,6 +33,7 @@ import {
   type SessionEpicGroup,
   type SessionProjectGroup,
 } from "./session-groups.js";
+import { canResumeSession, sameSessionScope } from "./sessions-tab-state.js";
 import { spawnSession } from "./spawn-session.js";
 
 const EMPTY_PROJECTS: WorkspaceInfo["projects"] = [];
@@ -170,10 +171,11 @@ export function SessionsTab({
   const [spawnError, setSpawnError] = useState<string | null>(null);
 
   const openSpawn = useCallback((scope: NewSessionScope) => {
+    if (!sameSessionScope(scope, spawnScope)) setPrompt("");
     setSpawnScope(scope);
     setSpawnError(null);
     setSpawnOpen(true);
-  }, []);
+  }, [spawnScope]);
 
   const startSession = useCallback(async () => {
     const text = prompt.trim();
@@ -216,9 +218,7 @@ export function SessionsTab({
   const faceRun = selected?.session.run ?? null;
   const terminalGone = useTerminalGone(faceRun, activeSid, activeWs);
   const settledSession = selected ? sessionStatus(selected.session) === "idle" : false;
-  const canResume = Boolean(
-    settledSession && faceRun?.sessionId && faceRun.terminalId && terminalGone,
-  );
+  const canResume = canResumeSession(settledSession, faceRun, terminalGone);
   const [resumeBusy, setResumeBusy] = useState(false);
   const [resumeError, setResumeError] = useState<string | null>(null);
 
@@ -441,13 +441,24 @@ function useTerminalGone(
   useEffect(() => {
     if (!key || !ws || !terminalId || tab) return;
     let cancelled = false;
-    void ensureTerminal(ws, terminalId, activeSid)
-      .then(() => {
-        if (!cancelled) setMissingKey(key);
-      })
-      .catch(() => {});
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    const hydrate = (isRetry: boolean) => {
+      void ensureTerminal(ws, terminalId, activeSid)
+        .then(() => {
+          if (!cancelled) setMissingKey(key);
+        })
+        .catch(() => {
+          if (cancelled || isRetry) return;
+          retryTimer = setTimeout(() => {
+            retryTimer = null;
+            if (!cancelled) hydrate(true);
+          }, 3000);
+        });
+    };
+    hydrate(false);
     return () => {
       cancelled = true;
+      if (retryTimer) clearTimeout(retryTimer);
     };
   }, [activeSid, ensureTerminal, key, tab, terminalId, ws]);
 
