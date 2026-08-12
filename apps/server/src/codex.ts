@@ -153,16 +153,18 @@ export function codexExecArgs(opts: {
 /**
  * Argv for an *interactive* codex session (the native TUI on a PTY). No
  * `--json` — the TUI renders itself, and its approval prompts are the
- * permission surface (the owner is at the terminal). Unlike Claude there is
- * no `--session-id` to pin: the thread id is never learnable from a TUI, so
- * an interactive codex chain is NOT headlessly resumable after its terminal
- * closes — prepareInteractive records that degradation on the run.
+ * permission surface (the owner is at the terminal). `resume <thread>` can
+ * reopen a known headless thread, but unlike Claude there is no `--session-id`
+ * to pin for a fresh TUI: its thread id is never learnable, so that fresh
+ * interactive chain is NOT headlessly resumable after its terminal closes.
  */
 export function codexInteractiveArgs(opts: {
   model?: string | null;
+  resumeSessionId?: string | null;
   permissionMode?: AgentPermissionMode | null;
 }): string[] {
   const args: string[] = [];
+  if (opts.resumeSessionId) args.push("resume", opts.resumeSessionId);
   args.push(...codexSandboxArgs(opts.permissionMode));
   if (opts.model) args.push("--model", opts.model);
   return args;

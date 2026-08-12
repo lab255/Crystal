@@ -606,6 +606,12 @@ export interface BridgeMethods {
   "agent.interactive": {
     params: WsScope & {
       prompt: string;
+      /**
+       * Relaunch this chain's latest session in a fresh PTY instead of starting a new one —
+       * same session id, worktree, cwd; the new run gets resumedFromRunId set to the chain's
+       * latest turn.
+       */
+      resumeRunId?: string | null;
       cwd?: string;
       taskId?: string | null;
       projectId?: string | null;

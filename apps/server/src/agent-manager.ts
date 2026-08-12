@@ -120,9 +120,11 @@ export interface AgentStartParams {
   costCapUsd?: number | null;
 }
 
-/** What an interactive dispatch needs from the caller (no resume, no worktrees). */
+/** What an interactive dispatch needs from the caller. */
 export interface InteractiveStartParams {
   prompt: string;
+  /** Relaunch the named run's resolved resume chain in a fresh PTY. */
+  resumeRunId?: string | null;
   cwd?: string;
   taskId?: string | null;
   projectId?: string | null;
@@ -138,6 +140,8 @@ export interface InteractiveStartParams {
   allowedTools?: string[];
   disallowedTools?: string[];
   permissionMode?: AgentPermissionMode | null;
+  /** Server-internal policy inherited by interactive resume turns. */
+  costCapUsd?: number | null;
 }
 
 /**
@@ -150,9 +154,24 @@ export interface InteractiveSpawn {
   file: string;
   args: string[];
   env: Record<string, string | undefined>;
-  /** Workspace-relative cwd for the hosting terminal. */
+  /** Workspace-relative cwd, or an adopted chain worktree's absolute path. */
   cwd: string;
   prompt: string;
+}
+
+interface ResumeChainResolution {
+  rootId: string;
+  chain: AgentRun[];
+  root: AgentRun;
+  latest: AgentRun;
+  sessionId: string | null;
+  worktreeHolder: AgentRun | null;
+}
+
+interface ResumeWorktreeResolution {
+  sourcePath: string | null;
+  adoptPath: string | null;
+  contested: boolean;
 }
 
 /**
@@ -407,12 +426,14 @@ export function claudeRunArgs(opts: {
  * `-p`/stream-json — the TUI renders itself; the PTY's raw byte stream is the
  * transcript. `--session-id` pins a known id so the chain stays resumable
  * headlessly after the terminal closes (a queued answer can still reach the
- * session). The MCP + dev-loop pre-allows mirror headless runs: the owner is
- * present, but routine git/test/board calls shouldn't nag them either.
+ * session); `--resume` instead reopens an existing chain in a fresh PTY. The
+ * MCP + dev-loop pre-allows mirror headless runs: the owner is present, but
+ * routine git/test/board calls shouldn't nag them either.
  */
 export function claudeInteractiveArgs(opts: {
   model?: string | null;
   sessionId?: string | null;
+  resumeSessionId?: string | null;
   mcpConfigPath?: string | null;
   appendSystemPrompt?: string | null;
   allowedTools?: string[] | null;
@@ -420,7 +441,8 @@ export function claudeInteractiveArgs(opts: {
   permissionMode?: AgentPermissionMode | null;
 }): string[] {
   const args = ["--permission-mode", opts.permissionMode ?? "acceptEdits"];
-  if (opts.sessionId) args.push("--session-id", opts.sessionId);
+  if (opts.resumeSessionId) args.push("--resume", opts.resumeSessionId);
+  else if (opts.sessionId) args.push("--session-id", opts.sessionId);
   if (opts.model) args.push("--model", opts.model);
   if (opts.mcpConfigPath) args.push("--mcp-config", opts.mcpConfigPath);
   if (opts.appendSystemPrompt) args.push("--append-system-prompt", opts.appendSystemPrompt);
@@ -1059,20 +1081,107 @@ export class AgentManager {
   async prepareInteractive(params: InteractiveStartParams): Promise<InteractiveSpawn> {
     if (this.disposed) throw new Error("Workspace is closed — no new agent runs.");
     await this.ensureLoaded();
+    if (!params.resumeRunId) return this.prepareInteractiveRun(params, null, null);
+
+    const fromRunId = params.resumeRunId;
+    const initial = this.resolveResumeChain(fromRunId);
+    const rootId = initial?.rootId ?? this.forwardedChainRoot(chainRootId(fromRunId, this.runs));
+    return this.serializeResume(rootId, async () => {
+      const resolution = this.resolveResumeChain(fromRunId);
+      if (!resolution) throw new Error(`Unknown run: ${fromRunId}`);
+      const live = resolution.sessionId
+        ? [...this.runs.values()].find(
+            (run) =>
+              run.sessionId === resolution.sessionId &&
+              (run.status === "running" || run.status === "queued"),
+          )
+        : resolution.chain.find((run) => run.status === "running" || run.status === "queued");
+      if (live) {
+        throw new Error(
+          `Session ${resolution.sessionId ?? resolution.rootId} has a live run (${live.id}) — resuming now would fork it. ` +
+            `Deliver via agent.message instead, or wait for the run to settle.`,
+        );
+      }
+      if (resolution.latest.status === "cancelled") {
+        throw new Error(`Run ${fromRunId}'s session was cancelled and cannot be resumed.`);
+      }
+      if (!resolution.sessionId) {
+        throw new Error(`Run ${fromRunId} has no session id to resume.`);
+      }
+
+      // Re-resolve the chain's profile because its flags are per invocation.
+      // The caller's prompt/profile fields are deliberately ignored: this is
+      // the same conversation reopening in a PTY, not a freshly seeded task.
+      const overlay = resolution.root.agentId
+        ? await this.profileResolver?.(resolution.root.agentId).catch(() => null)
+        : null;
+      const resumedParams: InteractiveStartParams = {
+        prompt: resolution.root.prompt,
+        cwd: resolution.root.cwd,
+        taskId: resolution.root.taskId,
+        projectId: resolution.root.projectId,
+        repoId: resolution.root.repoId,
+        agentId: resolution.root.agentId,
+        provider: resolution.latest.provider ?? resolution.root.provider ?? null,
+        model: resolution.latest.model ?? resolution.root.model ?? null,
+        appendSystemPrompt: overlay?.appendPrompt ?? null,
+        allowedTools: overlay?.allowedTools,
+        disallowedTools: overlay?.disallowedTools,
+        permissionMode: overlay?.permissionMode ?? null,
+        role: resolution.root.role === "manager" ? "manager" : null,
+        purpose: resolution.root.purpose,
+        tags: resolution.root.tags,
+        costCapUsd: resolution.latest.costCapUsd ?? resolution.root.costCapUsd ?? null,
+      };
+      return this.withResumeWorktree(resolution, (worktree) =>
+        this.prepareInteractiveRun(resumedParams, resolution, worktree),
+      );
+    });
+  }
+
+  private async prepareInteractiveRun(
+    params: InteractiveStartParams,
+    resume: ResumeChainResolution | null,
+    worktree: ResumeWorktreeResolution | null,
+  ): Promise<InteractiveSpawn> {
     const presetModel = await this.presetModelFor(params);
     if (presetModel) params = { ...params, ...presetModel };
-    const run = createAgentRun(params);
+    const run = createAgentRun({
+      ...params,
+      resumedFromRunId: resume?.latest.id ?? null,
+      costCapUsd: params.costCapUsd ?? null,
+    });
     const provider = params.provider === "codex" ? "codex" : "claude";
     // A known session id (--session-id) keeps the chain resumable headlessly
     // once the terminal closes — the TUI emits no stream-json to learn it
     // from. Codex has no such flag: its thread id is never learnable from the
     // TUI, so an interactive codex chain is not headlessly resumable after
     // its terminal exits (recorded on the run by the null sessionId).
-    if (provider !== "codex") run.sessionId = randomUUID();
+    if (resume?.sessionId) run.sessionId = resume.sessionId;
+    else if (provider !== "codex") run.sessionId = randomUUID();
     run.model = params.model ?? null;
+    if (worktree?.adoptPath) {
+      run.isolation = "worktree";
+      run.worktreePath = worktree.adoptPath;
+      run.branch = resume?.worktreeHolder?.branch ?? null;
+    }
     this.runs.set(run.id, run);
     this.indexTags(run);
     this.runEvents.set(run.id, []);
+    if (worktree?.adoptPath) {
+      this.record(run, {
+        type: "status",
+        status: "queued",
+        message: `Continuing in worktree: ${worktree.adoptPath}${run.branch ? ` (branch ${run.branch})` : ""}`,
+      });
+    } else if (worktree?.sourcePath) {
+      this.record(run, {
+        type: "stderr",
+        text: worktree.contested
+          ? `Chain worktree ${worktree.sourcePath} is in use by a live run — this turn resumed in the repo checkout instead.`
+          : `Chain worktree ${worktree.sourcePath} no longer exists — this turn resumed in the repo checkout.`,
+      });
+    }
 
     const mcpConfig =
       provider !== "codex" && (run.role === "manager" || run.taskId)
@@ -1085,11 +1194,13 @@ export class AgentManager {
       provider === "codex"
         ? codexInteractiveArgs({
             model: params.model,
+            resumeSessionId: resume?.sessionId,
             permissionMode: await this.gatedPermissionMode(run, params.permissionMode),
           })
         : claudeInteractiveArgs({
             model: params.model,
-            sessionId: run.sessionId!,
+            sessionId: resume ? null : run.sessionId,
+            resumeSessionId: resume?.sessionId,
             mcpConfigPath: mcpConfig,
             appendSystemPrompt: params.appendSystemPrompt,
             allowedTools: grantedInteractive.length
@@ -1100,11 +1211,15 @@ export class AgentManager {
           });
     const bin = provider === "codex" ? await this.codexPath() : await this.claudePath();
 
-    let prompt = params.prompt;
-    if (params.skills?.length) {
+    let prompt = resume ? "" : params.prompt;
+    if (!resume && params.skills?.length) {
       prompt += `\n\nUse these skills where relevant: ${params.skills.map((s) => `/${s}`).join(", ")}.`;
     }
-    if (mcpConfig && run.role !== "manager" && run.taskId) prompt += INTERACTIVE_TASK_NOTE;
+    if (!resume && mcpConfig && run.role !== "manager" && run.taskId) {
+      prompt += INTERACTIVE_TASK_NOTE;
+    }
+
+    const cwdAbs = worktree?.adoptPath ?? resolveInRoot(this.root, run.cwd ?? ".");
 
     return {
       run: { ...run },
@@ -1112,12 +1227,12 @@ export class AgentManager {
       args,
       env: envWithBinDir(
         envWithToolchain(agentEnv(stripApiKey(process.env)), [
-          resolveInRoot(this.root, run.cwd ?? "."),
+          cwdAbs,
           this.root,
         ]),
         bin,
       ),
-      cwd: run.cwd,
+      cwd: worktree?.adoptPath ?? run.cwd,
       prompt,
     };
   }
@@ -1403,6 +1518,67 @@ export class AgentManager {
       .sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
   }
 
+  /** Resolve every spawn-critical value of a resume chain in one place. */
+  private resolveResumeChain(fromRunId: string): ResumeChainResolution | null {
+    const rootId = this.forwardedChainRoot(chainRootId(fromRunId, this.runs));
+    const chain = this.orderedChain(rootId);
+    const root = chain[0];
+    const latest = chain[chain.length - 1];
+    if (!root || !latest) return null;
+    return {
+      rootId,
+      chain,
+      root,
+      latest,
+      sessionId: [...chain].reverse().find((run) => run.sessionId)?.sessionId ?? null,
+      worktreeHolder: [...chain].reverse().find((run) => run.worktreePath) ?? null,
+    };
+  }
+
+  /** Serialize any fresh invocation of one session, headless or interactive. */
+  private serializeResume<T>(rootId: string, action: () => Promise<T>): Promise<T> {
+    const previous = this.resumeLocks.get(rootId) ?? Promise.resolve();
+    const attempt = previous.then(action, action);
+    this.resumeLocks.set(rootId, attempt.catch(() => {}));
+    return attempt;
+  }
+
+  /**
+   * Resolve and lock the working copy used by a resume. Branch worktrees are
+   * shared track identities, so their adopt check and run registration must
+   * happen under the same lock used by fresh track dispatches.
+   */
+  private withResumeWorktree<T>(
+    resolution: ResumeChainResolution,
+    action: (worktree: ResumeWorktreeResolution) => Promise<T>,
+  ): Promise<T> {
+    const resolveAndRun = async (): Promise<T> => {
+      const sourcePath = resolution.worktreeHolder?.worktreePath ?? null;
+      const contested = sourcePath
+        ? [...this.runs.values()].some(
+            (run) =>
+              run.worktreePath === sourcePath &&
+              (run.status === "running" || run.status === "queued"),
+          )
+        : false;
+      const worktreeExists =
+        sourcePath != null && (await fs.access(sourcePath).then(() => true, () => false));
+      return action({
+        sourcePath,
+        adoptPath: sourcePath && worktreeExists && !contested ? sourcePath : null,
+        contested,
+      });
+    };
+
+    const holder = resolution.worktreeHolder;
+    if (!holder?.branch) return resolveAndRun();
+    const key = `${holder.cwd}\0${holder.branch}`;
+    const previous = this.branchLocks.get(key) ?? Promise.resolve();
+    const task = previous.then(resolveAndRun, resolveAndRun);
+    this.branchLocks.set(key, task.catch(() => {}));
+    return task;
+  }
+
   /**
    * Every run of one logical session's resume chain (root and each wake-up /
    * user-message turn), oldest first — the workflow engine reads a manager's
@@ -1432,50 +1608,33 @@ export class AgentManager {
    */
   async resumeChain(fromRunId: string, prompt: string): Promise<AgentRun | null> {
     await this.ensureLoaded();
-    const rootId = this.forwardedChainRoot(chainRootId(fromRunId, this.runs));
-    const prev = this.resumeLocks.get(rootId) ?? Promise.resolve();
-    const attempt = prev.then(async (): Promise<AgentRun | null> => {
-      if (this.chainLive(rootId)) return null;
-      const chain = this.orderedChain(rootId);
-      const root = chain[0];
-      const latest = chain[chain.length - 1];
-      if (!root || !latest || latest.status === "cancelled") return null;
-      const session = [...chain].reverse().find((r) => r.sessionId)?.sessionId;
-      if (!session) return null;
+    const initial = this.resolveResumeChain(fromRunId);
+    const rootId = initial?.rootId ?? this.forwardedChainRoot(chainRootId(fromRunId, this.runs));
+    return this.serializeResume(rootId, async (): Promise<AgentRun | null> => {
+      const resolution = this.resolveResumeChain(fromRunId);
+      if (
+        !resolution ||
+        this.chainLive(resolution.rootId) ||
+        resolution.latest.status === "cancelled" ||
+        !resolution.sessionId
+      ) {
+        return null;
+      }
       // Re-resolve the chain's profile policy: --append-system-prompt and the
       // tool flags are per-invocation, so a resumed turn that omitted them
       // would silently shed the profile's standing behavior mid-conversation.
-      const overlay = root.agentId
-        ? await this.profileResolver?.(root.agentId).catch(() => null)
+      const overlay = resolution.root.agentId
+        ? await this.profileResolver?.(resolution.root.agentId).catch(() => null)
         : null;
-      // Session continuity is also *working-copy* continuity: an isolated
-      // chain's edits live in its worktree, so a resumed turn must run there —
-      // resuming into the plain repo would strand the session's own work.
-      const wtHolder = [...chain].reverse().find((r) => r.worktreePath);
-      const startTurn = async (): Promise<AgentRun | null> => {
-        const worktree = wtHolder?.worktreePath ?? null;
-        // Never share a working copy with a live run outside this chain (a
-        // fresh worker may hold the same track branch's worktree). This scan
-        // is sound only because check-and-start runs under the branch lock
-        // below for branch-bound worktrees — start() registers the run
-        // synchronously before the next lock holder's scan.
-        const contested = worktree
-          ? [...this.runs.values()].some(
-              (r) =>
-                r.worktreePath === worktree &&
-                (r.status === "running" || r.status === "queued"),
-            )
-          : false;
-        const exists =
-          worktree != null && (await fs.access(worktree).then(() => true, () => false));
-        const adopt = worktree && exists && !contested ? worktree : null;
+      return this.withResumeWorktree(resolution, async (worktree): Promise<AgentRun | null> => {
+        const { root, latest, sessionId } = resolution;
         const run = await this.start({
           prompt,
           cwd: root.cwd,
           taskId: root.taskId,
           projectId: root.projectId,
           repoId: root.repoId,
-          resumeSessionId: session,
+          resumeSessionId: sessionId,
           resumedFromRunId: latest.id,
           agentId: root.agentId,
           // A resumed turn re-enters the SAME session — it must stay on the
@@ -1491,42 +1650,26 @@ export class AgentManager {
           role: root.role === "manager" ? "manager" : null,
           purpose: root.purpose,
           tags: root.tags,
-          isolation: adopt ? "worktree" : undefined,
-          adoptWorktreePath: adopt,
-          branch: adopt ? (wtHolder?.branch ?? null) : null,
+          isolation: worktree.adoptPath ? "worktree" : undefined,
+          adoptWorktreePath: worktree.adoptPath,
+          branch: worktree.adoptPath ? (resolution.worktreeHolder?.branch ?? null) : null,
           // A resumed turn is the same conversation under the same policy —
           // the cap the chain started with binds every later turn too.
           costCapUsd: latest.costCapUsd ?? root.costCapUsd ?? null,
         });
-        if (worktree && !adopt) {
+        if (worktree.sourcePath && !worktree.adoptPath) {
           // Falling back to the repo checkout is visible, never silent — the
           // session's earlier edits stay in the worktree it could not enter.
           this.record(run, {
             type: "stderr",
-            text: contested
-              ? `Chain worktree ${worktree} is in use by a live run — this turn resumed in the repo checkout instead.`
-              : `Chain worktree ${worktree} no longer exists — this turn resumed in the repo checkout.`,
+            text: worktree.contested
+              ? `Chain worktree ${worktree.sourcePath} is in use by a live run — this turn resumed in the repo checkout instead.`
+              : `Chain worktree ${worktree.sourcePath} no longer exists — this turn resumed in the repo checkout.`,
           });
         }
         return run;
-      };
-      // Branch worktrees are a shared track identity across chains, so the
-      // adoption check and the start must hold the same per-(repo, branch)
-      // lock acquireWorktree uses — without it two resumes (or a resume
-      // racing a fresh dispatch) both pass the live-holder scan before
-      // either registers its run, and two live Claude processes end up
-      // editing one working copy.
-      if (wtHolder?.branch) {
-        const key = `${wtHolder.cwd}\0${wtHolder.branch}`;
-        const prevLock = this.branchLocks.get(key) ?? Promise.resolve();
-        const task = prevLock.then(startTurn, startTurn);
-        this.branchLocks.set(key, task.catch(() => {}));
-        return task;
-      }
-      return startTurn();
+      });
     });
-    this.resumeLocks.set(rootId, attempt.catch(() => {}));
-    return attempt;
   }
 
   /* ---------------- context handoff (session lineage) ---------------- */

@@ -118,6 +118,15 @@ describe("claudeInteractiveArgs", () => {
     expect(args[args.indexOf("--allowedTools") + 1]).not.toContain("mcp__crystal");
   });
 
+  it("resumes an existing session instead of pinning a fresh id", () => {
+    const args = claudeInteractiveArgs({
+      sessionId: "fresh-id",
+      resumeSessionId: "existing-id",
+    });
+    expect(args[args.indexOf("--resume") + 1]).toBe("existing-id");
+    expect(args).not.toContain("--session-id");
+  });
+
   it("threads the profile policy exactly like headless runs", () => {
     const args = claudeInteractiveArgs({
       appendSystemPrompt: "Standing orders.",
@@ -396,6 +405,8 @@ describe("interactive sessions", () => {
     const plan = await mgr.prepareInteractive({ prompt: "Fix the bug.", taskId: "task_1" });
     expect(plan.run.sessionId).toMatch(/[0-9a-f-]{36}/);
     expect(plan.args[plan.args.indexOf("--session-id") + 1]).toBe(plan.run.sessionId);
+    expect(plan.args).not.toContain("--resume");
+    expect(plan.run.resumedFromRunId).toBeNull();
     // Task-bound → per-run mcp config on disk, endpoint carrying the run id.
     const cfgPath = plan.args[plan.args.indexOf("--mcp-config") + 1]!;
     const cfg = JSON.parse(await fs.readFile(cfgPath, "utf8"));
@@ -406,6 +417,63 @@ describe("interactive sessions", () => {
     expect(plan.prompt).toContain("ask_question");
     expect(plan.prompt).toContain("AskUserQuestion");
     expect(plan.prompt).toContain("resolve_question");
+  });
+
+  it("resolves the latest chain turn into a fresh interactive PTY in the same worktree", async () => {
+    const mgr = await makeManager();
+    const original = await mgr.prepareInteractive({
+      prompt: "Original task",
+      cwd: "packages/app",
+      taskId: "task_1",
+      projectId: "project_1",
+      tags: ["epic:epic_1"],
+    });
+    const first = await mgr.bindInteractive(original.run.id, "term_original");
+    await mgr.settleInteractive("term_original", 0);
+
+    const worktree = path.join(tmp!, "chain-worktree");
+    await fs.mkdir(worktree, { recursive: true });
+    const originalRecord = (await mgr.list()).find((run) => run.id === first.id)!;
+    originalRecord.worktreePath = worktree;
+    originalRecord.branch = "wf/session";
+
+    const turnTwo = await mgr.prepareInteractive({
+      prompt: "this must not be typed",
+      resumeRunId: first.id,
+    });
+    expect(turnTwo.args[turnTwo.args.indexOf("--resume") + 1]).toBe(original.run.sessionId);
+    expect(turnTwo.args).not.toContain("--session-id");
+    expect(turnTwo.prompt).toBe("");
+    expect(turnTwo.cwd).toBe(worktree);
+    expect(turnTwo.run).toMatchObject({
+      cwd: "packages/app",
+      taskId: "task_1",
+      projectId: "project_1",
+      sessionId: original.run.sessionId,
+      resumedFromRunId: first.id,
+      worktreePath: worktree,
+      branch: "wf/session",
+      prompt: "Original task",
+    });
+    const second = await mgr.bindInteractive(turnTwo.run.id, "term_resumed_1");
+    await mgr.settleInteractive("term_resumed_1", 0);
+
+    // Resolving from any older turn faces the chain with its latest turn.
+    const turnThree = await mgr.prepareInteractive({ prompt: "ignored again", resumeRunId: first.id });
+    expect(turnThree.run.resumedFromRunId).toBe(second.id);
+    const third = await mgr.bindInteractive(turnThree.run.id, "term_resumed_2");
+    expect(third.status).toBe("running");
+    await mgr.settleInteractive("term_resumed_2", 0);
+  });
+
+  it("refuses an interactive resume while the chain has a live run", async () => {
+    const mgr = await makeManager();
+    const live = await mgr.prepareInteractive({ prompt: "Still live" });
+
+    await expect(
+      mgr.prepareInteractive({ prompt: "fork attempt", resumeRunId: live.run.id }),
+    ).rejects.toThrow(/live run.*fork/i);
+    expect(await mgr.chainRuns(live.run.id)).toHaveLength(1);
   });
 
   it("delivers into the live terminal, then settles on terminal exit", async () => {

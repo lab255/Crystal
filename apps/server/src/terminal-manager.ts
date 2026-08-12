@@ -1,4 +1,5 @@
 import { spawn as spawnProcess } from "node:child_process";
+import path from "node:path";
 import { spawn as spawnPty, type IPty } from "@lydell/node-pty";
 import {
   Emitter,
@@ -113,7 +114,13 @@ export class TerminalManager {
   }
 
   create(opts: TerminalCreateOptions = {}): TerminalInfo {
-    const cwdAbs = resolveInRoot(this.root, opts.cwd ?? ".");
+    // Command terminals may re-enter an agent chain's server-resolved
+    // worktree, which lives outside the workspace root in app data. Bare
+    // user terminals remain strictly workspace-relative.
+    const cwdAbs =
+      opts.command && opts.cwd && path.isAbsolute(opts.cwd)
+        ? path.resolve(opts.cwd)
+        : resolveInRoot(this.root, opts.cwd ?? ".");
     // A .cmd/.bat command can't be CreateProcess'd directly — route it through
     // cmd.exe. NOT as argv: node-pty would quote the spaced shim path AND the
     // spaced args (--allowedTools always has spaces), and with >2 quotes after

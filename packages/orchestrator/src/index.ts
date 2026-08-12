@@ -7,3 +7,4 @@ export { RunList } from "./RunList.js";
 export { RunsPane } from "./RunsPane.js";
 export { messageRun } from "./message-run.js";
 export { buildTaskPrompt } from "./prompt.js";
+export * from "./session-groups.js";
