@@ -154,7 +154,7 @@ export interface InteractiveSpawn {
   file: string;
   args: string[];
   env: Record<string, string | undefined>;
-  /** Workspace-relative cwd, or an adopted chain worktree's absolute path. */
+  /** Server-resolved absolute cwd inside the workspace or an adopted worktree. */
   cwd: string;
   prompt: string;
 }
@@ -1232,7 +1232,7 @@ export class AgentManager {
         ]),
         bin,
       ),
-      cwd: worktree?.adoptPath ?? run.cwd,
+      cwd: cwdAbs,
       prompt,
     };
   }

@@ -787,6 +787,8 @@ export async function startCrystalServer(opts: {
       run: await registry.get(ws).agents.handoff(runId, { targetAgentId }),
     }),
     "terminal.create": async ({ ws, cwd, cols, rows }) => ({
+      // Rebuild the options explicitly: trustedCwd is a server-only
+      // capability and must never be forwarded from bridge input.
       terminal: registry.get(ws).terminals.create({ cwd, cols, rows }),
     }),
     "terminal.list": async ({ ws }) => ({ terminals: registry.get(ws).terminals.list() }),
@@ -1095,6 +1097,8 @@ export async function startCrystalServer(opts: {
           agentId ?? null,
         );
         const term = rt.terminals.create({
+          cwd: plan.cwd,
+          trustedCwd: true,
           cols: terminal.cols,
           rows: terminal.rows,
           command: { file: plan.file, args: plan.args, env: plan.env },

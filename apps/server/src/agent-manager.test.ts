@@ -419,6 +419,19 @@ describe("interactive sessions", () => {
     expect(plan.prompt).toContain("resolve_question");
   });
 
+  it("confines a prepared interactive cwd to the workspace root", async () => {
+    const mgr = await makeManager();
+    const plan = await mgr.prepareInteractive({ prompt: "Stay contained.", cwd: "/etc" });
+    const rel = path.relative(mgr.workspaceRoot, plan.cwd);
+
+    expect(path.isAbsolute(plan.cwd)).toBe(true);
+    expect(rel === ".." || rel.startsWith(`..${path.sep}`)).toBe(false);
+    expect(plan.cwd).not.toBe(path.resolve("/etc"));
+    await expect(
+      mgr.prepareInteractive({ prompt: "No traversal.", cwd: "../../.." }),
+    ).rejects.toThrow(/escapes workspace root/i);
+  });
+
   it("resolves the latest chain turn into a fresh interactive PTY in the same worktree", async () => {
     const mgr = await makeManager();
     const original = await mgr.prepareInteractive({
@@ -466,6 +479,42 @@ describe("interactive sessions", () => {
     await mgr.settleInteractive("term_resumed_2", 0);
   });
 
+  it("falls back to the repo checkout when another live run holds the chain worktree", async () => {
+    const mgr = await makeManager();
+    const original = await mgr.prepareInteractive({
+      prompt: "Original task",
+      cwd: "packages/app",
+    });
+    await mgr.bindInteractive(original.run.id, "term_original");
+    await mgr.settleInteractive("term_original", 0);
+
+    const worktree = path.join(tmp!, "contested-worktree");
+    await fs.mkdir(worktree, { recursive: true });
+    const originalRecord = (await mgr.list()).find((run) => run.id === original.run.id)!;
+    originalRecord.worktreePath = worktree;
+    originalRecord.branch = "wf/contested";
+
+    const holder = await mgr.prepareInteractive({ prompt: "Hold the worktree." });
+    const holderRecord = (await mgr.list()).find((run) => run.id === holder.run.id)!;
+    holderRecord.worktreePath = worktree;
+    await mgr.bindInteractive(holder.run.id, "term_holder");
+
+    const resumed = await mgr.prepareInteractive({
+      prompt: "ignored",
+      resumeRunId: original.run.id,
+    });
+    expect(resumed.cwd).toBe(path.join(mgr.workspaceRoot, "packages/app"));
+    expect(resumed.run.worktreePath).toBeUndefined();
+    expect(
+      (await mgr.eventsFor(resumed.run.id)).some(
+        ({ event }) =>
+          event.type === "stderr" && /in use by a live run.*repo checkout/i.test(event.text),
+      ),
+    ).toBe(true);
+
+    await mgr.settleInteractive("term_holder", 0);
+  });
+
   it("refuses an interactive resume while the chain has a live run", async () => {
     const mgr = await makeManager();
     const live = await mgr.prepareInteractive({ prompt: "Still live" });
@@ -474,6 +523,19 @@ describe("interactive sessions", () => {
       mgr.prepareInteractive({ prompt: "fork attempt", resumeRunId: live.run.id }),
     ).rejects.toThrow(/live run.*fork/i);
     expect(await mgr.chainRuns(live.run.id)).toHaveLength(1);
+  });
+
+  it("refuses to resume a chain with no session id", async () => {
+    const mgr = await makeManager();
+    const original = await mgr.prepareInteractive({ prompt: "Unresumable session" });
+    const record = (await mgr.list()).find((run) => run.id === original.run.id)!;
+    record.sessionId = null;
+    await mgr.bindInteractive(original.run.id, "term_no_session");
+    await mgr.settleInteractive("term_no_session", 0);
+
+    await expect(
+      mgr.prepareInteractive({ prompt: "resume", resumeRunId: original.run.id }),
+    ).rejects.toThrow(`Run ${original.run.id} has no session id to resume.`);
   });
 
   it("delivers into the live terminal, then settles on terminal exit", async () => {
