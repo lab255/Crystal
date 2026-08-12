@@ -10,7 +10,7 @@ import { MANAGER_PREAMBLE } from "./prompt.js";
  * preamble stripped — otherwise every manager session titles as the same
  * boilerplate first sentence and the list becomes unscannable.
  */
-function runHeadline(prompt: string): string {
+export function runHeadline(prompt: string): string {
   const own = prompt.startsWith(MANAGER_PREAMBLE)
     ? prompt.slice(MANAGER_PREAMBLE.length)
     : prompt;

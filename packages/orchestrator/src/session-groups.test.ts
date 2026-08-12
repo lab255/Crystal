@@ -39,6 +39,43 @@ describe("groupSessionsByProject", () => {
     expect(groups[1]?.epics[0]?.sessions.map((session) => session.run.id)).toEqual(["beta-run"]);
   });
 
+  it("includes an empty project with no epic buckets", () => {
+    const alpha = project("alpha", "Alpha");
+    const groups = groupSessionsByProject([], [{ path: "alpha.crystal", project: alpha }]);
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0]).toMatchObject({ projectId: "alpha", name: "Alpha", epics: [] });
+  });
+
+  it("includes configured epics with zero sessions", () => {
+    const board = project("alpha", "Alpha", {
+      epics: [
+        { id: "active", name: "Active", description: "" },
+        { id: "empty", name: "Empty", description: "" },
+      ],
+    });
+    const [group] = groupSessionsByProject(
+      [run("active-run", { projectId: "alpha", tags: ["epic:active"] })],
+      [{ path: "alpha.crystal", project: board }],
+    );
+
+    expect(group?.epics.map((epic) => epic.epicId)).toEqual(["active", "empty"]);
+    expect(group?.epics[1]?.sessions).toEqual([]);
+  });
+
+  it("omits empty No epic and Unassigned residue buckets", () => {
+    const board = project("alpha", "Alpha", {
+      epics: [{ id: "assigned", name: "Assigned", description: "" }],
+    });
+    const groups = groupSessionsByProject(
+      [run("assigned-run", { projectId: "alpha", tags: ["epic:assigned"] })],
+      [{ path: "alpha.crystal", project: board }],
+    );
+
+    expect(groups.map((group) => group.name)).toEqual(["Alpha"]);
+    expect(groups[0]?.epics.map((epic) => epic.name)).toEqual(["Assigned"]);
+  });
+
   it("resolves an epic through the run's task before its epic tag", () => {
     const board = project("alpha", "Alpha", {
       epics: [
@@ -60,7 +97,9 @@ describe("groupSessionsByProject", () => {
       [{ path: "alpha.crystal", project: board }],
     );
 
-    expect(group?.epics.map((epic) => epic.epicId)).toEqual(["task-epic"]);
+    expect(group?.epics.map((epic) => epic.epicId)).toEqual(["task-epic", "tag-epic"]);
+    expect(group?.epics[0]?.sessions.map((session) => session.run.id)).toEqual(["task-run"]);
+    expect(group?.epics[1]?.sessions).toEqual([]);
   });
 
   it("falls back to an epic dimensional tag", () => {
