@@ -23,6 +23,7 @@ import {
   Keyboard,
   Layers,
   ListTodo,
+  MessagesSquare,
   Network,
   PencilRuler,
   Plus,
@@ -84,6 +85,7 @@ import { SHELL_SHORTCUTS, shortcutHint, workspaceShortcutHint } from "./shortcut
 /** Command-palette icon per orchestrate tab (mirrors the tab strip). */
 const ORCHESTRATE_TAB_ICONS: Record<OrchestratorTabId, LucideIcon> = {
   board: KanbanSquare,
+  sessions: MessagesSquare,
   workflows: Network,
   runs: History,
   agents: Bot,

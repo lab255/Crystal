@@ -340,3 +340,18 @@ export function formatRunDuration(ms: number | null | undefined): string {
   if (s < 60) return `${s}s`;
   return `${Math.floor(s / 60)}m ${s % 60}s`;
 }
+
+/** A live run's wall-clock elapsed time, rendered as a compact digital clock. */
+export function formatElapsed(startedAtIso: string, nowMs: number): string {
+  const startedAtMs = Date.parse(startedAtIso);
+  const elapsedMs =
+    Number.isFinite(startedAtMs) && Number.isFinite(nowMs)
+      ? Math.max(0, nowMs - startedAtMs)
+      : 0;
+  const totalSeconds = Math.floor(elapsedMs / 1000);
+  const seconds = String(totalSeconds % 60).padStart(2, "0");
+  const minutes = Math.floor(totalSeconds / 60);
+
+  if (totalSeconds < 3600) return `${String(minutes).padStart(2, "0")}:${seconds}`;
+  return `${Math.floor(totalSeconds / 3600)}:${String(minutes % 60).padStart(2, "0")}:${seconds}`;
+}

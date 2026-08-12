@@ -74,12 +74,12 @@ function groupProjectSessions(
   }
 
   const epics: SessionEpicGroup[] = project
-    ? project.epics.flatMap((epic) => {
-        const grouped = byEpic.get(epic.id);
-        return grouped?.length
-          ? [{ epicId: epic.id, name: epic.name, epic, sessions: grouped }]
-          : [];
-      })
+    ? project.epics.map((epic) => ({
+        epicId: epic.id,
+        name: epic.name,
+        epic,
+        sessions: byEpic.get(epic.id) ?? [],
+      }))
     : [];
   if (noEpic.length) {
     epics.push({ epicId: null, name: "No epic", epic: null, sessions: noEpic });
@@ -96,8 +96,9 @@ function groupProjectSessions(
 
 /**
  * Collapse a workspace's flat run history into root sessions, then group the
- * rail by project and epic. Empty project/epic buckets are omitted; source
- * order is preserved and Unassigned/No epic residues always trail.
+ * rail by project and epic. Every configured project and epic is represented
+ * in source order, even when empty; Unassigned/No epic residues trail and are
+ * included only when they contain sessions.
  */
 export function groupSessionsByProject(
   runs: readonly AgentRun[],
@@ -119,10 +120,9 @@ export function groupSessionsByProject(
     else sessionsByProject.set(source.project.id, [session]);
   }
 
-  const grouped = projects.flatMap((source) => {
-    const sessions = sessionsByProject.get(source.project.id);
-    return sessions?.length ? [groupProjectSessions(source, sessions)] : [];
-  });
+  const grouped = projects.map((source) =>
+    groupProjectSessions(source, sessionsByProject.get(source.project.id) ?? []),
+  );
   if (unassigned.length) grouped.push(groupProjectSessions(null, unassigned));
   return grouped;
 }

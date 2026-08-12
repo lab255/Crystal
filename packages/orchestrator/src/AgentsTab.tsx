@@ -46,6 +46,7 @@ import {
 import { Badge, Button, EmptyState, Field, Input, Select, TagInput, Textarea, cn } from "@crystal/ui";
 import { MANAGER_PREAMBLE } from "./prompt.js";
 import { RunsPane } from "./RunsPane.js";
+import { spawnSession } from "./spawn-session.js";
 
 const EMPTY_PROFILES: AgentProfile[] = [];
 
@@ -992,7 +993,7 @@ function DispatchPanel({
         model: modelOverride.trim() || null,
       };
       if (interactive && !isolate) {
-        const { run, terminal } = await client.request("agent.interactive", params);
+        const { run, terminal } = await spawnSession({ client, ...params });
         setPrompt("");
         if (activeWs) await focusTerminal(activeWs, terminal.id);
         onDispatched(run.id);

@@ -120,6 +120,7 @@ export { InteractiveRunTerminal } from "./run-terminal.js";
 export { XtermView } from "./xterm-view.js";
 export {
   RunTranscript,
+  formatElapsed,
   formatRunCost,
   formatRunDuration,
   formatRunTokens,
