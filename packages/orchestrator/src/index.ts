@@ -5,6 +5,7 @@ export { AgentsTab } from "./AgentsTab.js";
 export { OrchestratorMode } from "./OrchestratorMode.js";
 export { RunList } from "./RunList.js";
 export { RunsPane } from "./RunsPane.js";
+export { SessionsTab, type SessionsTabProps } from "./SessionsTab.js";
 export {
   SessionGroupList,
   type NewSessionScope,

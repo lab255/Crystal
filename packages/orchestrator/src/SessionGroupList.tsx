@@ -224,7 +224,7 @@ function SessionCard({
             status === "working" ? "text-ink" : "text-ink-faint",
           )}
         >
-          <StatusDot status={status === "working" ? "running" : "idle"} />
+          <StatusDot status={status === "working" ? "running" : session.run.status} />
           {status === "working" ? "Working" : "Idle"}
         </span>
       </span>

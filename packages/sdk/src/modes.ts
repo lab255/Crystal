@@ -132,6 +132,7 @@ export const MODE_SUBSECTIONS: Partial<
     default: "board",
     items: [
       { id: "board", label: "Board" },
+      { id: "sessions", label: "Sessions" },
       { id: "runs", label: "Runs" },
       { id: "agents", label: "Agents" },
       { id: "workflows", label: "Workflows" },

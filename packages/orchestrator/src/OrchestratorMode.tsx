@@ -8,6 +8,7 @@ import {
   KanbanSquare,
   KeyRound,
   ListTodo,
+  MessagesSquare,
   Network,
   Plus,
   Rows3,
@@ -47,6 +48,7 @@ import { CostsTab } from "./CostsTab.js";
 import { InsightsTab, INSIGHT_PERIODS, type InsightPeriod } from "./InsightsTab.js";
 import { QuestionsStrip } from "./QuestionsStrip.js";
 import { RunsPane } from "./RunsPane.js";
+import { SessionsTab } from "./SessionsTab.js";
 import { TaskDetail } from "./TaskDetail.js";
 import { TaskSession } from "./TaskSession.js";
 import { TasksColumn } from "./TasksColumn.js";
@@ -96,6 +98,13 @@ export function OrchestratorMode() {
   const runId = useNav((l) => l.orchestrate?.run) ?? null;
   const setRunId = useCallback(
     (id: string | null) => nav({ orchestrate: { run: id } }),
+    [nav],
+  );
+  const sessionProject = useNav((l) => l.orchestrate?.sessionProject) ?? null;
+  const sessionEpic = useNav((l) => l.orchestrate?.sessionEpic) ?? null;
+  const setSessionScope = useCallback(
+    (projectId: string | null, epicId: string | null) =>
+      nav({ orchestrate: { sessionProject: projectId, sessionEpic: epicId } }),
     [nav],
   );
   const workflowId = useNav((l) => l.orchestrate?.workflow) ?? null;
@@ -278,6 +287,9 @@ export function OrchestratorMode() {
               </span>
             ) : null}
           </TabButton>
+          <TabButton active={tab === "sessions"} onClick={() => setTab("sessions")}>
+            <MessagesSquare className="h-3.5 w-3.5" /> Sessions
+          </TabButton>
           <TabButton active={tab === "workflows"} onClick={() => setTab("workflows")}>
             <Network className="h-3.5 w-3.5" /> Workflows
           </TabButton>
@@ -417,6 +429,14 @@ export function OrchestratorMode() {
               with your code.
             </EmptyState>
           )
+        ) : tab === "sessions" ? (
+          <SessionsTab
+            selectedRunId={runId}
+            onSelectRun={setRunId}
+            projectFilter={sessionProject}
+            epicFilter={sessionEpic}
+            onScopeChange={setSessionScope}
+          />
         ) : tab === "workflows" ? (
           <WorkflowsTab
             selectedWorkflowId={workflowId}

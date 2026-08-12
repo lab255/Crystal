@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { formatRunCost, formatRunDuration, formatRunTokens } from "./run-transcript.js";
+import {
+  formatElapsed,
+  formatRunCost,
+  formatRunDuration,
+  formatRunTokens,
+} from "./run-transcript.js";
 
 /**
  * The run formatters are shared by the orchestrator (run rows, task cost) and
@@ -37,5 +42,24 @@ describe("formatRunDuration", () => {
     expect(formatRunDuration(1500)).toBe("2s");
     expect(formatRunDuration(59_000)).toBe("59s");
     expect(formatRunDuration(125_000)).toBe("2m 5s");
+  });
+});
+
+describe("formatElapsed", () => {
+  const startedAt = "2026-08-12T00:00:00.000Z";
+  const after = (ms: number) => Date.parse(startedAt) + ms;
+
+  it("formats live elapsed time below and above one hour", () => {
+    expect(formatElapsed(startedAt, after(5_999))).toBe("00:05");
+    expect(formatElapsed(startedAt, after(59 * 60_000 + 59_999))).toBe("59:59");
+    expect(formatElapsed(startedAt, after(60 * 60_000))).toBe("1:00:00");
+    expect(formatElapsed(startedAt, after(25 * 60 * 60_000 + 2 * 60_000 + 3_000))).toBe(
+      "25:02:03",
+    );
+  });
+
+  it("clamps future or invalid start times to zero", () => {
+    expect(formatElapsed(startedAt, after(-1_000))).toBe("00:00");
+    expect(formatElapsed("not-a-date", after(1_000))).toBe("00:00");
   });
 });
