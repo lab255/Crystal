@@ -149,7 +149,7 @@ function SessionNode({ node, root, filtering, selectedRunId, attention, agentNam
         <span className="block truncate text-xs text-ink">{headline}</span>
         <span className="mt-0.5 flex flex-wrap items-center gap-1 text-[10px] text-ink-faint">
           <span className="truncate">{agentNameOf(node.run) || node.run.model || node.run.provider || "Agent"}</span>
-          {node.run.purpose ? <Chip>{node.run.purpose}</Chip> : null}
+          {node.run.purpose && node.run.purpose !== headline ? <Chip>{node.run.purpose}</Chip> : null}
           {node.run.branch ? <Chip><GitBranch className="h-2.5 w-2.5" />{node.run.branch}</Chip> : null}
           {node.run.terminalId ? <Chip>interactive</Chip> : null}
           {workflowId && headline !== workflowName ? <Chip>{workflowName || workflowId.slice(0, 8)}</Chip> : null}
