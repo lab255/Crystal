@@ -3,6 +3,7 @@ import { MessagesSquare, Plus, Timer, TerminalSquare } from "lucide-react";
 import {
   attentionRunIds,
   deriveNeedsYou,
+  sessionHeadline,
   type AgentProfile,
   type AgentRun,
   type RunNode,
@@ -32,7 +33,7 @@ import {
   Textarea,
 } from "@crystal/ui";
 import { messageRun } from "./message-run.js";
-import { runHeadline } from "./RunList.js";
+import { MANAGER_PREAMBLE } from "./prompt.js";
 import {
   SessionGroupList,
   type NewSessionScope,
@@ -136,6 +137,14 @@ export function SessionsTab({
   const workflowNameOf = useCallback(
     (id: string) => workflows.find((workflow) => workflow.id === id)?.name,
     [workflows],
+  );
+  const taskTitleOf = useCallback(
+    (id: string) => projects.flatMap((entry) => entry.project.tasks).find((task) => task.id === id)?.title,
+    [projects],
+  );
+  const namingContext = useMemo(
+    () => ({ stripPrefixes: [MANAGER_PREAMBLE], workflowNameOf, taskTitleOf }),
+    [taskTitleOf, workflowNameOf],
   );
   const attention = useMemo(
     () => attentionRunIds(deriveNeedsYou(projects, runs, pendingPermissions)),
@@ -345,7 +354,7 @@ export function SessionsTab({
           selectedRunId={selectedRunId}
           attention={attention}
           agentNameOf={agentNameOf}
-          workflowNameOf={workflowNameOf}
+          namingContext={namingContext}
           onSelect={onSelectRun}
           onNewSession={openSpawn}
         />
@@ -377,7 +386,7 @@ export function SessionsTab({
                     </button>
                     <span className="text-ink-faint">/</span>
                     <span className="min-w-0 truncate font-medium text-ink">
-                      {runHeadline(selected.session.turns[0]!.prompt) || "Session"}
+                      {sessionHeadline(selected.session, namingContext)}
                     </span>
                   </nav>
                   {run.status === "running" && run.startedAt ? (

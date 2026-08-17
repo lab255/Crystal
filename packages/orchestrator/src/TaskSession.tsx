@@ -8,7 +8,7 @@ import {
   livenessIndex,
   nowIso,
   openQuestions,
-  promptHeadline,
+  sessionHeadline,
   questionDeliverability,
   type Project,
   type TaskItem,
@@ -231,7 +231,7 @@ export function TaskSession({
                 key={node.run.id}
                 type="button"
                 onClick={() => onSelectRun(node.run.id)}
-                title={node.run.prompt.split("\n")[0]}
+                title={sessionHeadline(node, { taskTitleOf: (id) => id === task.id ? task.title : null })}
                 className={cn(
                   "flex max-w-56 items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] transition-colors",
                   active
@@ -240,7 +240,7 @@ export function TaskSession({
                 )}
               >
                 <StatusDot status={node.run.status} className="h-1.5 w-1.5" />
-                <span className="truncate">{promptHeadline(node.run.prompt, 40)}</span>
+                <span className="truncate">{sessionHeadline(node, { taskTitleOf: (id) => id === task.id ? task.title : null })}</span>
                 <span className="text-ink-faint">{formatRunCost(node.run.costUsd)}</span>
               </button>
             );

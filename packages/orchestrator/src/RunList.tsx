@@ -4,10 +4,12 @@ import {
   groupRunsByManager,
   sessionDescendantCount,
   sessionDisplayStatus,
+  sessionHeadline,
   sessionSubtreeCost,
   sessionWorkflowId,
   type AgentRun,
   type RunNode,
+  type SessionNamingContext,
 } from "@crystal/core";
 import { formatRunCost } from "@crystal/client";
 import { StatusDot, cn } from "@crystal/ui";
@@ -16,15 +18,25 @@ import { MANAGER_PREAMBLE } from "./prompt.js";
 const EMPTY_SET: ReadonlySet<string> = new Set();
 
 /**
- * A row's headline: the conversation's opening prompt, with the fixed manager
- * preamble stripped — otherwise every manager session titles as the same
- * boilerplate first sentence and the list becomes unscannable.
+ * Prompt-only headline, delegating to core's sessionHeadline policy. Prefer
+ * sessionHeadline with a real node + naming context; this shim serves callers
+ * that only hold a prompt string. Two edge behaviors inherited from the
+ * policy: an empty prompt yields "Session" (was ""), and a workflow-manager
+ * prompt yields the quoted workflow name (was the boilerplate line).
  */
 export function runHeadline(prompt: string): string {
-  const own = prompt.startsWith(MANAGER_PREAMBLE)
-    ? prompt.slice(MANAGER_PREAMBLE.length)
-    : prompt;
-  return own.trimStart().split("\n")[0] || prompt.split("\n")[0]!;
+  // Satisfies the fields sessionHeadline reads; a wider read in core fails
+  // the typecheck here instead of silently seeing undefined.
+  const run = {
+    prompt,
+    tags: [] as string[],
+    purpose: null,
+    role: null,
+    taskId: null,
+  } satisfies Partial<AgentRun> as AgentRun;
+  return sessionHeadline({ run, turns: [run], workers: [] }, {
+    stripPrefixes: [MANAGER_PREAMBLE],
+  });
 }
 
 /**
@@ -50,6 +62,7 @@ export function RunList({
   className,
   wsNameOf,
   attention = EMPTY_SET,
+  namingContext,
 }: {
   runs: AgentRun[];
   selectedRunId: string | null;
@@ -68,6 +81,8 @@ export function RunList({
   wsNameOf?: (run: AgentRun) => string | null | undefined;
   /** Run ids currently requiring operator attention. */
   attention?: ReadonlySet<string>;
+  /** Shared session-title lookups for workflow and board identity. */
+  namingContext?: SessionNamingContext;
 }) {
   const nodes = useMemo(() => groupRunsByManager(runs), [runs]);
 
@@ -96,6 +111,7 @@ export function RunList({
               onSelect={onSelect}
               wsNameOf={wsNameOf}
               attention={attention}
+              namingContext={namingContext}
             />
           ))
         )}
@@ -111,6 +127,7 @@ function RunTreeRow({
   onSelect,
   wsNameOf,
   attention,
+  namingContext,
 }: {
   node: RunNode;
   depth: number;
@@ -118,6 +135,7 @@ function RunTreeRow({
   onSelect: (id: string) => void;
   wsNameOf?: (run: AgentRun) => string | null | undefined;
   attention: ReadonlySet<string>;
+  namingContext?: SessionNamingContext;
 }) {
   return (
     <div>
@@ -128,6 +146,7 @@ function RunTreeRow({
         onSelect={onSelect}
         wsName={wsNameOf?.(node.run)}
         attention={attention}
+        namingContext={namingContext}
       />
       {node.workers.length > 0 ? (
         <div className="ml-3.5 mt-1 space-y-1 border-l border-edge/70 pl-1.5">
@@ -140,6 +159,7 @@ function RunTreeRow({
               onSelect={onSelect}
               wsNameOf={wsNameOf}
               attention={attention}
+              namingContext={namingContext}
             />
           ))}
         </div>
@@ -156,6 +176,7 @@ function RunListItem({
   onSelect,
   wsName,
   attention,
+  namingContext,
 }: {
   node: RunNode;
   depth: number;
@@ -164,6 +185,7 @@ function RunListItem({
   /** Workspace name chip (cross-workspace lists only). */
   wsName?: string | null;
   attention: ReadonlySet<string>;
+  namingContext?: SessionNamingContext;
 }) {
   const run = node.run;
   const isManager = run.role === "manager" || node.workers.length > 0;
@@ -201,7 +223,7 @@ function RunListItem({
           )}
         >
           {/* The conversation is titled by how it started, not the latest wake-up prompt. */}
-          <span className="truncate">{runHeadline(node.turns[0]!.prompt)}</span>
+          <span className="truncate">{sessionHeadline(node, namingContext)}</span>
           {run.terminalId ? (
             <span
               className="ml-auto flex shrink-0 items-center gap-0.5 rounded-full bg-surface-3 px-1.5 text-[9px] font-medium text-ink-muted"

@@ -16,6 +16,8 @@ import {
   AGENT_PERMISSION_MODES,
   AGENT_PROFILE_KINDS,
   attentionRunIds,
+  groupRunsByManager,
+  sessionHeadline,
   deriveNeedsYou,
   AGENT_PROFILE_SCOPES,
   AGENT_PROVIDERS,
@@ -32,6 +34,7 @@ import {
   type AgentProfileScope,
   type AgentProvider,
   type RunPurpose,
+  type RunNode,
   type WorkspaceInfo,
 } from "@crystal/core";
 import {
@@ -47,8 +50,8 @@ import {
   useWorkspaces,
 } from "@crystal/client";
 import { Badge, Button, EmptyState, Field, Input, Select, TagInput, Textarea, cn } from "@crystal/ui";
-import { MANAGER_PREAMBLE } from "./prompt.js";
 import { RunsPane } from "./RunsPane.js";
+import { MANAGER_PREAMBLE } from "./prompt.js";
 import { spawnSession } from "./spawn-session.js";
 
 const EMPTY_PROFILES: AgentProfile[] = [];
@@ -349,10 +352,25 @@ function PendingPermissionsPanel() {
   const pending = usePermissions((s) => s.pending);
   const decide = usePermissions((s) => s.decide);
   const runs = useAgents((s) => s.runs);
+  const workflows = useWorkflows((s) => s.workflows);
+  const projects = useWorkspace((s) => s.info?.projects ?? EMPTY_PROJECT_ENTRIES);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const runsById = useMemo(() => new Map(runs.map((run) => [run.id, run])), [runs]);
+  const nodesByRunId = useMemo(() => {
+    const index = new Map<string, RunNode>();
+    const visit = (node: RunNode) => {
+      for (const turn of node.turns) index.set(turn.id, node);
+      for (const worker of node.workers) visit(worker);
+    };
+    for (const root of groupRunsByManager(runs)) visit(root);
+    return index;
+  }, [runs]);
+  const namingContext = useMemo(() => ({
+    stripPrefixes: [MANAGER_PREAMBLE],
+    workflowNameOf: (id: string) => workflows.find((workflow) => workflow.id === id)?.name,
+    taskTitleOf: (id: string) => projects.flatMap((entry) => entry.project.tasks).find((task) => task.id === id)?.title,
+  }), [projects, workflows]);
 
   if (pending.length === 0) return null;
 
@@ -384,8 +402,9 @@ function PendingPermissionsPanel() {
       </div>
       <ul className="space-y-2">
         {pending.map((request) => {
-          const run = runsById.get(request.runId);
-          const title = run ? permissionRunTitle(run.prompt) : null;
+          const node = nodesByRunId.get(request.runId);
+          const run = node?.run;
+          const title = node ? permissionRunTitle(node, namingContext) : null;
           return (
             <li
               key={request.id}
@@ -445,11 +464,8 @@ function PendingPermissionsPanel() {
   );
 }
 
-function permissionRunTitle(prompt: string): string {
-  const own = prompt.startsWith(MANAGER_PREAMBLE)
-    ? prompt.slice(MANAGER_PREAMBLE.length)
-    : prompt;
-  return own.trimStart().split("\n")[0] || prompt.split("\n")[0] || "untitled run";
+function permissionRunTitle(node: RunNode, ctx: Parameters<typeof sessionHeadline>[1]): string {
+  return sessionHeadline(node, ctx);
 }
 
 /**

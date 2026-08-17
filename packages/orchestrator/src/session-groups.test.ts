@@ -209,6 +209,20 @@ describe("session filtering", () => {
     expect(sessionNodeMatchesFilter(node!, "missing", nameOf)).toBe(false);
   });
 
+  it("matches the displayed workflow worker title instead of raw boilerplate", () => {
+    const [node] = groupSessionsByProject([
+      run("worker", {
+        prompt: "You are the PLAN-stage worker for workflow boilerplate",
+        purpose: "plan",
+        tags: ["workflow:wf-1"],
+      }),
+    ], []).at(-1)?.epics[0]?.sessions ?? [];
+    const naming = { workflowNameOf: (id: string) => id === "wf-1" ? "Checkout launch" : null };
+
+    expect(sessionNodeMatchesFilter(node!, "plan — checkout launch", nameOf, naming)).toBe(true);
+    expect(sessionNodeMatchesFilter(node!, "workflow boilerplate", nameOf, naming)).toBe(false);
+  });
+
   it("keeps ancestors while pruning nonmatching sibling workers", () => {
     const groups = groupSessionsByProject([
       run("manager"),
