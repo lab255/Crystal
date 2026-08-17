@@ -21,6 +21,7 @@ import {
 import {
   formatResetsAt,
   runFailureHint,
+  sessionHeadline,
   usageTotalTokens,
   type AgentProfile,
   type AgentRun,
@@ -154,6 +155,11 @@ export function RunSurface({
   const interactive = Boolean(run.terminalId);
   const tokens = usageTotalTokens(run.usage);
   const [steerNotice, setSteerNotice] = useState<string | null>(null);
+  const headlineNode = useMemo(() => ({
+    run,
+    turns: chain?.length ? [...chain] : [run],
+    workers: [],
+  }), [chain, run]);
 
   useEffect(() => setSteerNotice(null), [run.id]);
 
@@ -182,7 +188,7 @@ export function RunSurface({
       <header className="flex items-center gap-2.5 border-b border-edge px-3 py-2">
         <StatusDot status={run.status} />
         <div className="min-w-0 flex-1">
-          <div className="truncate text-xs font-medium text-ink">{run.prompt.split("\n")[0]}</div>
+          <div className="truncate text-xs font-medium text-ink">{sessionHeadline(headlineNode)}</div>
           <div className="mt-0.5 flex items-center gap-2 text-[10px] text-ink-faint">
             {run.purpose ? <Badge tone="violet">{run.purpose}</Badge> : null}
             {run.agentId ? <Badge tone="cyan">{run.agentId}</Badge> : null}

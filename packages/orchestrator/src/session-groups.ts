@@ -1,14 +1,15 @@
 import {
   groupRunsByManager,
   sessionLatestActivity,
+  sessionHeadline,
   tagsInDimension,
   type AgentRun,
   type Epic,
   type Project,
   type RunNode,
+  type SessionNamingContext,
   type WorkspaceInfo,
 } from "@crystal/core";
-import { runHeadline } from "./RunList.js";
 
 export type SessionStatus = "working" | "idle";
 
@@ -50,12 +51,13 @@ export function sessionNodeMatchesFilter(
   node: RunNode,
   query: string,
   agentNameOf: AgentNameLookup,
+  namingContext?: SessionNamingContext,
 ): boolean {
   const needle = query.trim().toLocaleLowerCase();
   if (!needle) return true;
   const run = node.run;
   // Match the OPENING prompt (what the rail titles by), not the latest turn.
-  return [runHeadline(node.turns[0]!.prompt), agentNameOf(run), run.model, run.branch, run.purpose]
+  return [sessionHeadline(node, namingContext), agentNameOf(run), run.model, run.branch, run.purpose]
     .some((value) => value?.toLocaleLowerCase().includes(needle));
 }
 
@@ -64,10 +66,11 @@ export function filterSessionTree(
   node: RunNode,
   query: string,
   agentNameOf: AgentNameLookup,
+  namingContext?: SessionNamingContext,
 ): RunNode | null {
-  if (!query.trim() || sessionNodeMatchesFilter(node, query, agentNameOf)) return node;
+  if (!query.trim() || sessionNodeMatchesFilter(node, query, agentNameOf, namingContext)) return node;
   const workers = node.workers
-    .map((worker) => filterSessionTree(worker, query, agentNameOf))
+    .map((worker) => filterSessionTree(worker, query, agentNameOf, namingContext))
     .filter((worker): worker is RunNode => worker != null);
   return workers.length ? { ...node, workers } : null;
 }

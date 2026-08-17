@@ -3,13 +3,14 @@ import { ChevronDown, ChevronRight, GitBranch, Plus, Search } from "lucide-react
 import {
   sessionDescendantCount,
   sessionDisplayStatus,
+  sessionHeadline,
   sessionSubtreeCost,
   sessionWorkflowId,
   type RunNode,
+  type SessionNamingContext,
 } from "@crystal/core";
 import { formatRunCost, useCollapsedSet } from "@crystal/client";
 import { Button, Input, StatusDot, cn } from "@crystal/ui";
-import { runHeadline } from "./RunList.js";
 import {
   filterSessionTree,
   type AgentNameLookup,
@@ -24,7 +25,9 @@ export interface SessionGroupListProps {
   selectedRunId: string | null;
   attention: ReadonlySet<string>;
   agentNameOf: AgentNameLookup;
-  workflowNameOf: (id: string) => string | null | undefined;
+  /** One naming source: titles, search and the chip-redundancy check all read
+   * namingContext — a separate workflow lookup could silently diverge. */
+  namingContext: SessionNamingContext;
   onSelect: (runId: string) => void;
   onNewSession: (scope: NewSessionScope) => void;
 }
@@ -36,7 +39,7 @@ const sessionCount = (project: SessionProjectGroup) =>
   project.epics.reduce((count, epic) => count + epic.sessions.length, 0);
 
 export function SessionGroupList(props: SessionGroupListProps) {
-  const { sessions, agentNameOf } = props;
+  const { sessions, agentNameOf, namingContext } = props;
   const collapsed = useCollapsedSet("sessions-rail");
   const [filter, setFilter] = useState("");
   const visible = useMemo(() => {
@@ -45,11 +48,11 @@ export function SessionGroupList(props: SessionGroupListProps) {
       ...project,
       epics: project.epics.map((epic) => ({
         ...epic,
-        sessions: epic.sessions.map((node) => filterSessionTree(node, filter, agentNameOf))
+        sessions: epic.sessions.map((node) => filterSessionTree(node, filter, agentNameOf, namingContext))
           .filter((node): node is RunNode => node != null),
       })).filter((epic) => epic.sessions.length > 0),
     })).filter((project) => project.epics.length > 0);
-  }, [agentNameOf, filter, sessions]);
+  }, [agentNameOf, filter, namingContext, sessions]);
 
   return <aside aria-label="Sessions" className="flex w-80 shrink-0 flex-col border-r border-edge bg-surface-1">
     <div className="relative shrink-0 border-b border-edge p-2">
@@ -96,9 +99,10 @@ function EpicSection({ project, epic, collapsed, filtering, ...props }: SessionG
   </section>;
 }
 
-function SessionNode({ node, root, filtering, selectedRunId, attention, agentNameOf, workflowNameOf, onSelect, collapsed }: {
+function SessionNode({ node, root, filtering, selectedRunId, attention, agentNameOf, namingContext, onSelect, collapsed }: {
   node: RunNode; root: boolean; filtering: boolean; selectedRunId: string | null; attention: ReadonlySet<string>;
-  agentNameOf: AgentNameLookup; workflowNameOf: (id: string) => string | null | undefined;
+  agentNameOf: AgentNameLookup;
+  namingContext: SessionNamingContext;
   onSelect: (id: string) => void; collapsed: ReturnType<typeof useCollapsedSet>;
 }) {
   // Collapse keys use the chain ROOT id: the face id is the latest turn, so
@@ -119,6 +123,8 @@ function SessionNode({ node, root, filtering, selectedRunId, attention, agentNam
   const cost = sessionSubtreeCost(node);
   const workerCount = root ? sessionDescendantCount(node) : 0;
   const workflowId = root ? sessionWorkflowId(node) : null;
+  const headline = sessionHeadline(node, namingContext);
+  const workflowName = workflowId ? namingContext.workflowNameOf?.(workflowId) : null;
   return <div>
     <div className={cn("flex rounded-lg transition-colors", selected ? "bg-crystal-500/15" : selectionWithin ? "bg-crystal-500/5" : "hover:bg-surface-2")}>
       <button type="button" disabled={!hasWorkers} aria-label={hasWorkers ? `${closed ? "Expand" : "Collapse"} workers` : undefined} onClick={() => hasWorkers && !filtering && collapsed.toggle(collapseKey)} className="w-5 shrink-0 self-stretch disabled:cursor-default">
@@ -127,20 +133,20 @@ function SessionNode({ node, root, filtering, selectedRunId, attention, agentNam
       <button type="button" onClick={() => onSelect(node.run.id)} className="min-w-0 flex-1 py-1.5 pr-2 text-left">
         {/* Title by the chain's OPENING prompt — the face is the latest turn,
             which for steered sessions is a wake-up notice ("Worker … settled"). */}
-        <span className="block truncate text-xs text-ink">{runHeadline(node.turns[0]!.prompt) || "Session"}</span>
+        <span className="block truncate text-xs text-ink">{headline}</span>
         <span className="mt-0.5 flex flex-wrap items-center gap-1 text-[10px] text-ink-faint">
           <span className="truncate">{agentNameOf(node.run) || node.run.model || node.run.provider || "Agent"}</span>
           {node.run.purpose ? <Chip>{node.run.purpose}</Chip> : null}
           {node.run.branch ? <Chip><GitBranch className="h-2.5 w-2.5" />{node.run.branch}</Chip> : null}
           {node.run.terminalId ? <Chip>interactive</Chip> : null}
-          {workflowId ? <Chip>{workflowNameOf(workflowId) || workflowId.slice(0, 8)}</Chip> : null}
+          {workflowId && headline !== workflowName ? <Chip>{workflowName || workflowId.slice(0, 8)}</Chip> : null}
           {workerCount > 0 ? <Chip>{workerCount} worker{workerCount === 1 ? "" : "s"}</Chip> : null}
           {cost != null && cost > 0 ? <span className="font-mono">{formatRunCost(cost)}</span> : null}
           <Status status={status} />
         </span>
       </button>
     </div>
-    {hasWorkers && !closed ? <div className="mt-1 space-y-1 border-l border-edge/70 pl-3">{node.workers.map((worker) => <SessionNode key={worker.run.id} node={worker} root={false} filtering={filtering} selectedRunId={selectedRunId} attention={attention} agentNameOf={agentNameOf} workflowNameOf={workflowNameOf} onSelect={onSelect} collapsed={collapsed} />)}</div> : null}
+    {hasWorkers && !closed ? <div className="mt-1 space-y-1 border-l border-edge/70 pl-3">{node.workers.map((worker) => <SessionNode key={worker.run.id} node={worker} root={false} filtering={filtering} selectedRunId={selectedRunId} attention={attention} agentNameOf={agentNameOf} namingContext={namingContext} onSelect={onSelect} collapsed={collapsed} />)}</div> : null}
   </div>;
 }
 

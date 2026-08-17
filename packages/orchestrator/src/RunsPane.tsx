@@ -1,10 +1,13 @@
-import { useCallback, type ReactNode } from "react";
+import { useCallback, useMemo, type ReactNode } from "react";
 import { Bot } from "lucide-react";
-import type { AgentRun } from "@crystal/core";
-import { RunSurface, useCrystal, useFollowChain, useRunSurface } from "@crystal/client";
+import type { AgentRun, WorkspaceInfo } from "@crystal/core";
+import { RunSurface, useCrystal, useFollowChain, useRunSurface, useWorkspace, useWorkflows } from "@crystal/client";
 import { EmptyState } from "@crystal/ui";
 import { messageRun } from "./message-run.js";
 import { RunList } from "./RunList.js";
+import { MANAGER_PREAMBLE } from "./prompt.js";
+
+const EMPTY_PROJECTS: WorkspaceInfo["projects"] = [];
 
 /**
  * The one RunList + RunSurface split layout — the Runs tab and the Agents
@@ -40,6 +43,13 @@ export function RunsPane({
   const { client } = useCrystal();
   const surface = useRunSurface(selectedRunId);
   const run = surface.run;
+  const projects = useWorkspace((state) => state.info?.projects ?? EMPTY_PROJECTS);
+  const workflows = useWorkflows((state) => state.workflows);
+  const namingContext = useMemo(() => ({
+    stripPrefixes: [MANAGER_PREAMBLE],
+    workflowNameOf: (id: string) => workflows.find((workflow) => workflow.id === id)?.name,
+    taskTitleOf: (id: string) => projects.flatMap((entry) => entry.project.tasks).find((task) => task.id === id)?.title,
+  }), [projects, workflows]);
 
   const onSend = useCallback(
     async (text: string) => {
@@ -64,6 +74,7 @@ export function RunsPane({
       title={title}
       emptyHint={emptyHint}
       attention={attention}
+      namingContext={namingContext}
       className={listHeader ? "w-full border-r-0" : undefined}
     />
   );

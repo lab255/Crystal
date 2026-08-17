@@ -31,6 +31,7 @@ import {
   workflowSpend,
   workflowTag,
   sessionDisplayStatus,
+  sessionHeadline,
   sessionSubtreeCost,
   type AgentRun,
   type RunNode,
@@ -70,7 +71,6 @@ import { TemplateBuilder } from "./TemplateBuilder.js";
 import { TemplateEditor } from "./TemplateEditor.js";
 import { WorkflowGraph } from "./WorkflowGraph.js";
 import { managerSessionEnded } from "./workflow-manager.js";
-import { runHeadline } from "./RunList.js";
 import { workflowRunForest } from "./workflow-runs.js";
 
 const EMPTY_PROJECTS: never[] = [];
@@ -667,7 +667,7 @@ function WorkflowDetail({
         {runForest.length > 0 ? (
           <div className="mt-2 space-y-1">
             {runForest.map((node) => (
-              <WorkflowRunTree key={node.run.id} node={node} onOpenRun={onOpenRun} />
+              <WorkflowRunTree key={node.run.id} node={node} workflowName={workflow.name} onOpenRun={onOpenRun} />
             ))}
           </div>
         ) : null}
@@ -709,13 +709,15 @@ const SESSION_STATUS_LABELS: Record<SessionDisplayStatus, string> = {
 
 function WorkflowRunTree({
   node,
+  workflowName,
   onOpenRun,
 }: {
   node: RunNode;
+  workflowName: string;
   onOpenRun?: (id: string) => void;
 }) {
   const status = sessionDisplayStatus(node, EMPTY_ATTENTION_RUN_IDS);
-  const headline = runHeadline(node.turns[0]!.prompt) || node.run.purpose || "Session";
+  const headline = sessionHeadline(node, { workflowNameOf: () => workflowName });
   return (
     <div>
       <button
@@ -742,7 +744,7 @@ function WorkflowRunTree({
       {node.workers.length > 0 ? (
         <div className="ml-3.5 space-y-1 border-l border-edge/70 pl-1.5">
           {node.workers.map((worker) => (
-            <WorkflowRunTree key={worker.run.id} node={worker} onOpenRun={onOpenRun} />
+            <WorkflowRunTree key={worker.run.id} node={worker} workflowName={workflowName} onOpenRun={onOpenRun} />
           ))}
         </div>
       ) : null}
