@@ -124,6 +124,12 @@ export interface SessionNamingContext {
   stripPrefixes?: readonly string[];
   workflowNameOf?: (workflowId: string) => string | null | undefined;
   taskTitleOf?: (taskId: string) => string | null | undefined;
+  /**
+   * Drop the "— workflow" suffix from worker titles. For rows nested under a
+   * root already titled as that workflow, repeating the name on every
+   * sibling is noise — the ancestry says it.
+   */
+  omitWorkflowName?: boolean;
 }
 
 /** Core authors these prompts (workflow.ts / hub.ts), so core recognizes them. */
@@ -159,7 +165,7 @@ export function sessionHeadline(node: RunNode, ctx: SessionNamingContext = {}): 
   if (managerName) return workflowName ?? managerName;
   if (workflowName) {
     const kind = opening.purpose ?? (opening.role === "manager" ? "manager" : "worker");
-    return `${kind} — ${workflowName}`;
+    return ctx.omitWorkflowName ? kind : `${kind} — ${workflowName}`;
   }
 
   return promptHeadline(opening.prompt, ctx.stripPrefixes) || "Session";

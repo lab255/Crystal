@@ -99,11 +99,13 @@ function EpicSection({ project, epic, collapsed, filtering, ...props }: SessionG
   </section>;
 }
 
-function SessionNode({ node, root, filtering, selectedRunId, attention, agentNameOf, namingContext, onSelect, collapsed }: {
+function SessionNode({ node, root, filtering, selectedRunId, attention, agentNameOf, namingContext, onSelect, collapsed, rootWorkflowId = null }: {
   node: RunNode; root: boolean; filtering: boolean; selectedRunId: string | null; attention: ReadonlySet<string>;
   agentNameOf: AgentNameLookup;
   namingContext: SessionNamingContext;
   onSelect: (id: string) => void; collapsed: ReturnType<typeof useCollapsedSet>;
+  /** The subtree root's workflow — nested rows in the same workflow drop the redundant "— workflow" title suffix. */
+  rootWorkflowId?: string | null;
 }) {
   // Collapse keys use the chain ROOT id: the face id is the latest turn, so
   // keying on it would re-expand a deliberately collapsed subtree on every
@@ -128,8 +130,13 @@ function SessionNode({ node, root, filtering, selectedRunId, attention, agentNam
       ? node.turns.reduce((sum, turn) => sum + (turn.costUsd ?? 0), 0)
       : null;
   const workerCount = root ? sessionDescendantCount(node) : 0;
-  const workflowId = root ? sessionWorkflowId(node) : null;
-  const headline = sessionHeadline(node, namingContext);
+  const ownWorkflowId = sessionWorkflowId(node);
+  const workflowId = root ? ownWorkflowId : null;
+  const inRootWorkflow = !root && ownWorkflowId != null && ownWorkflowId === rootWorkflowId;
+  const headline = sessionHeadline(
+    node,
+    inRootWorkflow ? { ...namingContext, omitWorkflowName: true } : namingContext,
+  );
   const workflowName = workflowId ? namingContext.workflowNameOf?.(workflowId) : null;
   return <div>
     <div className={cn("flex rounded-lg transition-colors", selected ? "bg-crystal-500/15" : selectionWithin ? "bg-crystal-500/5" : "hover:bg-surface-2")}>
@@ -152,7 +159,7 @@ function SessionNode({ node, root, filtering, selectedRunId, attention, agentNam
         </span>
       </button>
     </div>
-    {hasWorkers && !closed ? <div className="mt-1 space-y-1 border-l border-edge/70 pl-3">{node.workers.map((worker) => <SessionNode key={worker.run.id} node={worker} root={false} filtering={filtering} selectedRunId={selectedRunId} attention={attention} agentNameOf={agentNameOf} namingContext={namingContext} onSelect={onSelect} collapsed={collapsed} />)}</div> : null}
+    {hasWorkers && !closed ? <div className="mt-1 space-y-1 border-l border-edge/70 pl-3">{node.workers.map((worker) => <SessionNode key={worker.run.id} node={worker} root={false} filtering={filtering} selectedRunId={selectedRunId} attention={attention} agentNameOf={agentNameOf} namingContext={namingContext} onSelect={onSelect} collapsed={collapsed} rootWorkflowId={root ? ownWorkflowId : rootWorkflowId} />)}</div> : null}
   </div>;
 }
 

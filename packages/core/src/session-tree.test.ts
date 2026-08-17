@@ -125,6 +125,8 @@ describe("sessionHeadline", () => {
     });
     const [node] = groupRunsByManager([first]);
     expect(sessionHeadline(node!, ctx)).toBe("implement — Payments v2");
+    // Nested under a root already titled as the workflow, drop the suffix.
+    expect(sessionHeadline(node!, { ...ctx, omitWorkflowName: true })).toBe("implement");
   });
 
   it("titles by the OPENING prompt, stripped — never the wake-up face", () => {
