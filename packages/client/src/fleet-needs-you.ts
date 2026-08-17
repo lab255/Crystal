@@ -124,7 +124,14 @@ export function useAttentionJump(): (target: AttentionTarget) => void {
         navStore.getState().update({
           ws,
           mode: "orchestrate",
-          orchestrate: { tab: "runs", run: target.run.id },
+          // Clear the rail scope: a cross-workspace jump must not inherit the
+          // previous workspace's project/epic filter and hide the run's row.
+          orchestrate: {
+            tab: "sessions",
+            run: target.run.id,
+            sessionProject: null,
+            sessionEpic: null,
+          },
         });
       }
     },

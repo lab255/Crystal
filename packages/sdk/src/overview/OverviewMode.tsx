@@ -6,6 +6,7 @@ import { Button, EmptyState, Input, Tooltip, cn } from "@crystal/ui";
 import { CoordinatorChat, QuestionsView } from "@crystal/hub";
 import { OpenWorkspaceDialog } from "../OpenWorkspaceDialog.js";
 import { FleetPulse } from "./FleetPulse.js";
+import { LiveRunsPanel } from "./LiveRunsPanel.js";
 import { WorkspaceCard } from "./WorkspaceCard.js";
 import { attentionLegendText } from "../shell-labels.js";
 
@@ -127,6 +128,8 @@ function Dashboard() {
 
         {/* Insights + costs headline — the agent system's pulse, fleet-wide. */}
         <FleetPulse />
+
+        <LiveRunsPanel />
 
         {total === 0 ? (
           <EmptyState title="No workspaces open">

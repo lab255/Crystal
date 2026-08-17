@@ -231,10 +231,8 @@ export function OrchestratorMode() {
                 .join("\n") || undefined
             }
             onClick={() => {
-              // Jump to the first thing waiting, session visible: a
-              // question's task lands on the board tab (the list view shows
-              // its live session beside the list); a failed run lands on its
-              // task when it has one, else on the Runs tab.
+              // A question belongs to its board task; run-shaped attention
+              // belongs to the hierarchical session that resolves any run id.
               const q = needsYou.questions[0];
               const p = needsYou.permissions[0];
               const f = needsYou.failures[0];
@@ -242,19 +240,17 @@ export function OrchestratorMode() {
                 setProjectPath(q.projectPath);
                 selectListTask(q.taskId);
                 setTab("board");
-              } else if (p) {
-                setRunId(p.runId);
-                setTab("runs");
-              } else if (f) {
-                const onBoard =
-                  f.taskId != null && current?.project.tasks.some((t) => t.id === f.taskId);
-                if (onBoard) {
-                  nav({ orchestrate: { task: f.taskId!, run: f.id } });
-                  setTab("board");
-                } else {
-                  setRunId(f.id);
-                  setTab("runs");
-                }
+              } else if (p || f) {
+                // One nav write, rail scope cleared — a stale project filter
+                // must not hide the jumped run's row.
+                nav({
+                  orchestrate: {
+                    tab: "sessions",
+                    run: p ? p.runId : f!.id,
+                    sessionProject: null,
+                    sessionEpic: null,
+                  },
+                });
               }
             }}
             className="flex items-center gap-1.5 rounded-full border border-warn/40 bg-warn/10 px-2.5 py-0.5 text-[11px] font-medium text-warn transition-colors hover:bg-warn/20"
@@ -291,6 +287,11 @@ export function OrchestratorMode() {
           </TabButton>
           <TabButton active={tab === "sessions"} onClick={() => setTab("sessions")}>
             <MessagesSquare className="h-3.5 w-3.5" /> Sessions
+            {runningCount > 0 ? (
+              <span className="ml-0.5 rounded-full bg-info/20 px-1.5 text-[10px] text-info">
+                {runningCount}
+              </span>
+            ) : null}
           </TabButton>
           <TabButton active={tab === "workflows"} onClick={() => setTab("workflows")}>
             <Network className="h-3.5 w-3.5" /> Workflows

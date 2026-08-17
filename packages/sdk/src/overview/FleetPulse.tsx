@@ -21,7 +21,7 @@ export function FleetPulse() {
     return {
       totals: week.totals,
       prior: week.prior,
-      running: all.filter((r) => r.status === "running").length,
+      running: all.filter((r) => r.status === "running" || r.status === "queued").length,
       week,
     };
   }, [runsByWs]);
@@ -36,12 +36,14 @@ export function FleetPulse() {
     label: string;
     value: string;
     detail?: React.ReactNode;
-    onClick: () => void;
+    /** Absent = informational tile (no hover affordance, click does nothing). */
+    onClick?: () => void;
   }) => (
     <button
       type="button"
       onClick={opts.onClick}
-      className="flex min-w-36 flex-1 flex-col gap-0.5 rounded-panel border border-edge bg-surface-1 px-3 py-2 text-left transition-colors hover:border-edge-strong hover:bg-surface-2"
+      disabled={!opts.onClick}
+      className="flex min-w-36 flex-1 flex-col gap-0.5 rounded-panel border border-edge bg-surface-1 px-3 py-2 text-left transition-colors enabled:hover:border-edge-strong enabled:hover:bg-surface-2"
     >
       <span className="flex items-center gap-1.5 text-[11px] text-ink-faint">
         {opts.icon}
@@ -84,8 +86,12 @@ export function FleetPulse() {
         icon: <Cpu className="h-3 w-3" />,
         label: "Active now",
         value: String(running),
-        detail: running > 0 ? "agents running across the fleet" : "all quiet",
-        onClick: () => updateNav({ mode: "orchestrate", orchestrate: { tab: "runs" } }),
+        detail: running > 0 ? "agents working across the fleet" : "all quiet",
+        // The panel only mounts with live runs — an idle tile has no target.
+        onClick:
+          running > 0
+            ? () => document.getElementById("live-runs")?.scrollIntoView({ behavior: "smooth" })
+            : undefined,
       })}
       {tile({
         icon: <Gauge className="h-3 w-3" />,
