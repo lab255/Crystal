@@ -30,6 +30,8 @@ import {
   validateWorkflowTemplate,
   workflowSpend,
   workflowTag,
+  attentionRunIds,
+  deriveNeedsYou,
   sessionDisplayStatus,
   sessionHeadline,
   sessionSubtreeCost,
@@ -48,6 +50,7 @@ import {
   useAgents,
   useComposerKeydown,
   useCrystal,
+  usePermissions,
   useRunSurface,
   useTerminals,
   useWorkflows,
@@ -74,7 +77,6 @@ import { managerSessionEnded } from "./workflow-manager.js";
 import { workflowRunForest } from "./workflow-runs.js";
 
 const EMPTY_PROJECTS: never[] = [];
-const EMPTY_ATTENTION_RUN_IDS = new Set<string>();
 
 /**
  * The workflow surface: multi-agent workflows driven by an interactive manager
@@ -291,11 +293,18 @@ function WorkflowDetail({
     [runs, tag],
   );
   const runForest = useMemo(() => workflowRunForest(runs, workflow.id), [runs, workflow.id]);
+  const pendingPermissions = usePermissions((s) => s.pending);
   const managerEnded = managerSessionEnded(workflow.status, managerTurns);
 
   // Open questions on the workflow's board tasks — the manager (or a worker)
   // is waiting on the human owner; answering happens on the Board tab.
   const projects = useWorkspace((s) => s.info?.projects ?? EMPTY_PROJECTS);
+  // The run tree joins the one attention policy: a worker parked on a
+  // question/permission must read "Needs you" here, not "Idle".
+  const attention = useMemo(
+    () => attentionRunIds(deriveNeedsYou(projects, runs, pendingPermissions)),
+    [pendingPermissions, projects, runs],
+  );
   const openQuestions = useMemo(() => {
     const project =
       projects.find((p) => p.project.id === workflow.projectId) ?? projects[0] ?? null;
@@ -667,7 +676,7 @@ function WorkflowDetail({
         {runForest.length > 0 ? (
           <div className="mt-2 space-y-1">
             {runForest.map((node) => (
-              <WorkflowRunTree key={node.run.id} node={node} workflowName={workflow.name} onOpenRun={onOpenRun} />
+              <WorkflowRunTree key={node.run.id} node={node} workflowName={workflow.name} attention={attention} onOpenRun={onOpenRun} />
             ))}
           </div>
         ) : null}
@@ -710,13 +719,15 @@ const SESSION_STATUS_LABELS: Record<SessionDisplayStatus, string> = {
 function WorkflowRunTree({
   node,
   workflowName,
+  attention,
   onOpenRun,
 }: {
   node: RunNode;
   workflowName: string;
+  attention: ReadonlySet<string>;
   onOpenRun?: (id: string) => void;
 }) {
-  const status = sessionDisplayStatus(node, EMPTY_ATTENTION_RUN_IDS);
+  const status = sessionDisplayStatus(node, attention);
   const headline = sessionHeadline(node, { workflowNameOf: () => workflowName });
   return (
     <div>
@@ -744,7 +755,7 @@ function WorkflowRunTree({
       {node.workers.length > 0 ? (
         <div className="ml-3.5 space-y-1 border-l border-edge/70 pl-1.5">
           {node.workers.map((worker) => (
-            <WorkflowRunTree key={worker.run.id} node={worker} workflowName={workflowName} onOpenRun={onOpenRun} />
+            <WorkflowRunTree key={worker.run.id} node={worker} workflowName={workflowName} attention={attention} onOpenRun={onOpenRun} />
           ))}
         </div>
       ) : null}

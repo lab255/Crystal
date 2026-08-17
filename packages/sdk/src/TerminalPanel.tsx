@@ -157,6 +157,11 @@ export function TerminalPanel({ onClose }: { onClose: () => void }) {
             return (
               <div
                 key={t.id}
+                // Not a <button>: the close control nests inside. Tab
+                // semantics + Enter/Space keep PTY switching keyboardable.
+                role="tab"
+                tabIndex={0}
+                aria-selected={t.id === activeTabId}
                 className={cn(
                   "group/tab flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-[11px]",
                   t.id === activeTabId
@@ -164,6 +169,12 @@ export function TerminalPanel({ onClose }: { onClose: () => void }) {
                     : "text-ink-faint hover:bg-surface-2 hover:text-ink-muted",
                 )}
                 onClick={() => setActive(t.id)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    setActive(t.id);
+                  }
+                }}
               >
                 <Icon className="h-3 w-3" />
                 <span className="max-w-40 truncate">

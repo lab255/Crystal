@@ -389,8 +389,7 @@ export function OrchestratorMode() {
                   onProjectChange={(project: Project) => updateProject(current.path, project)}
                   onOpenTask={setTaskId}
                   onOpenRun={(id) => {
-                    setRunId(id);
-                    setTab("runs");
+                    nav({ orchestrate: { tab: "sessions", run: id, sessionProject: null, sessionEpic: null } });
                   }}
                 />
                 <div className="flex min-h-0 flex-1">
@@ -410,8 +409,7 @@ export function OrchestratorMode() {
                       onProjectChange={(project: Project) => updateProject(current.path, project)}
                       onClose={() => setTaskId(null)}
                       onOpenRun={(id) => {
-                        setRunId(id);
-                        setTab("runs");
+                        nav({ orchestrate: { tab: "sessions", run: id, sessionProject: null, sessionEpic: null } });
                       }}
                     />
                   ) : null}
@@ -449,8 +447,7 @@ export function OrchestratorMode() {
             selectedTemplateId={templateId}
             onSelectTemplate={setTemplateId}
             onOpenRun={(id) => {
-              setRunId(id);
-              setTab("runs");
+              nav({ orchestrate: { tab: "sessions", run: id, sessionProject: null, sessionEpic: null } });
             }}
             onOpenTask={(id) => {
               setTaskId(id);
