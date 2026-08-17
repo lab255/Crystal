@@ -49,6 +49,8 @@ export {
   type SettingsState,
   type ThemePreference,
 } from "./settings.js";
+export { useFollowChain } from "./follow-chain.js";
+export { useCollapsedSet, type CollapsedSet } from "./collapse-store.js";
 export {
   createWorkspaceStore,
   type WorkspaceState,

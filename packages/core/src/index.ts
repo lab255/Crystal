@@ -30,6 +30,7 @@ export * from "./grants.js";
 export * from "./insights.js";
 export * from "./recap.js";
 export * from "./attention.js";
+export * from "./session-tree.js";
 export * from "./question-liveness.js";
 export * from "./task-attention.js";
 export * from "./workflow.js";
