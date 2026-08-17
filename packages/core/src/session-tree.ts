@@ -43,6 +43,19 @@ function subtreeSome(node: RunNode, pred: (node: RunNode) => boolean): boolean {
 }
 
 /**
+ * Any live turn anywhere in the subtree. This is the resume/steer gate's
+ * predicate too (a chain mid-turn cannot be resumed) — distinct from
+ * {@link sessionDisplayStatus}, where attention outranks working for
+ * DISPLAY but a needs-you subtree may still be executing.
+ */
+export function sessionIsWorking(node: RunNode): boolean {
+  return subtreeSome(
+    node,
+    (n) => n.run.status === "running" || n.run.status === "queued",
+  );
+}
+
+/**
  * Roll one session subtree up to a {@link SessionDisplayStatus}. Pass the
  * workspace's {@link attentionRunIds}; pass an empty set when the attention
  * feed is unavailable — unknown attention degrades to `working`/`idle`,
@@ -55,11 +68,7 @@ export function sessionDisplayStatus(
   if (subtreeSome(node, (n) => n.turns.some((turn) => attention.has(turn.id)))) {
     return "needs-you";
   }
-  if (
-    subtreeSome(node, (n) => n.run.status === "running" || n.run.status === "queued")
-  ) {
-    return "working";
-  }
+  if (sessionIsWorking(node)) return "working";
   if (subtreeSome(node, (n) => n.run.status === "failed")) return "failed";
   return "idle";
 }

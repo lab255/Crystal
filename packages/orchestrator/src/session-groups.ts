@@ -11,8 +11,6 @@ import {
   type WorkspaceInfo,
 } from "@crystal/core";
 
-export type SessionStatus = "working" | "idle";
-
 /** One epic section in a project's sessions rail; null is the trailing residue. */
 export interface SessionEpicGroup {
   epicId: string | null;
@@ -31,18 +29,6 @@ export interface SessionProjectGroup {
 }
 
 type WorkspaceProject = WorkspaceInfo["projects"][number];
-
-/**
- * A session is working while any turn represented by its face or any nested
- * worker session is queued/running. Workers are recursive because managers
- * may delegate to managers of their own.
- */
-export function sessionStatus(session: RunNode): SessionStatus {
-  if (session.run.status === "running" || session.run.status === "queued") return "working";
-  return session.workers.some((worker) => sessionStatus(worker) === "working")
-    ? "working"
-    : "idle";
-}
 
 export type AgentNameLookup = (run: AgentRun) => string | null | undefined;
 

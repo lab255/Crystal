@@ -15,6 +15,19 @@ describe("canResumeSession", () => {
   it("rejects a cancelled session even when it otherwise looks resumable", () => {
     expect(canResumeSession(true, { ...resumable, status: "cancelled" }, true)).toBe(false);
   });
+
+  it("offers a settled HEADLESS session a path into a TUI", () => {
+    expect(canResumeSession(true, { ...resumable, terminalId: null }, false)).toBe(true);
+  });
+
+  it("hides the affordance while the interactive terminal is still listed", () => {
+    expect(canResumeSession(true, resumable, false)).toBe(false);
+  });
+
+  it("never offers resume while the subtree is working or without a session", () => {
+    expect(canResumeSession(false, { ...resumable, terminalId: null }, false)).toBe(false);
+    expect(canResumeSession(true, { ...resumable, sessionId: null }, true)).toBe(false);
+  });
 });
 
 describe("sameSessionScope", () => {

@@ -4,6 +4,7 @@ import {
   attentionRunIds,
   deriveNeedsYou,
   sessionHeadline,
+  sessionIsWorking,
   type AgentProfile,
   type AgentRun,
   type RunNode,
@@ -40,7 +41,6 @@ import {
 } from "./SessionGroupList.js";
 import {
   groupSessionsByProject,
-  sessionStatus,
   type SessionEpicGroup,
   type SessionProjectGroup,
 } from "./session-groups.js";
@@ -126,7 +126,6 @@ export function SessionsTab({
   const roster = useWorkspace((state) => state.roster);
   const agents = roster?.agents ?? EMPTY_AGENTS;
   const activeWs = useWorkspaces((state) => state.activeId);
-  const focusTerminal = useTerminals((state) => state.focusTerminal);
   const pendingPermissions = usePermissions((state) => state.pending);
   const workflows = useWorkflows((state) => state.workflows);
 
@@ -201,7 +200,7 @@ export function SessionsTab({
     setSpawnBusy(true);
     setSpawnError(null);
     try {
-      const { run: spawnedRun, terminal } = await spawnSession({
+      const { run: spawnedRun } = await spawnSession({
         client,
         ws: activeWs ?? undefined,
         prompt: text,
@@ -212,15 +211,15 @@ export function SessionsTab({
       onSelectRun(spawnedRun.id);
       setPrompt("");
       setSpawnOpen(false);
-      // Selection is already safe if revealing the shared terminal panel
-      // fails; terminal hydration can be retried from the run surface.
-      if (activeWs) await focusTerminal(activeWs, terminal.id).catch(() => {});
+      // The run surface embeds the session's PTY — selecting the run is
+      // enough; forcing the bottom panel open here just duplicated the
+      // console and stole the viewport.
     } catch (error) {
       setSpawnError((error as Error).message);
     } finally {
       setSpawnBusy(false);
     }
-  }, [activeWs, agentId, client, focusTerminal, onSelectRun, prompt, spawnBusy, spawnScope]);
+  }, [activeWs, agentId, client, onSelectRun, prompt, spawnBusy, spawnScope]);
   const onPromptKeyDown = useComposerKeydown(() => void startSession());
 
   const dialogProject = spawnScope.projectId
@@ -235,7 +234,7 @@ export function SessionsTab({
 
   const faceRun = selected?.session.run ?? null;
   const terminalGone = useTerminalGone(faceRun, activeSid, activeWs);
-  const settledSession = selected ? sessionStatus(selected.session) === "idle" : false;
+  const settledSession = selected ? !sessionIsWorking(selected.session) : false;
   const canResume = canResumeSession(settledSession, faceRun, terminalGone);
   const [resumeBusy, setResumeBusy] = useState(false);
   const [resumeError, setResumeError] = useState<string | null>(null);

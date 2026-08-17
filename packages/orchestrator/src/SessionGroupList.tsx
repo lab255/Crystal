@@ -120,7 +120,13 @@ function SessionNode({ node, root, filtering, selectedRunId, attention, agentNam
     closed &&
     selectedRunId != null &&
     node.workers.some((worker) => subtreeContainsRun(worker, selectedRunId));
-  const cost = sessionSubtreeCost(node);
+  // Roots bill the whole subtree; nested rows bill their own chain only, or
+  // every level re-states its parent's total and the rail reads double.
+  const cost = root
+    ? sessionSubtreeCost(node)
+    : node.turns.some((turn) => turn.costUsd != null)
+      ? node.turns.reduce((sum, turn) => sum + (turn.costUsd ?? 0), 0)
+      : null;
   const workerCount = root ? sessionDescendantCount(node) : 0;
   const workflowId = root ? sessionWorkflowId(node) : null;
   const headline = sessionHeadline(node, namingContext);

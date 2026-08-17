@@ -2,6 +2,7 @@ import {
   AgentRunSchema,
   ProjectSchema,
   TaskItemSchema,
+  sessionIsWorking,
   type AgentRun,
   type Project,
 } from "@crystal/core";
@@ -10,7 +11,6 @@ import {
   filterSessionTree,
   groupSessionsByProject,
   sessionNodeMatchesFilter,
-  sessionStatus,
 } from "./session-groups.js";
 
 const timestamp = "2026-08-12T00:00:00.000Z";
@@ -170,7 +170,7 @@ describe("groupSessionsByProject", () => {
 
     expect(sessions.map((session) => session.run.id)).toEqual(["manager"]);
     expect(sessions[0]?.workers.map((worker) => worker.run.id)).toEqual(["worker"]);
-    expect(sessionStatus(sessions[0]!)).toBe("working");
+    expect(sessionIsWorking(sessions[0]!)).toBe(true);
   });
 
   it("sorts sessions by newest subtree activity", () => {
