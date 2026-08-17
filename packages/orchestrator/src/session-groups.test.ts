@@ -6,7 +6,12 @@ import {
   type Project,
 } from "@crystal/core";
 import { describe, expect, it } from "vitest";
-import { groupSessionsByProject, sessionStatus } from "./session-groups.js";
+import {
+  filterSessionTree,
+  groupSessionsByProject,
+  sessionNodeMatchesFilter,
+  sessionStatus,
+} from "./session-groups.js";
 
 const timestamp = "2026-08-12T00:00:00.000Z";
 
@@ -166,5 +171,62 @@ describe("groupSessionsByProject", () => {
     expect(sessions.map((session) => session.run.id)).toEqual(["manager"]);
     expect(sessions[0]?.workers.map((worker) => worker.run.id)).toEqual(["worker"]);
     expect(sessionStatus(sessions[0]!)).toBe("working");
+  });
+
+  it("sorts sessions by newest subtree activity", () => {
+    const board = project("alpha", "Alpha");
+    const [group] = groupSessionsByProject(
+      [
+        run("older", { projectId: "alpha", createdAt: "2026-01-01T00:00:00Z" }),
+        run("manager", { projectId: "alpha", createdAt: "2026-01-02T00:00:00Z" }),
+        run("fresh-worker", {
+          projectId: "alpha",
+          parentRunId: "manager",
+          createdAt: "2026-01-04T00:00:00Z",
+        }),
+        run("middle", { projectId: "alpha", createdAt: "2026-01-03T00:00:00Z" }),
+      ],
+      [{ path: "alpha.crystal", project: board }],
+    );
+    expect(group?.epics[0]?.sessions.map((node) => node.run.id)).toEqual([
+      "manager",
+      "middle",
+      "older",
+    ]);
+  });
+});
+
+describe("session filtering", () => {
+  const nameOf = (candidate: AgentRun) => candidate.agentId === "reviewer" ? "Code Reviewer" : null;
+
+  it("matches headline and rich run metadata case-insensitively", () => {
+    const [node] = groupSessionsByProject([
+      run("root", { prompt: "Repair Search", agentId: "reviewer", model: "sonnet", branch: "fix/rail", purpose: "code-review" }),
+    ], []).at(-1)?.epics[0]?.sessions ?? [];
+    expect(sessionNodeMatchesFilter(node!, "SEARCH", nameOf)).toBe(true);
+    expect(sessionNodeMatchesFilter(node!, "code reviewer", nameOf)).toBe(true);
+    expect(sessionNodeMatchesFilter(node!, "fix/rail", nameOf)).toBe(true);
+    expect(sessionNodeMatchesFilter(node!, "missing", nameOf)).toBe(false);
+  });
+
+  it("keeps ancestors while pruning nonmatching sibling workers", () => {
+    const groups = groupSessionsByProject([
+      run("manager"),
+      run("match", { parentRunId: "manager", prompt: "Needle worker" }),
+      run("other", { parentRunId: "manager", prompt: "Other worker" }),
+    ], []);
+    const root = groups[0]!.epics[0]!.sessions[0]!;
+    const filtered = filterSessionTree(root, "needle", nameOf);
+    expect(filtered?.run.id).toBe("manager");
+    expect(filtered?.workers.map((node) => node.run.id)).toEqual(["match"]);
+  });
+
+  it("keeps a directly matching root's whole subtree", () => {
+    const groups = groupSessionsByProject([
+      run("manager", { prompt: "Needle root" }),
+      run("worker", { parentRunId: "manager" }),
+    ], []);
+    const root = groups[0]!.epics[0]!.sessions[0]!;
+    expect(filterSessionTree(root, "needle", nameOf)?.workers).toHaveLength(1);
   });
 });
