@@ -30,8 +30,11 @@ import {
   validateWorkflowTemplate,
   workflowSpend,
   workflowTag,
+  sessionDisplayStatus,
+  sessionSubtreeCost,
   type AgentRun,
-  type AgentRunStatus,
+  type RunNode,
+  type SessionDisplayStatus,
   type Workflow,
   type WorkflowSpend,
   type WorkflowStageStatus,
@@ -58,6 +61,7 @@ import {
   Input,
   Select,
   Spinner,
+  StatusDot,
   Textarea,
   Tooltip,
   cn,
@@ -66,8 +70,11 @@ import { TemplateBuilder } from "./TemplateBuilder.js";
 import { TemplateEditor } from "./TemplateEditor.js";
 import { WorkflowGraph } from "./WorkflowGraph.js";
 import { managerSessionEnded } from "./workflow-manager.js";
+import { runHeadline } from "./RunList.js";
+import { workflowRunForest } from "./workflow-runs.js";
 
 const EMPTY_PROJECTS: never[] = [];
+const EMPTY_ATTENTION_RUN_IDS = new Set<string>();
 
 /**
  * The workflow surface: multi-agent workflows driven by an interactive manager
@@ -240,14 +247,6 @@ const STAGE_STATUS_CLASSES: Record<WorkflowStageStatus, string> = {
   skipped: "border-edge text-ink-faint line-through",
 };
 
-const WORKER_CHIP_CLASSES: Record<AgentRunStatus, string> = {
-  queued: "border-crystal-500/40 bg-crystal-500/10 text-crystal-200",
-  running: "border-crystal-500/40 bg-crystal-500/10 text-crystal-200",
-  completed: "border-ok/30 text-ok",
-  failed: "border-danger/30 text-danger",
-  cancelled: "border-edge text-ink-faint line-through",
-};
-
 function WorkflowDetail({
   workflow,
   runs,
@@ -291,13 +290,7 @@ function WorkflowDetail({
         .sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
     [runs, tag],
   );
-  const workers = useMemo(
-    () =>
-      runs
-        .filter((r) => r.tags.includes(tag) && r.role === "worker")
-        .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
-    [runs, tag],
-  );
+  const runForest = useMemo(() => workflowRunForest(runs, workflow.id), [runs, workflow.id]);
   const managerEnded = managerSessionEnded(workflow.status, managerTurns);
 
   // Open questions on the workflow's board tasks — the manager (or a worker)
@@ -671,24 +664,10 @@ function WorkflowDetail({
           </div>
         ) : null}
 
-        {workers.length > 0 ? (
-          <div className="mt-2 flex flex-wrap gap-1">
-            {workers.map((w) => (
-              <Tooltip key={w.id} content={w.prompt.split("\n")[0] ?? w.id}>
-                <button
-                  type="button"
-                  onClick={() => onOpenRun?.(w.id)}
-                  className={cn(
-                    "flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px]",
-                    WORKER_CHIP_CLASSES[w.status],
-                  )}
-                >
-                  {w.status === "running" ? <Spinner className="h-2.5 w-2.5" /> : null}
-                  {w.purpose ?? "worker"}
-                  {w.branch ? <span className="font-mono text-ink-faint">{w.branch.split("/").pop()}</span> : null}
-                  {w.costUsd != null ? <span className="text-ink-faint">{formatRunCost(w.costUsd)}</span> : null}
-                </button>
-              </Tooltip>
+        {runForest.length > 0 ? (
+          <div className="mt-2 space-y-1">
+            {runForest.map((node) => (
+              <WorkflowRunTree key={node.run.id} node={node} onOpenRun={onOpenRun} />
             ))}
           </div>
         ) : null}
@@ -717,6 +696,58 @@ function WorkflowDetail({
           </EmptyState>
         )}
       </div>
+    </div>
+  );
+}
+
+const SESSION_STATUS_LABELS: Record<SessionDisplayStatus, string> = {
+  "needs-you": "Needs you",
+  working: "Working",
+  failed: "Failed",
+  idle: "Idle",
+};
+
+function WorkflowRunTree({
+  node,
+  onOpenRun,
+}: {
+  node: RunNode;
+  onOpenRun?: (id: string) => void;
+}) {
+  const status = sessionDisplayStatus(node, EMPTY_ATTENTION_RUN_IDS);
+  const headline = runHeadline(node.turns[0]!.prompt) || node.run.purpose || "Session";
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => onOpenRun?.(node.run.id)}
+        className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-[11px] transition-colors hover:bg-surface-2"
+      >
+        <StatusDot
+          status={status === "working" ? "running" : status === "failed" ? "failed" : "idle"}
+        />
+        <span className="shrink-0 text-ink-faint">{SESSION_STATUS_LABELS[status]}</span>
+        <span className="min-w-0 flex-1 truncate text-ink">{headline}</span>
+        <span className="shrink-0 text-ink-muted">
+          {node.run.purpose ?? node.run.role ?? "agent"}
+        </span>
+        {node.run.branch ? (
+          <span className="flex max-w-40 shrink-0 items-center gap-1 truncate font-mono text-ink-faint">
+            <GitBranch className="h-3 w-3" />
+            {node.run.branch}
+          </span>
+        ) : null}
+        <span className="shrink-0 font-mono text-ink-faint">
+          {formatRunCost(sessionSubtreeCost(node))}
+        </span>
+      </button>
+      {node.workers.length > 0 ? (
+        <div className="ml-3.5 space-y-1 border-l border-edge/70 pl-1.5">
+          {node.workers.map((worker) => (
+            <WorkflowRunTree key={worker.run.id} node={worker} onOpenRun={onOpenRun} />
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
