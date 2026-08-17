@@ -48,6 +48,20 @@ export function InteractiveRunTerminal({
     };
   }, [tab, ws, terminalId, activeSid, ensureTerminal]);
 
+  // A LIVE run with a confirmed-missing terminal is an orphan (the composer
+  // is hidden for live interactive runs, so "Connecting…" forever is a dead
+  // end). Grace period first: right after spawn the terminal can list a beat
+  // behind the run.
+  const [orphaned, setOrphaned] = useState(false);
+  useEffect(() => {
+    if (!gone || tab) {
+      setOrphaned(false);
+      return;
+    }
+    const timer = setTimeout(() => setOrphaned(true), 8000);
+    return () => clearTimeout(timer);
+  }, [gone, tab, run.id]);
+
   if (!terminalId) return null;
   return (
     <div className={cn("min-h-0 flex-1", className)}>
@@ -59,12 +73,11 @@ export function InteractiveRunTerminal({
         </div>
       ) : (
         <div className="flex h-full items-center justify-center text-xs text-ink-faint">
-          {/* A live run's terminal may list a beat after spawn — keep waiting
-              for the terminal.changed broadcast; only a settled run's absence
-              is final. */}
           {gone && run.status !== "running" && run.status !== "queued"
             ? "This session's terminal was closed — no transcript to show."
-            : "Connecting to the session's terminal…"}
+            : orphaned
+              ? "The session's terminal is gone but the run still reads as live — cancel the run to recover it."
+              : "Connecting to the session's terminal…"}
         </div>
       )}
     </div>
