@@ -151,7 +151,9 @@ export function TerminalPanel({ onClose }: { onClose: () => void }) {
       <div className="flex h-8 shrink-0 items-center gap-0.5 border-b border-edge px-1.5">
         <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto">
           {tabs.map((t) => {
-            const Icon = t.kind === "agent" ? Bot : TerminalSquare;
+            // A titled PTY is an interactive agent session (title is set only
+            // for command terminals) — badge it as an agent, not a plain shell.
+            const Icon = t.kind === "agent" || t.title ? Bot : TerminalSquare;
             return (
               <div
                 key={t.id}
