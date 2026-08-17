@@ -19,7 +19,19 @@ function cssColor(name: string, fallback: string): string {
  * resizes propagate to the server so every connected client renders the same
  * session — a resize elsewhere is applied here via the tab's cols/rows.
  */
-export function XtermView({ tab }: { tab: TerminalTab }) {
+export function XtermView({
+  tab,
+  autoFocus = true,
+}: {
+  tab: TerminalTab;
+  /**
+   * Grab keyboard focus on mount. The bottom panel wants it (the user just
+   * clicked the tab); an embedded run-surface console must NOT steal focus
+   * from the rail merely because a session was selected — and with the panel
+   * open, two views of the same terminal would otherwise fight over it.
+   */
+  autoFocus?: boolean;
+}) {
   const chunks = useTerminals((s) => s.chunksByTab[tab.id]);
   const write = useTerminals((s) => s.write);
   const resize = useTerminals((s) => s.resize);
@@ -64,7 +76,7 @@ export function XtermView({ tab }: { tab: TerminalTab }) {
       void resize(tab.id, term.cols, term.rows).catch(() => {});
     };
     fitToContainer();
-    term.focus();
+    if (autoFocus) term.focus();
     const observer = new ResizeObserver(fitToContainer);
     observer.observe(el);
 

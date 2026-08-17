@@ -53,7 +53,9 @@ export function InteractiveRunTerminal({
     <div className={cn("min-h-0 flex-1", className)}>
       {tab ? (
         <div className="h-full min-h-0 px-2 py-1">
-          <XtermView tab={tab} />
+          {/* Click-to-focus only: selecting a session must not hijack the
+              keyboard mid-navigation. */}
+          <XtermView tab={tab} autoFocus={false} />
         </div>
       ) : (
         <div className="flex h-full items-center justify-center text-xs text-ink-faint">
