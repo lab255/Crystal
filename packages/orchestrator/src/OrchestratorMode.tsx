@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import {
   RUN_PURPOSES,
+  attentionRunIds,
   countActionableQuestions,
   deriveNeedsYou,
   firstAttentionTask,
@@ -136,6 +137,7 @@ export function OrchestratorMode() {
     [projects, runs, pendingPermissions],
   );
   const runsById = useMemo(() => livenessIndex(runs), [runs]);
+  const attention = useMemo(() => attentionRunIds(needsYou), [needsYou]);
   const auth = useAgents((s) => s.auth);
   const [createOpen, setCreateOpen] = useState(false);
   const [newName, setNewName] = useState("");
@@ -465,6 +467,7 @@ export function OrchestratorMode() {
             runs={filteredRuns}
             selectedRunId={runId}
             onSelect={setRunId}
+            attention={attention}
             emptyHint={
               purposeFilter
                 ? `No ${purposeFilter} runs.`
