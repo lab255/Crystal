@@ -54,7 +54,8 @@ export function sessionNodeMatchesFilter(
   const needle = query.trim().toLocaleLowerCase();
   if (!needle) return true;
   const run = node.run;
-  return [runHeadline(run.prompt), agentNameOf(run), run.model, run.branch, run.purpose]
+  // Match the OPENING prompt (what the rail titles by), not the latest turn.
+  return [runHeadline(node.turns[0]!.prompt), agentNameOf(run), run.model, run.branch, run.purpose]
     .some((value) => value?.toLocaleLowerCase().includes(needle));
 }
 

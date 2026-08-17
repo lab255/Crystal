@@ -125,7 +125,9 @@ function SessionNode({ node, root, filtering, selectedRunId, attention, agentNam
         {hasWorkers ? <Chevron closed={closed} /> : null}
       </button>
       <button type="button" onClick={() => onSelect(node.run.id)} className="min-w-0 flex-1 py-1.5 pr-2 text-left">
-        <span className="block truncate text-xs text-ink">{runHeadline(node.run.prompt) || "Session"}</span>
+        {/* Title by the chain's OPENING prompt — the face is the latest turn,
+            which for steered sessions is a wake-up notice ("Worker … settled"). */}
+        <span className="block truncate text-xs text-ink">{runHeadline(node.turns[0]!.prompt) || "Session"}</span>
         <span className="mt-0.5 flex flex-wrap items-center gap-1 text-[10px] text-ink-faint">
           <span className="truncate">{agentNameOf(node.run) || node.run.model || node.run.provider || "Agent"}</span>
           {node.run.purpose ? <Chip>{node.run.purpose}</Chip> : null}

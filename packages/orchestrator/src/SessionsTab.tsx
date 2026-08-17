@@ -377,7 +377,7 @@ export function SessionsTab({
                     </button>
                     <span className="text-ink-faint">/</span>
                     <span className="min-w-0 truncate font-medium text-ink">
-                      {runHeadline(selected.session.run.prompt) || "Session"}
+                      {runHeadline(selected.session.turns[0]!.prompt) || "Session"}
                     </span>
                   </nav>
                   {run.status === "running" && run.startedAt ? (

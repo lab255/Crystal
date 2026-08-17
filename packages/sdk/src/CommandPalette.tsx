@@ -422,7 +422,7 @@ export function CommandPalette({
           nav({ architect: { view: "infra" } });
         },
       },
-      ...(["board", "workflows", "runs", "agents", "costs", "insights"] as const).map((tab) => ({
+      ...(["board", "sessions", "workflows", "runs", "agents", "costs", "insights"] as const).map((tab) => ({
         id: `view.orchestrate.${tab}`,
         title: `Orchestrate: ${tab === "costs" ? "Cost attribution" : `${tab[0]!.toUpperCase()}${tab.slice(1)}`}`,
         icon: ORCHESTRATE_TAB_ICONS[tab],
