@@ -6,6 +6,7 @@ import {
   runWorkflowId,
   sessionDescendantCount,
   sessionDisplayStatus,
+  sessionHeadline,
   sessionLatestActivity,
   sessionSubtreeCost,
   sessionWorkflowId,
@@ -87,6 +88,50 @@ describe("workflow attribution", () => {
     const second = run("t2", { resumedFromRunId: "t1", tags: [] });
     const [node] = groupRunsByManager([second, first]);
     expect(sessionWorkflowId(node!)).toBe("wf9");
+  });
+});
+
+describe("sessionHeadline", () => {
+  const ctx = {
+    stripPrefixes: ["You are an agent for task X. "],
+    workflowNameOf: (id: string) => (id === "wf9" ? "Payments v2" : null),
+    taskTitleOf: (id: string) => (id === "t1" ? "Ship the release" : null),
+  };
+
+  it("prefers the board task's title over everything", () => {
+    const first = run("t1", { taskId: "t1", tags: ["workflow:wf9"] });
+    const [node] = groupRunsByManager([first]);
+    expect(sessionHeadline(node!, ctx)).toBe("Ship the release");
+  });
+
+  it("faces a workflow manager as the workflow itself", () => {
+    const first = run("m1", {
+      role: "manager",
+      tags: ["workflow:wf9"],
+      prompt: 'You are the MANAGER of workflow "Payments v2" (wf9) — a long-lived session.',
+    });
+    const [node] = groupRunsByManager([first]);
+    expect(sessionHeadline(node!, ctx)).toBe("Payments v2");
+    // The prompt's own quoted name carries it when no store lookup exists.
+    expect(sessionHeadline(node!, {})).toBe("Payments v2");
+  });
+
+  it("faces a workflow worker as purpose — workflow", () => {
+    const first = run("w1", {
+      role: "worker",
+      purpose: "implement",
+      tags: ["workflow:wf9"],
+      prompt: "You are the DEVELOP worker on track auth…",
+    });
+    const [node] = groupRunsByManager([first]);
+    expect(sessionHeadline(node!, ctx)).toBe("implement — Payments v2");
+  });
+
+  it("titles by the OPENING prompt, stripped — never the wake-up face", () => {
+    const first = run("t1", { prompt: "You are an agent for task X. Fix the login flow" });
+    const woken = run("t2", { resumedFromRunId: "t1", prompt: "Worker run_9 settled: completed" });
+    const [node] = groupRunsByManager([woken, first]);
+    expect(sessionHeadline(node!, ctx)).toBe("Fix the login flow");
   });
 });
 

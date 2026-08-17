@@ -105,6 +105,57 @@ export function sessionLatestActivity(node: RunNode): string {
   return latest;
 }
 
+/**
+ * Everything a headline may borrow from outside the run record. All lookups
+ * are optional — a surface without (say) the workflow store just falls
+ * through to the next naming source.
+ */
+export interface SessionNamingContext {
+  /** Boilerplate prompt openings to strip before using the first line. */
+  stripPrefixes?: readonly string[];
+  workflowNameOf?: (workflowId: string) => string | null | undefined;
+  taskTitleOf?: (taskId: string) => string | null | undefined;
+}
+
+/** Core authors these prompts (workflow.ts / hub.ts), so core recognizes them. */
+const MANAGER_OPENING = /^You are the (?:MANAGER of workflow|PROGRAM MANAGER of) "([^"]+)"/;
+
+function promptHeadline(prompt: string, strip: readonly string[] = []): string {
+  let text = prompt;
+  for (const prefix of strip) {
+    if (text.startsWith(prefix)) text = text.slice(prefix.length);
+  }
+  const first = text.trimStart().split("\n")[0] ?? "";
+  return first.trim() || (prompt.split("\n")[0] ?? "").trim();
+}
+
+/**
+ * THE session title. Identity beats prose: dispatched prompts open with
+ * near-identical boilerplate ("You are the PLAN-stage worker for …"), so a
+ * rail titled by prompt text collapses into indistinguishable rows. In
+ * order: the board task's title, the workflow's name (managers face as the
+ * workflow itself; workers as "purpose — workflow"), then the OPENING
+ * prompt's first line with known boilerplate stripped. Never the face
+ * turn's prompt — for steered sessions that is a wake-up notice.
+ */
+export function sessionHeadline(node: RunNode, ctx: SessionNamingContext = {}): string {
+  const opening = node.turns[0]!;
+  const taskId = node.turns.find((turn) => turn.taskId)?.taskId;
+  const taskTitle = taskId ? ctx.taskTitleOf?.(taskId) : null;
+  if (taskTitle) return taskTitle;
+
+  const workflowId = sessionWorkflowId(node);
+  const workflowName = workflowId ? (ctx.workflowNameOf?.(workflowId) ?? null) : null;
+  const managerName = MANAGER_OPENING.exec(opening.prompt)?.[1];
+  if (managerName) return workflowName ?? managerName;
+  if (workflowName) {
+    const kind = opening.purpose ?? (opening.role === "manager" ? "manager" : "worker");
+    return `${kind} — ${workflowName}`;
+  }
+
+  return promptHeadline(opening.prompt, ctx.stripPrefixes) || "Session";
+}
+
 /** The run's `workflow:<id>` attribution, or null outside any workflow. */
 export function runWorkflowId(run: Pick<AgentRun, "tags">): string | null {
   return tagsInDimension(run.tags, "workflow")[0] ?? null;
