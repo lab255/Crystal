@@ -41,15 +41,23 @@ import {
 } from "lucide-react";
 import {
   TASK_ATTENTION_LABELS,
+  attentionRunIds,
   compareTaskAttention,
+  deriveNeedsYou,
   formatWsRef,
+  groupRunsByManager,
   livenessIndex,
   liveRunIds,
+  sessionDisplayStatus,
+  sessionHeadline,
+  sessionLatestActivity,
   taskAttention,
   type AgentRun,
   type OrchestratorTabId,
+  type PendingPermission,
   type TaskAttentionGroup,
   type TaskItem,
+  type Workflow,
 } from "@crystal/core";
 import {
   EMPTY_RUNS,
@@ -61,8 +69,10 @@ import {
   useLens,
   useNav,
   useNavUpdate,
+  usePermissions,
   useWorkspace,
   useWorkspaces,
+  useWorkflows,
   wsKey,
 } from "@crystal/client";
 import { CommandList, Dialog, DialogContent, Kbd } from "@crystal/ui";
@@ -141,6 +151,8 @@ interface TaskJumpEntry {
 const EMPTY_ARCHITECTURES: never[] = [];
 const EMPTY_PROJECTS: never[] = [];
 const CLOSED_RUNS: AgentRun[] = [];
+const CLOSED_PERMISSIONS: PendingPermission[] = [];
+const CLOSED_WORKFLOWS: Workflow[] = [];
 const CLOSED_MAP: Record<string, never> = {};
 
 export function CommandPalette({
@@ -177,10 +189,35 @@ export function CommandPalette({
   // (stable constants while closed) so the mounted-but-hidden palette never
   // re-renders with the agent firehose.
   const activeRuns = useAgents((s) => (open ? s.runs : CLOSED_RUNS));
+  const pendingPermissions = usePermissions((s) => (open ? s.pending : CLOSED_PERMISSIONS));
+  const workflows = useWorkflows((s) => (open ? s.workflows : CLOSED_WORKFLOWS));
   const fleetRuns = useFleet((s) => (open ? s.runsByWs : CLOSED_MAP));
   const fleetRunsLoaded = useFleet((s) => (open ? s.runsLoadedByWs : CLOSED_MAP));
   const fleetProjects = useFleet((s) => (open ? s.projectsByWs : CLOSED_MAP));
   const [query, setQuery] = useState("");
+
+  const activeNeedsYou = useMemo(
+    () => deriveNeedsYou(projects, activeRuns, pendingPermissions),
+    [activeRuns, pendingPermissions, projects],
+  );
+  const sessionEntries = useMemo(() => {
+    const workflowNameOf = (id: string) => workflows.find((workflow) => workflow.id === id)?.name;
+    const taskTitleOf = (id: string) => projects.flatMap((entry) => entry.project.tasks).find((task) => task.id === id)?.title;
+    const namingContext = { workflowNameOf, taskTitleOf };
+    const attention = attentionRunIds(activeNeedsYou);
+    return groupRunsByManager([...activeRuns])
+      .map((node) => ({
+        node,
+        headline: sessionHeadline(node, namingContext),
+        status: sessionDisplayStatus(node, attention),
+        activity: sessionLatestActivity(node),
+      }))
+      .sort((a, b) => {
+        const rank = (status: typeof a.status) => status === "needs-you" ? 0 : status === "working" ? 1 : 2;
+        return rank(a.status) - rank(b.status) || b.activity.localeCompare(a.activity);
+      })
+      .slice(0, 30);
+  }, [activeNeedsYou, activeRuns, projects, workflows]);
 
   useEffect(() => {
     if (open) setQuery("");
@@ -431,6 +468,29 @@ export function CommandPalette({
           nav({ orchestrate: { tab } });
         },
       })),
+      ...sessionEntries.map(({ node, headline, status }) => ({
+        id: `session.${node.turns[0]!.id}`,
+        title: `Session: ${headline}`,
+        icon: MessagesSquare,
+        tag: status === "needs-you" ? "Needs you" : status === "working" ? "Working" : undefined,
+        run: () => {
+          onSwitchMode("orchestrate");
+          nav({ orchestrate: { tab: "sessions", run: node.run.id, sessionProject: null, sessionEpic: null } });
+        },
+      })),
+      ...(activeNeedsYou.count > 0 ? [{
+        id: "attention.first",
+        title: `Needs you: ${activeNeedsYou.questions[0]?.question.text ?? (activeNeedsYou.permissions[0] ? `${activeNeedsYou.permissions[0].tool} needs permission` : activeNeedsYou.failures[0]?.prompt ?? "Agent session")}`,
+        icon: CircleHelp,
+        run: () => {
+          const question = activeNeedsYou.questions[0];
+          const runId = activeNeedsYou.permissions[0]?.runId ?? activeNeedsYou.failures[0]?.id;
+          onSwitchMode("orchestrate");
+          nav(question
+            ? { orchestrate: { tab: "board", project: question.projectPath, task: question.taskId, run: null } }
+            : { orchestrate: { tab: "sessions", run: runId, sessionProject: null, sessionEpic: null } });
+        },
+      }] : []),
       // Documents in the active workspace: diagrams, their facets, boards.
       ...architectures.map((a) => ({
         id: `arch.open.${a.path}`,
@@ -547,6 +607,8 @@ export function CommandPalette({
     architectures,
     projects,
     taskEntries,
+    sessionEntries,
+    activeNeedsYou,
     selectWorkspace,
     nav,
     workspaces,

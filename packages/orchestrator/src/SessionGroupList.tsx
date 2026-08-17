@@ -1,15 +1,16 @@
-import { useMemo, useState, type ReactNode } from "react";
-import { ChevronDown, ChevronRight, GitBranch, Plus, Search } from "lucide-react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { ChevronDown, ChevronRight, GitBranch, History, Plus, Search } from "lucide-react";
 import {
   sessionDescendantCount,
   sessionDisplayStatus,
   sessionHeadline,
+  sessionIsWorking,
   sessionSubtreeCost,
   sessionWorkflowId,
   type RunNode,
   type SessionNamingContext,
 } from "@crystal/core";
-import { formatRunCost, useCollapsedSet } from "@crystal/client";
+import { formatElapsed, formatRunCost, useCollapsedSet } from "@crystal/client";
 import { Button, Input, StatusDot, cn } from "@crystal/ui";
 import {
   filterSessionTree,
@@ -42,6 +43,17 @@ export function SessionGroupList(props: SessionGroupListProps) {
   const { sessions, agentNameOf, namingContext } = props;
   const collapsed = useCollapsedSet("sessions-rail");
   const [filter, setFilter] = useState("");
+  const anythingWorking = useMemo(
+    () => sessions.some((project) => project.epics.some((epic) => epic.sessions.some(sessionIsWorking))),
+    [sessions],
+  );
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (!anythingWorking) return;
+    setNowMs(Date.now());
+    const timer = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [anythingWorking]);
   const visible = useMemo(() => {
     if (!filter.trim()) return sessions;
     return sessions.map((project) => ({
@@ -71,7 +83,7 @@ export function SessionGroupList(props: SessionGroupListProps) {
             </button>
             <Button variant="ghost" size="icon-sm" aria-label={`New session in ${project.name}`} onClick={() => props.onNewSession({ projectId: project.projectId, epicId: null })}><Plus className="h-3.5 w-3.5" /></Button>
           </div>
-          {!closed && <div className="pb-1.5">{project.epics.map((epic) => <EpicSection key={epicKey(project, epic)} {...props} project={project} epic={epic} collapsed={collapsed} filtering={Boolean(filter.trim())} />)}</div>}
+          {!closed && <div className="pb-1.5">{project.epics.map((epic) => <EpicSection key={epicKey(project, epic)} {...props} project={project} epic={epic} collapsed={collapsed} filtering={Boolean(filter.trim())} nowMs={nowMs} />)}</div>}
         </section>;
       })}
       {filter.trim() && visible.length === 0 ? <p className="px-3 py-6 text-center text-xs text-ink-faint">No matching sessions</p> : null}
@@ -84,7 +96,7 @@ function Chevron({ closed }: { closed: boolean }) {
   return <Icon className="h-3 w-3 shrink-0 text-ink-faint" />;
 }
 
-function EpicSection({ project, epic, collapsed, filtering, ...props }: SessionGroupListProps & { project: SessionProjectGroup; epic: SessionEpicGroup; collapsed: ReturnType<typeof useCollapsedSet>; filtering: boolean }) {
+function EpicSection({ project, epic, collapsed, filtering, nowMs, ...props }: SessionGroupListProps & { project: SessionProjectGroup; epic: SessionEpicGroup; collapsed: ReturnType<typeof useCollapsedSet>; filtering: boolean; nowMs: number }) {
   const key = `epic:${epicKey(project, epic)}`;
   const closed = !filtering && collapsed.isCollapsed(key);
   return <section>
@@ -95,15 +107,16 @@ function EpicSection({ project, epic, collapsed, filtering, ...props }: SessionG
       </button>
       <Button variant="ghost" size="icon-sm" aria-label={`New session in ${epic.name}`} onClick={() => props.onNewSession({ projectId: project.projectId, epicId: epic.epicId })}><Plus className="h-3 w-3" /></Button>
     </div>
-    {!closed && <div className="space-y-1 px-1.5 pb-1 pl-6">{epic.sessions.map((node) => <SessionNode key={node.run.id} node={node} root filtering={filtering} {...props} collapsed={collapsed} />)}</div>}
+    {!closed && <div className="space-y-1 px-1.5 pb-1 pl-6">{epic.sessions.map((node) => <SessionNode key={node.run.id} node={node} root filtering={filtering} nowMs={nowMs} {...props} collapsed={collapsed} />)}</div>}
   </section>;
 }
 
-function SessionNode({ node, root, filtering, selectedRunId, attention, agentNameOf, namingContext, onSelect, collapsed, rootWorkflowId = null }: {
+function SessionNode({ node, root, filtering, selectedRunId, attention, agentNameOf, namingContext, onSelect, collapsed, nowMs, rootWorkflowId = null }: {
   node: RunNode; root: boolean; filtering: boolean; selectedRunId: string | null; attention: ReadonlySet<string>;
   agentNameOf: AgentNameLookup;
   namingContext: SessionNamingContext;
   onSelect: (id: string) => void; collapsed: ReturnType<typeof useCollapsedSet>;
+  nowMs: number;
   /** The subtree root's workflow — nested rows in the same workflow drop the redundant "— workflow" title suffix. */
   rootWorkflowId?: string | null;
 }) {
@@ -138,8 +151,10 @@ function SessionNode({ node, root, filtering, selectedRunId, attention, agentNam
     inRootWorkflow ? { ...namingContext, omitWorkflowName: true } : namingContext,
   );
   const workflowName = workflowId ? namingContext.workflowNameOf?.(workflowId) : null;
+  const workingStartedAt = newestRunningStartedAt(node);
+  const resumable = root && !sessionIsWorking(node) && node.run.status !== "cancelled" && Boolean(node.run.sessionId);
   return <div>
-    <div className={cn("flex rounded-lg transition-colors", selected ? "bg-crystal-500/15" : selectionWithin ? "bg-crystal-500/5" : "hover:bg-surface-2")}>
+    <div title={resumable ? "This session is resumable" : undefined} className={cn("group flex rounded-lg transition-colors", selected ? "bg-crystal-500/15" : selectionWithin ? "bg-crystal-500/5" : "hover:bg-surface-2")}>
       <button type="button" disabled={!hasWorkers} aria-label={hasWorkers ? `${closed ? "Expand" : "Collapse"} workers` : undefined} onClick={() => hasWorkers && !filtering && collapsed.toggle(collapseKey)} className="w-5 shrink-0 self-stretch disabled:cursor-default">
         {hasWorkers ? <Chevron closed={closed} /> : null}
       </button>
@@ -155,12 +170,25 @@ function SessionNode({ node, root, filtering, selectedRunId, attention, agentNam
           {workflowId && headline !== workflowName ? <Chip>{workflowName || workflowId.slice(0, 8)}</Chip> : null}
           {workerCount > 0 ? <Chip>{workerCount} worker{workerCount === 1 ? "" : "s"}</Chip> : null}
           {cost != null && cost > 0 ? <span className="font-mono">{formatRunCost(cost)}</span> : null}
-          <Status status={status} />
+          {resumable ? <History aria-label="Resumable" className="h-3 w-3 opacity-0 transition-opacity group-hover:opacity-40" /> : null}
+          <Status status={status} elapsed={workingStartedAt ? formatElapsed(workingStartedAt, nowMs) : null} />
         </span>
       </button>
     </div>
-    {hasWorkers && !closed ? <div className="mt-1 space-y-1 border-l border-edge/70 pl-3">{node.workers.map((worker) => <SessionNode key={worker.run.id} node={worker} root={false} filtering={filtering} selectedRunId={selectedRunId} attention={attention} agentNameOf={agentNameOf} namingContext={namingContext} onSelect={onSelect} collapsed={collapsed} rootWorkflowId={root ? ownWorkflowId : rootWorkflowId} />)}</div> : null}
+    {hasWorkers && !closed ? <div className="mt-1 space-y-1 border-l border-edge/70 pl-3">{node.workers.map((worker) => <SessionNode key={worker.run.id} node={worker} root={false} filtering={filtering} selectedRunId={selectedRunId} attention={attention} agentNameOf={agentNameOf} namingContext={namingContext} onSelect={onSelect} collapsed={collapsed} nowMs={nowMs} rootWorkflowId={root ? ownWorkflowId : rootWorkflowId} />)}</div> : null}
   </div>;
+}
+
+function newestRunningStartedAt(node: RunNode): string | null {
+  let latest: string | null = null;
+  for (const turn of node.turns) {
+    if (turn.status === "running" && turn.startedAt && (!latest || turn.startedAt > latest)) latest = turn.startedAt;
+  }
+  for (const worker of node.workers) {
+    const startedAt = newestRunningStartedAt(worker);
+    if (startedAt && (!latest || startedAt > latest)) latest = startedAt;
+  }
+  return latest;
 }
 
 function subtreeContainsRun(node: RunNode, runId: string): boolean {
@@ -171,8 +199,8 @@ function subtreeContainsRun(node: RunNode, runId: string): boolean {
 }
 
 function Chip({ children }: { children: ReactNode }) { return <span className="inline-flex min-w-0 max-w-full items-center gap-0.5 rounded bg-surface-3 px-1 py-0.5 text-ink-muted"><span className="flex min-w-0 items-center gap-0.5 truncate">{children}</span></span>; }
-function Status({ status }: { status: ReturnType<typeof sessionDisplayStatus> }) {
+function Status({ status, elapsed }: { status: ReturnType<typeof sessionDisplayStatus>; elapsed: string | null }) {
   const label = status === "needs-you" ? "Needs you" : status === "working" ? "Working" : status === "failed" ? "Failed" : "Idle";
   const dot = status === "working" ? "running" : status;
-  return <span className={cn("ml-auto flex shrink-0 items-center gap-1", status === "needs-you" ? "rounded bg-warn/10 px-1 text-warn" : status === "failed" ? "text-danger" : status === "working" ? "text-ink" : "text-ink-faint")}><StatusDot status={dot} />{label}</span>;
+  return <span className={cn("ml-auto flex shrink-0 items-center gap-1", status === "needs-you" ? "rounded bg-warn/10 px-1 text-warn" : status === "failed" ? "text-danger" : status === "working" ? "text-ink" : "text-ink-faint")}><StatusDot status={dot} />{label}{elapsed ? <span className="text-ink-faint">{status === "working" ? null : "Working "}<span className="font-mono tabular-nums">{elapsed}</span></span> : null}</span>;
 }
