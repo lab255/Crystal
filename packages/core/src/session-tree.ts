@@ -64,11 +64,21 @@ export function sessionDisplayStatus(
   return "idle";
 }
 
-/** Total spend of a session subtree: every turn of every nested session. */
-export function sessionSubtreeCost(node: RunNode): number {
-  let total = 0;
-  for (const turn of node.turns) total += turn.costUsd ?? 0;
-  for (const worker of node.workers) total += sessionSubtreeCost(worker);
+/**
+ * Total spend of a session subtree — every turn of every nested session — or
+ * null when NO turn has a readable cost. "$0.00" and "could not be read" are
+ * different facts (interactive runs stream no usage); collapsing both to 0
+ * once made an uncapped interactive fleet look free.
+ */
+export function sessionSubtreeCost(node: RunNode): number | null {
+  let total: number | null = null;
+  for (const turn of node.turns) {
+    if (turn.costUsd != null) total = (total ?? 0) + turn.costUsd;
+  }
+  for (const worker of node.workers) {
+    const nested = sessionSubtreeCost(worker);
+    if (nested != null) total = (total ?? 0) + nested;
+  }
   return total;
 }
 

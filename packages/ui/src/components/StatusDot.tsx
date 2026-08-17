@@ -6,7 +6,8 @@ export type StatusKind =
   | "completed"
   | "failed"
   | "cancelled"
-  | "idle";
+  | "idle"
+  | "needs-you";
 
 const styles: Record<StatusKind, string> = {
   queued: "bg-ink-faint",
@@ -15,6 +16,9 @@ const styles: Record<StatusKind, string> = {
   failed: "bg-danger",
   cancelled: "bg-warn",
   idle: "bg-ink-faint",
+  // Blocked on the operator — pulses like running (something is waiting on
+  // you right now), amber like cancelled (steady amber = it already stopped).
+  "needs-you": "bg-warn animate-pulse",
 };
 
 export function StatusDot({ status, className }: { status: StatusKind; className?: string }) {

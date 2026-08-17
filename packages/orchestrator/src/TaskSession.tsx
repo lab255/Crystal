@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Lock, PanelRight } from "lucide-react";
 import {
   TASK_STATUSES,
@@ -21,6 +21,7 @@ import {
   questionDeliveryNotice,
   useAgents,
   useCrystal,
+  useFollowChain,
   useRunSurface,
 } from "@crystal/client";
 import { Button, Select, StatusDot, Tooltip, cn } from "@crystal/ui";
@@ -95,23 +96,7 @@ export function TaskSession({
     [client, run, onSelectRun],
   );
 
-  // Follow the conversation when a queued delivery lands later: a new turn
-  // grown from the shown tip advances with it (see RunsPane for the rule).
-  const lastShown = useRef<string | null>(null);
-  const hadSuccessor = useRef(false);
-  useEffect(() => {
-    if (taskRuns.length === 0) return;
-    const successor = effectiveRunId
-      ? taskRuns.find((r) => r.resumedFromRunId === effectiveRunId)
-      : undefined;
-    if (effectiveRunId !== lastShown.current) {
-      lastShown.current = effectiveRunId;
-      hadSuccessor.current = successor != null;
-      return;
-    }
-    if (!effectiveRunId || hadSuccessor.current || !successor) return;
-    onSelectRun(successor.id);
-  }, [taskRuns, effectiveRunId, onSelectRun]);
+  useFollowChain(taskRuns, effectiveRunId, onSelectRun);
 
   function patchTask(patch: Partial<TaskItem>): void {
     onProjectChange({

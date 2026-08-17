@@ -133,7 +133,7 @@ function SessionNode({ node, root, filtering, selectedRunId, attention, agentNam
           {node.run.terminalId ? <Chip>interactive</Chip> : null}
           {workflowId ? <Chip>{workflowNameOf(workflowId) || workflowId.slice(0, 8)}</Chip> : null}
           {workerCount > 0 ? <Chip>{workerCount} worker{workerCount === 1 ? "" : "s"}</Chip> : null}
-          {cost > 0 ? <span className="font-mono">{formatRunCost(cost)}</span> : null}
+          {cost != null && cost > 0 ? <span className="font-mono">{formatRunCost(cost)}</span> : null}
           <Status status={status} />
         </span>
       </button>
@@ -152,6 +152,6 @@ function subtreeContainsRun(node: RunNode, runId: string): boolean {
 function Chip({ children }: { children: ReactNode }) { return <span className="inline-flex min-w-0 max-w-full items-center gap-0.5 rounded bg-surface-3 px-1 py-0.5 text-ink-muted"><span className="flex min-w-0 items-center gap-0.5 truncate">{children}</span></span>; }
 function Status({ status }: { status: ReturnType<typeof sessionDisplayStatus> }) {
   const label = status === "needs-you" ? "Needs you" : status === "working" ? "Working" : status === "failed" ? "Failed" : "Idle";
-  const dot = status === "working" ? "running" : status === "failed" ? "failed" : "idle";
+  const dot = status === "working" ? "running" : status;
   return <span className={cn("ml-auto flex shrink-0 items-center gap-1", status === "needs-you" ? "rounded bg-warn/10 px-1 text-warn" : status === "failed" ? "text-danger" : status === "working" ? "text-ink" : "text-ink-faint")}><StatusDot status={dot} />{label}</span>;
 }

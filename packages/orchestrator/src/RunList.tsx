@@ -15,15 +15,6 @@ import { MANAGER_PREAMBLE } from "./prompt.js";
 
 const EMPTY_SET: ReadonlySet<string> = new Set();
 
-/** Whether any turn in the subtree has a readable cost — "$0.00" and "could
- * not be read" are different facts, and sessionSubtreeCost collapses both
- * to 0. */
-function subtreeCostKnown(node: RunNode): boolean {
-  return (
-    node.turns.some((t) => t.costUsd != null) || node.workers.some(subtreeCostKnown)
-  );
-}
-
 /**
  * A row's headline: the conversation's opening prompt, with the fixed manager
  * preamble stripped — otherwise every manager session titles as the same
@@ -182,12 +173,9 @@ function RunListItem({
   const selected =
     selectedRunId != null && node.turns.some((t) => t.id === selectedRunId);
   // The whole subtree's bill — the face turn alone under-reports a steered
-  // session. All-null stays "—": an unreadable spend (interactive sessions
-  // stream no usage) must never render as a confident $0.00.
+  // session. Unreadable spend stays null ("—"), never a confident $0.00.
   const costUsd = isManager
-    ? subtreeCostKnown(node)
-      ? sessionSubtreeCost(node)
-      : null
+    ? sessionSubtreeCost(node)
     : node.turns.some((t) => t.costUsd != null)
       ? node.turns.reduce((sum, t) => sum + (t.costUsd ?? 0), 0)
       : null;
@@ -201,17 +189,10 @@ function RunListItem({
         selected ? "bg-crystal-500/15" : "hover:bg-surface-2",
       )}
     >
-      {displayStatus === "needs-you" ? (
-        <span
-          aria-label="needs you"
-          className="mt-1 inline-block h-2 w-2 shrink-0 rounded-full bg-warn"
-        />
-      ) : (
-        <StatusDot
-          status={displayStatus === "working" ? "running" : displayStatus}
-          className="mt-1"
-        />
-      )}
+      <StatusDot
+        status={displayStatus === "working" ? "running" : displayStatus}
+        className="mt-1"
+      />
       <span className="min-w-0 flex-1">
         <span
           className={cn(

@@ -63,6 +63,13 @@ describe("subtree rollups", () => {
     expect(sessionDescendantCount(root!)).toBe(3);
   });
 
+  it("keeps unreadable spend null — never a confident zero", () => {
+    const [root] = forest();
+    expect(sessionSubtreeCost(root!)).toBeNull();
+    const [partial] = forest({ g4: { costUsd: 2 } });
+    expect(sessionSubtreeCost(partial!)).toBe(2);
+  });
+
   it("takes the newest stamp in the subtree as latest activity", () => {
     const [root] = forest({ g4: { endedAt: "2026-01-02T00:00:00Z" } });
     expect(sessionLatestActivity(root!)).toBe("2026-01-02T00:00:00Z");

@@ -723,9 +723,7 @@ function WorkflowRunTree({
         onClick={() => onOpenRun?.(node.run.id)}
         className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-[11px] transition-colors hover:bg-surface-2"
       >
-        <StatusDot
-          status={status === "working" ? "running" : status === "failed" ? "failed" : "idle"}
-        />
+        <StatusDot status={status === "working" ? "running" : status} />
         <span className="shrink-0 text-ink-faint">{SESSION_STATUS_LABELS[status]}</span>
         <span className="min-w-0 flex-1 truncate text-ink">{headline}</span>
         <span className="shrink-0 text-ink-muted">
