@@ -100,18 +100,31 @@ export function WorkspaceCard({
     enter();
     updateNav({ ws: formatWsRef(sid, ws.id), mode: "orchestrate", orchestrate: { tab: "runs" } });
   };
+  const goToSessions = () => {
+    enter();
+    updateNav({
+      ws: formatWsRef(sid, ws.id),
+      mode: "orchestrate",
+      orchestrate: { tab: "sessions", run: null, sessionProject: null, sessionEpic: null },
+    });
+  };
   const goToBoard = () => {
     enter();
     updateNav({ ws: formatWsRef(sid, ws.id), mode: "orchestrate", orchestrate: { tab: "board" } });
   };
-  // Same jump as the orchestrator pill: runs tab with the newest failure
-  // selected, so the recovery actions (resume / handoff) are one click away.
+  // Same jump as the orchestrator pill: resolve the newest failure in its
+  // hierarchical session, where recovery actions stay in conversation context.
   const goToFailure = () => {
     enter();
     updateNav({
       ws: formatWsRef(sid, ws.id),
       mode: "orchestrate",
-      orchestrate: { tab: "runs", run: needRecovery[0]?.id },
+      orchestrate: {
+        tab: "sessions",
+        run: needRecovery[0]?.id,
+        sessionProject: null,
+        sessionEpic: null,
+      },
     });
   };
 
@@ -258,7 +271,7 @@ export function WorkspaceCard({
           <button
             type="button"
             disabled={offline}
-            onClick={goToRuns}
+            onClick={goToSessions}
             className="rounded-full bg-info/15 px-2 py-0.5 text-info hover:bg-info/25"
           >
             {running} running
