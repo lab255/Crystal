@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useRef, type ReactNode } from "react";
+import { useCallback, type ReactNode } from "react";
 import { Bot } from "lucide-react";
 import type { AgentRun } from "@crystal/core";
-import { RunSurface, useCrystal, useRunSurface } from "@crystal/client";
+import { RunSurface, useCrystal, useFollowChain, useRunSurface } from "@crystal/client";
 import { EmptyState } from "@crystal/ui";
 import { messageRun } from "./message-run.js";
 import { RunList } from "./RunList.js";
@@ -21,6 +21,7 @@ export function RunsPane({
   emptyHint,
   listHeader,
   emptyState,
+  attention,
 }: {
   /** The runs shown in the sidepane (callers filter to their scope). */
   runs: AgentRun[];
@@ -33,6 +34,8 @@ export function RunsPane({
   listHeader?: ReactNode;
   /** Right pane when no run is selected (defaults to a generic prompt). */
   emptyState?: ReactNode;
+  /** Run ids currently requiring operator attention. */
+  attention?: ReadonlySet<string>;
 }) {
   const { client } = useCrystal();
   const surface = useRunSurface(selectedRunId);
@@ -51,28 +54,7 @@ export function RunsPane({
     [client, run, onSelect],
   );
 
-  // Follow the conversation when a queued delivery lands later: a new turn
-  // grown from the *selected tip* advances selection with it. Selecting an
-  // older turn on purpose is respected — it already had a successor when
-  // selected, so it never auto-advances away.
-  const lastSelected = useRef<string | null>(null);
-  const hadSuccessor = useRef(false);
-  useEffect(() => {
-    // No baseline from an unloaded list: the store starts empty, and a
-    // deep-linked older turn would otherwise record "no successor" before
-    // refresh() lands — then bounce to the tip the moment runs arrive.
-    if (runs.length === 0) return;
-    const successor = selectedRunId
-      ? runs.find((r) => r.resumedFromRunId === selectedRunId)
-      : undefined;
-    if (selectedRunId !== lastSelected.current) {
-      lastSelected.current = selectedRunId;
-      hadSuccessor.current = successor != null;
-      return;
-    }
-    if (!selectedRunId || hadSuccessor.current || !successor) return;
-    onSelect(successor.id);
-  }, [runs, selectedRunId, onSelect]);
+  useFollowChain(runs, selectedRunId, onSelect);
 
   const list = (
     <RunList
@@ -81,6 +63,7 @@ export function RunsPane({
       onSelect={onSelect}
       title={title}
       emptyHint={emptyHint}
+      attention={attention}
       className={listHeader ? "w-full border-r-0" : undefined}
     />
   );

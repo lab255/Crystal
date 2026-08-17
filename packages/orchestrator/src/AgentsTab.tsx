@@ -15,6 +15,8 @@ import {
 import {
   AGENT_PERMISSION_MODES,
   AGENT_PROFILE_KINDS,
+  attentionRunIds,
+  deriveNeedsYou,
   AGENT_PROFILE_SCOPES,
   AGENT_PROVIDERS,
   MODEL_HINTS,
@@ -30,6 +32,7 @@ import {
   type AgentProfileScope,
   type AgentProvider,
   type RunPurpose,
+  type WorkspaceInfo,
 } from "@crystal/core";
 import {
   formatRunCost,
@@ -49,14 +52,14 @@ import { RunsPane } from "./RunsPane.js";
 import { spawnSession } from "./spawn-session.js";
 
 const EMPTY_PROFILES: AgentProfile[] = [];
+const EMPTY_PROJECT_ENTRIES: WorkspaceInfo["projects"] = [];
 
 /**
  * The roster surface: durable named agents, not just a dispatch form. Left,
  * the workspace's profiles (project + library sections, spend-per-profile
  * from the `agent:<id>` tag) plus the roster-level defaults; right, the
- * profile editor with the dispatch composer beneath it. Selecting a run
- * (e.g. right after dispatching) swaps the whole surface for the shared
- * {@link RunsPane} until the user returns to the roster.
+ * profile editor with the dispatch composer beneath it. A selected run opens
+ * beside the persistent roster in the shared {@link RunsPane}.
  */
 export function AgentsTab({
   selectedRunId,
@@ -68,6 +71,14 @@ export function AgentsTab({
   const runs = useAgents((s) => s.runs);
   const roster = useWorkspace((s) => s.roster);
   const updateRoster = useWorkspace((s) => s.updateRoster);
+  const projects = useWorkspace((s) => s.info?.projects ?? EMPTY_PROJECT_ENTRIES);
+  const pendingPermissions = usePermissions((s) => s.pending);
+  // The run list's needs-you dots join the one attention policy: questions +
+  // parked permissions + unrecovered failures, keyed by run id.
+  const attention = useMemo(
+    () => attentionRunIds(deriveNeedsYou(projects, runs, pendingPermissions)),
+    [projects, runs, pendingPermissions],
+  );
 
   const profiles = roster?.agents ?? EMPTY_PROFILES;
   const [profileId, setProfileId] = useState<string | null>(null);
@@ -89,31 +100,6 @@ export function AgentsTab({
     return byTag;
   }, [runs]);
 
-  // Watching a run replaces the roster surface with the shared runs pane.
-  if (selectedRunId) {
-    return (
-      <div className="flex h-full min-h-0 flex-col">
-        <div className="flex items-center gap-2 border-b border-edge px-3 py-1.5">
-          <Button variant="ghost" size="sm" onClick={() => onSelectRun(null)}>
-            <ArrowLeft className="h-3.5 w-3.5" /> Roster
-          </Button>
-          <span className="truncate text-[11px] text-ink-faint">
-            Dispatched runs — every path in streams into the same tree
-          </span>
-        </div>
-        <div className="min-h-0 flex-1">
-          <RunsPane
-            runs={runs}
-            selectedRunId={selectedRunId}
-            onSelect={onSelectRun}
-            title="Agents"
-            emptyHint="No agents dispatched yet."
-          />
-        </div>
-      </div>
-    );
-  }
-
   const sections: { scope: AgentProfileScope; label: string }[] = [
     { scope: "project", label: "Project" },
     { scope: "library", label: "Library" },
@@ -121,7 +107,12 @@ export function AgentsTab({
 
   return (
     <div className="flex h-full min-h-0">
-      <aside className="flex w-72 shrink-0 flex-col border-r border-edge bg-surface-1">
+      <aside
+        className={cn(
+          "flex shrink-0 flex-col border-r border-edge bg-surface-1",
+          selectedRunId ? "w-80" : "w-72",
+        )}
+      >
         <div className="flex items-center gap-2 px-3 py-2.5">
           <Sparkles className="h-3.5 w-3.5 text-crystal-300" />
           <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-faint">
@@ -134,6 +125,8 @@ export function AgentsTab({
             onClick={() => {
               setDraftNew(createAgentProfile("New agent", "generic", "sonnet"));
               setProfileId(null);
+              // The editor only lives in the no-run layout — surface it.
+              onSelectRun(null);
             }}
           >
             <Plus className="h-3 w-3" /> New agent
@@ -162,6 +155,7 @@ export function AgentsTab({
                       onSelect={() => {
                         setDraftNew(null);
                         setProfileId(p.id);
+                        onSelectRun(null);
                       }}
                     />
                   ))
@@ -297,32 +291,55 @@ export function AgentsTab({
         ) : null}
       </aside>
 
-      <main className="min-w-0 flex-1 overflow-y-auto">
-        <div className="mx-auto flex w-full max-w-2xl flex-col gap-4 p-5">
-          {selectedProfile ? (
-            <ProfileEditor
-              key={selectedProfile.id}
-              profile={selectedProfile}
-              isNew={draftNew != null}
-              onSaved={(saved) => {
-                setDraftNew(null);
-                setProfileId(saved.id);
-              }}
-              onDeleted={() => {
-                setDraftNew(null);
-                setProfileId(null);
-              }}
-              onClose={() => {
-                setDraftNew(null);
-                setProfileId(null);
-              }}
+      {selectedRunId ? (
+        <main className="flex min-w-0 flex-1 flex-col">
+          <div className="flex items-center gap-2 border-b border-edge px-3 py-1.5">
+            <Button variant="ghost" size="sm" onClick={() => onSelectRun(null)}>
+              <ArrowLeft className="h-3.5 w-3.5" /> Close run
+            </Button>
+            <span className="truncate text-[11px] text-ink-faint">
+              Dispatched runs — every path in streams into the same tree
+            </span>
+          </div>
+          <div className="min-h-0 flex-1">
+            <RunsPane
+              runs={runs}
+              selectedRunId={selectedRunId}
+              onSelect={onSelectRun}
+              title="Agents"
+              emptyHint="No agents dispatched yet."
+              attention={attention}
             />
-          ) : null}
-          <DispatchPanel profiles={profiles} onDispatched={onSelectRun} />
-          <PendingPermissionsPanel />
-          <GrantsPanel />
-        </div>
-      </main>
+          </div>
+        </main>
+      ) : (
+        <main className="min-w-0 flex-1 overflow-y-auto">
+          <div className="mx-auto flex w-full max-w-2xl flex-col gap-4 p-5">
+            {selectedProfile ? (
+              <ProfileEditor
+                key={selectedProfile.id}
+                profile={selectedProfile}
+                isNew={draftNew != null}
+                onSaved={(saved) => {
+                  setDraftNew(null);
+                  setProfileId(saved.id);
+                }}
+                onDeleted={() => {
+                  setDraftNew(null);
+                  setProfileId(null);
+                }}
+                onClose={() => {
+                  setDraftNew(null);
+                  setProfileId(null);
+                }}
+              />
+            ) : null}
+            <DispatchPanel profiles={profiles} onDispatched={onSelectRun} />
+            <PendingPermissionsPanel />
+            <GrantsPanel />
+          </div>
+        </main>
+      )}
     </div>
   );
 }

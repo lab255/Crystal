@@ -1,9 +1,28 @@
 import { useMemo } from "react";
 import { GitBranch, MessagesSquare, TerminalSquare } from "lucide-react";
-import { groupRunsByManager, type AgentRun, type RunNode } from "@crystal/core";
+import {
+  groupRunsByManager,
+  sessionDescendantCount,
+  sessionDisplayStatus,
+  sessionSubtreeCost,
+  sessionWorkflowId,
+  type AgentRun,
+  type RunNode,
+} from "@crystal/core";
 import { formatRunCost } from "@crystal/client";
 import { StatusDot, cn } from "@crystal/ui";
 import { MANAGER_PREAMBLE } from "./prompt.js";
+
+const EMPTY_SET: ReadonlySet<string> = new Set();
+
+/** Whether any turn in the subtree has a readable cost — "$0.00" and "could
+ * not be read" are different facts, and sessionSubtreeCost collapses both
+ * to 0. */
+function subtreeCostKnown(node: RunNode): boolean {
+  return (
+    node.turns.some((t) => t.costUsd != null) || node.workers.some(subtreeCostKnown)
+  );
+}
 
 /**
  * A row's headline: the conversation's opening prompt, with the fixed manager
@@ -39,6 +58,7 @@ export function RunList({
   emptyHint = "No runs yet.",
   className,
   wsNameOf,
+  attention = EMPTY_SET,
 }: {
   runs: AgentRun[];
   selectedRunId: string | null;
@@ -55,6 +75,8 @@ export function RunList({
    * which store each run came from — supplies the name. Unset = no chip.
    */
   wsNameOf?: (run: AgentRun) => string | null | undefined;
+  /** Run ids currently requiring operator attention. */
+  attention?: ReadonlySet<string>;
 }) {
   const nodes = useMemo(() => groupRunsByManager(runs), [runs]);
 
@@ -75,28 +97,15 @@ export function RunList({
           <div className="px-2 py-6 text-center text-xs text-ink-faint">{emptyHint}</div>
         ) : (
           nodes.map((node) => (
-            <div key={node.run.id}>
-              <RunListItem
-                node={node}
-                selectedRunId={selectedRunId}
-                onSelect={onSelect}
-                wsName={wsNameOf?.(node.run)}
-              />
-              {node.workers.length > 0 ? (
-                <div className="ml-3.5 mt-1 space-y-1 border-l border-edge/70 pl-1.5">
-                  {node.workers.map((w) => (
-                    <RunListItem
-                      key={w.run.id}
-                      node={w}
-                      selectedRunId={selectedRunId}
-                      onSelect={onSelect}
-                      worker
-                      wsName={wsNameOf?.(w.run)}
-                    />
-                  ))}
-                </div>
-              ) : null}
-            </div>
+            <RunTreeRow
+              key={node.run.id}
+              node={node}
+              depth={0}
+              selectedRunId={selectedRunId}
+              onSelect={onSelect}
+              wsNameOf={wsNameOf}
+              attention={attention}
+            />
           ))
         )}
       </div>
@@ -104,47 +113,110 @@ export function RunList({
   );
 }
 
+function RunTreeRow({
+  node,
+  depth,
+  selectedRunId,
+  onSelect,
+  wsNameOf,
+  attention,
+}: {
+  node: RunNode;
+  depth: number;
+  selectedRunId: string | null;
+  onSelect: (id: string) => void;
+  wsNameOf?: (run: AgentRun) => string | null | undefined;
+  attention: ReadonlySet<string>;
+}) {
+  return (
+    <div>
+      <RunListItem
+        node={node}
+        depth={depth}
+        selectedRunId={selectedRunId}
+        onSelect={onSelect}
+        wsName={wsNameOf?.(node.run)}
+        attention={attention}
+      />
+      {node.workers.length > 0 ? (
+        <div className="ml-3.5 mt-1 space-y-1 border-l border-edge/70 pl-1.5">
+          {node.workers.map((worker) => (
+            <RunTreeRow
+              key={worker.run.id}
+              node={worker}
+              depth={depth + 1}
+              selectedRunId={selectedRunId}
+              onSelect={onSelect}
+              wsNameOf={wsNameOf}
+              attention={attention}
+            />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 /** One session row: status, prompt headline, turn count, timestamp and cost. */
 function RunListItem({
   node,
+  depth,
   selectedRunId,
   onSelect,
-  worker = false,
   wsName,
+  attention,
 }: {
   node: RunNode;
+  depth: number;
   selectedRunId: string | null;
   onSelect: (id: string) => void;
-  /** Render as a nested worker row (denser). */
-  worker?: boolean;
   /** Workspace name chip (cross-workspace lists only). */
   wsName?: string | null;
+  attention: ReadonlySet<string>;
 }) {
   const run = node.run;
   const isManager = run.role === "manager" || node.workers.length > 0;
+  const displayStatus = sessionDisplayStatus(node, attention);
+  const descendantCount = sessionDescendantCount(node);
+  const workflowId = sessionWorkflowId(node);
   const selected =
     selectedRunId != null && node.turns.some((t) => t.id === selectedRunId);
-  // The whole chain's bill — the face turn alone under-reports a steered
-  // session. All-null turns stay "—" (an interactive session mid-flight).
-  const costUsd = node.turns.some((t) => t.costUsd != null)
-    ? node.turns.reduce((sum, t) => sum + (t.costUsd ?? 0), 0)
-    : null;
+  // The whole subtree's bill — the face turn alone under-reports a steered
+  // session. All-null stays "—": an unreadable spend (interactive sessions
+  // stream no usage) must never render as a confident $0.00.
+  const costUsd = isManager
+    ? subtreeCostKnown(node)
+      ? sessionSubtreeCost(node)
+      : null
+    : node.turns.some((t) => t.costUsd != null)
+      ? node.turns.reduce((sum, t) => sum + (t.costUsd ?? 0), 0)
+      : null;
   return (
     <button
       type="button"
       onClick={() => onSelect(run.id)}
       className={cn(
         "flex w-full items-start gap-2 rounded-lg px-2 text-left transition-colors",
-        worker ? "py-1.5" : "py-2",
+        depth > 0 ? "py-1.5" : "py-2",
         selected ? "bg-crystal-500/15" : "hover:bg-surface-2",
       )}
     >
-      <StatusDot status={run.status} className="mt-1" />
+      {displayStatus === "needs-you" ? (
+        <span
+          aria-label="needs you"
+          className="mt-1 inline-block h-2 w-2 shrink-0 rounded-full bg-warn"
+        />
+      ) : (
+        <StatusDot
+          status={displayStatus === "working" ? "running" : displayStatus}
+          className="mt-1"
+        />
+      )}
       <span className="min-w-0 flex-1">
         <span
           className={cn(
             "flex items-center gap-1.5",
-            worker ? "text-[11px] text-ink-muted" : "text-xs text-ink",
+            depth > 0 ? "text-[11px] text-ink-muted" : "text-xs text-ink",
           )}
         >
           {/* The conversation is titled by how it started, not the latest wake-up prompt. */}
@@ -178,7 +250,7 @@ function RunListItem({
               )}
             >
               <GitBranch className="h-2.5 w-2.5" />
-              {node.workers.length || ""}
+              {descendantCount || ""}
             </span>
           ) : null}
         </span>
@@ -189,6 +261,14 @@ function RunListItem({
           {wsName ? (
             <span className="shrink-0 rounded-full bg-surface-3 px-1.5 text-[9px] font-medium text-ink-faint">
               {wsName}
+            </span>
+          ) : null}
+          {workflowId ? (
+            <span
+              className="shrink-0 rounded-full bg-surface-3 px-1.5 text-[9px] font-medium text-ink-faint"
+              title={`Workflow ${workflowId}`}
+            >
+              {workflowId.slice(0, 8)}
             </span>
           ) : null}
         </span>
