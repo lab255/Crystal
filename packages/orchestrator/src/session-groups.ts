@@ -1,5 +1,6 @@
 import {
   groupRunsByManager,
+  sessionLatestActivity,
   tagsInDimension,
   type AgentRun,
   type Epic,
@@ -7,6 +8,7 @@ import {
   type RunNode,
   type WorkspaceInfo,
 } from "@crystal/core";
+import { runHeadline } from "./RunList.js";
 
 export type SessionStatus = "working" | "idle";
 
@@ -41,6 +43,34 @@ export function sessionStatus(session: RunNode): SessionStatus {
     : "idle";
 }
 
+export type AgentNameLookup = (run: AgentRun) => string | null | undefined;
+
+/** Match a node's user-facing rail metadata, excluding its descendants. */
+export function sessionNodeMatchesFilter(
+  node: RunNode,
+  query: string,
+  agentNameOf: AgentNameLookup,
+): boolean {
+  const needle = query.trim().toLocaleLowerCase();
+  if (!needle) return true;
+  const run = node.run;
+  return [runHeadline(run.prompt), agentNameOf(run), run.model, run.branch, run.purpose]
+    .some((value) => value?.toLocaleLowerCase().includes(needle));
+}
+
+/** Keep matching nodes and their ancestry; a directly matching node keeps its subtree. */
+export function filterSessionTree(
+  node: RunNode,
+  query: string,
+  agentNameOf: AgentNameLookup,
+): RunNode | null {
+  if (!query.trim() || sessionNodeMatchesFilter(node, query, agentNameOf)) return node;
+  const workers = node.workers
+    .map((worker) => filterSessionTree(worker, query, agentNameOf))
+    .filter((worker): worker is RunNode => worker != null);
+  return workers.length ? { ...node, workers } : null;
+}
+
 function epicForSession(session: RunNode, project: Project): Epic | null {
   const task = session.run.taskId
     ? project.tasks.find((candidate) => candidate.id === session.run.taskId)
@@ -72,6 +102,11 @@ function groupProjectSessions(
     if (bucket) bucket.push(session);
     else byEpic.set(epic.id, [session]);
   }
+
+  const newestFirst = (a: RunNode, b: RunNode) =>
+    sessionLatestActivity(b).localeCompare(sessionLatestActivity(a));
+  for (const bucket of byEpic.values()) bucket.sort(newestFirst);
+  noEpic.sort(newestFirst);
 
   const epics: SessionEpicGroup[] = project
     ? project.epics.map((epic) => ({

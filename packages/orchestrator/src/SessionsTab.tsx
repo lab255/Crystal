@@ -1,16 +1,26 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { MessagesSquare, Plus, Timer, TerminalSquare } from "lucide-react";
-import type { AgentProfile, AgentRun, RunNode, WorkspaceInfo } from "@crystal/core";
+import {
+  attentionRunIds,
+  deriveNeedsYou,
+  type AgentProfile,
+  type AgentRun,
+  type RunNode,
+  type WorkspaceInfo,
+} from "@crystal/core";
 import {
   RunSurface,
   formatElapsed,
   useAgents,
   useComposerKeydown,
   useCrystal,
+  useFollowChain,
+  usePermissions,
   useRunSurface,
   useTerminals,
   useWorkspace,
   useWorkspaces,
+  useWorkflows,
 } from "@crystal/client";
 import {
   Button,
@@ -116,6 +126,21 @@ export function SessionsTab({
   const agents = roster?.agents ?? EMPTY_AGENTS;
   const activeWs = useWorkspaces((state) => state.activeId);
   const focusTerminal = useTerminals((state) => state.focusTerminal);
+  const pendingPermissions = usePermissions((state) => state.pending);
+  const workflows = useWorkflows((state) => state.workflows);
+
+  const agentNameOf = useCallback(
+    (candidate: AgentRun) => agents.find((agent) => agent.id === candidate.agentId)?.name,
+    [agents],
+  );
+  const workflowNameOf = useCallback(
+    (id: string) => workflows.find((workflow) => workflow.id === id)?.name,
+    [workflows],
+  );
+  const attention = useMemo(
+    () => attentionRunIds(deriveNeedsYou(projects, runs, pendingPermissions)),
+    [pendingPermissions, projects, runs],
+  );
 
   const groups = useMemo(() => groupSessionsByProject(runs, projects), [runs, projects]);
   const filteredGroups = useMemo(
@@ -137,23 +162,7 @@ export function SessionsTab({
     [client, run, onSelectRun],
   );
 
-  // Keep following a selected conversation when a queued delivery grows a
-  // successor, while respecting an intentional selection of an older turn.
-  const lastSelected = useRef<string | null>(null);
-  const hadSuccessor = useRef(false);
-  useEffect(() => {
-    if (runs.length === 0) return;
-    const successor = selectedRunId
-      ? runs.find((candidate) => candidate.resumedFromRunId === selectedRunId)
-      : undefined;
-    if (selectedRunId !== lastSelected.current) {
-      lastSelected.current = selectedRunId;
-      hadSuccessor.current = successor != null;
-      return;
-    }
-    if (!selectedRunId || hadSuccessor.current || !successor) return;
-    onSelectRun(successor.id);
-  }, [runs, selectedRunId, onSelectRun]);
+  useFollowChain(runs, selectedRunId, onSelectRun);
 
   const [nowMs, setNowMs] = useState(() => Date.now());
   useEffect(() => {
@@ -334,6 +343,9 @@ export function SessionsTab({
         <SessionGroupList
           sessions={filteredGroups}
           selectedRunId={selectedRunId}
+          attention={attention}
+          agentNameOf={agentNameOf}
+          workflowNameOf={workflowNameOf}
           onSelect={onSelectRun}
           onNewSession={openSpawn}
         />
