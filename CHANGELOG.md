@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.32.0 (2026-08-18)
+
+### Features
+
+- palette session jumps, rail/live elapsed, resumable hints ([`38fde0c`](https://github.com/lab255/Crystal/commit/38fde0c))
+- DX-journey fixes — every open-run jump lands on Sessions ([`b49afb4`](https://github.com/lab255/Crystal/commit/b49afb4))
+- headless sessions can go interactive; one working predicate; calmer rail ([`c829bbc`](https://github.com/lab255/Crystal/commit/c829bbc))
+- adopt sessionHeadline everywhere ([`3062e25`](https://github.com/lab255/Crystal/commit/3062e25))
+- cross-workspace live-runs lane on the Overview ([`1626916`](https://github.com/lab255/Crystal/commit/1626916))
+- sessionHeadline — the one session naming derivation ([`0416178`](https://github.com/lab255/Crystal/commit/0416178))
+- needs-you dots in the Runs tab list ([`a5f25c6`](https://github.com/lab255/Crystal/commit/a5f25c6))
+- bb-style hierarchical sessions rail ([`db7e6a9`](https://github.com/lab255/Crystal/commit/db7e6a9))
+- parentage-derived worker hierarchy in WorkflowsTab ([`df8f2cf`](https://github.com/lab255/Crystal/commit/df8f2cf))
+- recursive RunList tree, unified status, AgentsTab roster/run split ([`cf2e15e`](https://github.com/lab255/Crystal/commit/cf2e15e))
+- shared session-tree display seams for the hierarchical agents UI ([`64e3efb`](https://github.com/lab255/Crystal/commit/64e3efb))
+- SessionsTab — grouped rail, live console, spawn + resume ([`acb51f7`](https://github.com/lab255/Crystal/commit/acb51f7))
+- sessions rail — SessionGroupList, spawn helper, empty groups ([`3004208`](https://github.com/lab255/Crystal/commit/3004208))
+- session grouping, sessions deep links, interactive resume ([`29a0a91`](https://github.com/lab255/Crystal/commit/29a0a91))
+- boot to the workspace picker instead of forcing a root ([`0e1858f`](https://github.com/lab255/Crystal/commit/0e1858f))
+
+### Bug Fixes
+
+- name the orphaned-terminal dead end instead of connecting forever ([`1760faf`](https://github.com/lab255/Crystal/commit/1760faf))
+- badge interactive agent PTY tabs with the agent icon ([`8f8d37f`](https://github.com/lab255/Crystal/commit/8f8d37f))
+- embedded run consoles no longer steal keyboard focus on mount ([`579a777`](https://github.com/lab255/Crystal/commit/579a777))
+- title sessions by their opening prompt; Sessions in palette ([`dafed00`](https://github.com/lab255/Crystal/commit/dafed00))
+- gate Resume on non-cancelled chains, retry terminal probe, scope-aware draft ([`39ef9c5`](https://github.com/lab255/Crystal/commit/39ef9c5))
+- confine interactive cwd, gate worktree re-entry behind trustedCwd ([`7d64a7b`](https://github.com/lab255/Crystal/commit/7d64a7b))
+- style merge/apply failure notes loudly, not as success text ([`dbdbeaa`](https://github.com/lab255/Crystal/commit/dbdbeaa))
+- publishConfig.access public, trim published files to dist only ([`4f26e88`](https://github.com/lab255/Crystal/commit/4f26e88))
+- bundle @crystal/* workspace deps for standalone npm publish ([`12a0ec7`](https://github.com/lab255/Crystal/commit/12a0ec7))
+
 ## v0.31.1 (2026-08-10)
 
 ### Bug Fixes
