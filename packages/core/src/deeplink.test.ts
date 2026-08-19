@@ -76,7 +76,7 @@ describe("formatDeepLink", () => {
     const hash = formatDeepLink({
       mode: "code",
       architect: { diagram: "x.crystal" },
-      orchestrate: { task: "t1" },
+      threads: { thread: "r1" },
       code: {},
     });
     expect(hash).toBe("#/code");
@@ -106,40 +106,19 @@ describe("formatDeepLink", () => {
     expect(other).toBe("#/architect/codebase?ws=abc&at=workspace&mws=def");
   });
 
-  it("scopes task/run params to their tab", () => {
-    // The board owns both: task selection plus the session pane's pinned run.
-    expect(
-      formatDeepLink({ mode: "orchestrate", orchestrate: { tab: "board", task: "t1", run: "r1" } }),
-    ).toBe("#/orchestrate/board?task=t1&run=r1");
-    expect(
-      formatDeepLink({ mode: "orchestrate", orchestrate: { tab: "runs", task: "t1", run: "r1" } }),
-    ).toBe("#/orchestrate/runs?run=r1");
-  });
-
-  it("round-trips the board view toggle and rejects unknown views", () => {
+  it("round-trips the threads section", () => {
     const url = formatDeepLink({
-      mode: "orchestrate",
-      orchestrate: { tab: "board", view: "board", task: "t1" },
+      mode: "threads",
+      ws: "abc",
+      threads: { thread: "r1", find: "auth", compose: true },
     });
-    expect(url).toBe("#/orchestrate/board?view=board&task=t1");
-    expect(parseDeepLink(url).orchestrate?.view).toBe("board");
-    // Unset = the list+session default; garbage stays unset.
-    expect(parseDeepLink("#/orchestrate/board?task=t1").orchestrate?.view).toBeUndefined();
-    expect(parseDeepLink("#/orchestrate/board?view=bogus").orchestrate?.view).toBeUndefined();
-    // view is board-tab-owned: it never serializes on other tabs.
-    expect(
-      formatDeepLink({ mode: "orchestrate", orchestrate: { tab: "runs", view: "board", run: "r1" } }),
-    ).toBe("#/orchestrate/runs?run=r1");
-  });
-
-  it("round-trips board swimlanes and rejects unknown lane axes", () => {
-    const url = formatDeepLink({
-      mode: "orchestrate",
-      orchestrate: { tab: "board", group: "status", swim: "agent" },
+    expect(url).toBe("#/threads?ws=abc&thread=r1&find=auth&compose=1");
+    expect(parseDeepLink(url)).toEqual({
+      mode: "threads",
+      ws: "abc",
+      threads: { thread: "r1", find: "auth", compose: true },
     });
-    expect(url).toBe("#/orchestrate/board?group=status&swim=agent");
-    expect(parseDeepLink(url).orchestrate?.swim).toBe("agent");
-    expect(parseDeepLink("#/orchestrate/board?swim=bogus").orchestrate?.swim).toBeUndefined();
+    expect(formatDeepLink({ mode: "threads" })).toBe("#/threads");
   });
 });
 
@@ -390,48 +369,38 @@ describe("round trips", () => {
     expect(roundTrip(codemap)).toEqual(codemap);
   });
 
-  it("orchestrate board and runs", () => {
-    const board: DeepLink = {
+  it("threads selection round-trips", () => {
+    const link: DeepLink = {
       ws: "abc",
-      mode: "orchestrate",
-      orchestrate: { tab: "board", project: ".crystal/projects/q3 work.crystal", task: "t-9" },
+      mode: "threads",
+      threads: { thread: "run-123" },
     };
-    expect(roundTrip(board)).toEqual(board);
-    const runs: DeepLink = {
-      ws: "abc",
-      mode: "orchestrate",
-      orchestrate: { tab: "runs", run: "run-123" },
-    };
-    expect(roundTrip(runs)).toEqual(runs);
+    expect(roundTrip(link)).toEqual(link);
   });
 
-  it("round-trips sessions rail scope and selection", () => {
-    const sessions: DeepLink = {
-      ws: "abc",
-      mode: "orchestrate",
-      orchestrate: {
-        tab: "sessions",
-        project: ".crystal/projects/q3 work.crystal",
-        run: "run-123",
-        sessionProject: "proj-payments",
-        sessionEpic: "epic-checkout",
-      },
-    };
-    const parsed = parseDeepLink(formatDeepLink(sessions));
-    expect(parsed).toEqual(sessions);
-    expect(parseDeepLink(formatDeepLink(parsed))).toEqual(parsed);
-  });
-
-  it("orchestrate insights with its period", () => {
-    const insights: DeepLink = {
-      ws: "abc",
-      mode: "orchestrate",
-      orchestrate: { tab: "insights", period: 90 },
-    };
-    expect(formatDeepLink(insights)).toBe("#/orchestrate/insights?ws=abc&period=90");
-    expect(roundTrip(insights)).toEqual(insights);
-    // An off-menu period is dropped rather than trusted.
-    expect(parseDeepLink("#/orchestrate/insights?period=13").orchestrate?.period).toBeUndefined();
+  it("orchestrate URLs are permanent parse aliases onto threads", () => {
+    // Any run-carrying tab lands on its thread — the chain resolves the id.
+    for (const tab of ["board", "sessions", "runs", "agents"]) {
+      expect(parseDeepLink(`#/orchestrate/${tab}?ws=abc&run=run-123`)).toEqual({
+        ws: "abc",
+        mode: "threads",
+        threads: { thread: "run-123" },
+      });
+    }
+    // Board/workflow selections have no surviving surface — bare threads.
+    expect(parseDeepLink("#/orchestrate/board?project=p.crystal&task=t-9")).toEqual({
+      mode: "threads",
+    });
+    expect(parseDeepLink("#/orchestrate/workflows?workflow=w1&builder=1")).toEqual({
+      mode: "threads",
+    });
+    // Costs/insights land on the Overview dashboard (FleetPulse survives).
+    expect(parseDeepLink("#/orchestrate/costs?by=epic")).toEqual({ mode: "projects" });
+    expect(parseDeepLink("#/orchestrate/insights?period=90")).toEqual({ mode: "projects" });
+    // Guessable names keep landing somewhere sensible.
+    expect(parseDeepLink("#/sessions").mode).toBe("threads");
+    expect(parseDeepLink("#/runs").mode).toBe("threads");
+    expect(parseDeepLink("#/chats").mode).toBe("threads");
   });
 
   it("projects overview", () => {
@@ -709,22 +678,15 @@ describe("applyDeepLink", () => {
     });
   });
 
-  it("keeps board selection while popping through runs URLs", () => {
+  it("replaces the threads section wholesale", () => {
     const current: DeepLink = {
-      mode: "orchestrate",
-      orchestrate: { tab: "board", project: "p.crystal", task: "t1", group: "epic" },
+      mode: "threads",
+      threads: { thread: "r1", find: "auth" },
     };
-    const next = applyDeepLink(current, {
-      mode: "orchestrate",
-      orchestrate: { tab: "runs", project: "p.crystal", run: "r1" },
-    });
-    expect(next.orchestrate).toEqual({
-      tab: "runs",
-      project: "p.crystal",
-      run: "r1",
-      task: "t1",
-      group: "epic",
-    });
+    const next = applyDeepLink(current, { mode: "threads", threads: { thread: "r2" } });
+    expect(next.threads).toEqual({ thread: "r2" });
+    const cleared = applyDeepLink(current, { mode: "threads" });
+    expect(cleared.threads).toBeUndefined();
   });
 
   it("treats a bare architect URL as the default view with nothing selected", () => {
@@ -769,7 +731,7 @@ describe("applyDeepLink", () => {
       mode: "architect",
       ws: "w1",
       architect: { diagram: "a.crystal" },
-      orchestrate: { task: "t1" },
+      threads: { thread: "r1" },
     };
     const next = applyDeepLink(current, { mode: "code", ws: "w2", code: { file: "x.ts" } });
     expect(next).toEqual({
@@ -777,7 +739,7 @@ describe("applyDeepLink", () => {
       ws: "w2",
       code: { file: "x.ts" },
       architect: { diagram: "a.crystal" },
-      orchestrate: { task: "t1" },
+      threads: { thread: "r1" },
     });
   });
 });
@@ -865,17 +827,15 @@ describe("deepLinkNavIdentity", () => {
     );
   });
 
-  it("orchestrate: tab and project are places, task/run selections are not", () => {
-    const board: DeepLink = { mode: "orchestrate", orchestrate: { tab: "board", project: "p" } };
-    expect(
-      deepLinkNavIdentity({ mode: "orchestrate", orchestrate: { tab: "board", project: "p", task: "t" } }),
-    ).toBe(deepLinkNavIdentity(board));
-    expect(
-      deepLinkNavIdentity({ mode: "orchestrate", orchestrate: { tab: "runs", project: "p" } }),
-    ).not.toBe(deepLinkNavIdentity(board));
-    expect(
-      deepLinkNavIdentity({ mode: "orchestrate", orchestrate: { tab: "board", project: "q" } }),
-    ).not.toBe(deepLinkNavIdentity(board));
+  it("threads: each thread is a place; rail filter and composer are not", () => {
+    const a: DeepLink = { mode: "threads", threads: { thread: "r1" } };
+    expect(deepLinkNavIdentity({ mode: "threads", threads: { thread: "r1", find: "x" } })).toBe(
+      deepLinkNavIdentity(a),
+    );
+    expect(deepLinkNavIdentity({ mode: "threads", threads: { thread: "r2" } })).not.toBe(
+      deepLinkNavIdentity(a),
+    );
+    expect(deepLinkNavIdentity({ mode: "threads" })).not.toBe(deepLinkNavIdentity(a));
   });
 
   it("ignores a program selection the inbox does not own", () => {

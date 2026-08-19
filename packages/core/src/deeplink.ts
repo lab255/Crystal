@@ -5,7 +5,7 @@
  * Shape: `#/<mode>[/<subview>]?<params>`, e.g.
  *   #/architect/architecture?ws=1a2b3c&system=sys%3Aauth&insights=1
  *   #/architect/codebase?ws=1a2b3c&at=module&path=packages/core&dups=1
- *   #/orchestrate/board?ws=1a2b3c&project=.crystal/projects/q3.crystal&task=t-42
+ *   #/threads?ws=1a2b3c&thread=r-42
  *   #/code?ws=1a2b3c&file=packages/core/src/bridge.ts
  *
  * The URL encodes the *current* view only; the client nav store keeps every
@@ -16,10 +16,8 @@
 
 import { C4_LEVELS, type C4Level } from "./c4.js";
 import { CODE_LOD_LEVELS, type CodeLodLevel } from "./codemap.js";
-import { INSIGHT_PERIODS } from "./insights.js";
 import type { QualityViewId } from "./quality.js";
 import type { SurfaceViewId } from "./surfaces.js";
-import { RUN_PURPOSES, type RunPurpose } from "./agent.js";
 
 /**
  * The fleet client's id for the bootstrapped connection (page-origin bridge /
@@ -57,7 +55,7 @@ export function formatWsRef(sid: string | null | undefined, ws: string): string 
 export type CrystalModeId =
   | "projects"
   | "architect"
-  | "orchestrate"
+  | "threads"
   | "code"
   | "jobs"
   | "surfaces"
@@ -68,14 +66,6 @@ export type CrystalModeId =
  * never emitted.
  */
 export type ArchitectViewId = "architecture" | "codebase" | "infra";
-export type OrchestratorTabId =
-  | "board"
-  | "sessions"
-  | "runs"
-  | "agents"
-  | "workflows"
-  | "costs"
-  | "insights";
 
 /** Mirrors the code map's drill levels (all workspaces → workspace → module → file). */
 export type CodeMapLevelLink =
@@ -167,53 +157,19 @@ export interface ArchitectLink {
   scope?: string;
 }
 
-export interface OrchestrateLink {
-  tab?: OrchestratorTabId;
-  /** Selected project `.crystal` file path. */
-  project?: string;
-  /** Selected task id (board tab). */
-  task?: string;
-  /**
-   * Board-tab layout: unset = "list" (grouped task list beside the selected
-   * task's live session — the default working view), "board" = the kanban.
-   */
-  view?: "list" | "board";
-  /** Selected agent run id (board, sessions, runs, or agents tab). */
-  run?: string;
-  /** Project scope selected in the sessions rail. */
-  sessionProject?: string;
-  /** Epic scope selected in the sessions rail. */
-  sessionEpic?: string;
-  /** Runs-tab purpose filter chip (unset = all purposes). */
-  purpose?: RunPurpose;
-  /** Selected workflow id (workflows tab). */
-  workflow?: string;
-  /** Template builder pane open (workflows tab). */
-  builder?: boolean;
-  /** Selected template id in the builder. */
-  template?: string;
-  /** Board grouping: "status" (default), "epic", or "tag:<dimension>". */
-  group?: string;
-  /**
-   * Board swimlanes: unset (no lanes), "epic", "agent" (agent owner) or
-   * "human" (human owner). Orthogonal to `group` — lanes stack rows of the
-   * same columns; an epic-lanes/epic-columns combination is ignored.
-   */
-  swim?: string;
-  /** Board sort key: "manual" (default), "priority", "size", "tokens" or "cost". */
-  sort?: string;
-  /** Board text filter (matches title, description and labels). */
-  filter?: string;
-  /** Board owner filter: "agent:<profileId>" or "human:<name>". */
-  owner?: string;
-  /**
-   * Costs-tab attribution axis: "epic", "human" (owner), "workflow",
-   * "agent", or "tag:<dimension>" (multi-dimension label attribution).
-   * Unset = epic.
-   */
-  costBy?: string;
-  /** Insights window in days: 7, 30 or 90 (insights tab). */
-  period?: number;
+/**
+ * The Threads mode — first-class agent chats. A thread is a resume chain
+ * (manager turn + its resumed turns + nested workers), addressed by any run
+ * id in the chain; the view resolves the id to its thread, which is what
+ * keeps every old `?run=` link working.
+ */
+export interface ThreadsLink {
+  /** Any run id in the target chain (unset = no thread selected). */
+  thread?: string;
+  /** Thread-rail text filter. */
+  find?: string;
+  /** New-thread composer open. */
+  compose?: boolean;
 }
 
 export interface CodeLink {
@@ -301,7 +257,7 @@ export interface DeepLink {
   mode?: CrystalModeId;
   projects?: ProjectsLink;
   architect?: ArchitectLink;
-  orchestrate?: OrchestrateLink;
+  threads?: ThreadsLink;
   code?: CodeLink;
   surfaces?: SurfacesLink;
   quality?: QualityLink;
@@ -384,30 +340,11 @@ export function formatDeepLink(link: DeepLink): string {
     if (a.sel) add("sel", a.sel);
     if (a.find) add("find", a.find);
     if (a.vs) add("vs", a.vs);
-  } else if (mode === "orchestrate") {
-    const o = link.orchestrate ?? {};
-    const tab = o.tab ?? "board";
-    path += `/${tab}`;
-    if (o.project) add("project", o.project);
-    if (tab === "board" && o.view) add("view", o.view);
-    if (tab === "board" && o.task) add("task", o.task);
-    if (tab === "board" && o.group) add("group", o.group);
-    if (tab === "board" && o.swim) add("swim", o.swim);
-    if (tab === "board" && o.sort) add("sort", o.sort);
-    if (tab === "board" && o.filter) add("filter", o.filter);
-    if (tab === "board" && o.owner) add("owner", o.owner);
-    // The board tab owns `run` too: the list view's session pane can pin a
-    // specific turn of the selected task (unset = follow the newest).
-    if ((tab === "sessions" || tab === "runs" || tab === "agents" || tab === "board") && o.run)
-      add("run", o.run);
-    if (tab === "sessions" && o.sessionProject) add("sessionProject", o.sessionProject);
-    if (tab === "sessions" && o.sessionEpic) add("sessionEpic", o.sessionEpic);
-    if (tab === "runs" && o.purpose) add("purpose", o.purpose);
-    if (tab === "workflows" && o.workflow) add("workflow", o.workflow);
-    if (tab === "workflows" && o.builder) add("builder", "1");
-    if (tab === "workflows" && o.builder && o.template) add("template", o.template);
-    if (tab === "costs" && o.costBy) add("by", o.costBy);
-    if (tab === "insights" && o.period) add("period", String(o.period));
+  } else if (mode === "threads") {
+    const t = link.threads ?? {};
+    if (t.thread) add("thread", t.thread);
+    if (t.find) add("find", t.find);
+    if (t.compose) add("compose", "1");
   } else if (mode === "code") {
     if (link.code?.file) add("file", link.code.file);
   } else if (mode === "surfaces") {
@@ -473,6 +410,10 @@ const MODE_ALIASES: Record<string, [CrystalModeId, string?]> = {
   portfolio: ["projects", "chat"],
   inbox: ["projects", "inbox"],
   questions: ["projects", "inbox"],
+  // The Orchestrate tabs people bookmarked or type from muscle memory.
+  sessions: ["threads"],
+  runs: ["threads"],
+  chats: ["threads"],
   editor: ["code"],
   arch: ["architect"],
   architecture: ["architect"],
@@ -578,56 +519,28 @@ export function parseDeepLink(hash: string): DeepLink {
     if (layers) a.layers = layers;
     if (Object.keys(a).length) link.architect = a;
   } else if (mode === "orchestrate") {
-    link.mode = "orchestrate";
-    const o: OrchestrateLink = {};
+    // The Orchestrate mode retired into Threads (permanent parse aliases).
+    // Costs/insights tabs land on the Overview dashboard — FleetPulse is the
+    // surviving spend surface; every run-carrying tab lands on its thread.
     const tab = segments[1];
-    if (
-      tab === "board" ||
-      tab === "sessions" ||
-      tab === "runs" ||
-      tab === "agents" ||
-      tab === "workflows" ||
-      tab === "costs" ||
-      tab === "insights"
-    )
-      o.tab = tab;
-    const project = params.get("project");
-    if (project) o.project = project;
-    const task = params.get("task");
-    if (task) o.task = task;
-    const view = params.get("view");
-    if (view === "list" || view === "board") o.view = view;
-    const group = params.get("group");
-    if (group) o.group = group;
-    const swim = params.get("swim");
-    if (swim === "epic" || swim === "agent" || swim === "human") o.swim = swim;
-    const sort = params.get("sort");
-    if (sort) o.sort = sort;
-    const filter = params.get("filter");
-    if (filter) o.filter = filter;
-    const owner = params.get("owner");
-    if (owner) o.owner = owner;
-    const run = params.get("run");
-    if (run) o.run = run;
-    if (tab === "sessions") {
-      const sessionProject = params.get("sessionProject");
-      if (sessionProject) o.sessionProject = sessionProject;
-      const sessionEpic = params.get("sessionEpic");
-      if (sessionEpic) o.sessionEpic = sessionEpic;
+    if (tab === "costs" || tab === "insights") {
+      link.mode = "projects";
+      return link;
     }
-    const purpose = params.get("purpose");
-    if (purpose && (RUN_PURPOSES as readonly string[]).includes(purpose))
-      o.purpose = purpose as RunPurpose;
-    const workflow = params.get("workflow");
-    if (workflow) o.workflow = workflow;
-    if (params.get("builder") === "1") o.builder = true;
-    const template = params.get("template");
-    if (template) o.template = template;
-    const costBy = params.get("by");
-    if (costBy) o.costBy = costBy;
-    const period = Number(params.get("period"));
-    if ((INSIGHT_PERIODS as readonly number[]).includes(period)) o.period = period;
-    if (Object.keys(o).length) link.orchestrate = o;
+    link.mode = "threads";
+    const t: ThreadsLink = {};
+    const run = params.get("run");
+    if (run) t.thread = run;
+    if (Object.keys(t).length) link.threads = t;
+  } else if (mode === "threads") {
+    link.mode = "threads";
+    const t: ThreadsLink = {};
+    const thread = params.get("thread");
+    if (thread) t.thread = thread;
+    const find = params.get("find");
+    if (find) t.find = find;
+    if (params.get("compose") === "1") t.compose = true;
+    if (Object.keys(t).length) link.threads = t;
   } else if (mode === "code") {
     link.mode = "code";
     const file = params.get("file");
@@ -733,16 +646,6 @@ const ARCHITECT_VIEW_FIELDS: Record<ArchitectViewId, readonly (keyof ArchitectLi
   infra: ["view", "diagram", "facet", "draft", "review", "journey", "overlay", "sel", "find", "vs"],
 };
 
-const ORCHESTRATE_TAB_FIELDS: Record<OrchestratorTabId, readonly (keyof OrchestrateLink)[]> = {
-  board: ["tab", "project", "task", "view", "run", "group", "swim", "sort"],
-  sessions: ["tab", "project", "run", "sessionProject", "sessionEpic"],
-  runs: ["tab", "project", "run", "purpose"],
-  agents: ["tab", "project", "run"],
-  workflows: ["tab", "project", "workflow", "builder", "template"],
-  costs: ["tab", "project", "costBy"],
-  insights: ["tab", "project", "period"],
-};
-
 const SURFACES_VIEW_FIELDS: Record<SurfaceViewId, readonly (keyof SurfacesLink)[]> = {
   screens: ["view", "screen", "demo", "arch", "find"],
   components: ["view", "component", "arch", "find"],
@@ -796,11 +699,10 @@ export function applyDeepLink(current: DeepLink, next: DeepLink): DeepLink {
     const merged = replaceOwned(current.architect, next.architect, ARCHITECT_VIEW_FIELDS[view]);
     if (merged) link.architect = merged;
     else delete link.architect;
-  } else if (next.mode === "orchestrate") {
-    const tab = next.orchestrate?.tab ?? "board";
-    const merged = replaceOwned(current.orchestrate, next.orchestrate, ORCHESTRATE_TAB_FIELDS[tab]);
-    if (merged) link.orchestrate = merged;
-    else delete link.orchestrate;
+  } else if (next.mode === "threads") {
+    // The threads URL encodes the whole section, so it replaces wholesale.
+    if (next.threads) link.threads = next.threads;
+    else delete link.threads;
   } else if (next.mode === "code") {
     if (next.code) link.code = next.code;
     else delete link.code;
@@ -850,9 +752,10 @@ export function deepLinkNavIdentity(link: DeepLink): string {
     if (view === "infra") return `architect/${view}/${a.draft ?? ""}`;
     return `architect/architecture/${a.facet ?? ""}|${a.draft ?? ""}`;
   }
-  if (mode === "orchestrate") {
-    const o = link.orchestrate ?? {};
-    return `orchestrate/${o.tab ?? "board"}/${o.project ?? ""}`;
+  if (mode === "threads") {
+    // Each thread is a place of its own: back walks thread → thread, not
+    // every selection click inside one.
+    return `threads/${link.threads?.thread ?? ""}`;
   }
   if (mode === "code") return `code/${link.code?.file ?? ""}`;
   if (mode === "surfaces") return `surfaces/${link.surfaces?.view ?? "screens"}`;

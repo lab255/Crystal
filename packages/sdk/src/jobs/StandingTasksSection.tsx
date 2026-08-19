@@ -45,7 +45,7 @@ export function StandingTasksSection() {
     try {
       const result = await client.request("standing.fire", { taskId });
       if (result.runId) {
-        updateNav({ mode: "orchestrate", orchestrate: { tab: "runs", run: result.runId } });
+        updateNav({ mode: "threads", threads: { thread: result.runId, compose: null } });
       } else {
         setNotice(result.reason ?? "Fire suppressed.");
       }
@@ -123,8 +123,8 @@ export function StandingTasksSection() {
                     type="button"
                     onClick={() =>
                       updateNav({
-                        mode: "orchestrate",
-                        orchestrate: { tab: "runs", run: task.liveRunId! },
+                        mode: "threads",
+                        threads: { thread: task.liveRunId!, compose: null },
                       })
                     }
                     className="shrink-0 rounded-full bg-info/15 px-2 text-[10px] text-info hover:bg-info/25"

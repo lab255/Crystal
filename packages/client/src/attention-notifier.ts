@@ -158,10 +158,7 @@ export function useAttentionNotifications(): void {
   const notifyRunsSettled = useSettings((s) => s.notifyRunsSettled);
   const notifyWorkflowPaused = useSettings((s) => s.notifyWorkflowPaused);
   const mode = useNav((l) => l.mode);
-  const selectedTab = useNav((l) => l.orchestrate?.tab);
-  const selectedTask = useNav((l) => l.orchestrate?.task);
-  const selectedRun = useNav((l) => l.orchestrate?.run);
-  const selectedWorkflow = useNav((l) => l.orchestrate?.workflow);
+  const selectedThread = useNav((l) => l.threads?.thread);
 
   const trackerRef = useRef<AttentionTracker | null>(null);
   const tracker = (trackerRef.current ??= new AttentionTracker());
@@ -188,18 +185,16 @@ export function useAttentionNotifications(): void {
   onScreenRef.current = (target) => {
     if (typeof document === "undefined" || !document.hasFocus()) return false;
     if (!activeWsId || wsKey(target.sid, target.ws) !== wsKey(activeSid, activeWsId)) return false;
-    if (mode !== "orchestrate") return false;
+    if (mode !== "threads") return false;
+    // A thread selection is "any run id in the chain", so exact-id equality is
+    // the conservative check: a mismatch may still be on screen (another turn
+    // of the same chain), but a false "on screen" would swallow the toast.
     if (target.kind === "question") {
-      // The board is the default tab, so an unset tab still shows the task.
-      return (
-        (selectedTab === "board" || selectedTab === undefined) &&
-        selectedTask === target.question.taskId
-      );
+      return target.question.question.runId != null && selectedThread === target.question.question.runId;
     }
-    if (target.kind === "workflow") {
-      return selectedTab === "workflows" && selectedWorkflow === target.workflowId;
-    }
-    return selectedTab === "runs" && selectedRun === target.run.id;
+    // Workflows have no dedicated surface anymore — never suppress the pause toast.
+    if (target.kind === "workflow") return false;
+    return selectedThread === target.run.id;
   };
 
   // Desktop click-to-jump: the shell's notifier echoes the clicked toast's

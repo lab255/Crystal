@@ -5,11 +5,9 @@ import {
   BookOpenText,
   Bot,
   Boxes,
-  ChartColumn,
   CircleCheck,
   CircleDot,
   CircleHelp,
-  Coins,
   Component,
   Database,
   Eye,
@@ -19,12 +17,10 @@ import {
   GitCompareArrows,
   Globe2,
   History,
-  KanbanSquare,
   Keyboard,
   Layers,
   ListTodo,
   MessagesSquare,
-  Network,
   PencilRuler,
   Plus,
   Settings as SettingsIcon,
@@ -53,7 +49,6 @@ import {
   sessionLatestActivity,
   taskAttention,
   type AgentRun,
-  type OrchestratorTabId,
   type PendingPermission,
   type TaskAttentionGroup,
   type TaskItem,
@@ -78,7 +73,7 @@ import {
 import { CommandList, Dialog, DialogContent, Kbd } from "@crystal/ui";
 import {
   CAPABILITY_EVENTS,
-  NEW_WORKFLOW_NAV,
+  NEW_THREAD_NAV,
   paletteCapabilities,
   type PaletteCapabilityAction,
   type PaletteCapabilityIcon,
@@ -91,17 +86,6 @@ import {
   type CrystalMode,
 } from "./modes.js";
 import { SHELL_SHORTCUTS, shortcutHint, workspaceShortcutHint } from "./shortcuts.js";
-
-/** Command-palette icon per orchestrate tab (mirrors the tab strip). */
-const ORCHESTRATE_TAB_ICONS: Record<OrchestratorTabId, LucideIcon> = {
-  board: KanbanSquare,
-  sessions: MessagesSquare,
-  workflows: Network,
-  runs: History,
-  agents: Bot,
-  costs: Coins,
-  insights: ChartColumn,
-};
 
 /** Command-palette icon per attention group (see task-attention.ts). */
 const TASK_ATTENTION_ICONS: Record<TaskAttentionGroup, LucideIcon> = {
@@ -120,7 +104,7 @@ const CAPABILITY_ICONS: Record<PaletteCapabilityIcon, LucideIcon> = {
   save: BookmarkPlus,
   publish: Share2,
   workspace: FolderPlus,
-  workflow: Network,
+  thread: MessagesSquare,
   keyboard: Keyboard,
 };
 
@@ -145,6 +129,13 @@ interface TaskJumpEntry {
   projectName: string;
   task: TaskItem;
   group: TaskAttentionGroup;
+  /** Newest run attributed to the task — the thread a hit lands on. */
+  runId: string | null;
+}
+
+/** Newest run attributed to a task (runs arrive newest-first). */
+function newestTaskRunId(runs: readonly AgentRun[], taskId: string): string | null {
+  return runs.find((run) => run.taskId === taskId)?.id ?? null;
 }
 
 // zustand v5: selectors must return stable references — module-level constants.
@@ -242,6 +233,7 @@ export function CommandPalette({
             projectName: p.project.name,
             task,
             group: taskAttention(task, live, runsById),
+            runId: newestTaskRunId(activeRuns, task.id),
           });
         }
       }
@@ -265,6 +257,7 @@ export function CommandPalette({
               projectName: p.project.name,
               task,
               group: taskAttention(task, live, runsById),
+              runId: newestTaskRunId(workspaceRuns, task.id),
             });
           }
         }
@@ -297,9 +290,9 @@ export function CommandPalette({
         onOpenSettings?.("publish");
       } else if (action === "open-workspace") {
         window.dispatchEvent(new CustomEvent("crystal:open-workspace"));
-      } else if (action === "new-workflow") {
-        onSwitchMode("orchestrate");
-        nav(NEW_WORKFLOW_NAV);
+      } else if (action === "new-thread") {
+        onSwitchMode("threads");
+        nav(NEW_THREAD_NAV);
       } else {
         onOpenShortcuts?.();
       }
@@ -459,23 +452,14 @@ export function CommandPalette({
           nav({ architect: { view: "infra" } });
         },
       },
-      ...(["board", "sessions", "workflows", "runs", "agents", "costs", "insights"] as const).map((tab) => ({
-        id: `view.orchestrate.${tab}`,
-        title: `Orchestrate: ${tab === "costs" ? "Cost attribution" : `${tab[0]!.toUpperCase()}${tab.slice(1)}`}`,
-        icon: ORCHESTRATE_TAB_ICONS[tab],
-        run: () => {
-          onSwitchMode("orchestrate");
-          nav({ orchestrate: { tab } });
-        },
-      })),
       ...sessionEntries.map(({ node, headline, status }) => ({
         id: `session.${node.turns[0]!.id}`,
-        title: `Session: ${headline}`,
+        title: `Thread: ${headline}`,
         icon: MessagesSquare,
         tag: status === "needs-you" ? "Needs you" : status === "working" ? "Working" : undefined,
         run: () => {
-          onSwitchMode("orchestrate");
-          nav({ orchestrate: { tab: "sessions", run: node.run.id, sessionProject: null, sessionEpic: null } });
+          onSwitchMode("threads");
+          nav({ threads: { thread: node.run.id, compose: null } });
         },
       })),
       ...(activeNeedsYou.count > 0 ? [{
@@ -483,12 +467,13 @@ export function CommandPalette({
         title: `Needs you: ${activeNeedsYou.questions[0]?.question.text ?? (activeNeedsYou.permissions[0] ? `${activeNeedsYou.permissions[0].tool} needs permission` : activeNeedsYou.failures[0]?.prompt ?? "Agent session")}`,
         icon: CircleHelp,
         run: () => {
-          const question = activeNeedsYou.questions[0];
-          const runId = activeNeedsYou.permissions[0]?.runId ?? activeNeedsYou.failures[0]?.id;
-          onSwitchMode("orchestrate");
-          nav(question
-            ? { orchestrate: { tab: "board", project: question.projectPath, task: question.taskId, run: null } }
-            : { orchestrate: { tab: "sessions", run: runId, sessionProject: null, sessionEpic: null } });
+          const runId =
+            activeNeedsYou.questions[0]?.question.runId ??
+            activeNeedsYou.permissions[0]?.runId ??
+            activeNeedsYou.failures[0]?.id ??
+            null;
+          onSwitchMode("threads");
+          nav({ threads: runId ? { thread: runId, compose: null } : { thread: null, compose: null } });
         },
       }] : []),
       // Documents in the active workspace: diagrams, their facets, boards.
@@ -514,17 +499,8 @@ export function CommandPalette({
           },
         })),
       ),
-      ...projects.map((p) => ({
-        id: `board.open.${p.path}`,
-        title: `Open board: ${p.project.name}`,
-        icon: KanbanSquare,
-        run: () => {
-          onSwitchMode("orchestrate");
-          nav({ orchestrate: { tab: "board" as const, project: p.path } });
-        },
-      })),
-      // Tasks across every open workspace — the board's list+session view
-      // auto-shows the task's session, so a hit jumps straight into it.
+      // Tasks across every open workspace — a hit lands on the task's newest
+      // agent thread (boards have no UI of their own anymore).
       ...taskEntries.map((e) => ({
         id: `task.${e.sid}.${e.wsId}.${e.task.id}`,
         title: `Task: ${e.task.title} — ${e.projectName}${e.wsName ? ` · ${e.wsName}` : ""}`,
@@ -537,10 +513,10 @@ export function CommandPalette({
             : undefined,
         run: () => {
           if (e.wsName !== null) selectWorkspace(e.sid, e.wsId);
-          onSwitchMode("orchestrate");
+          onSwitchMode("threads");
           nav({
             ws: formatWsRef(e.sid, e.wsId),
-            orchestrate: { tab: "board" as const, project: e.projectPath, task: e.task.id },
+            threads: e.runId ? { thread: e.runId, compose: null } : { thread: null, compose: null },
           });
         },
       })),
@@ -566,15 +542,6 @@ export function CommandPalette({
         run: () => {
           onSwitchMode("architect");
           void createArchitecture("Untitled architecture");
-        },
-      },
-      {
-        id: "project.new",
-        title: "New project board",
-        icon: Plus,
-        run: () => {
-          onSwitchMode("orchestrate");
-          void createProject("Untitled project");
         },
       },
       {

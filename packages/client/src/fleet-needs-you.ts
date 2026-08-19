@@ -95,8 +95,9 @@ export type AttentionTarget =
 
 /**
  * Jump to a notification item from any mode: focus its (server, workspace)
- * pair and deep-link the orchestrator to the task board, run review, or
- * workflow view. Same shape as the overview card's navigation actions.
+ * pair and land on the item's thread. A question jumps to the thread that
+ * asked it (answering is inline there); a question with no asking run, and
+ * workflow items, land on the bare Threads mode.
  */
 export function useAttentionJump(): (target: AttentionTarget) => void {
   const { selectWorkspace, navStore } = useCrystal();
@@ -104,34 +105,22 @@ export function useAttentionJump(): (target: AttentionTarget) => void {
     (target: AttentionTarget) => {
       selectWorkspace(target.sid, target.ws);
       const ws = formatWsRef(target.sid, target.ws);
+      // compose: null — a jump must land on the target thread (or the rail),
+      // never on a stale New-thread composer (nav merge keeps omitted keys).
       if (target.kind === "question") {
+        const runId = target.question.question.runId ?? null;
         navStore.getState().update({
           ws,
-          mode: "orchestrate",
-          orchestrate: {
-            tab: "board",
-            project: target.question.projectPath,
-            task: target.question.taskId,
-          },
+          mode: "threads",
+          threads: runId ? { thread: runId, compose: null } : { compose: null },
         });
       } else if (target.kind === "workflow") {
-        navStore.getState().update({
-          ws,
-          mode: "orchestrate",
-          orchestrate: { tab: "workflows", workflow: target.workflowId },
-        });
+        navStore.getState().update({ ws, mode: "threads", threads: { compose: null } });
       } else {
         navStore.getState().update({
           ws,
-          mode: "orchestrate",
-          // Clear the rail scope: a cross-workspace jump must not inherit the
-          // previous workspace's project/epic filter and hide the run's row.
-          orchestrate: {
-            tab: "sessions",
-            run: target.run.id,
-            sessionProject: null,
-            sessionEpic: null,
-          },
+          mode: "threads",
+          threads: { thread: target.run.id, compose: null },
         });
       }
     },

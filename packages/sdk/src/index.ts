@@ -5,7 +5,7 @@
  * 1. `mountCrystal(el)` — one call, non-React hosts.
  * 2. `<Crystal />` — the full IDE as a React component.
  * 3. `<CrystalProvider>` + individual modes — build your own shell. Import
- *    modes from their own packages (`@crystal/architect`, `@crystal/orchestrator`,
+ *    modes from their own packages (`@crystal/architect`, `@crystal/threads`,
  *    `@crystal/editor`); they are deliberately not re-exported here so bundlers
  *    can code-split them behind the shell's lazy boundaries.
  * 4. `BridgeClient` + `@crystal/core` — headless access to workspaces, graphs,

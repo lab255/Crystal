@@ -8,7 +8,7 @@ export type PaletteCapabilityAction =
   | "save-lens"
   | "publish-settings"
   | "open-workspace"
-  | "new-workflow"
+  | "new-thread"
   | "keyboard-shortcuts";
 
 export type PaletteCapabilityIcon =
@@ -18,7 +18,7 @@ export type PaletteCapabilityIcon =
   | "save"
   | "publish"
   | "workspace"
-  | "workflow"
+  | "thread"
   | "keyboard";
 
 export interface PaletteCapability {
@@ -41,8 +41,9 @@ export const REVIEW_REF_NAV = {
   architect: { view: "architecture", vs: null },
 } satisfies NavPatch;
 
-export const NEW_WORKFLOW_NAV = {
-  orchestrate: { tab: "workflows", workflow: null, builder: null },
+export const NEW_THREAD_NAV = {
+  mode: "threads",
+  threads: { thread: null, compose: true },
 } satisfies NavPatch;
 
 const ALWAYS_AVAILABLE: readonly PaletteCapability[] = [
@@ -77,10 +78,10 @@ const ALWAYS_AVAILABLE: readonly PaletteCapability[] = [
     action: "open-workspace",
   },
   {
-    id: "workflow.new",
-    title: "New workflow…",
-    icon: "workflow",
-    action: "new-workflow",
+    id: "thread.new",
+    title: "New thread…",
+    icon: "thread",
+    action: "new-thread",
   },
   {
     id: "shortcuts.open",

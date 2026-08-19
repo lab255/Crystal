@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   BASE_BRANCH_LENS_PARAM,
-  NEW_WORKFLOW_NAV,
+  NEW_THREAD_NAV,
   paletteCapabilities,
   REVIEW_REF_NAV,
 } from "./capabilities.js";
@@ -14,7 +14,7 @@ describe("paletteCapabilities", () => {
       ["Clear lens", "clear-lens"],
       ["Publish / sharing settings…", "publish-settings"],
       ["Open workspace…", "open-workspace"],
-      ["New workflow…", "new-workflow"],
+      ["New thread…", "new-thread"],
       ["Keyboard shortcuts", "keyboard-shortcuts"],
     ]);
   });
@@ -27,8 +27,9 @@ describe("paletteCapabilities", () => {
   it("targets the concrete capability surfaces", () => {
     expect(BASE_BRANCH_LENS_PARAM).toBe("diff:base");
     expect(REVIEW_REF_NAV).toEqual({ architect: { view: "architecture", vs: null } });
-    expect(NEW_WORKFLOW_NAV).toEqual({
-      orchestrate: { tab: "workflows", workflow: null, builder: null },
+    expect(NEW_THREAD_NAV).toEqual({
+      mode: "threads",
+      threads: { thread: null, compose: true },
     });
   });
 });

@@ -32,7 +32,7 @@ describe("nav store", () => {
       mode: "architect",
       ws: "w1",
       architect: { diagram: "a.crystal" },
-      orchestrate: { task: "t1" },
+      threads: { thread: "r1" },
     });
     // infra owns the diagram selection — an infra URL without one clears it.
     store.getState().apply({ mode: "architect", ws: "w2", architect: { view: "infra" } });
@@ -40,12 +40,12 @@ describe("nav store", () => {
       mode: "architect",
       ws: "w2",
       architect: { view: "infra" },
-      orchestrate: { task: "t1" },
+      threads: { thread: "r1" },
     });
     // A bare "#/architect" (default view, nothing selected) empties the section.
     store.getState().apply({ mode: "architect" });
     expect(store.getState().link.architect).toBeUndefined();
-    expect(store.getState().link.orchestrate).toEqual({ task: "t1" });
+    expect(store.getState().link.threads).toEqual({ thread: "r1" });
   });
 
   it("apply keeps sibling-subview state a URL cannot express", () => {

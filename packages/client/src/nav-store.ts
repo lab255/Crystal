@@ -5,8 +5,8 @@ import {
   type CodeLink,
   type CrystalModeId,
   type DeepLink,
-  type OrchestrateLink,
   type ProjectsLink,
+  type ThreadsLink,
   type QualityLink,
   type SurfacesLink,
 } from "@crystal/core";
@@ -24,7 +24,7 @@ export interface NavPatch {
   mode?: CrystalModeId;
   projects?: SectionPatch<ProjectsLink>;
   architect?: SectionPatch<ArchitectLink>;
-  orchestrate?: SectionPatch<OrchestrateLink>;
+  threads?: SectionPatch<ThreadsLink>;
   code?: SectionPatch<CodeLink>;
   surfaces?: SectionPatch<SurfacesLink>;
   quality?: SectionPatch<QualityLink>;
@@ -99,9 +99,9 @@ export function createNavStore(initial: DeepLink = {}): NavStore {
       const architect = mergeSection(cur.architect, patch.architect);
       if (architect) link.architect = architect;
       else if (patch.architect) delete link.architect;
-      const orchestrate = mergeSection(cur.orchestrate, patch.orchestrate);
-      if (orchestrate) link.orchestrate = orchestrate;
-      else if (patch.orchestrate) delete link.orchestrate;
+      const threads = mergeSection(cur.threads, patch.threads);
+      if (threads) link.threads = threads;
+      else if (patch.threads) delete link.threads;
       const code = mergeSection(cur.code, patch.code);
       if (code) link.code = code;
       else if (patch.code) delete link.code;

@@ -6,7 +6,8 @@ coordinator chat (program manager, cross-project programs dispatched to per-proj
 orchestrators) and the questions inbox; architecture diagrammer (three consolidated
 views: derived-architecture / codebase / infrastructure, one shared vs-ref review),
 surfaces explorer — screens/components/stories/API surface/schemas,
-PM/agent orchestration, Monaco editor, quality — test runner + coverage, jobs hub) plus a
+Threads — chat-first agent conversations (questions + tool use inline, workers
+nested; `packages/threads`), Monaco editor, quality — test runner + coverage, jobs hub) plus a
 bottom terminal panel that runs shells and agent consoles in any open workspace. Read
 `README.md` for the product shape; this file is the mechanics.
 
@@ -48,7 +49,7 @@ build/sign (+notarize on macOS) → signed updater `latest.json`).
 ## Architecture rules
 
 - Dependency direction: `core`, `ui` ← `client` ← modes
-  (`architect`/`orchestrator`/`editor`/`surfaces`/`quality`/`hub`) ← `sdk` ← apps. `core` is
+  (`architect`/`threads`/`editor`/`surfaces`/`quality`) ← `sdk` ← apps. `core` is
   pure TS (no React, no Node APIs) — it defines the domain model, the `.crystal` file
   envelope, the bridge protocol (`BridgeMethods` in `packages/core/src/bridge.ts` is the
   single source of truth for both client and server) and the Claude stream-json parser.
@@ -153,9 +154,11 @@ build/sign (+notarize on macOS) → signed updater `latest.json`).
   (`AgentManager.grantsResolver`, headless and interactive), and permission denials
   detected in the stream (`isPermissionDenial` on error tool_results, tool named via
   the per-run toolUseId→name map) fold per (tool, workflow) through `onToolDenied` —
-  "delivery X requested tool Y, denied N times" is readable in the AgentsTab grants
-  panel instead of being transcript archaeology. Bridge: `grants.get`/`grants.setTools`
-  + the `grants.changed` event.
+  "delivery X requested tool Y, denied N times" is durable data instead of
+  transcript archaeology. Bridge: `grants.get`/`grants.setTools` + the
+  `grants.changed` event. Since the orchestration frontend strip, grants (like
+  boards, workflow templates and budget editing) have no dedicated UI — they are
+  driven over the bridge/MCP.
 - A template stage carries three things beyond its dependencies. `handoff` is the
   artifact it owes the stages downstream — dependencies say *when* a stage may start,
   only the handoff says *what its worker is given*, so it goes into both the producing
@@ -180,11 +183,28 @@ build/sign (+notarize on macOS) → signed updater `latest.json`).
   copy (`deriveTemplate`, provenance in `basedOn`), so editing a project's fork can
   never reach the library; and a one-off graph passed to `workflow.start` as `template`
   is snapshotted into that run alone, never persisted.
+- The Threads mode (`packages/threads`) is the ONE orchestration frontend: a
+  thread = a resume chain (`groupRunsByManager` → `RunNode`), identity = the
+  chain-root run id, workers render nested inside their manager's transcript,
+  never as rail rows. The rail's one status dot per row is
+  `threadIndicator` (needs-input > running > failed > unread > idle) over core's
+  `sessionDisplayStatus` with localStorage unread/pins (`thread-unread.ts`).
+  The transcript is a pure fold (`transcript-items.ts`) over the SAME
+  `RunEvent[]` the console chunker reads: consecutive tool calls coalesce into
+  one "Explored N files" work item, questions join their board record by
+  (runId, text) and stay in history once answered, `dispatch` events become
+  delegation rows. Composers route through client's `messageRun` (workflow:/
+  program: tag routing) and must surface the typed `resumed|queued|recorded`
+  status. Deep link: `#/threads?thread=<any run id in the chain>`;
+  `#/orchestrate/*` parses as permanent aliases (run-carrying tabs → the
+  thread, costs/insights → the Overview dashboard). Cost display reuses the
+  accounting kernel only (`sessionSubtreeCost`, `rollupRunsUsage`,
+  `workflowSpend`, hub `ProgramSpend` as server truth) — no budget-editing UI.
 - The hub (the layer above workflows) is **cross-project** — engine unchanged, but
-  its UI now lives inside the Overview mode: `#/projects/chat` (CoordinatorChat, a
+  its UI now lives inside the Overview mode: `#/projects/chat` (`ProgramThread`, a
   plain conversation with the program manager; program picker + create form) and
-  `#/projects/inbox` (QuestionsView). `packages/hub` exports only those two
-  components; old `#/hub/...` links are permanent parse aliases. Delivery/budget
+  `#/projects/inbox` (`QuestionInbox`) — both exported by `@crystal/threads`;
+  old `#/hub/...` links are permanent parse aliases. Delivery/budget
   management has no dedicated screens — the manager drives it over MCP. A
   `Program` is one
   high-level epic split into per-project `ProgramDelivery`s, each dispatched as
@@ -278,8 +298,8 @@ build/sign (+notarize on macOS) → signed updater `latest.json`).
   unclassified) and `agent.handoff` recovers overflow: haiku summarizer → fresh
   session seeded with the note, `handoffFromRunId` lineage, same worktree. The
   workflow engine repoints `managerRunId` via `AgentManager.onHandoff`. An
-  auth-classified failure parks every queued delivery (`authChanged` event, banner in
-  the orchestrator) until a successful run proves the login healed.
+  auth-classified failure parks every queued delivery (`authChanged` event; failed
+  threads stay loud in the rail) until a successful run proves the login healed.
 - Managed services + watches: model in `packages/core/src/service.ts` (defs +
   watches are repo-durable in `.crystal/services.json`; watch patterns are literal
   alternatives, NEVER regex), supervision in `apps/server/src/service-manager.ts`

@@ -12,7 +12,7 @@ import {
 } from "@crystal/core";
 import { autoLayout, buildSurveyPrompt, type SurveyKind } from "@crystal/architect";
 import { useAgents, useCrystal, useNavUpdate } from "@crystal/client";
-import { RunList } from "@crystal/orchestrator";
+import { RunList } from "@crystal/client";
 import { Spinner, StatusDot, cn } from "@crystal/ui";
 import { ScopedActionButton, type JobScope } from "./ScopedActionButton.js";
 import { ServicesSection } from "./ServicesSection.js";
@@ -417,7 +417,7 @@ function JobRuns({ runs }: { runs: AgentRun[] }) {
       runs={jobs}
       selectedRunId={null}
       onSelect={(id) =>
-        updateNav({ mode: "orchestrate", orchestrate: { tab: "runs", run: id } })
+        updateNav({ mode: "threads", threads: { thread: id, compose: null } })
       }
       title="Recent jobs"
       emptyHint="No jobs yet — dispatch an index or survey above."

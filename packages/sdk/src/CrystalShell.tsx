@@ -85,8 +85,8 @@ import {
 const ArchitectMode = lazy(() =>
   import("@crystal/architect").then((m) => ({ default: m.ArchitectMode })),
 );
-const OrchestratorMode = lazy(() =>
-  import("@crystal/orchestrator").then((m) => ({ default: m.OrchestratorMode })),
+const ThreadsMode = lazy(() =>
+  import("@crystal/threads").then((m) => ({ default: m.ThreadsMode })),
 );
 const EditorMode = lazy(() =>
   import("@crystal/editor").then((m) => ({ default: m.EditorMode })),
@@ -107,7 +107,7 @@ const MODE_COMPONENTS: Record<CrystalMode, React.LazyExoticComponent<() => React
   projects: OverviewMode,
   architect: ArchitectMode,
   surfaces: SurfacesMode,
-  orchestrate: OrchestratorMode,
+  threads: ThreadsMode,
   code: EditorMode,
   quality: QualityMode,
   jobs: JobsMode,

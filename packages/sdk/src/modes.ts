@@ -2,8 +2,8 @@ import {
   Activity,
   Boxes,
   Code2,
-  KanbanSquare,
   LayoutGrid,
+  MessagesSquare,
   PanelsTopLeft,
   ShieldCheck,
   type LucideIcon,
@@ -17,7 +17,7 @@ export const CRYSTAL_MODES: CrystalMode[] = [
   "projects",
   "architect",
   "surfaces",
-  "orchestrate",
+  "threads",
   "code",
   "quality",
   "jobs",
@@ -36,7 +36,7 @@ export const MODE_LABELS: Record<CrystalMode, string> = {
   projects: "Overview",
   architect: "Architecture",
   surfaces: "Surfaces",
-  orchestrate: "Orchestrate",
+  threads: "Threads",
   code: "Code",
   quality: "Quality",
   jobs: "Jobs",
@@ -47,7 +47,7 @@ export const MODE_ICONS: Record<CrystalMode, LucideIcon> = {
   projects: LayoutGrid,
   architect: Boxes,
   surfaces: PanelsTopLeft,
-  orchestrate: KanbanSquare,
+  threads: MessagesSquare,
   code: Code2,
   quality: ShieldCheck,
   jobs: Activity,
@@ -91,7 +91,7 @@ export const MODE_SUBSECTIONS: Partial<
   Record<
     CrystalMode,
     {
-      section: "architect" | "surfaces" | "orchestrate" | "quality";
+      section: "architect" | "surfaces" | "quality";
       key: "view" | "tab";
       default: string;
       items: ModeSubsection[];
@@ -126,20 +126,7 @@ export const MODE_SUBSECTIONS: Partial<
       { id: "schemas", label: "Schemas" },
     ],
   },
-  orchestrate: {
-    section: "orchestrate",
-    key: "tab",
-    default: "board",
-    items: [
-      { id: "board", label: "Board" },
-      { id: "sessions", label: "Sessions" },
-      { id: "runs", label: "Runs" },
-      { id: "agents", label: "Agents" },
-      { id: "workflows", label: "Workflows" },
-      { id: "costs", label: "Costs" },
-      { id: "insights", label: "Insights" },
-    ],
-  },
+  // threads is a leaf section: the rail inside the mode is its second level.
   quality: {
     section: "quality",
     key: "view",

@@ -1,11 +1,6 @@
 import { useState } from "react";
 import { ArrowDown, ArrowUp, ChevronRight, RotateCcw } from "lucide-react";
-import type {
-  ArchitectViewId,
-  OrchestratorTabId,
-  QualityViewId,
-  SurfaceViewId,
-} from "@crystal/core";
+import type { ArchitectViewId, QualityViewId, SurfaceViewId } from "@crystal/core";
 import { useNav, useNavUpdate, useSettings } from "@crystal/client";
 import { cn, useContextMenu, type MenuEntry } from "@crystal/ui";
 import {
@@ -47,7 +42,6 @@ export function ProjectNav({
   const archView = useNav((l) => l.architect?.view);
   const archLevel = useNav((l) => l.architect?.level);
   const surfView = useNav((l) => l.surfaces?.view);
-  const orchTab = useNav((l) => l.orchestrate?.tab);
   const qualView = useNav((l) => l.quality?.view);
   const [manualOpen, setManualOpen] = useState<ReadonlySet<CrystalMode>>(new Set());
   const [dragId, setDragId] = useState<CrystalMode | null>(null);
@@ -66,9 +60,7 @@ export function ProjectNav({
           : archView
         : m === "surfaces"
           ? surfView
-          : m === "orchestrate"
-            ? orchTab
-            : qualView;
+          : qualView;
     return current ?? spec.default;
   };
 
@@ -94,9 +86,6 @@ export function ProjectNav({
       }
       case "surfaces":
         updateNav({ mode: m, surfaces: { view: id as SurfaceViewId } });
-        break;
-      case "orchestrate":
-        updateNav({ mode: m, orchestrate: { tab: id as OrchestratorTabId } });
         break;
       case "quality":
         updateNav({ mode: m, quality: { view: id as QualityViewId } });
@@ -165,8 +154,8 @@ export function ProjectNav({
           const active = mode === m;
           const open = active || manualOpen.has(m);
           const badge =
-            m === "orchestrate" ? needsYouCount || runningRuns : m === "jobs" ? runningJobs : 0;
-          const badgeWarns = m === "orchestrate" && needsYouCount > 0;
+            m === "threads" ? needsYouCount || runningRuns : m === "jobs" ? runningJobs : 0;
+          const badgeWarns = m === "threads" && needsYouCount > 0;
           const sub = activeSubview(m);
           const dropPosition =
             dragId && dragId !== m && dragOverId === m

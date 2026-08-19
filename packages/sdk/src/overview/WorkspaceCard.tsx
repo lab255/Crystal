@@ -98,19 +98,15 @@ export function WorkspaceCard({
   const enter = () => selectWorkspace(sid, ws.id);
   const goToRuns = () => {
     enter();
-    updateNav({ ws: formatWsRef(sid, ws.id), mode: "orchestrate", orchestrate: { tab: "runs" } });
+    updateNav({ ws: formatWsRef(sid, ws.id), mode: "threads", threads: { thread: null, compose: null } });
   };
   const goToSessions = () => {
     enter();
-    updateNav({
-      ws: formatWsRef(sid, ws.id),
-      mode: "orchestrate",
-      orchestrate: { tab: "sessions", run: null, sessionProject: null, sessionEpic: null },
-    });
+    updateNav({ ws: formatWsRef(sid, ws.id), mode: "threads", threads: { thread: null, compose: null } });
   };
   const goToBoard = () => {
     enter();
-    updateNav({ ws: formatWsRef(sid, ws.id), mode: "orchestrate", orchestrate: { tab: "board" } });
+    updateNav({ ws: formatWsRef(sid, ws.id), mode: "threads", threads: { thread: null, compose: null } });
   };
   // Same jump as the orchestrator pill: resolve the newest failure in its
   // hierarchical session, where recovery actions stay in conversation context.
@@ -118,13 +114,8 @@ export function WorkspaceCard({
     enter();
     updateNav({
       ws: formatWsRef(sid, ws.id),
-      mode: "orchestrate",
-      orchestrate: {
-        tab: "sessions",
-        run: needRecovery[0]?.id,
-        sessionProject: null,
-        sessionEpic: null,
-      },
+      mode: "threads",
+      threads: { thread: needRecovery[0]?.id ?? null, compose: null },
     });
   };
 

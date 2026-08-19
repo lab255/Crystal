@@ -73,14 +73,12 @@ export function FleetPulse() {
           ) : (
             "no prior-week baseline"
           ),
-        onClick: () => updateNav({ mode: "orchestrate", orchestrate: { tab: "costs" } }),
       })}
       {tile({
         icon: <Bot className="h-3 w-3" />,
         label: "Runs · 7d",
         value: String(totals.runCount),
         detail: `${(totals.tokens / 1_000_000).toFixed(totals.tokens >= 1_000_000 ? 1 : 2)}M tokens`,
-        onClick: () => updateNav({ mode: "orchestrate", orchestrate: { tab: "insights" } }),
       })}
       {tile({
         icon: <Cpu className="h-3 w-3" />,
@@ -98,7 +96,6 @@ export function FleetPulse() {
         label: "Today",
         value: formatUsd(week.days[week.days.length - 1]?.costUsd ?? 0),
         detail: `${week.days[week.days.length - 1]?.runCount ?? 0} runs`,
-        onClick: () => updateNav({ mode: "orchestrate", orchestrate: { tab: "insights" } }),
       })}
     </div>
   );

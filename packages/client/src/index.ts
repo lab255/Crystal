@@ -151,6 +151,25 @@ export {
   type RunSurfaceDiff,
   type RunSurfaceProps,
 } from "./run-surface.js";
+export { messageRun } from "./message-run.js";
+export {
+  spawnSession,
+  type SpawnSessionInput,
+  type SpawnSessionResult,
+} from "./spawn-session.js";
+export {
+  filterSessionTree,
+  groupSessionsByProject,
+  sessionNodeMatchesFilter,
+  type AgentNameLookup,
+  type NewSessionScope,
+  type SessionEpicGroup,
+  type SessionProjectGroup,
+} from "./session-groups.js";
+export { canResumeSession, sameSessionScope } from "./sessions-tab-state.js";
+export { workflowRunForest } from "./workflow-runs.js";
+export { managerSessionEnded } from "./workflow-manager.js";
+export { RunList, runHeadline } from "./run-list.js";
 export { createLensStore, type LensState, type LensStore } from "./lens-store.js";
 export { createNavStore, type NavPatch, type NavState, type NavStore } from "./nav-store.js";
 export { requestOpenFile } from "./open-file.js";

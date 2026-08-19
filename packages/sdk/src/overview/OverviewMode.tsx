@@ -3,7 +3,7 @@ import { Bot, FolderPlus, Inbox, LayoutGrid, Unplug } from "lucide-react";
 import type { OverviewViewId } from "@crystal/core";
 import { useFleetConnections, useHub, useNav, useNavUpdate } from "@crystal/client";
 import { Button, EmptyState, Input, Tooltip, cn } from "@crystal/ui";
-import { CoordinatorChat, QuestionsView } from "@crystal/hub";
+import { ProgramThread, QuestionInbox } from "@crystal/threads";
 import { OpenWorkspaceDialog } from "../OpenWorkspaceDialog.js";
 import { FleetPulse } from "./FleetPulse.js";
 import { LiveRunsPanel } from "./LiveRunsPanel.js";
@@ -73,9 +73,9 @@ export function OverviewMode() {
       </div>
 
       {view === "chat" ? (
-        <CoordinatorChat />
+        <ProgramThread />
       ) : view === "inbox" ? (
-        <QuestionsView find={find} />
+        <QuestionInbox find={find} />
       ) : (
         <Dashboard />
       )}

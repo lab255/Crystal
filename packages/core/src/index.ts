@@ -24,6 +24,7 @@ export * from "./agent.js";
 export * from "./codex.js";
 export * from "./run-failure.js";
 export * from "./orchestration.js";
+export * from "./board-prompt.js";
 export * from "./preflight.js";
 export * from "./premise.js";
 export * from "./grants.js";
