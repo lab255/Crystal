@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.33.0 (2026-08-19)
+
+### Features
+
+- replace orchestrator/hub UI with chat-first threads mode ([`1246bc5`](https://github.com/lab255/Crystal/commit/1246bc5))
+
 ## v0.32.0 (2026-08-18)
 
 ### Features
