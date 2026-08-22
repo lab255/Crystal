@@ -116,7 +116,7 @@ import {
 import { FacetsPanel } from "./FacetsPanel.js";
 import { LodSlider } from "./LodSlider.js";
 import { cappedExpansionFiles } from "../live-code.js";
-import { HUGE_TREE_FILE_LIMIT } from "../lod-config.js";
+import { HUGE_TREE_FILE_LIMIT, MINIMAP_MAX_NODES } from "../lod-config.js";
 import { MapActionsContext, SYMBOL_TONES, mapNodeTypes, type MapActions } from "./map-nodes.js";
 import { ExportMenu } from "../ExportMenu.js";
 
@@ -265,6 +265,45 @@ function CodeMapInner({
   const [focus, setFocus] = useState<{ id: string; nonce: number } | null>(null);
   const focusNonce = useRef(0);
   const inflight = useRef(new Set<string>());
+  const pendingModuleDetails = useRef(new Map<string, CacheEntry<CodeModuleDetail>>());
+  const pendingFileDetails = useRef(new Map<string, CacheEntry<CodeFileDetail>>());
+  const detailFlushTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flushPendingDetails = useCallback(() => {
+    if (detailFlushTimer.current) clearTimeout(detailFlushTimer.current);
+    detailFlushTimer.current = null;
+    if (pendingModuleDetails.current.size > 0) {
+      const arrived = pendingModuleDetails.current;
+      pendingModuleDetails.current = new Map();
+      setModuleDetails((current) => {
+        const next = new Map(current);
+        for (const [path, entry] of arrived) next.set(path, entry);
+        return next;
+      });
+    }
+    if (pendingFileDetails.current.size > 0) {
+      const arrived = pendingFileDetails.current;
+      pendingFileDetails.current = new Map();
+      setFileDetails((current) => {
+        const next = new Map(current);
+        for (const [path, entry] of arrived) next.set(path, entry);
+        return next;
+      });
+    }
+  }, []);
+  const scheduleDetailFlush = useCallback(() => {
+    if (detailFlushTimer.current) clearTimeout(detailFlushTimer.current);
+    detailFlushTimer.current = setTimeout(flushPendingDetails, 120);
+  }, [flushPendingDetails]);
+  const finishDetailRequest = useCallback(
+    (key: string) => {
+      inflight.current.delete(key);
+      if (inflight.current.size === 0) flushPendingDetails();
+    },
+    [flushPendingDetails],
+  );
+  useEffect(() => () => {
+    if (detailFlushTimer.current) clearTimeout(detailFlushTimer.current);
+  }, []);
 
   /* ---- level of detail + facet lens state ---- */
 
@@ -291,6 +330,7 @@ function CodeMapInner({
     modules: CodeModuleDetail[];
     files: CodeFileDetail[];
   } | null> | null>(null);
+  const bulkWarnedGenerations = useRef(new Set<number>());
   const [refitNonce, setRefitNonce] = useState(0);
   const lodInit = useRef(false);
   const appliedLens = useRef<string | null>(null);
@@ -331,6 +371,8 @@ function CodeMapInner({
     const isSwitch = lastWs.current != null;
     lastWs.current = wsKey;
     setSummary(null);
+    pendingModuleDetails.current.clear();
+    pendingFileDetails.current.clear();
     setModuleDetails(new Map());
     setFileDetails(new Map());
     setExpandedModules(new Set());
@@ -381,13 +423,14 @@ function CodeMapInner({
       const prefer = lensPreferRef.current ?? undefined;
       client
         .request("codemap.module", { ws: wsKey, path, prefer })
-        .then((detail) =>
-          setModuleDetails((m) => new Map(m).set(path, { gen: generation, detail })),
-        )
+        .then((detail) => {
+          pendingModuleDetails.current.set(path, { gen: generation, detail });
+          scheduleDetailFlush();
+        })
         .catch(() => {})
-        .finally(() => inflight.current.delete(key));
+        .finally(() => finishDetailRequest(key));
     }
-  }, [client, wsKey, expandedModules, generation, moduleDetails]);
+  }, [client, wsKey, expandedModules, generation, moduleDetails, scheduleDetailFlush, finishDetailRequest]);
 
   // File details: expanded files + the selected file + the drilled file.
   const wantedFiles = useMemo(() => {
@@ -406,11 +449,14 @@ function CodeMapInner({
       inflight.current.add(key);
       client
         .request("codemap.file", { ws: wsKey, path })
-        .then((detail) => setFileDetails((m) => new Map(m).set(path, { gen: generation, detail })))
+        .then((detail) => {
+          pendingFileDetails.current.set(path, { gen: generation, detail });
+          scheduleDetailFlush();
+        })
         .catch(() => {})
-        .finally(() => inflight.current.delete(key));
+        .finally(() => finishDetailRequest(key));
     }
-  }, [client, wsKey, wantedFiles, generation, fileDetails]);
+  }, [client, wsKey, wantedFiles, generation, fileDetails, scheduleDetailFlush, finishDetailRequest]);
 
   // Live updates: the server re-analyzes when code changes on disk.
   useEffect(() => {
@@ -452,29 +498,39 @@ function CodeMapInner({
   const ensureBulk = useCallback(async () => {
     if (!wsKey) return null;
     if (bulkData.current?.gen === generation) return bulkData.current;
-    bulkInflight.current ??= client
-      .request("codemap.details", { ws: wsKey, prefer: lensPreferRef.current ?? undefined })
-      .then((res) => {
-        bulkData.current = { gen: generation, ...res };
-        setModuleDetails((m) => {
-          const next = new Map(m);
-          for (const d of res.modules) next.set(d.module.path, { gen: generation, detail: d });
-          return next;
+    const key = `${wsKey}|bulk|${generation}`;
+    if (!bulkInflight.current) {
+      inflight.current.add(key);
+      bulkInflight.current = client
+        .request(
+          "codemap.details",
+          { ws: wsKey, prefer: lensPreferRef.current ?? undefined },
+          { timeoutMs: 180_000 },
+        )
+        .then((res) => {
+          bulkData.current = { gen: generation, ...res };
+          for (const d of res.modules)
+            pendingModuleDetails.current.set(d.module.path, { gen: generation, detail: d });
+          for (const f of res.files)
+            pendingFileDetails.current.set(f.path, { gen: generation, detail: f });
+          scheduleDetailFlush();
+          setBulkLoadedGen(generation);
+          return bulkData.current;
+        })
+        .catch((error: unknown) => {
+          if (!bulkWarnedGenerations.current.has(generation)) {
+            bulkWarnedGenerations.current.add(generation);
+            console.warn(`Code map bulk details failed for generation ${generation}`, error);
+          }
+          return null;
+        })
+        .finally(() => {
+          bulkInflight.current = null;
+          finishDetailRequest(key);
         });
-        setFileDetails((m) => {
-          const next = new Map(m);
-          for (const f of res.files) next.set(f.path, { gen: generation, detail: f });
-          return next;
-        });
-        setBulkLoadedGen(generation);
-        return bulkData.current;
-      })
-      .catch(() => null)
-      .finally(() => {
-        bulkInflight.current = null;
-      });
+    }
     return bulkInflight.current;
-  }, [client, wsKey, generation]);
+  }, [client, wsKey, generation, scheduleDetailFlush, finishDetailRequest]);
 
   const applyLodExpansion = useCallback(
     async (next: CodeLodLevel) => {
@@ -505,10 +561,18 @@ function CodeMapInner({
 
   const setLod = useCallback(
     (next: CodeLodLevel) => {
+      if (next === "modules" || next === "members") {
+        void ensureBulk().then((data) => {
+          if (!data) return;
+          nav({ architect: { lod: next } });
+          void applyLodExpansion(next);
+        });
+        return;
+      }
       nav({ architect: { lod: next } });
       void applyLodExpansion(next);
     },
-    [nav, applyLodExpansion],
+    [nav, ensureBulk, applyLodExpansion],
   );
 
   // On reasonably sized workspaces the bulk details load eagerly, so member
@@ -878,7 +942,7 @@ function CodeMapInner({
   ]);
   // Built off-thread; the previous scene stays interactive while a newer
   // input computes.
-  const { value: builtScene } = useWorkerMemo<MapSceneInput, MapScene>(
+  const { value: builtScene, pending: scenePending } = useWorkerMemo<MapSceneInput, MapScene>(
     makeMapSceneWorker,
     buildMapScene,
     sceneInput,
@@ -1357,6 +1421,24 @@ function CodeMapInner({
         {level && level.kind !== "all" ? (
           <div className="absolute left-3 top-13 z-10 flex max-w-[calc(100%-1.5rem)] flex-wrap items-center gap-2 gap-y-1 rounded-xl border border-edge bg-surface-2/95 px-2.5 py-1.5 text-xs shadow-xl shadow-black/30 backdrop-blur">
             <LodSlider level={lod} onChange={setLod} counts={lodCounts} />
+            {scenePending ? (
+              <span className="flex items-center gap-1 text-[10px] text-ink-faint">
+                <Spinner className="h-3 w-3" /> updating…
+              </span>
+            ) : null}
+            {summary?.excluded && summary.excluded.files > 0 ? (
+              <span
+                className="rounded-md bg-surface-3 px-1.5 py-0.5 text-[10px] text-ink-muted"
+                title={summary.excluded.roots.map((root) => `${root.path} — ${root.files} files`).join("\n")}
+              >
+                {summary.excluded.files} generated files hidden
+              </span>
+            ) : null}
+            {scene?.hiddenSelectionEdges ? (
+              <span className="text-[10px] text-ink-faint">
+                +{scene.hiddenSelectionEdges} selection links hidden
+              </span>
+            ) : null}
             <span className="h-4 w-px bg-edge" />
             <RefReviewBar
               active={
@@ -1639,6 +1721,18 @@ function CodeMapInner({
 
 const SNAP_STORAGE_KEY = "crystal:codemap:snap";
 
+function nodeSetFingerprint(nodes: readonly MapRfNode[]): string {
+  let sum = 0;
+  let xor = 0;
+  for (const node of nodes) {
+    let hash = 0;
+    for (let i = 0; i < node.id.length; i++) hash = Math.imul(hash, 31) + node.id.charCodeAt(i) | 0;
+    sum = sum + hash | 0;
+    xor ^= hash;
+  }
+  return `${nodes.length}:${sum}:${xor}`;
+}
+
 function WorkspaceMapCanvas({
   scene,
   refitNonce,
@@ -1712,10 +1806,7 @@ function WorkspaceMapCanvas({
   const lastSceneIdsRef = useRef("");
   useEffect(() => {
     setNodes(scene.nodes);
-    const ids = scene.nodes
-      .map((n) => n.id)
-      .sort()
-      .join("|");
+    const ids = nodeSetFingerprint(scene.nodes);
     if (ids === lastSceneIdsRef.current) return;
     lastSceneIdsRef.current = ids;
     if (scene.nodes.length === 0) return;
@@ -1871,18 +1962,20 @@ function WorkspaceMapCanvas({
     >
       <Background variant={BackgroundVariant.Dots} gap={22} size={1.25} color="var(--color-edge-strong)" />
       <Controls position="bottom-left" showInteractive={false} className="!rounded-lg !border !border-edge !bg-surface-2 !shadow-lg overflow-hidden" />
-      <MiniMap
-        position="bottom-right"
-        pannable
-        zoomable
-        className="!h-28 !w-40 !rounded-lg !border !border-edge !bg-surface-2"
-        nodeColor={(n) =>
-          (n.data as MapRfNode["data"]).nodeKind === "module"
-            ? "var(--color-surface-3)"
-            : "var(--color-crystal-500)"
-        }
-        maskColor="color-mix(in srgb, var(--color-surface-0) 75%, transparent)"
-      />
+      {scene.nodes.length <= MINIMAP_MAX_NODES ? (
+        <MiniMap
+          position="bottom-right"
+          pannable
+          zoomable
+          className="!h-28 !w-40 !rounded-lg !border !border-edge !bg-surface-2"
+          nodeColor={(n) =>
+            (n.data as MapRfNode["data"]).nodeKind === "module"
+              ? "var(--color-surface-3)"
+              : "var(--color-crystal-500)"
+          }
+          maskColor="color-mix(in srgb, var(--color-surface-0) 75%, transparent)"
+        />
+      ) : null}
       <Panel position="top-right" className="flex items-center gap-0.5 rounded-xl border border-edge bg-surface-2/95 p-1 shadow-xl shadow-black/30 backdrop-blur">
         <Tooltip content={snap ? "Snap to grid: on" : "Snap to grid: off"}>
           <button

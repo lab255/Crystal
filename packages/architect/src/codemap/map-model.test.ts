@@ -43,6 +43,7 @@ import {
   type ModuleNodeData,
   type SymbolNodeData,
 } from "./map-model.js";
+import { MAX_FILE_CARDS_PER_MODULE, MAX_SELECTION_EDGES } from "../lod-config.js";
 
 const A = "packages/core/src/a.ts";
 const B = "packages/ui/src/b.ts";
@@ -397,6 +398,110 @@ describe("buildMapScene — selection edges", () => {
       }),
     );
     expect(scene.edges.some((e) => e.id.startsWith("sel:"))).toBe(false);
+  });
+
+  it("caps the selected neighborhood by aggregate weight", () => {
+    const neighbors = Array.from({ length: MAX_SELECTION_EDGES + 1 }, (_, i) => `packages/n${i}`);
+    const largeSummary: CodeMapSummary = {
+      ...summary(),
+      modules: [summary().modules[0]!, ...neighbors.map((path) => ({ path, name: path, fileCount: 1 }))],
+      deps: [],
+    };
+    const detail = fileDetailA();
+    detail.imports = neighbors.map((targetModule, i) => ({
+      specifier: targetModule,
+      resolved: `${targetModule}/index.ts`,
+      targetModule,
+      names: [`n${i}`],
+      external: false,
+    }));
+    detail.importedBy = Array.from({ length: 5 }, () => `${neighbors.at(-1)!}/caller.ts`);
+    const scene = buildMapScene(
+      input({
+        summary: largeSummary,
+        moduleDetails: new Map([["packages/core", coreDetail()]]),
+        fileDetails: new Map([[A, detail]]),
+        expandedModules: new Set(["packages/core"]),
+        selectedFile: A,
+      }),
+    );
+
+    const selected = scene.edges.filter((edge) => edge.id.startsWith("sel:"));
+    expect(selected).toHaveLength(MAX_SELECTION_EDGES);
+    expect(scene.hiddenSelectionEdges).toBe(2);
+    expect(selected.some((edge) => edge.source === moduleId(neighbors.at(-1)!))).toBe(true);
+  });
+});
+
+describe("buildMapScene — file cap", () => {
+  it("keeps server order and adds a structured-clonable overflow node", () => {
+    const files = Array.from({ length: MAX_FILE_CARDS_PER_MODULE + 7 }, (_, i) => ({
+      path: `packages/core/src/f${i}.ts`,
+      name: `f${i}.ts`,
+      dir: "src",
+      importCount: 0,
+      exportCount: 0,
+    }));
+    const detail: CodeModuleDetail = { ...coreDetail(), files };
+    const scene = buildMapScene(
+      input({
+        moduleDetails: new Map([["packages/core", detail]]),
+        expandedModules: new Set(["packages/core"]),
+      }),
+    );
+
+    const cards = scene.nodes.filter((node) => node.data.nodeKind === "file");
+    expect(cards).toHaveLength(MAX_FILE_CARDS_PER_MODULE);
+    expect(cards[0]!.id).toBe(fileId(files[0]!.path));
+    expect(cards.at(-1)!.id).toBe(fileId(files[MAX_FILE_CARDS_PER_MODULE - 1]!.path));
+    const overflow = scene.nodes.find((node) => node.data.nodeKind === "overflow")!;
+    expect(overflow.data).toMatchObject({ hidden: 7, showingAll: false });
+    expect(() => structuredClone(scene)).not.toThrow();
+  });
+
+  it("keeps selected and expanded files past the cap and excludes them from overflow", () => {
+    const files = Array.from({ length: MAX_FILE_CARDS_PER_MODULE + 7 }, (_, i) => ({
+      path: `packages/core/src/f${i}.ts`,
+      name: `f${i}.ts`,
+      dir: "src",
+      importCount: 0,
+      exportCount: 0,
+    }));
+    const selected = files[MAX_FILE_CARDS_PER_MODULE + 1]!.path;
+    const expanded = files[MAX_FILE_CARDS_PER_MODULE + 4]!.path;
+    const detail: CodeModuleDetail = { ...coreDetail(), files };
+    const scene = buildMapScene(
+      input({
+        moduleDetails: new Map([["packages/core", detail]]),
+        expandedModules: new Set(["packages/core"]),
+        expandedFiles: new Set([expanded]),
+        selectedFile: selected,
+      }),
+    );
+
+    const cards = scene.nodes.filter((node) => node.data.nodeKind === "file");
+    expect(cards).toHaveLength(MAX_FILE_CARDS_PER_MODULE + 2);
+    expect(cards.at(-2)!.id).toBe(fileId(selected));
+    expect(cards.at(-1)!.id).toBe(fileId(expanded));
+    const overflow = scene.nodes.find((node) => node.data.nodeKind === "overflow")!;
+    expect(overflow.data).toMatchObject({ hidden: 5, showingAll: false });
+  });
+});
+
+describe("buildMapScene — review ghosts", () => {
+  it("keeps removed file cards in their resolved module", () => {
+    const removed = "packages/core/src/removed.ts";
+    const scene = buildMapScene(
+      input({
+        moduleDetails: new Map([["packages/core", coreDetail()]]),
+        expandedModules: new Set(["packages/core"]),
+        marks: { [fileId(removed)]: { kind: "removed", ghost: true } },
+      }),
+    );
+
+    const ghost = scene.nodes.find((node) => node.id === fileId(removed))!;
+    expect(ghost.parentId).toBe(moduleId("packages/core"));
+    expect(ghost.data).toMatchObject({ nodeKind: "file", ghost: true, diffMark: "removed" });
   });
 });
 

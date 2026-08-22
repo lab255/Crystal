@@ -22,3 +22,12 @@ export const HUGE_TREE_FILE_LIMIT = 2000;
  * doesn't apply — an architecture diagram is already scoped to one workspace.
  */
 export const CANVAS_LOD_LEVELS: readonly CodeLodLevel[] = ["packages", "modules", "members"];
+
+/** File cards retained per module before the scene adds an overflow affordance. */
+export const MAX_FILE_CARDS_PER_MODULE = 60;
+
+/** Selection neighborhoods stay readable and bounded for high-fan-in barrels. */
+export const MAX_SELECTION_EDGES = 60;
+
+/** The MiniMap paints every node per frame, independent of viewport culling. */
+export const MINIMAP_MAX_NODES = 1_500;

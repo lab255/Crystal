@@ -383,17 +383,21 @@ export const SymbolNode = memo(function SymbolNode({ data, selected }: NodeProps
 export const OverflowNode = memo(function OverflowNode({ data }: NodeProps<MapRfNode>) {
   const d = data as OverflowNodeData;
   const actions = useMapActions();
+  const canToggle = actions.toggleAllFiles != null;
 
   return (
     <button
       type="button"
-      className="nodrag flex h-full w-full items-center justify-center gap-1 rounded-lg border border-dashed border-edge-strong bg-surface-2/60 text-[10px] text-ink-faint transition-colors hover:border-crystal-400 hover:text-ink"
+      disabled={!canToggle}
+      className="nodrag flex h-full w-full items-center justify-center gap-1 rounded-lg border border-dashed border-edge-strong bg-surface-2/60 text-[10px] text-ink-faint transition-colors enabled:hover:border-crystal-400 enabled:hover:text-ink"
       onClick={(e) => {
         e.stopPropagation();
         actions.toggleAllFiles?.(d.nodeId);
       }}
       title={
-        d.showingAll
+        !canToggle
+          ? `${d.hidden} files omitted from this large module`
+          : d.showingAll
           ? "Show only the most connected files"
           : "Show every file in this module (files being refactored always stay visible)"
       }
