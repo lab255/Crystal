@@ -13,6 +13,7 @@ import {
   scopeIsFullstack,
   scopeLayerOf,
 } from "./layout.js";
+import { splitInfraOnly } from "./arch-view-filter.js";
 
 function node(id: string, kind: ArchNodeKind, patch: Partial<ArchNode> = {}): ArchNode {
   return { ...createArchNode(kind, id, { x: 0, y: 0 }), ...patch, id };
@@ -25,6 +26,11 @@ function graph(nodes: ArchNode[], edges: ArchitectureGraph["edges"] = []): Archi
 const topOf = (g: ArchitectureGraph, id: string) => g.nodes.find((n) => n.id === id)!.position.y;
 
 describe("autoLayout — flow mode", () => {
+  it("lays out a zone-stripped projection exactly like a graph that never had zones", () => {
+    const clean = graph([node("a", "service"), node("b", "datastore")], [{ id: "ab", source: "a", target: "b", kind: "sync", label: "" }]);
+    const withZone = { ...clean, nodes: [...clean.nodes, node("region", "region")], edges: [...clean.edges, { id: "zone-edge", source: "region", target: "a", kind: "sync" as const, label: "" }] };
+    expect(autoLayout(splitInfraOnly(withZone).view)).toEqual(autoLayout(clean));
+  });
   it("assigns finite positions to every node", () => {
     const g = graph(
       [node("a", "service"), node("b", "datastore")],

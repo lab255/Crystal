@@ -298,6 +298,8 @@ export function filterRoutesForMovedEndpoints(
  * Edges live at the nearest scope containing both endpoints. That is the
  * detail ELK's hierarchy support relies on: leaving every edge on the root
  * makes nested endpoints route as if their parent boundaries did not exist.
+ * Architecture callers pass `splitInfraOnly(graph).view`; ELK's exact-visit
+ * assertions therefore cover only nodes belonging to that projection.
  */
 export async function elkAutoLayout(
   graph: ArchitectureGraph,
