@@ -23,6 +23,7 @@ import {
   attributedOpenQuestions,
   buildSystemOverview,
   computeReviewFindings,
+  createCrossInfraOverlay,
   facetIndexProjection,
   isQuestionOpen,
   migrateLegacyToOverlay,
@@ -842,6 +843,13 @@ export async function startCrystalServer(opts: {
     "codemap.details": ({ ws, modules, prefer }) =>
       registry.get(ws).codemap.bulkDetails(modules, prefer),
     "codemap.cross": () => registry.crossMap(),
+    // Cross-project infrastructure — placeholder handlers keeping the bridge
+    // surface whole until the server projection + hub overlay store land.
+    "infra.cross": async () => ({ projects: [], shared: [], generatedAt: new Date().toISOString() }),
+    "infra.crossOverlay.get": async () => ({ overlay: createCrossInfraOverlay() }),
+    "infra.crossOverlay.save": async () => {
+      throw new Error("Cross-infra overlay persistence is not available yet");
+    },
     "codemap.overview": async ({ ws }) => {
       const rt = registry.get(ws);
       const { index } = await rt.codeindex.get();
