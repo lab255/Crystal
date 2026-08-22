@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.35.0 (2026-08-22)
+
+### Features
+
+- wire cross-project infra scope, zone-safe canvas commits, Overview entry ([`185ed57`](https://github.com/lab255/Crystal/commit/185ed57))
+- typed-target Deployment view, env-scoped zones, adoptable externals, C4Deployment export ([`9c3564c`](https://github.com/lab255/Crystal/commit/9c3564c))
+- cross-project infra projection, hub overlay store, event translation ([`22c9774`](https://github.com/lab255/Crystal/commit/22c9774))
+- cross-project infrastructure scene + client store ([`0ec6d93`](https://github.com/lab255/Crystal/commit/0ec6d93))
+- typed deployment targets, env-scoped zones, cross-infra bridge contract ([`1f71bce`](https://github.com/lab255/Crystal/commit/1f71bce))
+
 ## v0.34.0 (2026-08-22)
 
 ### Features
