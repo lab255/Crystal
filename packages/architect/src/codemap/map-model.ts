@@ -266,10 +266,8 @@ export interface MapSceneInput extends FileBuildInput {
   /** Manual module positions (drag overrides), by module path. */
   positions?: ReadonlyMap<string, { x: number; y: number }>;
   /**
-   * Per-module layout footprints (the members-level estimate). When present,
-   * dagre lays modules out at these sizes regardless of what is currently
-   * expanded, so sliding the level of detail never re-arranges the map —
-   * collapsed cards sit centered in the slot their exposed form would fill.
+   * Per-module layout footprints (the members-level estimate). Expanded
+   * modules reserve these slots; collapsed modules always use card geometry.
    */
   layoutSizes?: ReadonlyMap<string, { w: number; h: number }>;
   /** Per-module member totals for the header badge (module path → count). */
@@ -573,7 +571,7 @@ export function buildMapScene(input: MapSceneInput): MapScene {
   g.setGraph({ rankdir: "TB", nodesep: 56, ranksep: 96, marginx: 24, marginy: 24 });
   g.setDefaultEdgeLabel(() => ({}));
   for (const b of moduleBuilds) {
-    const reserve = input.layoutSizes?.get(b.module.path);
+    const reserve = b.expanded ? input.layoutSizes?.get(b.module.path) : undefined;
     g.setNode(b.module.path, {
       width: Math.max(b.w, reserve?.w ?? 0),
       height: Math.max(b.h, reserve?.h ?? 0),
@@ -880,20 +878,39 @@ export function expandedFileFootprint(symbolCount: number): { w: number; h: numb
 }
 
 /**
- * A module's members-level footprint — every file expanded to its symbol
- * chips — for the LoD-stable layout (`MapSceneInput.layoutSizes`). Mirrors
- * the geometry `buildMapScene` produces when everything is expanded, so the
- * fully exposed view fits exactly the slots coarser levels were laid out on.
+ * A module's members-level footprint. Mirrors the capped geometry rendered at
+ * members LoD: capped expansion files are expanded, other displayed files are
+ * collapsed, and a final card represents files beyond the display cap.
  */
 export function memberFootprint(
   detail: CodeModuleDetail,
   symbolCountOf: (path: string) => number,
+  expansionFiles: readonly string[] = detail.files.map((file) => file.path),
 ): { w: number; h: number } {
+  const expanded = new Set(expansionFiles);
+  const shownFiles = detail.files.slice(0, MAX_FILE_CARDS_PER_MODULE);
+  const shownPaths = new Set(shownFiles.map((file) => file.path));
+  for (const file of detail.files) {
+    if (expanded.has(file.path) && !shownPaths.has(file.path)) {
+      shownFiles.push(file);
+      shownPaths.add(file.path);
+    }
+  }
+  const items = shownFiles.map((file) => {
+    const fp = expanded.has(file.path)
+      ? expandedFileFootprint(symbolCountOf(file.path))
+      : { w: FILE_COLLAPSED_W, h: FILE_COLLAPSED_H };
+    return { id: file.path, w: fp.w, h: fp.h };
+  });
+  if (detail.files.length > shownFiles.length) {
+    items.push({
+      id: `overflow:${detail.module.path}`,
+      w: FILE_COLLAPSED_W,
+      h: FILE_COLLAPSED_H,
+    });
+  }
   const packed = packGrid(
-    detail.files.map((f) => {
-      const fp = expandedFileFootprint(symbolCountOf(f.path));
-      return { id: f.path, w: fp.w, h: fp.h };
-    }),
+    items,
     MODULE_INNER_MAX_W,
   );
   return {

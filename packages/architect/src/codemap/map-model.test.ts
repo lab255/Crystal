@@ -636,28 +636,52 @@ describe("membershipLensCore", () => {
 });
 
 describe("buildMapScene — reserved layout", () => {
-  it("spaces modules by their member footprint while rendering collapsed cards", () => {
-    const plain = buildMapScene(input());
-    const reserved = buildMapScene(
+  it("ignores footprint slots for collapsed modules and keeps the overview compact", () => {
+    const modules = Array.from({ length: 20 }, (_, i) => ({
+      path: `packages/p${i}`,
+      name: `p${i}`,
+      fileCount: 200,
+    }));
+    const deps = modules.slice(1).map((module, i) => ({
+      source: module.path,
+      target: modules[i]!.path,
+      weight: 1,
+    }));
+    const scene = buildMapScene(
       input({
-        layoutSizes: new Map([
-          ["packages/core", { w: 900, h: 700 }],
-          ["packages/ui", { w: 900, h: 700 }],
-        ]),
+        summary: { modules, deps, fileTotal: 4000, generatedAt: "2026-07-06T00:00:00Z" },
+        layoutSizes: new Map(
+          modules.map((module) => [module.path, { w: 900, h: 20_000 }]),
+        ),
       }),
     );
-    const gapOf = (scene: ReturnType<typeof buildMapScene>) => {
-      const core = scene.nodes.find((n) => n.id === moduleId("packages/core"))!;
-      const ui = scene.nodes.find((n) => n.id === moduleId("packages/ui"))!;
-      return Math.abs(
-        core.position.y + core.height! / 2 - (ui.position.y + ui.height! / 2),
-      );
-    };
-    expect(gapOf(reserved)).toBeGreaterThan(gapOf(plain));
-    // cards themselves stay collapsed-size, centered in the reserved slot
-    const core = reserved.nodes.find((n) => n.id === moduleId("packages/core"))!;
-    expect(core.width).toBe(MODULE_COLLAPSED_W);
-    expect(core.height).toBe(MODULE_COLLAPSED_H);
+    expect(
+      scene.nodes.every(
+        (node) => node.width === MODULE_COLLAPSED_W && node.height === MODULE_COLLAPSED_H,
+      ),
+    ).toBe(true);
+    const bottom = Math.max(...scene.nodes.map((node) => node.position.y + node.height!));
+    const top = Math.min(...scene.nodes.map((node) => node.position.y));
+    expect(bottom - top).toBeLessThan(5_000);
+  });
+
+  it("uses a footprint slot only for the expanded module", () => {
+    const scene = buildMapScene(input({
+      moduleDetails: new Map([["packages/core", coreDetail()]]),
+      expandedModules: new Set(["packages/core"]),
+      layoutSizes: new Map([
+        ["packages/core", { w: 900, h: 700 }],
+        ["packages/ui", { w: 900, h: 20_000 }],
+      ]),
+    }));
+    const core = scene.nodes.find((node) => node.id === moduleId("packages/core"))!;
+    const ui = scene.nodes.find((node) => node.id === moduleId("packages/ui"))!;
+    const centerGap = Math.abs(
+      core.position.y + core.height! / 2 - (ui.position.y + ui.height! / 2),
+    );
+    expect(centerGap).toBe(700 / 2 + MODULE_COLLAPSED_H / 2 + 96);
+    expect(ui.width).toBe(MODULE_COLLAPSED_W);
+    expect(ui.height).toBe(MODULE_COLLAPSED_H);
   });
 });
 
@@ -685,6 +709,28 @@ describe("LoD footprints", () => {
       w: FILE_EXPANDED_W * 2 + GAP + MODULE_PAD * 2,
       h: MODULE_HEADER_H + fileH + MODULE_PAD,
     });
+  });
+
+  it("memberFootprint applies file-card and expansion caps", () => {
+    const files = Array.from({ length: 200 }, (_, i) => ({
+      path: `packages/core/src/f${i}.ts`,
+      name: `f${i}.ts`,
+      dir: "src",
+      importCount: 0,
+      exportCount: 24,
+    }));
+    const detail: CodeModuleDetail = {
+      module: { path: "packages/core", name: "core", fileCount: files.length },
+      files,
+      edges: [],
+      moduleDeps: [],
+      truncated: false,
+    };
+    const expansion = files.slice(0, 14).map((file) => file.path);
+    const fp = memberFootprint(detail, () => 24, expansion);
+    const uncapped = memberFootprint(detail, () => 24);
+    expect(fp.h).toBeLessThan(5_000);
+    expect(fp.h).toBeLessThan(uncapped.h / 2);
   });
 });
 
