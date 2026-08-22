@@ -137,6 +137,21 @@ function input(over: Partial<MapSceneInput> = {}): MapSceneInput {
   };
 }
 
+const sceneGeometry = (scene: ReturnType<typeof buildMapScene>) => ({
+  nodes: scene.nodes
+    .map((node) => ({
+      id: node.id,
+      parentId: node.parentId,
+      position: node.position,
+      width: node.width,
+      height: node.height,
+    }))
+    .sort((a, b) => a.id.localeCompare(b.id)),
+  edges: scene.edges
+    .map((edge) => ({ id: edge.id, source: edge.source, target: edge.target }))
+    .sort((a, b) => a.id.localeCompare(b.id)),
+});
+
 describe("moduleOfPath", () => {
   it("picks the longest matching module prefix", () => {
     const mods = summary().modules;
@@ -168,6 +183,23 @@ describe("packGrid", () => {
 });
 
 describe("buildMapScene — collapsed overview", () => {
+  it("is permutation-invariant without sorting caller module or dep arrays in place", () => {
+    const original = summary();
+    original.deps.push({ source: "packages/core", target: ".", weight: 1 });
+    const moduleOrder = original.modules.map((module) => module.path);
+    const depOrder = original.deps.map((dep) => `${dep.source}->${dep.target}`);
+    const expected = sceneGeometry(buildMapScene(input({ summary: original })));
+    const permuted: CodeMapSummary = {
+      ...original,
+      modules: [...original.modules].reverse(),
+      deps: [...original.deps].reverse(),
+    };
+
+    expect(sceneGeometry(buildMapScene(input({ summary: permuted })))).toEqual(expected);
+    expect(original.modules.map((module) => module.path)).toEqual(moduleOrder);
+    expect(original.deps.map((dep) => `${dep.source}->${dep.target}`)).toEqual(depOrder);
+  });
+
   it("renders modules as top-level containers with aggregated dep edges", () => {
     const scene = buildMapScene(input());
     // "." has no files and no deps — filtered out
@@ -214,6 +246,31 @@ describe("buildMapScene — expanded module", () => {
     const core = scene.nodes.find((n) => n.id === moduleId("packages/core"))!;
     expect(core.width!).toBeGreaterThan(MODULE_COLLAPSED_W);
     expect((core.data as ModuleNodeData).expanded).toBe(true);
+  });
+
+  it("packs file rectangles identically under detail permutations without mutating them", () => {
+    const detail = coreDetail();
+    const fileOrder = detail.files.map((file) => file.path);
+    const expected = sceneGeometry(
+      buildMapScene(
+        input({
+          moduleDetails: new Map([["packages/core", detail]]),
+          expandedModules: new Set(["packages/core"]),
+        }),
+      ),
+    );
+    const reversed = { ...detail, files: [...detail.files].reverse() };
+    const actual = sceneGeometry(
+      buildMapScene(
+        input({
+          moduleDetails: new Map([["packages/core", reversed]]),
+          expandedModules: new Set(["packages/core"]),
+        }),
+      ),
+    );
+
+    expect(actual).toEqual(expected);
+    expect(detail.files.map((file) => file.path)).toEqual(fileOrder);
   });
 
   it("expands a file into symbol chips, exported first", () => {

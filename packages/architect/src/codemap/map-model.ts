@@ -548,7 +548,9 @@ export function buildMapScene(input: MapSceneInput): MapScene {
     }
 
     const packed = packGrid(
-      files.map((f) => ({ id: f.node.id, w: f.w, h: f.h })),
+      files
+        .map((f) => ({ id: f.node.id, w: f.w, h: f.h }))
+        .sort((a, b) => a.id.localeCompare(b.id)),
       MODULE_INNER_MAX_W,
     );
     for (const f of files) {
@@ -564,6 +566,7 @@ export function buildMapScene(input: MapSceneInput): MapScene {
       h: MODULE_HEADER_H + packed.height + MODULE_PAD,
     });
   }
+  moduleBuilds.sort((a, b) => a.module.path.localeCompare(b.module.path));
 
   // top-level layout: dagre over module containers with their computed sizes,
   // top-to-bottom so dependencies read downward like the diagram view
@@ -584,8 +587,16 @@ export function buildMapScene(input: MapSceneInput): MapScene {
     modulePathSet.has(d.source) &&
     modulePathSet.has(d.target) &&
     (!lens || lens.modules.has(d.source) || lens.modules.has(d.target));
-  for (const d of summary.deps) {
-    if (depVisible(d)) g.setEdge(d.source, d.target);
+  const visibleDeps = summary.deps
+    .filter(depVisible)
+    .sort(
+      (a, b) =>
+        a.source.localeCompare(b.source) ||
+        a.target.localeCompare(b.target) ||
+        a.weight - b.weight,
+    );
+  for (const d of visibleDeps) {
+    g.setEdge(d.source, d.target);
   }
   dagre.layout(g);
 
@@ -634,8 +645,7 @@ export function buildMapScene(input: MapSceneInput): MapScene {
   /* ---- edges ---- */
   const edges: RfEdge[] = [];
   let hiddenSelectionEdges = 0;
-  for (const d of summary.deps) {
-    if (!depVisible(d)) continue;
+  for (const d of visibleDeps) {
     edges.push(depEdge(d.source, d.target, d.weight, marks?.[`dep:${d.source}->${d.target}`]));
   }
 
