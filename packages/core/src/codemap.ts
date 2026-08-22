@@ -58,9 +58,27 @@ export interface CodeModuleDep {
   weight: number;
 }
 
+/**
+ * Files the analyzer deliberately skipped: generated code (built-in
+ * detection) plus `.crystal/codemap.json` excludes. Excluded files are
+ * invisible to every projection — module file lists, deps, the system
+ * overview, surfaces — so the counts here are the only trace they leave.
+ */
+export interface CodeMapExclusions {
+  /** Total excluded files. */
+  files: number;
+  /** Heaviest excluded roots, descending by file count (capped). */
+  roots: { path: string; files: number }[];
+}
+
 export interface CodeMapSummary {
   modules: CodeModule[];
   deps: CodeModuleDep[];
+  /**
+   * Generated/excluded code skipped by the analyzer. Optional so older
+   * summaries stay valid; absent means nothing was excluded.
+   */
+  excluded?: CodeMapExclusions;
   /**
    * External services detected from the codebase's npm imports (databases,
    * caches, queues, SaaS APIs…) — see `external-services.ts`. Optional so
@@ -154,8 +172,13 @@ export interface CodeFileDetail {
   exports: CodeSymbol[];
   /** Every top-level symbol (exported and internal), with source ranges. */
   symbols: CodeSymbol[];
-  /** Workspace-relative paths of files importing this one. */
+  /** Workspace-relative paths of files importing this one (capped). */
   importedBy: string[];
+  /**
+   * Total importer count when `importedBy` was capped (a generated barrel
+   * can have hundreds of importers); absent when the list is complete.
+   */
+  importedByTotal?: number;
 }
 
 /* ------------------------------------------------------------------ */
