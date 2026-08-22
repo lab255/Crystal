@@ -6,7 +6,7 @@ import {
   type ArchitectureGraph,
   type C4View,
 } from "@crystal/core";
-import { exportMermaidC4, sanitizeMermaidId } from "./export-mermaid.js";
+import { exportMermaidC4, exportMermaidC4Deployment, sanitizeMermaidId } from "./export-mermaid.js";
 
 function node(id: string, patch: Partial<ArchNode> = {}): ArchNode {
   return {
@@ -146,5 +146,49 @@ describe("exportMermaidC4", () => {
     expect(forward.indexOf('Rel(a, z, "A")')).toBeLessThan(
       forward.indexOf('Rel(z, a, "Z")'),
     );
+  });
+});
+
+describe("exportMermaidC4Deployment", () => {
+  it("emits stable nested deployment boundaries and placed relationships", () => {
+    const region = { ...createArchNode("region", "Singapore", { x: 10, y: 20 }), id: "zone:sg" };
+    const api = { ...createArchNode("service", "API", { x: 0, y: 0 }), id: "svc:api", tech: ["Node.js"], description: "HTTP API", placements: { prod: { targetId: "tgt:ecs", target: "ECS", runtime: "fargate" } } };
+    const db = { ...createArchNode("datastore", "DB", { x: 0, y: 0 }), id: "svc:db", tech: ["Postgres"], description: "Primary", placements: { prod: { targetId: "tgt:rds", target: "RDS", runtime: "" } } };
+    const graph = { ...createArchitectureGraph("Payments"), environments: [{ id: "prod", name: "Production", kind: "cloud" as const, targets: [{ id: "tgt:ecs", name: "ECS", kind: "compute" as const, tech: "Fargate", region: "ap-southeast-1", zone: "zone:sg" }, { id: "tgt:rds", name: "RDS", kind: "compute" as const, zone: "missing" }] }], nodes: [db, region, api], edges: [{ id: "edge:z", source: "svc:api", target: "svc:db", kind: "data" as const, label: "reads" }] };
+    expect(exportMermaidC4Deployment(graph, "prod")).toBe(`C4Deployment
+title Payments — Production
+
+Deployment_Node(prod, "Production", "cloud") {
+  Deployment_Node(zone_sg, "Singapore", "region") {
+    Deployment_Node(tgt_ecs, "ECS", "Fargate · ap-southeast-1") {
+      Container(svc_api, "API", "Node.js", "HTTP API")
+    }
+  }
+  Deployment_Node(tgt_rds, "RDS", "") {
+    Container(svc_db, "DB", "Postgres", "Primary")
+  }
+}
+
+Rel(svc_api, svc_db, "reads")
+`);
+  });
+
+  it("renders dangling target ids in the same synthesized fallback group as the canvas", () => {
+    const api = { ...createArchNode("service", "API", { x: 0, y: 0 }), id: "api", placements: { prod: { targetId: "gone", target: "", runtime: "" } } };
+    const graph = { ...createArchitectureGraph("App"), environments: [{ id: "prod", name: "Prod", kind: "cloud" as const, targets: [] }], nodes: [api] };
+    const mermaid = exportMermaidC4Deployment(graph, "prod");
+    expect(mermaid).toContain('Deployment_Node(gone, "Unknown target", "")');
+    expect(mermaid).toContain('Container(api, "API"');
+  });
+
+  it("allocates distinct deterministic aliases when sanitized deployment ids collide", () => {
+    const a = { ...createArchNode("service", "A", { x: 0, y: 0 }), id: "svc:a", placements: { prod: { targetId: "target:a", target: "A", runtime: "" } } };
+    const b = { ...createArchNode("service", "B", { x: 0, y: 0 }), id: "svc-a", placements: { prod: { targetId: "target-a", target: "B", runtime: "" } } };
+    const graph = { ...createArchitectureGraph("App"), environments: [{ id: "prod", name: "Prod", kind: "cloud" as const, targets: [{ id: "target:a", name: "A", kind: "other" as const }, { id: "target-a", name: "B", kind: "other" as const }] }], nodes: [a, b] };
+    const mermaid = exportMermaidC4Deployment(graph, "prod");
+    expect(mermaid).toContain('Deployment_Node(target_a, "B"');
+    expect(mermaid).toContain('Deployment_Node(target_a_2, "A"');
+    expect(mermaid).toContain('Container(svc_a, "B"');
+    expect(mermaid).toContain('Container(svc_a_2, "A"');
   });
 });

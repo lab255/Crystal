@@ -7,11 +7,14 @@ import {
 } from "@crystal/core";
 import {
   environmentPlacementCount,
+  environmentSubgraph,
   groupLayer,
   infraGroups,
+  infraTargetBandStart,
   knownTargets,
   layerBands,
   placedEdges,
+  targetMemberColumns,
   zoneNestingRejection,
 } from "./infra.js";
 
@@ -19,12 +22,18 @@ function node(id: string, kind: ArchNode["kind"], placements: ArchNode["placemen
   return { ...createArchNode(kind, id, { x: 0, y: 0 }), id, placements };
 }
 
+const targets = [
+  { id: "tgt_ecs", name: "aws / ecs", kind: "compute" as const },
+  { id: "tgt_vercel", name: "vercel", kind: "paas" as const },
+  { id: "tgt_postgres", name: "postgres", kind: "compute" as const },
+  { id: "tgt_misc", name: "misc", kind: "other" as const },
+];
 function graph(nodes: ArchNode[], edges: ArchitectureGraph["edges"] = []): ArchitectureGraph {
-  return { ...createArchitectureGraph("g"), nodes, edges };
+  return { ...createArchitectureGraph("g"), environments: [{ id: "prod", name: "Prod", kind: "cloud", targets }, { id: "staging", name: "Staging", kind: "cloud", targets }], nodes, edges };
 }
 
-const ecs = { target: "aws / ecs", runtime: "fargate" };
-const vercel = { target: "vercel", runtime: "" };
+const ecs = { targetId: "tgt_ecs", target: "aws / ecs", runtime: "fargate" };
+const vercel = { targetId: "tgt_vercel", target: "vercel", runtime: "" };
 
 describe("infraGroups", () => {
   it("groups placed components by target and lists the rest as unplaced", () => {
@@ -40,9 +49,9 @@ describe("infraGroups", () => {
       node("memo", "note"), // notes never appear
     ]);
     const { groups, unplaced } = infraGroups(g, "prod");
-    expect(groups.map((x) => [x.target, x.nodes.map((n) => n.id)])).toEqual([
-      ["aws / ecs", ["api", "worker"]],
-      ["vercel", ["web"]],
+    expect(groups.map((x) => [x.target.id, x.nodes.map((n) => n.id)])).toEqual([
+      ["tgt_ecs", ["api", "worker"]],
+      ["tgt_vercel", ["web"]],
     ]);
     expect(unplaced.map((n) => n.id)).toEqual(["db"]);
   });
@@ -52,6 +61,18 @@ describe("infraGroups", () => {
     const { groups, unplaced } = infraGroups(g, "prod");
     expect(groups).toEqual([]);
     expect(unplaced.map((n) => n.id)).toEqual(["api"]);
+  });
+});
+
+describe("fallback target packing", () => {
+  it("starts below the deepest visible zone", () => {
+    expect(infraTargetBandStart(720, true)).toBe(824);
+    expect(infraTargetBandStart(96, false)).toBe(96);
+  });
+
+  it("uses the viewport aspect to grow beyond three member columns", () => {
+    expect(targetMemberColumns(24, 4, { width: 190, height: 58 })).toBe(5);
+    expect(targetMemberColumns(24, 0.8, { width: 190, height: 58 })).toBe(2);
   });
 });
 
@@ -68,24 +89,37 @@ describe("placedEdges", () => {
   });
 });
 
+describe("environmentSubgraph", () => {
+  it("keeps placed components and only edges induced by them", () => {
+    const g = graph(
+      [node("a", "service", { prod: ecs }), node("b", "service", { prod: vercel }), node("c", "note", { prod: ecs }), node("d", "service")],
+      [{ id: "ab", source: "a", target: "b", kind: "sync", label: "" }, { id: "ad", source: "a", target: "d", kind: "sync", label: "" }],
+    );
+    const scoped = environmentSubgraph(g, "prod");
+    expect(scoped.nodes.map((item) => item.id)).toEqual(["a", "b"]);
+    expect(scoped.edges.map((edge) => edge.id)).toEqual(["ab"]);
+    expect(scoped.environments).toBe(g.environments);
+  });
+});
+
 describe("layerBands", () => {
   it("orders target groups entry → service → data → unlayered by majority layer", () => {
     const bands = layerBands([
-      { target: "postgres", nodes: [node("db", "datastore"), node("q", "queue")] },
-      { target: "vercel", nodes: [node("web", "frontend")] },
-      { target: "ecs", nodes: [node("api", "service"), node("worker", "service"), node("cache", "datastore")] },
-      { target: "misc", nodes: [node("memo", "external", {})] }, // external → entry
+      { target: targets[2]!, nodes: [node("db", "datastore"), node("q", "queue")] },
+      { target: targets[1]!, nodes: [node("web", "frontend")] },
+      { target: targets[0]!, nodes: [node("api", "service"), node("worker", "service"), node("cache", "datastore")] },
+      { target: targets[3]!, nodes: [node("memo", "external", {})] }, // external → entry
     ]);
-    expect(bands.map((b) => [b.layer, b.groups.map((g) => g.target)])).toEqual([
+    expect(bands.map((b) => [b.layer, b.groups.map((g) => g.target.name)])).toEqual([
       ["entry", ["vercel", "misc"]],
-      ["service", ["ecs"]],
+      ["service", ["aws / ecs"]],
       ["data", ["postgres"]],
     ]);
   });
 
   it("respects explicit layer overrides via groupLayer", () => {
     const middleware = { ...node("mw", "service"), layer: "entry" as const };
-    expect(groupLayer({ target: "edge", nodes: [middleware] })).toBe("entry");
+    expect(groupLayer({ target: targets[3]!, nodes: [middleware] })).toBe("entry");
   });
 });
 
@@ -95,7 +129,7 @@ describe("knownTargets", () => {
       node("a", "service", { prod: ecs, staging: ecs }),
       node("b", "frontend", { prod: vercel }),
     ]);
-    expect(knownTargets(g)).toEqual(["aws / ecs", "vercel"]);
+    expect(knownTargets(g).map((target) => target.id)).toEqual(["tgt_ecs", "tgt_misc", "tgt_postgres", "tgt_vercel"]);
   });
 });
 
@@ -111,7 +145,9 @@ describe("destructive deployment edits", () => {
   });
 
   it("explains rejected zone nesting narrowly", () => {
-    expect(zoneNestingRejection("vpc", "subnet")).toBe("A VPC can't nest inside a subnet");
+    expect(zoneNestingRejection("vpc", "subnet")).toBe("A VPC cannot be nested inside a subnet.");
     expect(zoneNestingRejection("subnet", "vpc")).toBeNull();
+    expect(zoneNestingRejection("namespace", "cluster")).toBeNull();
+    expect(zoneNestingRejection("zone", "region")).toBeNull();
   });
 });

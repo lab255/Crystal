@@ -14,10 +14,21 @@ import {
   type ElkRoute,
   type ElkRouteLabel,
 } from "./elk-layout.js";
+import { splitInfraOnly } from "./arch-view-filter.js";
 
 type Size = { width: number; height: number };
 type Point = { x: number; y: number };
 type Box = Point & Size;
+
+describe("ELK infra projection contract", () => {
+  it("accepts a stripped graph without exact-visit assertions", async () => {
+    const clean = graph([node("a", "service"), node("b", "service")], [{ id: "ab", source: "a", target: "b", kind: "sync", label: "" }]);
+    const withZone = { ...clean, nodes: [...clean.nodes, node("vpc", "vpc")] };
+    const dims = new Map(clean.nodes.map((item) => [item.id, { width: 200, height: 100 }]));
+    const result = await elkAutoLayout(splitInfraOnly(withZone).view, { dims });
+    expect(result.graph.nodes.map((item) => item.id).sort()).toEqual(["a", "b"]);
+  });
+});
 
 function node(id: string, kind: ArchNodeKind, patch: Partial<ArchNode> = {}): ArchNode {
   return { ...createArchNode(kind, id, { x: 0, y: 0 }), ...patch, id };

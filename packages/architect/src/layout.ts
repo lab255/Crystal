@@ -50,6 +50,8 @@ export interface AutoLayoutOptions {
  * Auto-layout, scope by scope: siblings under the same parent are laid out
  * using only the edges that stay inside that scope. Container sizes are
  * preserved; children of containers are positioned parent-relative.
+ * Callers rendering the architecture view must pass `splitInfraOnly(graph).view`;
+ * deployment zones are intentionally outside this entry point's layout domain.
  */
 export function autoLayout(
   graph: ArchitectureGraph,

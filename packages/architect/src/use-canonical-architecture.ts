@@ -23,6 +23,7 @@ import {
   useWorkspaces,
 } from "@crystal/client";
 import { autoLayoutFitted } from "./layout.js";
+import { reinjectInfraOnly, splitInfraOnly } from "./arch-view-filter.js";
 import { buildSystemCardFacts, systemCardSlot } from "./system-card.js";
 import { reconcileCanonicalOverlay } from "./canonical-overlay.js";
 
@@ -302,7 +303,9 @@ export function useCanonicalArchitecture(options?: {
         if (card) reserve.set(id, systemCardSlot(card));
       }
     }
-    const laid = autoLayoutFitted(composed, { mode: "flow", reserve });
+    const { view: architectureView, infraOnly } = splitInfraOnly(composed);
+    const laidView = autoLayoutFitted(architectureView, { mode: "flow", reserve });
+    const laid = reinjectInfraOnly(laidView, infraOnly);
     // Auto-layout owns every node without an explicit x/y override — manual
     // nodes included until their first drag records one.
     const pinned = new Set<string>();

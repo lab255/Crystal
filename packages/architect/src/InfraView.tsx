@@ -44,21 +44,28 @@ import {
 } from "lucide-react";
 import {
   ARCH_KIND_OF_CATEGORY,
+  createArchNode,
   createLocalEnvironment,
+  duplicateEnvironment,
   isContainerKind,
+  moveDeployTarget,
+  removeEnvironment as removeEnvironmentFromGraph,
   topoOrderNodes,
   uid,
-  updateEnvironmentTargetLayout,
+  upsertDeployTarget,
   updateNodePlacement,
+  type ArchDeployTarget,
   type ArchEnvironment,
   type ArchNode,
   type ArchNodeKind,
   type ArchitectureGraph,
+  type CodeExternalDep,
   type CodeMapSummary,
+  type DiffMark,
   type DiffMarks,
 } from "@crystal/core";
-import { useNav, useWorkspaces } from "@crystal/client";
-import { Badge, Button, EmptyState, Input, Tooltip, cn } from "@crystal/ui";
+import { useNav, useNavUpdate, useWorkspaces } from "@crystal/client";
+import { Badge, Button, Dialog, DialogClose, DialogContent, EmptyState, Input, Tooltip, cn } from "@crystal/ui";
 import { CodeNode, type CodeNodeData, type CodeRfNode } from "./codemap/CodeNode.js";
 import { InlineRename } from "./ContextMenu.js";
 import { absolutePosition as graphAbsolutePosition, addNode as opAddNode, updateNode } from "./graph-ops.js";
@@ -66,15 +73,17 @@ import { DRAG_MIME, PALETTE_KINDS, Palette } from "./Palette.js";
 import {
   INFRA_ZONE_KINDS,
   environmentPlacementCount,
+  environmentSubgraph,
   infraGroups,
-  knownTargets,
+  infraTargetBandStart,
   layerBands,
   placedEdges,
+  targetMemberColumns,
   zoneNestingRejection,
   type InfraZoneKind,
 } from "./infra.js";
 import { detectedExternals, detectedInternalEdges, externalNodeId } from "./infra-deps.js";
-import { ACCENT_CSS, EDGE_KIND_STYLE, KIND_META, accentOf } from "./model.js";
+import { EDGE_KIND_STYLE, KIND_META, accentOf } from "./model.js";
 import { SimActionsContext, SimEditor, SimPanel, applyTrafficToEdges, useSimActions } from "./SimPanel.js";
 import {
   initialSimTickState,
@@ -86,6 +95,9 @@ import {
   type SimTotals,
 } from "./simulation.js";
 import { ExportMenu } from "./ExportMenu.js";
+import { exportMermaidC4Deployment } from "./export-mermaid.js";
+import { TargetInspector } from "./TargetInspector.js";
+import { DiffCornerBadge, diffBorderStyle, diffNodeClass } from "./nodes/diff-badge.js";
 
 /**
  * Deployment view — the C4 deployment diagram: the same architecture
@@ -121,6 +133,7 @@ const INFRA_PALETTE_GROUPS = [
 ] as const;
 
 interface GroupData extends Record<string, unknown> {
+  targetId: string;
   target: string;
   count: number;
   /** True when the active environment is local development. */
@@ -280,13 +293,38 @@ const BandLabelNode = memo(function BandLabelNode({ data }: NodeProps<BandLabelR
   );
 });
 
+interface ExternalData extends Record<string, unknown> {
+  dep: CodeExternalDep;
+  kind: ArchNodeKind;
+  envName: string;
+  diff?: DiffMark;
+}
+type ExternalRfNode = RfNode<ExternalData>;
+const AdoptExternalContext = createContext<((dep: CodeExternalDep, x: number, y: number) => void) | null>(null);
+const ExternalNode = memo(function ExternalNode({ data }: NodeProps<ExternalRfNode>) {
+  const adopt = useContext(AdoptExternalContext);
+  const Icon = KIND_META[data.kind].icon;
+  return (
+    <div
+      className={cn("group relative h-full w-full rounded-lg border border-edge bg-surface-2 p-2 text-ink shadow-sm", diffNodeClass(data.diff))}
+      style={diffBorderStyle(data.diff)}
+    >
+      {data.diff ? <DiffCornerBadge mark={data.diff} /> : null}
+      <div className="flex items-center gap-2"><Icon className="h-3.5 w-3.5" /><span className="truncate text-xs font-medium">{data.dep.name}</span></div>
+      <div className="mt-1 truncate text-[10px] text-ink-faint">{data.dep.packages.slice(0, 3).join(", ")}</div>
+      <button type="button" className="nodrag absolute bottom-1.5 right-1.5 rounded-md border border-edge bg-surface-3 px-1.5 py-0.5 text-[9px] text-ink-muted opacity-0 hover:text-ink group-hover:opacity-100" onClick={(event) => { event.stopPropagation(); adopt?.(data.dep, event.clientX, event.clientY); }}>Place in {data.envName}</button>
+    </div>
+  );
+});
+
 const nodeTypes = {
   zone: ZoneNode,
   infragroup: InfraGroupNode,
   code: CodeNode,
   bandlabel: BandLabelNode,
+  external: ExternalNode,
 };
-type InfraRfNode = ZoneRfNode | GroupRfNode | CodeRfNode | BandLabelRfNode;
+type InfraRfNode = ZoneRfNode | GroupRfNode | CodeRfNode | BandLabelRfNode | ExternalRfNode;
 
 const CELL_W = 190;
 const CELL_H = 58;
@@ -361,7 +399,7 @@ function clampPin(at: { x: number; y: number }): { x: number; y: number } {
 }
 
 /** Remove only the zone itself, preserving nested zones and assigned targets at root. */
-function deleteZoneFromGraph(graph: ArchitectureGraph, zoneId: string): ArchitectureGraph {
+export function deleteZoneFromGraph(graph: ArchitectureGraph, zoneId: string): ArchitectureGraph {
   const zone = graph.nodes.find((node) => node.id === zoneId && isZoneKind(node.kind));
   if (!zone) return graph;
   const zoneAbs = graphAbsolutePosition(graph, zoneId);
@@ -375,19 +413,33 @@ function deleteZoneFromGraph(graph: ArchitectureGraph, zoneId: string): Architec
           : node,
       ),
     edges: graph.edges.filter((edge) => edge.source !== zoneId && edge.target !== zoneId),
-    environments: graph.environments.map((environment) => {
-      if (!environment.layout) return environment;
-      let changed = false;
-      const layout = Object.fromEntries(
-        Object.entries(environment.layout).map(([target, pin]) => {
-          if (pin.zone !== zoneId) return [target, pin];
-          changed = true;
-          return [target, { x: zoneAbs.x + pin.x, y: zoneAbs.y + pin.y }];
-        }),
-      );
-      return changed ? { ...environment, layout } : environment;
-    }),
+    environments: graph.environments.map((environment) => ({
+      ...environment,
+      ...(environment.infraNodeIds ? { infraNodeIds: environment.infraNodeIds.filter((id) => id !== zoneId) } : {}),
+      targets: (environment.targets ?? []).map((target) => target.zone === zoneId
+        ? { ...target, x: zoneAbs.x + (target.x ?? 0), y: zoneAbs.y + (target.y ?? 0), zone: undefined }
+        : target),
+    })),
   };
+}
+
+export function removeZoneFromEnvironment(graph: ArchitectureGraph, envId: string, zoneId: string): ArchitectureGraph {
+  const zoneAbs = graphAbsolutePosition(graph, zoneId);
+  const scoped = {
+    ...graph,
+    environments: graph.environments.map((environment) => environment.id === envId
+      ? {
+          ...environment,
+          infraNodeIds: (environment.infraNodeIds ?? []).filter((id) => id !== zoneId),
+          targets: (environment.targets ?? []).map((target) => target.zone === zoneId
+            ? { ...target, x: zoneAbs.x + (target.x ?? 0), y: zoneAbs.y + (target.y ?? 0), zone: undefined }
+            : target),
+        }
+      : environment),
+  };
+  return scoped.environments.some((environment) => environment.infraNodeIds?.includes(zoneId))
+    ? scoped
+    : deleteZoneFromGraph(scoped, zoneId);
 }
 
 /** Pending "name a new deployment target" prompt from a drop on empty canvas. */
@@ -396,6 +448,10 @@ interface TargetPrompt {
   x: number;
   y: number;
   nodeId: string;
+  /** Palette nodes are minted against the live graph only when the prompt settles. */
+  kind?: ArchNodeKind;
+  /** Detected externals are likewise materialized against the live graph at commit. */
+  externalDep?: CodeExternalDep;
 }
 
 export function InfraView(props: {
@@ -424,14 +480,28 @@ function InfraInner({
   summary?: CodeMapSummary | null;
   diffMarks?: DiffMarks | null;
 }) {
-  const [envId, setEnvId] = useState<string | null>(null);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const nav = useNavUpdate();
+  const navEnv = useNav((link) => link.architect?.env) ?? null;
+  const navSelection = useNav((link) => link.architect?.sel) ?? null;
+  const parsedSelection = useMemo(() => {
+    if (!navSelection) return { kind: "node" as const, id: null };
+    const match = /^(node|target|zone):(.+)$/.exec(navSelection);
+    return match
+      ? { kind: match[1] as "node" | "target" | "zone", id: match[2]! }
+      : { kind: "node" as const, id: navSelection };
+  }, [navSelection]);
+  const selectedId = parsedSelection.id;
+  const select = useCallback((kind: "node" | "target" | "zone", id: string | null) => {
+    nav({ architect: { sel: id ? `${kind}:${id}` : null } });
+  }, [nav]);
   const [addingEnv, setAddingEnv] = useState(false);
   const [newEnvName, setNewEnvName] = useState("");
   const [newEnvKind, setNewEnvKind] = useState<ArchEnvironment["kind"]>("cloud");
+  const [removeEnvId, setRemoveEnvId] = useState<string | null>(null);
   const [targetPrompt, setTargetPrompt] = useState<TargetPrompt | null>(null);
+  const [externalPlacement, setExternalPlacement] = useState<TargetPrompt | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const { screenToFlowPosition } = useReactFlow();
+  const { fitView, screenToFlowPosition } = useReactFlow();
   const canvasRef = useRef<HTMLDivElement>(null);
   const workspaceName = useWorkspaces(
     (s) => s.workspaces.find((workspace) => workspace.id === s.activeId)?.name ?? "workspace",
@@ -443,7 +513,9 @@ function InfraInner({
     if (!element) return;
     const measure = () => {
       const rect = element.getBoundingClientRect();
-      setCanvasSize({ width: Math.round(rect.width), height: Math.round(rect.height) });
+      const ratio = rect.height > 0 ? rect.width / rect.height : 1;
+      const quantized = Math.round(Math.max(0.5, Math.min(3, ratio)) * 4) / 4;
+      setCanvasSize({ width: Math.round(rect.height * quantized), height: Math.round(rect.height) });
     };
     measure();
     const observer = new ResizeObserver(measure);
@@ -461,6 +533,20 @@ function InfraInner({
   const graphRef = useRef(graph);
   graphRef.current = graph;
 
+  const activeEnv =
+    graph.environments.find((e) => e.id === navEnv) ??
+    graph.environments.find((e) => e.name.toLowerCase() === navEnv?.toLowerCase()) ??
+    graph.environments[0] ??
+    null;
+  const deploymentMermaid = useMemo(
+    () => activeEnv ? exportMermaidC4Deployment(graph, activeEnv.id) : null,
+    [graph, activeEnv?.id],
+  );
+
+  useEffect(() => {
+    if (activeEnv && navEnv !== activeEnv.id) nav({ architect: { env: activeEnv.id } });
+  }, [activeEnv, navEnv, nav]);
+
   const resizeZone = useCallback(
     (
       id: string,
@@ -473,10 +559,11 @@ function InfraInner({
   );
   const removeZone = useCallback(
     (id: string) => {
-      onChange(deleteZoneFromGraph(graphRef.current, id));
-      setSelectedId((selected) => (selected === id ? null : selected));
+      if (!activeEnv) return;
+      onChange(removeZoneFromEnvironment(graphRef.current, activeEnv.id, id));
+      if (selectedId === id) select("zone", null);
     },
-    [onChange],
+    [onChange, select, selectedId, activeEnv],
   );
   const zoneActions = useMemo(
     () => ({ resize: resizeZone, remove: removeZone }),
@@ -507,7 +594,7 @@ function InfraInner({
     const tick = () => {
       // Small wobble makes the numbers feel live without changing the story.
       const jitter = 0.92 + Math.random() * 0.16;
-      const result = simulate(graphRef.current, {
+      const result = simulate(environmentSubgraph(graphRef.current, activeEnv?.id ?? ""), {
         ingressRps: simIngress * jitter,
         chaos: simChaos,
         killed: simKilled,
@@ -520,7 +607,7 @@ function InfraInner({
     tick();
     const handle = setInterval(tick, SIM_TICK_MS);
     return () => clearInterval(handle);
-  }, [simOn, simIngress, simChaos, simKilled]);
+  }, [simOn, simIngress, simChaos, simKilled, activeEnv?.id]);
 
   const toggleSimKill = useCallback((id: string) => {
     setSimKilled((prev) => {
@@ -547,23 +634,19 @@ function InfraInner({
     [toggleSimKill, toggleSimKillTarget],
   );
 
-  // Local development is the default lens; cloud environments are opt-in.
-  const activeEnv =
-    graph.environments.find((e) => e.id === envId) ??
-    graph.environments.find((e) => e.kind === "local") ??
-    graph.environments[0] ??
-    null;
-
   const zones = useMemo(
-    () => topoOrderNodes(graph).filter((node) => isZoneKind(node.kind)),
-    [graph],
+    () => {
+      const visible = new Set(activeEnv?.infraNodeIds ?? []);
+      return topoOrderNodes(graph).filter((node) => isZoneKind(node.kind) && visible.has(node.id));
+    },
+    [graph, activeEnv],
   );
 
   const { groups, unplaced } = useMemo(
     () => infraGroups(graph, activeEnv?.id ?? ""),
     [graph, activeEnv?.id],
   );
-  const targets = useMemo(() => knownTargets(graph), [graph]);
+  const targets = useMemo(() => activeEnv?.targets ?? [], [activeEnv]);
 
   /* ---- detected dependencies (service-map overlay from the live code map) ---- */
   const [depsOn, setDepsOn] = useState(true);
@@ -572,7 +655,8 @@ function InfraInner({
   const detected = useMemo(() => {
     if (!depsOn || !summary || !activeEnv) return { externals: [], internal: [] };
     return {
-      externals: detectedExternals(graph, activeEnv.id, summary),
+      externals: detectedExternals(graph, activeEnv.id, summary).filter(({ dep }) =>
+        !graph.nodes.find((node) => node.id === externalNodeId(dep))?.placements[activeEnv.id]?.targetId),
       internal: detectedInternalEdges(graph, activeEnv.id, summary),
     };
   }, [depsOn, summary, graph, activeEnv]);
@@ -580,41 +664,24 @@ function InfraInner({
   const addEnvironment = () => {
     const name = newEnvName.trim();
     if (!name) return;
-    const env: ArchEnvironment = { id: uid("env"), name, kind: newEnvKind };
+    const env: ArchEnvironment = { id: uid("env"), name, kind: newEnvKind, infraNodeIds: [] };
     onChange({ ...graph, environments: [...graph.environments, env] });
-    setEnvId(env.id);
+    nav({ architect: { env: env.id } });
     setNewEnvName("");
     setAddingEnv(false);
   };
 
   const addLocalEnvironment = () => {
-    const env = createLocalEnvironment();
+    const env = { ...createLocalEnvironment(), infraNodeIds: [] };
     onChange({ ...graph, environments: [...graph.environments, env] });
-    setEnvId(env.id);
+    nav({ architect: { env: env.id } });
   };
 
-  const removeEnvironment = (id: string) => {
-    const environment = graph.environments.find((candidate) => candidate.id === id);
-    if (!environment) return;
-    const count = environmentPlacementCount(graph, id);
-    if (
-      !window.confirm(
-        `Remove environment “${environment.name}”? This removes ${count} placement${count === 1 ? "" : "s"}.`,
-      )
-    ) {
-      return;
-    }
-    // Strip the environment and every placement keyed by it.
-    onChange({
-      ...graph,
-      environments: graph.environments.filter((e) => e.id !== id),
-      nodes: graph.nodes.map((n) => {
-        if (!(id in n.placements)) return n;
-        const { [id]: _, ...rest } = n.placements;
-        return { ...n, placements: rest };
-      }),
-    });
-    if (envId === id) setEnvId(null);
+  const confirmRemoveEnvironment = () => {
+    if (!removeEnvId) return;
+    onChange(removeEnvironmentFromGraph(graph, removeEnvId));
+    if (activeEnv?.id === removeEnvId) nav({ architect: { env: null, sel: null } });
+    setRemoveEnvId(null);
   };
 
   /**
@@ -623,16 +690,16 @@ function InfraInner({
    * container; omitted, the grid packer owns the slot.
    */
   const placeOn = useCallback(
-    (nodeId: string, target: string, at?: { x: number; y: number }) => {
+    (nodeId: string, target: ArchDeployTarget, at?: { x: number; y: number }, sourceGraph = graphRef.current) => {
       if (!activeEnv) return;
-      const node = graph.nodes.find((n) => n.id === nodeId);
+      const node = sourceGraph.nodes.find((n) => n.id === nodeId);
       if (!node) return;
       const runtime = node.placements[activeEnv.id]?.runtime ?? "";
       const pin = at ? clampPin(at) : {};
-      onChange(updateNodePlacement(graph, nodeId, activeEnv.id, { target, runtime, ...pin }));
-      setSelectedId(nodeId);
+      onChange(updateNodePlacement(sourceGraph, nodeId, activeEnv.id, { targetId: target.id, target: target.name, runtime, ...pin }));
+      select("node", nodeId);
     },
-    [graph, onChange, activeEnv],
+    [onChange, activeEnv, select],
   );
 
   const scene = useMemo(() => {
@@ -641,10 +708,10 @@ function InfraInner({
     const zoneNodes: ZoneRfNode[] = [];
     const bandNodes: BandLabelRfNode[] = [];
     const targetNodes: GroupRfNode[] = [];
-    const componentNodes: CodeRfNode[] = [];
+    const componentNodes: (CodeRfNode | ExternalRfNode)[] = [];
     const isLocal = activeEnv.kind === "local";
     const cellH = simOn ? CELL_H_SIM : CELL_H;
-    const targetLayout = activeEnv.layout ?? {};
+    const targetLayout = new Map((activeEnv.targets ?? []).map((target) => [target.id, target]));
     const zoneIds = new Set(zones.map((zone) => zone.id));
     let rootBottom = LAYOUT_TOP;
 
@@ -686,7 +753,8 @@ function InfraInner({
         return { node, pinned };
       });
       const packedCount = members.filter((m) => !m.pinned).length;
-      const cols = Math.max(1, Math.min(3, Math.ceil(Math.sqrt(Math.max(packedCount, 1)))));
+      const viewportAspect = Math.max(0.75, canvasSize.width / Math.max(canvasSize.height, 1));
+      const cols = targetMemberColumns(packedCount || 1, viewportAspect, { width: CELL_W, height: cellH });
       const rows = Math.ceil(packedCount / cols);
       let width = GROUP_PAD * 2 + cols * CELL_W + (cols - 1) * CELL_GAP;
       let height =
@@ -705,7 +773,7 @@ function InfraInner({
       parentId?: string,
     ) => {
       const { group, members, cols, width, height } = geometry;
-      const groupId = `target:${group.target}`;
+      const groupId = `target:${group.target.id}`;
       targetNodes.push({
         id: groupId,
         type: "infragroup",
@@ -715,11 +783,13 @@ function InfraInner({
         height,
         zIndex: -1,
         draggable: true,
-        selectable: false,
+        selectable: true,
+        selected: parsedSelection.kind === "target" && selectedId === group.target.id,
         deletable: false,
         dragHandle: ".infra-target-header",
         data: {
-          target: group.target,
+          targetId: group.target.id,
+          target: group.target.name,
           count: group.nodes.length,
           local: isLocal,
           memberIds: group.nodes.map((node) => node.id),
@@ -761,8 +831,8 @@ function InfraInner({
     // A pin opts a target out of fallback packing. Its coordinates are
     // parent-relative when it names a live zone.
     for (const group of groups) {
-      const pin = targetLayout[group.target];
-      if (!pin) continue;
+      const pin = targetLayout.get(group.target.id);
+      if (pin?.x == null || pin.y == null) continue;
       const parentId = pin.zone && zoneIds.has(pin.zone) ? pin.zone : undefined;
       appendTarget(geometryFor(group), { x: pin.x, y: pin.y }, parentId);
     }
@@ -772,11 +842,14 @@ function InfraInner({
     const fallbackBands = layerBands(groups)
       .map((band) => ({
         ...band,
-        groups: band.groups.filter((group) => !targetLayout[group.target]),
+        groups: band.groups.filter((group) => {
+          const target = targetLayout.get(group.target.id);
+          return target?.x == null || target.y == null;
+        }),
       }))
       .filter((band) => band.groups.length > 0);
     const usableWidth = Math.max(680, canvasSize.width - 220);
-    let bandY = LAYOUT_TOP;
+    let bandY = infraTargetBandStart(rootBottom, zones.length > 0, LAYOUT_TOP, BAND_GAP);
     for (const band of fallbackBands) {
       const geometries = band.groups.map(geometryFor);
       const average = {
@@ -845,6 +918,7 @@ function InfraInner({
         selectable: false,
         deletable: false,
         data: {
+          targetId: "__detected__",
           target: "Detected from code",
           count: n,
           local: isLocal,
@@ -856,10 +930,9 @@ function InfraInner({
       });
       detected.externals.forEach(({ dep }, j) => {
         const kind = ARCH_KIND_OF_CATEGORY[dep.category];
-        const meta = KIND_META[kind];
         componentNodes.push({
           id: externalNodeId(dep),
-          type: "code",
+          type: "external",
           parentId: groupId,
           draggable: false,
           selectable: false,
@@ -869,12 +942,9 @@ function InfraInner({
             y: GROUP_HEADER + GROUP_PAD + Math.floor(j / cols) * (CELL_H + CELL_GAP),
           },
           data: {
-            title: dep.name,
-            subtitle: dep.packages.slice(0, 3).join(", "),
-            accent: ACCENT_CSS[meta.defaultAccent],
-            icon: meta.icon,
-            badge: `×${dep.weight}`,
-            boundary: true,
+            dep,
+            kind,
+            envName: activeEnv.name,
             diff: diffMarks?.[externalNodeId(dep)],
           },
         });
@@ -950,12 +1020,20 @@ function InfraInner({
       }
     }
     return { nodes, edges };
-  }, [graph, groups, zones, activeEnv, selectedId, simOn, detected, diffMarks, canvasSize]);
+  }, [graph, groups, zones, activeEnv, selectedId, parsedSelection.kind, simOn, detected, diffMarks, canvasSize]);
 
   // Drag needs live node state; the derived scene resets it (drop snaps back
   // unless the placement actually changed, in which case the scene moves it).
   const [nodes, setNodes, applyNodesChange] = useNodesState<InfraRfNode>(scene.nodes);
   useEffect(() => setNodes(scene.nodes), [scene, setNodes]);
+  const sceneIds = useMemo(() => scene.nodes.map((node) => node.id).sort().join("\n"), [scene.nodes]);
+  const previousSceneIds = useRef(sceneIds);
+  useEffect(() => {
+    if (previousSceneIds.current === sceneIds) return;
+    previousSceneIds.current = sceneIds;
+    const frame = requestAnimationFrame(() => requestAnimationFrame(() => void fitView({ padding: 0.2, maxZoom: 1.15 })));
+    return () => cancelAnimationFrame(frame);
+  }, [sceneIds, fitView]);
 
   const onNodesChange = useCallback(
     (changes: NodeChange<InfraRfNode>[]) => {
@@ -969,11 +1047,13 @@ function InfraInner({
         });
       if (removedZoneIds.length === 0) return;
       let next = graphRef.current;
-      for (const id of removedZoneIds) next = deleteZoneFromGraph(next, id);
+      for (const id of removedZoneIds) {
+        if (activeEnv) next = removeZoneFromEnvironment(next, activeEnv.id, id);
+      }
       onChange(next);
-      setSelectedId((selected) => (selected && removedZoneIds.includes(selected) ? null : selected));
+      if (selectedId && removedZoneIds.includes(selectedId)) select("zone", null);
     },
-    [applyNodesChange, onChange],
+    [applyNodesChange, onChange, select, selectedId, activeEnv],
   );
 
   // Sim decorations merge into live node state (never a scene rebuild), so a
@@ -987,7 +1067,7 @@ function InfraInner({
           if (deadCount === data.deadCount) return n;
           return { ...n, data: { ...data, deadCount } } as InfraRfNode;
         }
-        if (n.type !== "code") return n;
+        if (n.type !== "code" && n.type !== "external") return n;
         const sim = simResult?.nodes.get(n.id);
         if (!sim && !(n.data as CodeNodeData).sim) return n;
         return { ...n, data: { ...n.data, sim, simKilled: simKilled.has(n.id) } } as InfraRfNode;
@@ -1025,7 +1105,7 @@ function InfraInner({
   useEffect(() => {
     setNodes((prev) =>
       prev.map((n) => {
-        if (n.type !== "code") return n;
+        if (n.type !== "code" && n.type !== "external") return n;
         const miss = findMatchIds != null && !findMatchIds.has(n.id);
         const marked = n.className?.includes("arch-find-miss") ?? false;
         if (miss === marked) return n;
@@ -1148,7 +1228,7 @@ function InfraInner({
         const zone = zoneAtPoint(center);
         const zoneAbs = zone ? rfAbsolutePosition(nodes, zone.id) : { x: 0, y: 0 };
         onChange(
-          updateEnvironmentTargetLayout(graphRef.current, activeEnv.id, data.target, {
+          moveDeployTarget(graphRef.current, activeEnv.id, data.targetId, {
             x: Math.round(abs.x - zoneAbs.x),
             y: Math.round(abs.y - zoneAbs.y),
             ...(zone ? { zone: zone.id } : {}),
@@ -1164,15 +1244,16 @@ function InfraInner({
         y: abs.y + (node.measured?.height ?? node.height ?? CELL_H) / 2,
       };
       const hit = groupAtPoint(center);
-      const target = hit ? (hit.data as GroupData).target : null;
-      const current = parent ? (parent.data as GroupData).target : null;
-      if (target && hit && target !== current) {
+      const targetId = hit ? (hit.data as GroupData).targetId : null;
+      const currentId = parent ? (parent.data as GroupData).targetId : null;
+      const target = activeEnv?.targets?.find((candidate) => candidate.id === targetId);
+      if (target && hit && targetId !== currentId) {
         // Crossed into another target — re-place, pinned where it landed.
         const hitAbs = rfAbsolutePosition(nodes, hit.id);
         placeOn(node.id, target, { x: abs.x - hitAbs.x, y: abs.y - hitAbs.y });
         return;
       }
-      if (target && target === current) {
+      if (target && targetId === currentId) {
         // Moved within its own target — pin the card where it was left; the
         // recomputed scene renders it there, so no snap-back.
         placeOn(node.id, target, node.position);
@@ -1204,10 +1285,10 @@ function InfraInner({
         { x: 0, y: 0 },
       );
       onChange(next);
-      setSelectedId(node.id);
+      select("node", node.id);
       return node.id;
     },
-    [graph, onChange],
+    [graph, onChange, select],
   );
 
   const addZoneAt = useCallback(
@@ -1225,11 +1306,17 @@ function InfraInner({
         position,
         parent?.id ?? null,
       );
-      onChange(updateNode(withNode, node.id, { size }));
-      setSelectedId(node.id);
+      const sized = updateNode(withNode, node.id, { size });
+      onChange({
+        ...sized,
+        environments: sized.environments.map((environment) => environment.id === activeEnv?.id
+          ? { ...environment, infraNodeIds: [...new Set([...(environment.infraNodeIds ?? []), node.id])] }
+          : environment),
+      });
+      select("zone", node.id);
       return node.id;
     },
-    [graph, nodes, onChange],
+    [graph, nodes, onChange, activeEnv, select],
   );
 
   const onPaletteAdd = useCallback(
@@ -1261,7 +1348,10 @@ function InfraInner({
       const nodeId = evt.dataTransfer.getData(INFRA_DRAG_MIME);
       if (nodeId) {
         evt.preventDefault();
-        if (hit) placeOn(nodeId, (hit.data as GroupData).target, cardAt);
+        if (hit) {
+          const target = activeEnv?.targets?.find((candidate) => candidate.id === (hit.data as GroupData).targetId);
+          if (target) placeOn(nodeId, target, cardAt);
+        }
         else setTargetPrompt({ x: evt.clientX, y: evt.clientY, nodeId });
         return;
       }
@@ -1281,26 +1371,25 @@ function InfraInner({
         return;
       }
       // Create + place in ONE graph change so undo/persistence see a single edit.
-      const { graph: next, node } = opAddNode(
-        graph,
-        kind,
-        `New ${KIND_META[kind].label.toLowerCase()}`,
-        { x: 0, y: 0 },
-      );
       if (hit) {
+        const { graph: next, node } = opAddNode(
+          graphRef.current,
+          kind,
+          `New ${KIND_META[kind].label.toLowerCase()}`,
+          { x: 0, y: 0 },
+        );
         const pin = cardAt ? clampPin(cardAt) : undefined;
         onChange(
           updateNodePlacement(next, node.id, activeEnv.id, {
+            targetId: (hit.data as GroupData).targetId,
             target: (hit.data as GroupData).target,
             runtime: "",
             ...pin,
           }),
         );
-        setSelectedId(node.id);
+        select("node", node.id);
       } else {
-        onChange(next);
-        setSelectedId(node.id);
-        setTargetPrompt({ x: evt.clientX, y: evt.clientY, nodeId: node.id });
+        setTargetPrompt({ x: evt.clientX, y: evt.clientY, nodeId: "", kind });
       }
     },
     [
@@ -1313,10 +1402,53 @@ function InfraInner({
       activeEnv,
       addZoneAt,
       zoneAtPoint,
+      select,
     ],
   );
 
-  const selectedNode = graph.nodes.find((n) => n.id === selectedId) ?? null;
+  const adoptExternal = useCallback((dep: CodeExternalDep, x: number, y: number) => {
+    if (!activeEnv) return;
+    const id = externalNodeId(dep);
+    setExternalPlacement({ x, y, nodeId: id, externalDep: dep });
+  }, [activeEnv]);
+
+  const materializePending = useCallback((prompt: TargetPrompt, source: ArchitectureGraph) => {
+    if (prompt.kind) {
+      const added = opAddNode(source, prompt.kind, `New ${KIND_META[prompt.kind].label.toLowerCase()}`, { x: 0, y: 0 });
+      return { graph: added.graph, nodeId: added.node.id };
+    }
+    if (prompt.externalDep && !source.nodes.some((node) => node.id === prompt.nodeId)) {
+      const kind = ARCH_KIND_OF_CATEGORY[prompt.externalDep.category];
+      const node = { ...createArchNode(kind, prompt.externalDep.name, { x: 0, y: 0 }), id: prompt.nodeId };
+      return { graph: { ...source, nodes: [...source.nodes, node] }, nodeId: node.id };
+    }
+    return { graph: source, nodeId: prompt.nodeId };
+  }, []);
+
+  const commitPendingPlacement = useCallback((prompt: TargetPrompt, target: ArchDeployTarget, createTarget = false) => {
+    if (!activeEnv) return;
+    const pending = materializePending(prompt, graphRef.current);
+    const withTarget = createTarget ? upsertDeployTarget(pending.graph, activeEnv.id, target) : pending.graph;
+    const node = withTarget.nodes.find((candidate) => candidate.id === pending.nodeId);
+    if (!node) return;
+    const runtime = node.placements[activeEnv.id]?.runtime ?? "";
+    onChange(updateNodePlacement(withTarget, pending.nodeId, activeEnv.id, { targetId: target.id, target: target.name, runtime }));
+    select("node", pending.nodeId);
+  }, [activeEnv, materializePending, onChange, select]);
+
+  const commitPaletteUnplaced = useCallback((prompt: TargetPrompt) => {
+    if (!prompt.kind) return;
+    const pending = materializePending(prompt, graphRef.current);
+    onChange(pending.graph);
+    select("node", pending.nodeId);
+  }, [materializePending, onChange, select]);
+
+  const selectedNode = parsedSelection.kind !== "target"
+    ? graph.nodes.find((n) => n.id === selectedId) ?? null
+    : null;
+  const selectedTarget = parsedSelection.kind === "target"
+    ? activeEnv?.targets?.find((target) => target.id === selectedId) ?? null
+    : null;
 
   if (graph.environments.length === 0) {
     return (
@@ -1369,7 +1501,7 @@ function InfraInner({
             >
               <button
                 type="button"
-                onClick={() => setEnvId(env.id)}
+                onClick={() => nav({ architect: { env: env.id, sel: null } })}
                 className="flex items-center gap-1 font-medium"
               >
                 {env.kind === "cloud" ? (
@@ -1381,7 +1513,21 @@ function InfraInner({
               </button>
               <button
                 type="button"
-                onClick={() => removeEnvironment(env.id)}
+                onClick={() => {
+                  const duplicated = duplicateEnvironment(graph, env.id);
+                  const created = duplicated.environments.at(-1);
+                  onChange(duplicated);
+                  if (created) nav({ architect: { env: created.id, sel: null } });
+                }}
+                className="hidden text-ink-faint hover:text-ink group-hover:block"
+                aria-label={`Duplicate environment ${env.name}`}
+                title="Duplicate environment"
+              >
+                <Plus className="h-3 w-3" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setRemoveEnvId(env.id)}
                 className="hidden text-ink-faint hover:text-danger group-hover:block"
                 aria-label={`Remove environment ${env.name}`}
               >
@@ -1473,6 +1619,7 @@ function InfraInner({
             canvasRef={canvasRef}
             workspace={workspaceName}
             view="infra"
+            mermaid={deploymentMermaid}
             onNotice={setNotice}
           />
         </div>
@@ -1483,6 +1630,7 @@ function InfraInner({
           <Palette groups={INFRA_PALETTE_GROUPS} onAdd={onPaletteAdd} />
         </div>
 
+        <AdoptExternalContext.Provider value={adoptExternal}>
         <ZoneActionsContext.Provider value={zoneActions}>
           <ReactFlow
             key={activeEnv?.id}
@@ -1492,9 +1640,11 @@ function InfraInner({
             onNodesChange={onNodesChange}
             onNodeDragStop={onNodeDragStop}
             onNodeClick={(_e, n) => {
-              if (n.type === "code" || n.type === "zone") setSelectedId(n.id);
+              if (n.type === "code") select("node", n.id);
+              else if (n.type === "zone") select("zone", n.id);
+              else if (n.type === "infragroup" && !(n.data as GroupData).detected) select("target", (n.data as GroupData).targetId);
             }}
-            onPaneClick={() => setSelectedId(null)}
+            onPaneClick={() => select("node", null)}
             onDrop={onCanvasDrop}
             onDragOver={(e) => {
               if (!acceptsCanvasDrag(e)) return;
@@ -1538,6 +1688,7 @@ function InfraInner({
             ) : null}
           </ReactFlow>
         </ZoneActionsContext.Provider>
+        </AdoptExternalContext.Provider>
 
         {groups.length === 0 && zones.length === 0 ? (
           <div className="pointer-events-none absolute inset-0 z-[5]">
@@ -1556,10 +1707,26 @@ function InfraInner({
             placeholder="New deployment target, e.g. aws us-east-1 / ecs"
             commitEmpty
             onCommit={(target) => {
-              placeOn(targetPrompt.nodeId, target);
+              if (!activeEnv) {
+                setTargetPrompt(null);
+                return;
+              }
+              const name = target.trim();
+              if (!name) {
+                commitPaletteUnplaced(targetPrompt);
+                setTargetPrompt(null);
+                return;
+              }
+              const key = (value: string) => value.trim().toLowerCase().replace(/\s+/g, " ");
+              const existing = (activeEnv.targets ?? []).find((candidate) => key(candidate.name) === key(name));
+              const deployTarget: ArchDeployTarget = existing ?? { id: uid("tgt"), name, kind: "other" };
+              commitPendingPlacement(targetPrompt, deployTarget, !existing);
               setTargetPrompt(null);
             }}
-            onCancel={() => setTargetPrompt(null)}
+            onCancel={() => {
+              commitPaletteUnplaced(targetPrompt);
+              setTargetPrompt(null);
+            }}
           />
         ) : null}
         {notice ? (
@@ -1587,7 +1754,18 @@ function InfraInner({
             targets={targets}
             graph={graph}
             onChange={onChange}
-            onClose={() => setSelectedId(null)}
+            onClose={() => select("node", null)}
+          />
+        ) : null}
+        {selectedTarget && activeEnv ? (
+          <TargetInspector
+            target={selectedTarget}
+            members={groups.find((group) => group.target.id === selectedTarget.id)?.nodes ?? []}
+            envId={activeEnv.id}
+            graph={graph}
+            onChange={onChange}
+            onSelectMember={(id) => select("node", id)}
+            onClose={() => select("target", null)}
           />
         ) : null}
         {selectedNode && isSimKind(selectedNode.kind) ? (
@@ -1622,7 +1800,7 @@ function InfraInner({
                   e.dataTransfer.setData(INFRA_DRAG_MIME, n.id);
                   e.dataTransfer.effectAllowed = "move";
                 }}
-                onClick={() => setSelectedId(n.id)}
+                onClick={() => select("node", n.id)}
                 className={cn(
                   "flex w-full cursor-grab items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs active:cursor-grabbing",
                   selectedId === n.id
@@ -1644,6 +1822,33 @@ function InfraInner({
           ) : null}
         </div>
       </aside>
+      <Dialog open={removeEnvId != null} onOpenChange={(open) => !open && setRemoveEnvId(null)}>
+        <DialogContent
+          title={`Remove environment “${graph.environments.find((environment) => environment.id === removeEnvId)?.name ?? ""}”?`}
+          description={removeEnvId ? `This removes ${environmentPlacementCount(graph, removeEnvId)} placement${environmentPlacementCount(graph, removeEnvId) === 1 ? "" : "s"}.` : undefined}
+        >
+          <div className="flex justify-end gap-2">
+            <DialogClose asChild><Button variant="ghost" size="sm">Cancel</Button></DialogClose>
+            <Button variant="danger" size="sm" onClick={confirmRemoveEnvironment}>Remove environment</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={externalPlacement != null} onOpenChange={(open) => !open && setExternalPlacement(null)}>
+        <DialogContent title={`Place detected service in ${activeEnv?.name ?? "environment"}`} description="Choose an existing deployment target or create a new one.">
+          <div className="space-y-1">
+            {targets.map((target) => (
+              <button key={target.id} type="button" className="block w-full rounded-lg border border-edge bg-surface-1 px-3 py-2 text-left text-xs text-ink-muted hover:bg-surface-2 hover:text-ink" onClick={() => {
+                if (externalPlacement) commitPendingPlacement(externalPlacement, target);
+                setExternalPlacement(null);
+              }}>{target.name}</button>
+            ))}
+            <Button variant="ghost" size="sm" onClick={() => {
+              if (externalPlacement) setTargetPrompt(externalPlacement);
+              setExternalPlacement(null);
+            }}><Plus className="h-3.5 w-3.5" /> New target…</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
     </SimActionsContext.Provider>
   );
@@ -1661,17 +1866,18 @@ function PlacementEditor({
   node: ArchNode;
   envId: string;
   envName: string;
-  targets: string[];
+  targets: ArchDeployTarget[];
   graph: ArchitectureGraph;
   onChange: (graph: ArchitectureGraph) => void;
   onClose: () => void;
 }) {
   const placement = node.placements[envId];
-  const [target, setTarget] = useState(placement?.target ?? "");
+  const [targetId, setTargetId] = useState(placement?.targetId ?? "");
   const [runtime, setRuntime] = useState(placement?.runtime ?? "");
 
-  const commit = (t: string, r: string) => {
-    onChange(updateNodePlacement(graph, node.id, envId, t.trim() ? { target: t.trim(), runtime: r.trim() } : null));
+  const commit = (id: string, r: string) => {
+    const target = targets.find((candidate) => candidate.id === id);
+    onChange(updateNodePlacement(graph, node.id, envId, target ? { targetId: target.id, target: target.name, runtime: r.trim() } : null));
   };
 
   return (
@@ -1688,19 +1894,14 @@ function PlacementEditor({
           <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-ink-faint">
             Target in {envName}
           </div>
-          <Input
-            list="crystal-infra-targets"
-            value={target}
-            onChange={(e) => setTarget(e.target.value)}
-            onBlur={() => commit(target, runtime)}
-            onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
-            placeholder="aws us-east-1 / ecs"
-          />
-          <datalist id="crystal-infra-targets">
-            {targets.map((t) => (
-              <option key={t} value={t} />
-            ))}
-          </datalist>
+          <select
+            value={targetId}
+            onChange={(event) => { setTargetId(event.target.value); commit(event.target.value, runtime); }}
+            className="h-8 w-full rounded-lg border border-edge bg-surface-2 px-2 text-xs text-ink outline-none"
+          >
+            <option value="">Unplaced</option>
+            {targets.map((target) => <option key={target.id} value={target.id}>{target.name}</option>)}
+          </select>
         </label>
         <label className="block">
           <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-ink-faint">
@@ -1709,7 +1910,7 @@ function PlacementEditor({
           <Input
             value={runtime}
             onChange={(e) => setRuntime(e.target.value)}
-            onBlur={() => commit(target, runtime)}
+            onBlur={() => commit(targetId, runtime)}
             onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
             placeholder="fargate ×3, k8s deployment, lambda…"
           />

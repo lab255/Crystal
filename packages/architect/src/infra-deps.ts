@@ -30,7 +30,7 @@ function placedByModule(graph: ArchitectureGraph, envId: string): Map<string, Ar
   for (const node of graph.nodes) {
     if (isContainerKind(node.kind) || node.kind === "note") continue;
     if (!node.codeModule) continue;
-    if (!node.placements[envId]?.target.trim()) continue;
+    if (!node.placements[envId]?.targetId) continue;
     byModule.set(node.codeModule, node);
   }
   return byModule;

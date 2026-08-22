@@ -72,7 +72,7 @@ export function ExportMenu({
     if (!mermaid) return;
     try {
       await navigator.clipboard.writeText(mermaid);
-      onNotice("Mermaid C4 copied to the clipboard.");
+      onNotice(`${view === "infra" ? "Mermaid C4Deployment" : "Mermaid C4"} copied to the clipboard.`);
     } catch (error) {
       onNotice(`Copy mermaid failed: ${errorMessage(error)}`);
     }
@@ -101,7 +101,7 @@ export function ExportMenu({
                 )
               }
             >
-              <FileCode2 className="h-3.5 w-3.5" /> Mermaid C4
+              <FileCode2 className="h-3.5 w-3.5" /> {view === "infra" ? "Mermaid C4Deployment" : "Mermaid C4"}
             </DropdownMenuItem>
             <DropdownMenuItem onSelect={() => void copyMermaid()}>
               <Clipboard className="h-3.5 w-3.5" /> Copy mermaid

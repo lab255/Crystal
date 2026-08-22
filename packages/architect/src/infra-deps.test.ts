@@ -24,7 +24,7 @@ function summary(partial: Partial<CodeMapSummary>): CodeMapSummary {
   return { modules: [], deps: [], fileTotal: 0, generatedAt: "", ...partial };
 }
 
-const prod = { prod: { target: "ecs", runtime: "" } };
+const prod = { prod: { targetId: "tgt_ecs", target: "ecs", runtime: "" } };
 
 describe("detectedInternalEdges", () => {
   it("maps module deps onto placed components", () => {

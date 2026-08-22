@@ -3,11 +3,14 @@ import {
   isContainerKind,
   layerOfNode,
   type ArchEdge,
+  type ArchDeployTarget,
   type ArchLayer,
   type ArchNode,
-  type ArchNodeKind,
   type ArchitectureGraph,
 } from "@crystal/core";
+
+export { INFRA_ZONE_KINDS, canNestZone, zoneNestingRejection } from "@crystal/core";
+export type { InfraZoneKind } from "@crystal/core";
 
 /**
  * Infrastructure view model — for one environment, group the architecture's
@@ -18,33 +21,8 @@ import {
  */
 
 export interface InfraGroup {
-  target: string;
+  target: ArchDeployTarget;
   nodes: ArchNode[];
-}
-
-export const INFRA_ZONE_KINDS = [
-  "vpc",
-  "subnet",
-  "securitygroup",
-] as const satisfies readonly ArchNodeKind[];
-export type InfraZoneKind = (typeof INFRA_ZONE_KINDS)[number];
-
-export function canNestZone(child: InfraZoneKind, parent: InfraZoneKind): boolean {
-  return child === "subnet"
-    ? parent === "vpc"
-    : child === "securitygroup"
-      ? parent === "vpc" || parent === "subnet"
-      : false;
-}
-
-export function zoneNestingRejection(
-  child: InfraZoneKind,
-  parent: InfraZoneKind,
-): string | null {
-  if (canNestZone(child, parent)) return null;
-  const label = (kind: InfraZoneKind) =>
-    kind === "vpc" ? "VPC" : kind === "subnet" ? "subnet" : "security group";
-  return `A ${label(child)} can't nest inside a ${label(parent)}`;
 }
 
 export function environmentPlacementCount(graph: ArchitectureGraph, envId: string): number {
@@ -60,19 +38,26 @@ export function infraGroups(
   graph: ArchitectureGraph,
   envId: string,
 ): { groups: InfraGroup[]; unplaced: ArchNode[] } {
-  const byTarget = new Map<string, ArchNode[]>();
+  const environment = graph.environments.find((candidate) => candidate.id === envId);
+  const targets = new Map((environment?.targets ?? []).map((target) => [target.id, target]));
+  const byTarget = new Map<string, { target: ArchDeployTarget; nodes: ArchNode[] }>();
   const unplaced: ArchNode[] = [];
   for (const node of placeableNodes(graph)) {
-    const target = node.placements[envId]?.target.trim();
-    if (!target) {
+    const placement = node.placements[envId];
+    if (!placement?.targetId) {
       unplaced.push(node);
       continue;
     }
-    byTarget.set(target, [...(byTarget.get(target) ?? []), node]);
+    const target = targets.get(placement.targetId) ?? {
+      id: placement.targetId,
+      name: placement.target || "Unknown target",
+      kind: "other" as const,
+    };
+    const group = byTarget.get(target.id) ?? { target, nodes: [] };
+    group.nodes.push(node);
+    byTarget.set(target.id, group);
   }
-  const groups = [...byTarget.entries()]
-    .map(([target, nodes]) => ({ target, nodes }))
-    .sort((a, b) => a.target.localeCompare(b.target));
+  const groups = [...byTarget.values()].sort((a, b) => a.target.id.localeCompare(b.target.id));
   return { groups, unplaced };
 }
 
@@ -80,10 +65,17 @@ export function infraGroups(
 export function placedEdges(graph: ArchitectureGraph, envId: string): ArchEdge[] {
   const placed = new Set(
     placeableNodes(graph)
-      .filter((n) => n.placements[envId]?.target.trim())
+      .filter((n) => n.placements[envId]?.targetId)
       .map((n) => n.id),
   );
   return graph.edges.filter((e) => placed.has(e.source) && placed.has(e.target));
+}
+
+/** Exact induced graph simulated by the deployment view for one environment. */
+export function environmentSubgraph(graph: ArchitectureGraph, envId: string): ArchitectureGraph {
+  const nodes = placeableNodes(graph).filter((node) => node.placements[envId]?.targetId);
+  const ids = new Set(nodes.map((node) => node.id));
+  return { ...graph, nodes, edges: graph.edges.filter((edge) => ids.has(edge.source) && ids.has(edge.target)) };
 }
 
 /** Majority layer of a target group's members (ties break toward the first counted). */
@@ -118,13 +110,26 @@ export function layerBands(
 }
 
 /** Every target used across all environments — suggestions for placement. */
-export function knownTargets(graph: ArchitectureGraph): string[] {
-  const targets = new Set<string>();
-  for (const node of graph.nodes) {
-    for (const placement of Object.values(node.placements)) {
-      const t = placement.target.trim();
-      if (t) targets.add(t);
-    }
+export function knownTargets(graph: ArchitectureGraph): ArchDeployTarget[] {
+  const targets = new Map<string, ArchDeployTarget>();
+  for (const environment of graph.environments) {
+    for (const target of environment.targets ?? []) targets.set(target.id, target);
   }
-  return [...targets].sort();
+  return [...targets.values()].sort((a, b) => a.id.localeCompare(b.id));
+}
+
+/** First fallback band y; zones reserve their complete root-space footprint. */
+export function infraTargetBandStart(rootBottom: number, hasZones: boolean, top = 96, gap = 104): number {
+  return Math.max(top, rootBottom + (hasZones ? gap : 0));
+}
+
+/** Aspect-aware grid width for target members; no fixed column ceiling. */
+export function targetMemberColumns(
+  count: number,
+  viewportAspect: number,
+  cell: { width: number; height: number },
+): number {
+  if (count <= 1) return 1;
+  const aspect = Math.max(0.75, viewportAspect);
+  return Math.max(1, Math.min(count, Math.round(Math.sqrt(count * aspect * (cell.height / cell.width)))));
 }
