@@ -119,6 +119,7 @@ import { exportMermaidC4Deployment } from "./export-mermaid.js";
 import { RemoveTargetDialog, TargetInspector } from "./TargetInspector.js";
 import { DiffCornerBadge, diffBorderStyle, diffNodeClass } from "./nodes/diff-badge.js";
 import { NoteNode } from "./nodes/NoteNode.js";
+import { ComposeSuggestions } from "./ComposeSuggestions.js";
 
 /**
  * Deployment view — the C4 deployment diagram: the same architecture
@@ -1791,6 +1792,10 @@ function InfraInner({
     <SimActionsContext.Provider value={simActions}>
     <div className="flex h-full min-h-0">
       <div ref={canvasRef} className="relative min-w-0 flex-1" tabIndex={-1}>
+        {/* Compose-derived topology suggestions (renders null without compose files) */}
+        <div className="absolute left-3 top-14 z-10">
+          <ComposeSuggestions graph={graph} environment={activeEnv ?? null} onAdopt={onChange} />
+        </div>
         {/* Environment switcher */}
         <div className="absolute left-3 top-3 z-10 flex max-w-[calc(100%-1.5rem)] flex-wrap items-center gap-1 rounded-xl border border-edge bg-surface-2/95 p-1 text-xs shadow-xl shadow-black/30 backdrop-blur">
           {graph.environments.map((env) => (
