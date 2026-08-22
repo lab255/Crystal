@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.39.0 (2026-08-22)
+
+### Features
+
+- interactive-phase incremental ELK path (dormant) + cold-solve identity regression ([`5d6b861`](https://github.com/lab255/Crystal/commit/5d6b861))
+
 ## v0.38.0 (2026-08-22)
 
 ### Features
