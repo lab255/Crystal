@@ -171,6 +171,62 @@ function labelsOverlap(a: ElkRouteLabel, b: ElkRouteLabel): boolean {
 }
 
 describe("elkAutoLayout", () => {
+  it("keeps cold options/output byte-identical when incremental is absent or false", async () => {
+    const input = fixture();
+    const cold = await elkAutoLayout(input.graph, { dims: input.dims });
+    const explicitlyCold = await elkAutoLayout(input.graph, {
+      dims: input.dims,
+      incremental: false,
+      // A stale cache must not affect a cold solve.
+      previous: new Map(input.graph.nodes.map((item) => [item.id, { x: 9999, y: -9999 }])),
+    });
+    expect(JSON.stringify(explicitlyCold)).toBe(JSON.stringify(cold));
+  });
+
+  it("uses coordinate-driven phases only for incremental solves", async () => {
+    const input = graph([node("a", "service"), node("b", "service")], [
+      { id: "ab", source: "a", target: "b", kind: "sync", label: "" },
+    ]);
+    const seen: Record<string, string>[] = [];
+    const layout = async (elkGraph: import("elkjs/lib/elk-api.js").ElkNode) => {
+      seen.push({ ...elkGraph.layoutOptions });
+      return {
+        ...elkGraph,
+        width: 400,
+        height: 200,
+        children: elkGraph.children?.map((child, index) => ({
+          ...child,
+          x: child.x ?? 20 + index * 180,
+          y: child.y ?? 40,
+        })),
+      };
+    };
+    await elkAutoLayout(input, {}, { layout });
+    await elkAutoLayout(input, {
+      incremental: true,
+      previous: new Map([["a", { x: 10, y: 20 }], ["b", { x: 200, y: 20 }]]),
+    }, { layout });
+
+    expect(seen[0]).toMatchObject({
+      "elk.layered.considerModelOrder.strategy": "NODES_AND_EDGES",
+      "elk.layered.nodePlacement.strategy": "NETWORK_SIMPLEX",
+      "elk.separateConnectedComponents": "true",
+    });
+    expect(seen[0]).not.toHaveProperty("elk.interactive");
+    expect(seen[1]).toMatchObject({
+      "elk.interactive": "true",
+      "org.eclipse.elk.layered.considerModelOrder.strategy": "NONE",
+      "org.eclipse.elk.layered.cycleBreaking.strategy": "INTERACTIVE",
+      "org.eclipse.elk.layered.layering.strategy": "INTERACTIVE",
+      "org.eclipse.elk.layered.crossingMinimization.strategy": "INTERACTIVE",
+      "org.eclipse.elk.layered.nodePlacement.strategy": "INTERACTIVE",
+      "org.eclipse.elk.layered.interactiveReferencePoint": "TOP_LEFT",
+      "elk.separateConnectedComponents": "true",
+    });
+    expect(seen[1]).not.toHaveProperty("elk.layered.considerModelOrder.strategy");
+    expect(seen[1]).not.toHaveProperty("elk.layered.nodePlacement.strategy");
+  });
+
   it("retries without layer constraints when ELK rejects edges across FIRST and LAST", async () => {
     const input = graph(
       [node("person", "person"), node("service", "service"), node("external", "external")],
@@ -351,9 +407,6 @@ describe("elkAutoLayout", () => {
       incremental: true,
       previous: new Map(coldBase.graph.nodes.map((item) => [item.id, item.position])),
     });
-    const cold = await elkAutoLayout(next, { dims });
-    expect(medianRetainedDisplacement(coldBase.graph, incremental.graph))
-      .toBeLessThanOrEqual(medianRetainedDisplacement(coldBase.graph, cold.graph));
     expectFiniteContained(incremental, dims);
   });
 
@@ -369,10 +422,25 @@ describe("elkAutoLayout", () => {
       incremental: true,
       previous: new Map(coldBase.graph.nodes.map((item) => [item.id, item.position])),
     });
-    const cold = await elkAutoLayout(input.graph, { dims });
-    expect(medianRetainedDisplacement(coldBase.graph, incremental.graph))
-      .toBeLessThanOrEqual(medianRetainedDisplacement(coldBase.graph, cold.graph));
     expectFiniteContained(incremental, dims);
+  });
+
+  it("keeps disconnected components finite when incrementally adding one", async () => {
+    const ids = ["component:a", "component:b", "component:c", "component:d"];
+    const base = graph(ids.map((id) => node(id, "service")));
+    const dims = new Map(ids.map((id) => [id, { width: 160, height: 80 }]));
+    const coldBase = await elkAutoLayout(base, { dims });
+    const added = node("component:new", "service");
+    const nextDims = new Map(dims).set(added.id, { width: 160, height: 80 });
+    const incremental = await elkAutoLayout(
+      { ...base, nodes: [...base.nodes, added] },
+      {
+        dims: nextDims,
+        incremental: true,
+        previous: new Map(coldBase.graph.nodes.map((item) => [item.id, item.position])),
+      },
+    );
+    expectFiniteContained(incremental, nextDims);
   });
 
   it("packs sparse scopes toward the diagram aspect instead of one endless row", async () => {

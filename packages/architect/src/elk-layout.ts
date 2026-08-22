@@ -14,7 +14,7 @@ export interface ElkLayoutOptions {
   aspectRatio?: number;
   /** Parent-relative positions from the last structurally similar solve. */
   previous?: ReadonlyMap<string, { x: number; y: number }>;
-  /** Enables ELK's conservative semi-interactive ordering hints. */
+  /** Enables ELK's coordinate-driven interactive phase strategies. */
   incremental?: boolean;
 }
 
@@ -95,12 +95,33 @@ function edgeLabelLayoutOptions(): Record<string, string> {
   };
 }
 
+function interactiveLayeredOptions(): Record<string, string> {
+  return {
+    // ELK 0.12's model-order strategy installs input-order processors during
+    // cycle breaking and crossing minimization. Its default is NONE; restore
+    // that default so the coordinate-driven INTERACTIVE phases own ordering.
+    "org.eclipse.elk.layered.considerModelOrder.strategy": "NONE",
+    "org.eclipse.elk.layered.cycleBreaking.strategy": "INTERACTIVE",
+    "org.eclipse.elk.layered.layering.strategy": "INTERACTIVE",
+    "org.eclipse.elk.layered.crossingMinimization.strategy": "INTERACTIVE",
+    "org.eclipse.elk.layered.nodePlacement.strategy": "INTERACTIVE",
+    "elk.interactive": "true",
+    // `previous` stores node top-left coordinates. TOP_LEFT keeps those hints
+    // stable when measured dimensions change; CENTER would shift the reference.
+    "org.eclipse.elk.layered.interactiveReferencePoint": "TOP_LEFT",
+    // Keep component splitting enabled. In the live 49-node components fixture,
+    // disabling it produced the same missing-node/crossing-explosion result as
+    // leaving it enabled, so there is no evidence to override the safe default.
+    "elk.separateConnectedComponents": "true",
+  };
+}
+
 function rootLayoutOptions(
   direction: "DOWN" | "RIGHT",
   aspectRatio: number,
   incremental: boolean,
 ): Record<string, string> {
-  return {
+  const options: Record<string, string> = {
     "elk.algorithm": "layered",
     "elk.direction": direction,
     "elk.hierarchyHandling": "INCLUDE_CHILDREN",
@@ -115,13 +136,13 @@ function rootLayoutOptions(
     "elk.separateConnectedComponents": "true",
     "elk.aspectRatio": String(aspectRatio),
     ...edgeLabelLayoutOptions(),
-    ...(incremental
-      ? {
-          "elk.interactive": "true",
-          "org.eclipse.elk.layered.crossingMinimization.semiInteractive": "true",
-        }
-      : {}),
   };
+  if (incremental) {
+    delete options["elk.layered.considerModelOrder.strategy"];
+    delete options["elk.layered.nodePlacement.strategy"];
+    Object.assign(options, interactiveLayeredOptions());
+  }
+  return options;
 }
 
 function finite(value: number | undefined, description: string): number {
@@ -423,6 +444,10 @@ export async function elkAutoLayout(
           layoutOptions["elk.algorithm"] = "rectpacking";
           layoutOptions["elk.aspectRatio"] = String(aspectRatio);
           layoutOptions["elk.spacing.nodeNode"] = "32";
+        } else if (opts.incremental) {
+          // INCLUDE_CHILDREN requires hierarchy-aware processors to match at
+          // every layered parent; root-only interactive strategies are invalid.
+          Object.assign(layoutOptions, interactiveLayeredOptions());
         }
       } else if (node.kind === "person") {
         layoutOptions[LAYER_CONSTRAINT_OPTION] = "FIRST";

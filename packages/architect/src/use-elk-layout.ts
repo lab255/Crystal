@@ -37,6 +37,12 @@ export interface AsyncWorkerResult<O> {
 
 const WORKER_STALL_MS = 60_000;
 // Ship cold-equivalent behavior first; A/B tests exercise the gated path directly.
+// DO NOT FLIP without a fresh visual A/B: the 2026-08-23 live experiment showed
+// the INTERACTIVE phase strategies cut median retained-node displacement
+// (1326px -> 272px on a 49-node components graph) but produce an unacceptable
+// long-edge/crossing explosion. The gated path is a tested foundation for
+// future stability work (post-hoc anchoring or constrained re-layout), not a
+// ready feature.
 const ENABLE_INCREMENTAL_ELK = false;
 
 /** @internal Exported for transport-policy tests without rendering React. */
