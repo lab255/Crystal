@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createArchNode, createArchitectureGraph } from "@crystal/core";
-import { removeInfraNodeFromEnvironment } from "./InfraView.js";
+import { infraGroupSceneNode, isInfraDropTarget, removeInfraNodeFromEnvironment } from "./InfraView.js";
 
 function fixture(shared: boolean) {
   const zone = { ...createArchNode("zone", "Zone", { x: 100, y: 200 }), id: "zone" };
@@ -39,5 +39,25 @@ describe("removeInfraNodeFromEnvironment", () => {
     const removed = removeInfraNodeFromEnvironment(shared, "b", "note");
     expect(removed.nodes.some((node) => node.id === "note")).toBe(false);
     expect(removed.edges).toEqual([]);
+  });
+});
+
+describe("deployment target scene", () => {
+  it("renders a declared empty target as a minimum-size component drop target", () => {
+    const target = fixture(false).environments[0]!.targets![0]!;
+    const sceneNode = infraGroupSceneNode(
+      { target, nodes: [] },
+      { x: 48, y: 96 },
+      { width: 218, height: 118 },
+      { local: false, selected: false, simActive: false },
+    );
+    expect(sceneNode).toMatchObject({
+      id: "target:t",
+      type: "infragroup",
+      width: 218,
+      height: 118,
+      data: { targetId: "t", count: 0, memberIds: [] },
+    });
+    expect(isInfraDropTarget(sceneNode)).toBe(true);
   });
 });

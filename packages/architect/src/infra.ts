@@ -49,7 +49,9 @@ export function infraGroups(
 ): { groups: InfraGroup[]; unplaced: ArchNode[] } {
   const environment = graph.environments.find((candidate) => candidate.id === envId);
   const targets = new Map((environment?.targets ?? []).map((target) => [target.id, target]));
-  const byTarget = new Map<string, { target: ArchDeployTarget; nodes: ArchNode[] }>();
+  const byTarget = new Map<string, { target: ArchDeployTarget; nodes: ArchNode[] }>(
+    [...targets.values()].map((target) => [target.id, { target, nodes: [] }]),
+  );
   const unplaced: ArchNode[] = [];
   for (const node of placeableNodes(graph)) {
     const placement = node.placements[envId];
@@ -114,6 +116,13 @@ export function environmentSubgraph(graph: ArchitectureGraph, envId: string): Ar
 
 /** Majority layer of a target group's members (ties break toward the first counted). */
 export function groupLayer(group: InfraGroup): ArchLayer | null {
+  if (group.nodes.length === 0) {
+    // Empty targets have no members to vote: hosting runtimes belong in the
+    // service band, while traffic-facing edge/static/device targets are entry.
+    if (["compute", "cluster", "serverless", "vm", "paas"].includes(group.target.kind)) return "service";
+    if (["edge", "static", "device"].includes(group.target.kind)) return "entry";
+    return null;
+  }
   const counts = new Map<ArchLayer, number>();
   for (const node of group.nodes) {
     const layer = layerOfNode(node);

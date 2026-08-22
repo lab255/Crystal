@@ -32,6 +32,22 @@ const MAX_AUTO_RETRIES = 3;
 const RETRY_BASE_DELAY_MS = 1_000;
 const EMPTY_STALE_IDS: readonly string[] = [];
 
+/** Ignore React Flow's mount/fit viewport callback until this session edits graph content. */
+export function shouldPersistCanonicalEdit(
+  rendered: ArchitectureGraph,
+  edited: ArchitectureGraph,
+  sessionHasUserEdit: boolean,
+): { persist: boolean; sessionHasUserEdit: boolean } {
+  const { viewport: _renderedViewport, ...renderedContent } = rendered;
+  const { viewport: _editedViewport, ...editedContent } = edited;
+  const contentChanged = JSON.stringify(renderedContent) !== JSON.stringify(editedContent);
+  const nextSessionHasUserEdit = sessionHasUserEdit || contentChanged;
+  return {
+    persist: contentChanged || nextSessionHasUserEdit,
+    sessionHasUserEdit: nextSessionHasUserEdit,
+  };
+}
+
 /**
  * The one canonical architecture, as a hook: fetches the overview + code map
  * (following `codemap.changed`), loads the overlay, derives, reconciles,
@@ -118,6 +134,12 @@ export function useCanonicalArchitecture(options?: {
   const requestIdRef = useRef(0);
   const inFlightRef = useRef<{ ws: string; requestId: number } | null>(null);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sessionHasUserEditRef = useRef(false);
+  const sessionWsRef = useRef(activeWs);
+  if (sessionWsRef.current !== activeWs) {
+    sessionWsRef.current = activeWs;
+    sessionHasUserEditRef.current = false;
+  }
   activeWsRef.current = activeWs;
   connectionRef.current = connection;
 
@@ -323,6 +345,9 @@ export function useCanonicalArchitecture(options?: {
   const commitEdited = useCallback(
     (edited: ArchitectureGraph) => {
       if (!derived || !rendered || !reconciled) return;
+      const decision = shouldPersistCanonicalEdit(rendered, edited, sessionHasUserEditRef.current);
+      sessionHasUserEditRef.current = decision.sessionHasUserEdit;
+      if (!decision.persist) return;
       updateArchOverlay(extractOverlay({ derived, rendered, edited, prev: reconciled }));
     },
     [derived, rendered, reconciled, updateArchOverlay],

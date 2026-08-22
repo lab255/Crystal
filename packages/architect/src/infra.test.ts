@@ -52,6 +52,8 @@ describe("infraGroups", () => {
     const { groups, unplaced } = infraGroups(g, "prod");
     expect(groups.map((x) => [x.target.id, x.nodes.map((n) => n.id)])).toEqual([
       ["tgt_ecs", ["api", "worker"]],
+      ["tgt_misc", []],
+      ["tgt_postgres", []],
       ["tgt_vercel", ["web"]],
     ]);
     expect(unplaced.map((n) => n.id)).toEqual(["db"]);
@@ -60,7 +62,12 @@ describe("infraGroups", () => {
   it("treats a placement in another environment as unplaced here", () => {
     const g = graph([node("api", "service", { staging: ecs })]);
     const { groups, unplaced } = infraGroups(g, "prod");
-    expect(groups).toEqual([]);
+    expect(groups.map((group) => [group.target.id, group.nodes])).toEqual([
+      ["tgt_ecs", []],
+      ["tgt_misc", []],
+      ["tgt_postgres", []],
+      ["tgt_vercel", []],
+    ]);
     expect(unplaced.map((n) => n.id)).toEqual(["api"]);
   });
 });
@@ -136,6 +143,13 @@ describe("layerBands", () => {
   it("respects explicit layer overrides via groupLayer", () => {
     const middleware = { ...node("mw", "service"), layer: "entry" as const };
     expect(groupLayer({ target: targets[3]!, nodes: [middleware] })).toBe("entry");
+  });
+
+  it("gives declared-but-empty targets a stable band from their kind", () => {
+    expect(groupLayer({ target: { id: "lambda", name: "Lambda", kind: "serverless" }, nodes: [] })).toBe("service");
+    expect(groupLayer({ target: { id: "cdn", name: "CDN", kind: "edge" }, nodes: [] })).toBe("entry");
+    expect(groupLayer({ target: { id: "phone", name: "Phone", kind: "device" }, nodes: [] })).toBe("entry");
+    expect(groupLayer({ target: { id: "misc", name: "Misc", kind: "other" }, nodes: [] })).toBeNull();
   });
 });
 

@@ -930,16 +930,16 @@ function DiagramsView({
   const commitC4 = useCallback(
     (edited: ArchitectureGraph) => {
       if (!c4Laid || !reconciled || !derived || !c4Projection) return;
-      updateArchOverlay(
-        applyC4Edit({
-          overlay: reconciled,
-          derived,
-          projected: c4Laid,
-          edited,
-          viewKey: viewKeyStr,
-          nodeRollup: c4Projection.nodeRollup,
-        }),
-      );
+      const next = applyC4Edit({
+        overlay: reconciled,
+        derived,
+        projected: c4Laid,
+        edited,
+        viewKey: viewKeyStr,
+        nodeRollup: c4Projection.nodeRollup,
+      });
+      if (next === reconciled) return;
+      updateArchOverlay(next);
     },
     [c4Laid, reconciled, derived, c4Projection, viewKeyStr, updateArchOverlay],
   );
