@@ -193,6 +193,34 @@ describe("deployment helpers", () => {
     expect(removed.nodes[0]!.placements.e).toBeUndefined();
   });
 
+  it("prunes only unreferenced environment-scoped notes", () => {
+    const graph = fixture();
+    graph.environments = [
+      { id: "e", name: "E", kind: "cloud", infraNodeIds: ["gone"], targets: [] },
+      { id: "keep", name: "Keep", kind: "cloud", infraNodeIds: ["shared"], targets: [] },
+    ];
+    graph.nodes = [
+      { ...createArchNode("note", "Gone", { x: 0, y: 0 }), id: "gone" },
+      { ...createArchNode("note", "Shared", { x: 0, y: 0 }), id: "shared" },
+    ];
+    const removed = removeEnvironment(graph, "e");
+    expect(removed.nodes.map((node) => node.id)).toEqual(["shared"]);
+  });
+
+  it("preserves an architecture-canvas note that the removed environment never referenced", () => {
+    const graph = fixture();
+    graph.environments = [
+      { id: "e", name: "E", kind: "cloud", infraNodeIds: ["owned"], targets: [] },
+      { id: "keep", name: "Keep", kind: "cloud", infraNodeIds: [], targets: [] },
+    ];
+    graph.nodes = [
+      { ...createArchNode("note", "Owned", { x: 0, y: 0 }), id: "owned" },
+      { ...createArchNode("note", "Canvas", { x: 0, y: 0 }), id: "canvas" },
+    ];
+    const removed = removeEnvironment(graph, "e");
+    expect(removed.nodes.map((node) => node.id)).toEqual(["canvas"]);
+  });
+
   it("retains shared zones, drops removed-zone edges, and reparents children", () => {
     const graph = fixture();
     graph.environments = [

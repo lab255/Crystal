@@ -330,16 +330,21 @@ export function duplicateEnvironment(graph: ArchitectureGraph, envId: string, na
 }
 
 /**
- * Remove an environment and its placement keys. Infra zones are pruned only
- * when every surviving environment has explicit, knowable membership.
+ * Remove an environment and its placement keys. The removed environment's own
+ * infra zones and notes are pruned when every survivor has explicit, knowable
+ * membership and none of them still references the node.
  */
 export function removeEnvironment(graph: ArchitectureGraph, envId: string): ArchitectureGraph {
-  if (!graph.environments.some((env) => env.id === envId)) return graph;
+  const removedEnvironment = graph.environments.find((env) => env.id === envId);
+  if (!removedEnvironment) return graph;
   const environments = graph.environments.filter((env) => env.id !== envId);
-  const canPruneZones = environments.every((env) => env.infraNodeIds !== undefined);
+  const canPruneInfra = environments.every((env) => env.infraNodeIds !== undefined);
   const retainedInfraIds = new Set(environments.flatMap((env) => env.infraNodeIds ?? []));
-  const removedNodeIds = new Set(canPruneZones
-    ? graph.nodes.filter((node) => isInfraZone(node.kind) && !retainedInfraIds.has(node.id)).map((node) => node.id)
+  const removedInfraIds = new Set(removedEnvironment.infraNodeIds ?? []);
+  const removedNodeIds = new Set(canPruneInfra
+    ? graph.nodes.filter((node) => removedInfraIds.has(node.id)
+      && (isInfraZone(node.kind) || node.kind === "note")
+      && !retainedInfraIds.has(node.id)).map((node) => node.id)
     : []);
   return {
     ...graph,

@@ -11,6 +11,7 @@ import {
   groupLayer,
   infraGroups,
   infraTargetEdges,
+  isEditableDeleteTarget,
   knownTargets,
   layerBands,
   placedEdges,
@@ -164,5 +165,17 @@ describe("destructive deployment edits", () => {
     expect(zoneNestingRejection("subnet", "vpc")).toBeNull();
     expect(zoneNestingRejection("namespace", "cluster")).toBeNull();
     expect(zoneNestingRejection("zone", "region")).toBeNull();
+  });
+});
+
+describe("deployment delete guard", () => {
+  it("recognizes editable controls and contenteditable descendants", () => {
+    const target = (matches: boolean, insideEditable = false) => ({
+      matches: () => matches,
+      closest: () => insideEditable ? {} : null,
+    }) as unknown as EventTarget;
+    expect(isEditableDeleteTarget(target(true))).toBe(true);
+    expect(isEditableDeleteTarget(target(false, true))).toBe(true);
+    expect(isEditableDeleteTarget(target(false))).toBe(false);
   });
 });
