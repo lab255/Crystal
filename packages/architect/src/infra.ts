@@ -12,6 +12,15 @@ import {
 export { INFRA_ZONE_KINDS, canNestZone, zoneNestingRejection } from "@crystal/core";
 export type { InfraZoneKind } from "@crystal/core";
 
+/** Delete/Backspace belongs to the focused editor control, never the canvas. */
+export function isEditableDeleteTarget(target: EventTarget | null): boolean {
+  const element = target as (EventTarget & Pick<Element, "matches" | "closest">) | null;
+  if (typeof element?.matches !== "function" || typeof element.closest !== "function") return false;
+  const editableSelector = "input, textarea, select, [contenteditable]:not([contenteditable='false'])";
+  return element.matches(editableSelector)
+    || element.closest("[contenteditable]:not([contenteditable='false'])") != null;
+}
+
 /**
  * Infrastructure view model — for one environment, group the architecture's
  * components by the deployment target they are placed on (a service-map

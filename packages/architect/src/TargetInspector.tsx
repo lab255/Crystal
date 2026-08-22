@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { MapPin, Trash2, X } from "lucide-react";
 import {
   TARGET_KINDS,
-  deleteDeployTarget,
   renameDeployTarget,
   upsertDeployTarget,
   type ArchDeployTarget,
@@ -12,17 +11,39 @@ import {
 } from "@crystal/core";
 import { Button, Dialog, DialogClose, DialogContent, Input } from "@crystal/ui";
 
-export function TargetInspector({ target, members, envId, graph, onChange, onSelectMember, onClose }: {
+export function RemoveTargetDialog({ target, memberCount, open, onOpenChange, onConfirm }: {
+  target: ArchDeployTarget | null;
+  memberCount: number;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent
+        title={`Remove target “${target?.name ?? ""}”?`}
+        description={`This also removes ${memberCount} placement${memberCount === 1 ? "" : "s"} from this environment.`}
+      >
+        <div className="flex justify-end gap-2">
+          <DialogClose asChild><Button variant="ghost" size="sm">Cancel</Button></DialogClose>
+          <Button variant="danger" size="sm" onClick={onConfirm}>Remove target</Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+export function TargetInspector({ target, members, envId, graph, onChange, onSelectMember, onRequestRemove, onClose }: {
   target: ArchDeployTarget;
   members: readonly ArchNode[];
   envId: string;
   graph: ArchitectureGraph;
   onChange: (graph: ArchitectureGraph) => void;
   onSelectMember: (nodeId: string) => void;
+  onRequestRemove: () => void;
   onClose: () => void;
 }) {
   const [draft, setDraft] = useState(target);
-  const [confirming, setConfirming] = useState(false);
   useEffect(() => setDraft(target), [target]);
 
   const patch = (next: ArchDeployTarget) => {
@@ -74,16 +95,8 @@ export function TargetInspector({ target, members, envId, graph, onChange, onSel
             </button>
           ))}
         </div>
-        <Button variant="ghost" size="xs" className="text-danger" onClick={() => setConfirming(true)}><Trash2 className="h-3 w-3" /> Remove target</Button>
+        <Button variant="ghost" size="xs" className="text-danger" onClick={onRequestRemove}><Trash2 className="h-3 w-3" /> Remove target</Button>
       </div>
-      <Dialog open={confirming} onOpenChange={setConfirming}>
-        <DialogContent title={`Remove target “${target.name}”?`} description={`This also removes ${members.length} placement${members.length === 1 ? "" : "s"} from this environment.`}>
-          <div className="flex justify-end gap-2">
-            <DialogClose asChild><Button variant="ghost" size="sm">Cancel</Button></DialogClose>
-            <Button variant="danger" size="sm" onClick={() => { onChange(deleteDeployTarget(graph, envId, target.id)); setConfirming(false); onClose(); }}>Remove target</Button>
-          </div>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

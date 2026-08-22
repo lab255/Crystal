@@ -33,12 +33,16 @@ import {
   Gauge,
   Globe2,
   GripVertical,
+  ListChecks,
   Laptop,
   MapPin,
   Play,
   Plus,
+  Pencil,
   Server,
   Skull,
+  StickyNote,
+  Trash2,
   Unplug,
   Waypoints,
   X,
@@ -48,8 +52,10 @@ import {
   createArchNode,
   createLocalEnvironment,
   duplicateEnvironment,
+  deleteDeployTarget,
   isContainerKind,
   moveDeployTarget,
+  renameDeployTarget,
   removeEnvironment as removeEnvironmentFromGraph,
   topoOrderNodes,
   uid,
@@ -65,8 +71,8 @@ import {
   type DiffMark,
   type DiffMarks,
 } from "@crystal/core";
-import { useNav, useNavUpdate, useWorkspaces } from "@crystal/client";
-import { Badge, Button, Dialog, DialogClose, DialogContent, EmptyState, Input, Tooltip, cn } from "@crystal/ui";
+import { useNav, useNavUpdate, useSymbolMenu, useWorkspaces } from "@crystal/client";
+import { Badge, Button, Dialog, DialogClose, DialogContent, EmptyState, Input, Tooltip, cn, useContextMenu, type MenuEntry } from "@crystal/ui";
 import { CodeNode, type CodeNodeData, type CodeRfNode } from "./codemap/CodeNode.js";
 import { InlineRename } from "./ContextMenu.js";
 import { absolutePosition as graphAbsolutePosition, addNode as opAddNode, updateNode } from "./graph-ops.js";
@@ -78,6 +84,7 @@ import {
   groupLayer,
   infraGroups,
   infraTargetEdges,
+  isEditableDeleteTarget,
   layerBands,
   placedEdges,
   targetMemberColumns,
@@ -96,7 +103,7 @@ import {
   type InfraTargetLayoutOutput,
 } from "./infra-layout.js";
 import { detectedExternals, detectedInternalEdges, externalNodeId } from "./infra-deps.js";
-import { EDGE_KIND_STYLE, KIND_META, accentOf } from "./model.js";
+import { EDGE_KIND_STYLE, KIND_META, accentOf, type ArchRfNode } from "./model.js";
 import { SimActionsContext, SimEditor, SimPanel, applyTrafficToEdges, useSimActions } from "./SimPanel.js";
 import {
   initialSimTickState,
@@ -109,8 +116,9 @@ import {
 } from "./simulation.js";
 import { ExportMenu } from "./ExportMenu.js";
 import { exportMermaidC4Deployment } from "./export-mermaid.js";
-import { TargetInspector } from "./TargetInspector.js";
+import { RemoveTargetDialog, TargetInspector } from "./TargetInspector.js";
 import { DiffCornerBadge, diffBorderStyle, diffNodeClass } from "./nodes/diff-badge.js";
+import { NoteNode } from "./nodes/NoteNode.js";
 
 /**
  * Deployment view — the C4 deployment diagram: the same architecture
@@ -139,10 +147,12 @@ const INFRA_COMPONENT_KINDS = PALETTE_KINDS.filter(
 const INFRA_PALETTE_KINDS: readonly ArchNodeKind[] = [
   ...INFRA_COMPONENT_KINDS,
   ...ZONE_KINDS,
+  "note",
 ];
 const INFRA_PALETTE_GROUPS = [
   { label: "Components", kinds: INFRA_COMPONENT_KINDS },
   { label: "Zones", kinds: ZONE_KINDS },
+  { label: "Notes", kinds: ["note"] },
 ] as const;
 
 interface GroupData extends Record<string, unknown> {
@@ -336,8 +346,10 @@ const nodeTypes = {
   code: CodeNode,
   bandlabel: BandLabelNode,
   external: ExternalNode,
+  note: NoteNode,
 };
-type InfraRfNode = ZoneRfNode | GroupRfNode | CodeRfNode | BandLabelRfNode | ExternalRfNode;
+type NoteRfNode = ArchRfNode & { type: "note" };
+type InfraRfNode = ZoneRfNode | GroupRfNode | CodeRfNode | BandLabelRfNode | ExternalRfNode | NoteRfNode;
 
 const CELL_W = 190;
 const CELL_H = 58;
@@ -460,23 +472,29 @@ export function deleteZoneFromGraph(graph: ArchitectureGraph, zoneId: string): A
   };
 }
 
-export function removeZoneFromEnvironment(graph: ArchitectureGraph, envId: string, zoneId: string): ArchitectureGraph {
-  const zoneAbs = graphAbsolutePosition(graph, zoneId);
+export function removeInfraNodeFromEnvironment(graph: ArchitectureGraph, envId: string, nodeId: string): ArchitectureGraph {
+  const node = graph.nodes.find((candidate) => candidate.id === nodeId);
+  if (!node || (!isZoneKind(node.kind) && node.kind !== "note")) return graph;
+  const zoneAbs = graphAbsolutePosition(graph, nodeId);
   const scoped = {
     ...graph,
     environments: graph.environments.map((environment) => environment.id === envId
       ? {
           ...environment,
-          infraNodeIds: (environment.infraNodeIds ?? []).filter((id) => id !== zoneId),
-          targets: (environment.targets ?? []).map((target) => target.zone === zoneId
+          infraNodeIds: (environment.infraNodeIds ?? []).filter((id) => id !== nodeId),
+          targets: isZoneKind(node.kind) ? (environment.targets ?? []).map((target) => target.zone === nodeId
             ? { ...target, x: zoneAbs.x + (target.x ?? 0), y: zoneAbs.y + (target.y ?? 0), zone: undefined }
-            : target),
+            : target) : environment.targets,
         }
       : environment),
   };
-  return scoped.environments.some((environment) => environment.infraNodeIds?.includes(zoneId))
-    ? scoped
-    : deleteZoneFromGraph(scoped, zoneId);
+  if (scoped.environments.some((environment) => environment.infraNodeIds?.includes(nodeId))) return scoped;
+  if (isZoneKind(node.kind)) return deleteZoneFromGraph(scoped, nodeId);
+  return {
+    ...scoped,
+    nodes: scoped.nodes.filter((candidate) => candidate.id !== nodeId),
+    edges: scoped.edges.filter((edge) => edge.source !== nodeId && edge.target !== nodeId),
+  };
 }
 
 /** Pending "name a new deployment target" prompt from a drop on empty canvas. */
@@ -535,10 +553,14 @@ function InfraInner({
   const [newEnvName, setNewEnvName] = useState("");
   const [newEnvKind, setNewEnvKind] = useState<ArchEnvironment["kind"]>("cloud");
   const [removeEnvId, setRemoveEnvId] = useState<string | null>(null);
+  const [confirmTargetId, setConfirmTargetId] = useState<string | null>(null);
+  const [renamePrompt, setRenamePrompt] = useState<{ id: string; kind: "node" | "target"; x: number; y: number } | null>(null);
   const [targetPrompt, setTargetPrompt] = useState<TargetPrompt | null>(null);
   const [externalPlacement, setExternalPlacement] = useState<TargetPrompt | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const { fitView, screenToFlowPosition } = useReactFlow();
+  const menu = useContextMenu();
+  const symbolMenu = useSymbolMenu();
   const updateNodeInternals = useUpdateNodeInternals();
   const canvasRef = useRef<HTMLDivElement>(null);
   const workspaceName = useWorkspaces(
@@ -599,8 +621,16 @@ function InfraInner({
   const removeZone = useCallback(
     (id: string) => {
       if (!activeEnv) return;
-      onChange(removeZoneFromEnvironment(graphRef.current, activeEnv.id, id));
+      onChange(removeInfraNodeFromEnvironment(graphRef.current, activeEnv.id, id));
       if (selectedId === id) select("zone", null);
+    },
+    [onChange, select, selectedId, activeEnv],
+  );
+  const removeInfraNode = useCallback(
+    (id: string) => {
+      if (!activeEnv) return;
+      onChange(removeInfraNodeFromEnvironment(graphRef.current, activeEnv.id, id));
+      if (selectedId === id) select("node", null);
     },
     [onChange, select, selectedId, activeEnv],
   );
@@ -680,6 +710,10 @@ function InfraInner({
     },
     [graph, activeEnv],
   );
+  const notes = useMemo(() => {
+    const visible = new Set(activeEnv?.infraNodeIds ?? []);
+    return graph.nodes.filter((node) => node.kind === "note" && visible.has(node.id));
+  }, [graph, activeEnv]);
 
   const { groups, unplaced } = useMemo(
     () => infraGroups(graph, activeEnv?.id ?? ""),
@@ -796,6 +830,7 @@ function InfraInner({
     if (!activeEnv) return { nodes: [] as InfraRfNode[], edges: [] as RfEdge[] };
 
     const zoneNodes: ZoneRfNode[] = [];
+    const noteNodes: NoteRfNode[] = [];
     const bandNodes: BandLabelRfNode[] = [];
     const targetNodes: GroupRfNode[] = [];
     const componentNodes: (CodeRfNode | ExternalRfNode)[] = [];
@@ -831,6 +866,19 @@ function InfraInner({
       });
       const abs = graphAbsolutePosition(graph, zone.id);
       rootBottom = Math.max(rootBottom, abs.y + size.height);
+    }
+
+    for (const note of notes) {
+      noteNodes.push({
+        id: note.id,
+        type: "note",
+        position: graphAbsolutePosition(graph, note.id),
+        draggable: true,
+        selectable: true,
+        deletable: false,
+        selected: parsedSelection.kind === "node" && selectedId === note.id,
+        data: { arch: note, diff: diffMarks?.[note.id] },
+      });
     }
 
     const appendTarget = (
@@ -1034,6 +1082,7 @@ function InfraInner({
     // React-flow requires every parent before its children.
     const nodes: InfraRfNode[] = [
       ...zoneNodes,
+      ...noteNodes,
       ...bandNodes,
       ...targetNodes,
       ...componentNodes,
@@ -1100,7 +1149,7 @@ function InfraInner({
       }
     }
     return { nodes, edges };
-  }, [graph, groups, zones, activeEnv, selectedId, parsedSelection.kind, simOn, detected, diffMarks, canvasSize, targetGeometries, infraLayout, infraLayoutInput]);
+  }, [graph, groups, zones, notes, activeEnv, selectedId, parsedSelection.kind, simOn, detected, diffMarks, canvasSize, targetGeometries, infraLayout, infraLayoutInput]);
 
   // Drag needs live node state; the derived scene resets it (drop snaps back
   // unless the placement actually changed, in which case the scene moves it).
@@ -1125,22 +1174,8 @@ function InfraInner({
   const onNodesChange = useCallback(
     (changes: NodeChange<InfraRfNode>[]) => {
       applyNodesChange(changes);
-      const removedZoneIds = changes
-        .filter((change) => change.type === "remove")
-        .map((change) => change.id)
-        .filter((id) => {
-          const node = graphRef.current.nodes.find((candidate) => candidate.id === id);
-          return node != null && isZoneKind(node.kind);
-        });
-      if (removedZoneIds.length === 0) return;
-      let next = graphRef.current;
-      for (const id of removedZoneIds) {
-        if (activeEnv) next = removeZoneFromEnvironment(next, activeEnv.id, id);
-      }
-      onChange(next);
-      if (selectedId && removedZoneIds.includes(selectedId)) select("zone", null);
     },
-    [applyNodesChange, onChange, select, selectedId, activeEnv],
+    [applyNodesChange],
   );
 
   // Sim decorations merge into live node state (never a scene rebuild), so a
@@ -1278,6 +1313,10 @@ function InfraInner({
 
   const onNodeDragStop = useCallback(
     (evt: MouseEvent | globalThis.TouchEvent, node: RfNode) => {
+      if (node.type === "note") {
+        onChange(updateNode(graphRef.current, node.id, { parentId: null, position: rfAbsolutePosition(nodes, node.id) }));
+        return;
+      }
       if (node.type === "zone") {
         const arch = graphRef.current.nodes.find((candidate) => candidate.id === node.id);
         if (!arch || !isZoneKind(arch.kind)) return;
@@ -1406,19 +1445,41 @@ function InfraInner({
     [graph, nodes, onChange, activeEnv, select],
   );
 
+  const addNoteAt = useCallback((point: { x: number; y: number }): string => {
+    if (!activeEnv) return "";
+    const { graph: withNode, node } = opAddNode(
+      graphRef.current,
+      "note",
+      "New note",
+      { x: Math.round(point.x - 104), y: Math.round(point.y - 36) },
+    );
+    onChange({
+      ...withNode,
+      environments: withNode.environments.map((environment) => environment.id === activeEnv.id
+        ? { ...environment, infraNodeIds: [...new Set([...(environment.infraNodeIds ?? []), node.id])] }
+        : environment),
+    });
+    select("node", node.id);
+    return node.id;
+  }, [activeEnv, onChange, select]);
+
   const onPaletteAdd = useCallback(
     (kind: ArchNodeKind) => {
-      if (!isZoneKind(kind)) {
-        addComponent(kind);
-        return;
-      }
       const rect = canvasRef.current?.getBoundingClientRect();
       const point = rect
         ? screenToFlowPosition({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 })
         : { x: 0, y: 0 };
+      if (kind === "note") {
+        addNoteAt(point);
+        return;
+      }
+      if (!isZoneKind(kind)) {
+        addComponent(kind);
+        return;
+      }
       addZoneAt(kind, point);
     },
-    [addComponent, addZoneAt, screenToFlowPosition],
+    [addComponent, addZoneAt, addNoteAt, screenToFlowPosition],
   );
 
   const onCanvasDrop = useCallback(
@@ -1445,6 +1506,10 @@ function InfraInner({
       const kind = evt.dataTransfer.getData(DRAG_MIME) as ArchNodeKind;
       if (!kind || !INFRA_PALETTE_KINDS.includes(kind) || !activeEnv) return;
       evt.preventDefault();
+      if (kind === "note") {
+        addNoteAt(point);
+        return;
+      }
       if (isZoneKind(kind)) {
         const parent = zoneAtPoint(point);
         if (parent) {
@@ -1488,6 +1553,7 @@ function InfraInner({
       onChange,
       activeEnv,
       addZoneAt,
+      addNoteAt,
       zoneAtPoint,
       select,
     ],
@@ -1537,6 +1603,157 @@ function InfraInner({
     ? activeEnv?.targets?.find((target) => target.id === selectedId) ?? null
     : null;
 
+  const requestTargetRemoval = useCallback((targetId: string) => {
+    setConfirmTargetId(targetId);
+    select("target", targetId);
+  }, [select]);
+  const confirmTarget = activeEnv?.targets?.find((target) => target.id === confirmTargetId) ?? null;
+  const confirmTargetMembers = confirmTarget
+    ? groups.find((group) => group.target.id === confirmTarget.id)?.nodes ?? []
+    : [];
+  const confirmRemoveTarget = useCallback(() => {
+    if (!activeEnv || !confirmTargetId) return;
+    onChange(deleteDeployTarget(graphRef.current, activeEnv.id, confirmTargetId));
+    setConfirmTargetId(null);
+    select("target", null);
+  }, [activeEnv, confirmTargetId, onChange, select]);
+
+  const componentMenuEntries = useCallback((node: ArchNode): MenuEntry[] => {
+    if (!activeEnv) return [];
+    const entries: MenuEntry[] = [
+      { type: "item", label: "Edit placement", icon: MapPin, onSelect: () => select("node", node.id) },
+      {
+        type: "submenu",
+        label: "Move to target",
+        icon: ListChecks,
+        entries: [
+          { type: "item", label: "Unplaced", onSelect: () => onChange(updateNodePlacement(graphRef.current, node.id, activeEnv.id, null)) },
+          ...targets.map((target) => ({ type: "item" as const, label: target.name, onSelect: () => placeOn(node.id, target) })),
+        ],
+      },
+      {
+        type: "item",
+        label: `Remove from ${activeEnv.name}`,
+        icon: Trash2,
+        danger: true,
+        disabled: !node.placements[activeEnv.id],
+        onSelect: () => onChange(updateNodePlacement(graphRef.current, node.id, activeEnv.id, null)),
+      },
+    ];
+    if (node.codeFile || node.codeModule) {
+      entries.push(
+        { type: "separator" },
+        ...symbolMenu(
+          {
+            node: node.id,
+            label: node.label,
+            file: node.codeFile ?? undefined,
+            module: node.codeModule ?? undefined,
+          },
+          {
+            graph: graphRef.current,
+            revealOnDiagram: () => {
+              select("node", node.id);
+              requestAnimationFrame(() => void fitView({ nodes: [{ id: node.id } as RfNode], padding: 0.4, maxZoom: 1.2 }));
+            },
+          },
+        ),
+      );
+    }
+    return entries;
+  }, [activeEnv, targets, onChange, placeOn, select, symbolMenu, fitView]);
+
+  const onNodeContextMenu = useCallback((event: React.MouseEvent, rfNode: InfraRfNode) => {
+    if (!activeEnv) return;
+    if (rfNode.type === "code") {
+      const node = graphRef.current.nodes.find((candidate) => candidate.id === rfNode.id);
+      if (node) menu.open(event, componentMenuEntries(node));
+      return;
+    }
+    if (rfNode.type === "infragroup") {
+      const data = rfNode.data as GroupData;
+      if (data.detected) return;
+      const target = activeEnv.targets?.find((candidate) => candidate.id === data.targetId);
+      if (!target) return;
+      menu.open(event, [
+        { type: "item", label: "Rename", icon: Pencil, onSelect: () => setRenamePrompt({ id: target.id, kind: "target", x: event.clientX, y: event.clientY }) },
+        { type: "item", label: "Edit details", icon: MapPin, onSelect: () => select("target", target.id) },
+        {
+          type: "submenu",
+          label: "Select members",
+          icon: ListChecks,
+          disabled: data.memberIds.length === 0,
+          entries: data.memberIds.map((id) => ({
+            type: "item" as const,
+            label: graphRef.current.nodes.find((node) => node.id === id)?.label ?? id,
+            onSelect: () => select("node", id),
+          })),
+        },
+        { type: "separator" },
+        { type: "item", label: "Remove target", icon: Trash2, danger: true, onSelect: () => requestTargetRemoval(target.id) },
+      ]);
+      return;
+    }
+    if (rfNode.type === "zone" || rfNode.type === "note") {
+      const node = graphRef.current.nodes.find((candidate) => candidate.id === rfNode.id);
+      if (!node) return;
+      menu.open(event, [
+        { type: "item", label: node.kind === "note" ? "Rename / edit" : "Rename", icon: Pencil, onSelect: () => node.kind === "note" ? select("node", node.id) : setRenamePrompt({ id: node.id, kind: "node", x: event.clientX, y: event.clientY }) },
+        { type: "item", label: `Remove from ${activeEnv.name}`, icon: Trash2, danger: true, onSelect: () => node.kind === "note" ? removeInfraNode(node.id) : removeZone(node.id) },
+      ]);
+      return;
+    }
+    if (rfNode.type === "external") {
+      const dep = (rfNode.data as ExternalData).dep;
+      menu.open(event, [{ type: "item", label: `Place in ${activeEnv.name}`, icon: MapPin, onSelect: () => adoptExternal(dep, event.clientX, event.clientY) }]);
+    }
+  }, [activeEnv, menu, componentMenuEntries, select, requestTargetRemoval, removeInfraNode, removeZone, adoptExternal]);
+
+  const onPaneContextMenu = useCallback((event: React.MouseEvent | MouseEvent) => {
+    if (!activeEnv) return;
+    const point = screenToFlowPosition({ x: event.clientX, y: event.clientY });
+    menu.open(event as React.MouseEvent, [
+      ...ZONE_KINDS.map((kind) => ({
+        type: "item" as const,
+        label: `Add ${KIND_META[kind].label.toLowerCase()} here`,
+        icon: KIND_META[kind].icon,
+        onSelect: () => {
+          const parent = zoneAtPoint(point);
+          if (parent) {
+            const rejection = zoneNestingRejection(kind, (parent.data as ZoneData).kind);
+            if (rejection) return setNotice(rejection);
+          }
+          addZoneAt(kind, point, parent);
+        },
+      })),
+      { type: "item", label: "Add note here", icon: StickyNote, onSelect: () => addNoteAt(point) },
+      { type: "separator" },
+      { type: "item", label: "New environment", icon: Plus, onSelect: () => setAddingEnv(true) },
+    ]);
+  }, [activeEnv, screenToFlowPosition, menu, zoneAtPoint, addZoneAt, addNoteAt]);
+
+  useEffect(() => {
+    const handleDelete = (event: KeyboardEvent) => {
+      if ((event.key !== "Delete" && event.key !== "Backspace") || event.defaultPrevented) return;
+      if (!canvasRef.current?.contains(document.activeElement) || isEditableDeleteTarget(event.target)) return;
+      if (!activeEnv || !selectedId) return;
+      if (parsedSelection.kind === "target") requestTargetRemoval(selectedId);
+      else {
+        const node = graphRef.current.nodes.find((candidate) => candidate.id === selectedId);
+        if (!node) return;
+        if (isZoneKind(node.kind)) removeZone(node.id);
+        else if (node.kind === "note") removeInfraNode(node.id);
+        else {
+          if (!node.placements[activeEnv.id]) return;
+          onChange(updateNodePlacement(graphRef.current, node.id, activeEnv.id, null));
+        }
+      }
+      event.preventDefault();
+    };
+    window.addEventListener("keydown", handleDelete);
+    return () => window.removeEventListener("keydown", handleDelete);
+  }, [activeEnv, selectedId, parsedSelection.kind, requestTargetRemoval, removeZone, removeInfraNode, onChange]);
+
   if (graph.environments.length === 0) {
     return (
       <EmptyState icon={Globe2} title="No environments yet">
@@ -1573,7 +1790,7 @@ function InfraInner({
   return (
     <SimActionsContext.Provider value={simActions}>
     <div className="flex h-full min-h-0">
-      <div ref={canvasRef} className="relative min-w-0 flex-1">
+      <div ref={canvasRef} className="relative min-w-0 flex-1" tabIndex={-1}>
         {/* Environment switcher */}
         <div className="absolute left-3 top-3 z-10 flex max-w-[calc(100%-1.5rem)] flex-wrap items-center gap-1 rounded-xl border border-edge bg-surface-2/95 p-1 text-xs shadow-xl shadow-black/30 backdrop-blur">
           {graph.environments.map((env) => (
@@ -1726,12 +1943,17 @@ function InfraInner({
             nodeTypes={nodeTypes}
             onNodesChange={onNodesChange}
             onNodeDragStop={onNodeDragStop}
+            onNodeContextMenu={onNodeContextMenu}
+            onPaneContextMenu={onPaneContextMenu}
+            deleteKeyCode={null}
             onNodeClick={(_e, n) => {
+              canvasRef.current?.focus();
               if (n.type === "code") select("node", n.id);
+              else if (n.type === "note") select("node", n.id);
               else if (n.type === "zone") select("zone", n.id);
               else if (n.type === "infragroup" && !(n.data as GroupData).detected) select("target", (n.data as GroupData).targetId);
             }}
-            onPaneClick={() => select("node", null)}
+            onPaneClick={() => { canvasRef.current?.focus(); select("node", null); }}
             onDrop={onCanvasDrop}
             onDragOver={(e) => {
               if (!acceptsCanvasDrag(e)) return;
@@ -1776,8 +1998,9 @@ function InfraInner({
           </ReactFlow>
         </ZoneActionsContext.Provider>
         </AdoptExternalContext.Provider>
+        {menu.element}
 
-        {groups.length === 0 && zones.length === 0 ? (
+        {groups.length === 0 && zones.length === 0 && notes.length === 0 ? (
           <div className="pointer-events-none absolute inset-0 z-[5]">
             <EmptyState icon={Server} title={`Nothing placed in ${activeEnv?.name ?? "this environment"}`}>
               Drag a component or zone onto the canvas. Components dropped on empty space can
@@ -1816,6 +2039,22 @@ function InfraInner({
             }}
           />
         ) : null}
+        {renamePrompt ? (
+          <InlineRename
+            x={renamePrompt.x}
+            y={renamePrompt.y}
+            initial={renamePrompt.kind === "target"
+              ? activeEnv?.targets?.find((target) => target.id === renamePrompt.id)?.name ?? ""
+              : graph.nodes.find((node) => node.id === renamePrompt.id)?.label ?? ""}
+            onCommit={(label) => {
+              onChange(renamePrompt.kind === "target" && activeEnv
+                ? renameDeployTarget(graphRef.current, activeEnv.id, renamePrompt.id, label)
+                : updateNode(graphRef.current, renamePrompt.id, { label }));
+              setRenamePrompt(null);
+            }}
+            onCancel={() => setRenamePrompt(null)}
+          />
+        ) : null}
         {notice ? (
           <div className="absolute bottom-3 left-1/2 z-20 flex max-w-lg -translate-x-1/2 items-center gap-2 rounded-xl border border-warn/40 bg-surface-2/95 px-3 py-2 text-[11px] text-ink-muted shadow-xl shadow-black/30 backdrop-blur">
             <span className="min-w-0">{notice}</span>
@@ -1832,7 +2071,15 @@ function InfraInner({
       </div>
 
       <aside className="flex w-72 shrink-0 flex-col border-l border-edge bg-surface-1">
-        {selectedNode && activeEnv && !isZoneKind(selectedNode.kind) ? (
+        {selectedNode?.kind === "note" ? (
+          <NoteEditor
+            key={selectedNode.id}
+            node={selectedNode}
+            graph={graph}
+            onChange={onChange}
+            onClose={() => select("node", null)}
+          />
+        ) : selectedNode && activeEnv && !isZoneKind(selectedNode.kind) ? (
           <PlacementEditor
             key={`${selectedNode.id}:${activeEnv.id}`}
             node={selectedNode}
@@ -1852,6 +2099,7 @@ function InfraInner({
             graph={graph}
             onChange={onChange}
             onSelectMember={(id) => select("node", id)}
+            onRequestRemove={() => requestTargetRemoval(selectedTarget.id)}
             onClose={() => select("target", null)}
           />
         ) : null}
@@ -1888,6 +2136,7 @@ function InfraInner({
                   e.dataTransfer.effectAllowed = "move";
                 }}
                 onClick={() => select("node", n.id)}
+                onContextMenu={(event) => menu.open(event, componentMenuEntries(n))}
                 className={cn(
                   "flex w-full cursor-grab items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs active:cursor-grabbing",
                   selectedId === n.id
@@ -1920,6 +2169,13 @@ function InfraInner({
           </div>
         </DialogContent>
       </Dialog>
+      <RemoveTargetDialog
+        target={confirmTarget}
+        memberCount={confirmTargetMembers.length}
+        open={confirmTarget != null}
+        onOpenChange={(open) => !open && setConfirmTargetId(null)}
+        onConfirm={confirmRemoveTarget}
+      />
       <Dialog open={externalPlacement != null} onOpenChange={(open) => !open && setExternalPlacement(null)}>
         <DialogContent title={`Place detected service in ${activeEnv?.name ?? "environment"}`} description="Choose an existing deployment target or create a new one.">
           <div className="space-y-1">
@@ -1938,6 +2194,42 @@ function InfraInner({
       </Dialog>
     </div>
     </SimActionsContext.Provider>
+  );
+}
+
+function NoteEditor({ node, graph, onChange, onClose }: {
+  node: ArchNode;
+  graph: ArchitectureGraph;
+  onChange: (graph: ArchitectureGraph) => void;
+  onClose: () => void;
+}) {
+  const [label, setLabel] = useState(node.label);
+  const [description, setDescription] = useState(node.description ?? "");
+  const commit = (patch: Partial<Pick<ArchNode, "label" | "description">>) =>
+    onChange(updateNode(graph, node.id, patch));
+  return (
+    <div className="border-b border-edge p-3">
+      <div className="mb-2 flex items-center gap-2">
+        <StickyNote className="h-3.5 w-3.5 shrink-0 text-accent-amber" />
+        <span className="min-w-0 flex-1 truncate text-xs font-semibold text-ink">Note</span>
+        <Button variant="ghost" size="icon-sm" onClick={onClose} aria-label="Close note editor"><X className="h-3.5 w-3.5" /></Button>
+      </div>
+      <div className="space-y-2">
+        <label className="block">
+          <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-ink-faint">Title</div>
+          <Input value={label} onChange={(event) => setLabel(event.target.value)} onBlur={() => commit({ label: label.trim() || node.label })} />
+        </label>
+        <label className="block">
+          <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-ink-faint">Text</div>
+          <textarea
+            value={description}
+            onChange={(event) => setDescription(event.target.value)}
+            onBlur={() => commit({ description: description.trim() || undefined })}
+            className="min-h-20 w-full resize-y rounded-lg border border-edge bg-surface-2 px-2 py-1.5 text-xs text-ink outline-none focus:border-crystal-500/60"
+          />
+        </label>
+      </div>
+    </div>
   );
 }
 
