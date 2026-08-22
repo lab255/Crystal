@@ -2,6 +2,7 @@ import type { CrossInfraMap, CrossInfraOverlay, TargetKind, ArchNodeKind } from 
 
 export const PROJECT_NODE_PREFIX = "project:";
 export const SHARED_NODE_PREFIX = "shared:";
+export const IDENTITY_LINK_NODE_PREFIX = "idlink:";
 const PROJECT_WIDTH = 300;
 const PROJECT_HEADER_HEIGHT = 78;
 const TARGET_WIDTH = 126;
@@ -15,6 +16,7 @@ const SHARED_WIDTH = 190;
 const SHARED_HEIGHT = 74;
 const SHARED_GAP = 24;
 const SHARED_BAND_GAP = 92;
+const MAX_PROJECT_EXTERNAL_ROWS = 6;
 
 export type CrossSceneNodeData =
   | {
@@ -26,6 +28,7 @@ export type CrossSceneNodeData =
       envName?: string;
       hasEnvironments: boolean;
       unsharedExternalCount: number;
+      externals: Array<{ key: string; label: string; serviceKind: ArchNodeKind; category?: string }>;
     }
   | {
       kind: "target";
@@ -43,6 +46,10 @@ export type CrossSceneNodeData =
       category?: string;
       framing: string;
       consumerCount: number;
+      sharedKey?: string;
+      members?: Array<{ ws: string; key: string }>;
+      identityLinkId?: string;
+      warning?: string;
     };
 
 export interface SceneNode {
@@ -62,7 +69,7 @@ export interface SceneEdge {
   source: string;
   target: string;
   type: "smoothstep";
-  data: { relationship: "detected-service-type" };
+  data: { relationship: "detected-service-type" | "linked-same-instance" };
 }
 
 export interface CrossInfraScene {
@@ -124,8 +131,10 @@ function targetNodeId(ws: string, envId: string, targetId: string): string {
   return `${PROJECT_NODE_PREFIX}${ws}:target:${envId}:${targetId}`;
 }
 
-function hasQualifiedInstance(key: string): boolean {
-  return key.startsWith("ext:") && key.split(":").length >= 3;
+function mostCommonLabel(labels: string[]): string {
+  const counts = new Map<string, number>();
+  for (const label of labels) counts.set(label, (counts.get(label) ?? 0) + 1);
+  return [...counts].sort(([a, aCount], [b, bCount]) => bCount - aCount || a.localeCompare(b))[0]?.[0] ?? "Linked service";
 }
 
 export function buildCrossInfraScene(
@@ -150,14 +159,23 @@ export function buildCrossInfraScene(
       return [project.ws, env] as const;
     }),
   );
+  const linkedMembers = new Set(
+    (overlay?.identityLinks ?? []).flatMap((link) =>
+      link.members.length >= 2 ? link.members.map((member) => `${member.ws}\0${member.key}`) : [],
+    ),
+  );
   const activeShared = [...map.shared]
     .map((shared) => ({
       shared,
-      consumers: shared.projects.filter((consumer) => selected.get(consumer.ws)?.id === consumer.envId),
+      consumers: shared.projects.filter(
+        (consumer) => selected.get(consumer.ws)?.id === consumer.envId && !linkedMembers.has(`${consumer.ws}\0${shared.key}`),
+      ),
     }))
     .filter(({ consumers }) => consumers.length >= 2)
     .sort((a, b) => a.shared.label.localeCompare(b.shared.label) || a.shared.key.localeCompare(b.shared.key));
-  const sharedKeys = new Set(activeShared.map(({ shared }) => shared.key));
+  const sharedMembers = new Set(activeShared.flatMap(({ shared, consumers }) =>
+    consumers.map((consumer) => `${consumer.ws}\0${shared.key}`),
+  ));
   const warnings: string[] = [];
   const nodes: SceneNode[] = [];
   const projectHeights: number[] = [];
@@ -177,10 +195,15 @@ export function buildCrossInfraScene(
         `${project.name}: multiple environments named '${normalizeEnvName(env!.name)}'; using ${env!.id}`,
       );
     }
+    const externals = [...(env?.externals ?? [])]
+      .filter((external) => !linkedMembers.has(`${project.ws}\0${external.id}`) && !sharedMembers.has(`${project.ws}\0${external.id}`))
+      .sort((a, b) => a.label.localeCompare(b.label) || a.id.localeCompare(b.id));
     const targetRows = Math.ceil((env?.targets.length ?? 0) / 2);
+    const renderedExternalRows = Math.min(externals.length, MAX_PROJECT_EXTERNAL_ROWS) +
+      (externals.length > MAX_PROJECT_EXTERNAL_ROWS ? 1 : 0);
     const height = Math.max(
       EMPTY_PROJECT_HEIGHT,
-      PROJECT_HEADER_HEIGHT + targetRows * (TARGET_HEIGHT + TARGET_GAP) + TARGET_GAP,
+      PROJECT_HEADER_HEIGHT + targetRows * (TARGET_HEIGHT + TARGET_GAP) + TARGET_GAP + renderedExternalRows * 24,
     );
     projectHeights.push(height);
     const row = Math.floor(index / PROJECT_COLUMNS);
@@ -190,7 +213,7 @@ export function buildCrossInfraScene(
     );
     const y = earlierRowHeights.reduce((sum, value) => sum + value + PROJECT_GAP_Y, 0);
     const projectId = `${PROJECT_NODE_PREFIX}${project.ws}`;
-    const externalCount = env?.externals.filter((external) => !sharedKeys.has(external.id)).length ?? 0;
+    const externalCount = externals.length;
     if (project.error) warnings.push(`${project.name}: ${project.error}`);
     nodes.push({
       id: projectId,
@@ -208,6 +231,9 @@ export function buildCrossInfraScene(
         envName: env?.name,
         hasEnvironments: project.environments.length > 0,
         unsharedExternalCount: externalCount,
+        externals: externals.map((external) => ({
+          key: external.id, label: external.label, serviceKind: external.kind, category: external.category,
+        })),
       },
     });
     for (const [targetIndex, target] of [...(env?.targets ?? [])]
@@ -242,7 +268,20 @@ export function buildCrossInfraScene(
   const projectBottom = Array.from({ length: gridRows }, (_, row) =>
     Math.max(...projectHeights.slice(row * PROJECT_COLUMNS, (row + 1) * PROJECT_COLUMNS), 0),
   ).reduce((sum, height) => sum + height + PROJECT_GAP_Y, -PROJECT_GAP_Y);
-  const bandWidth = activeShared.length * SHARED_WIDTH + Math.max(0, activeShared.length - 1) * SHARED_GAP;
+  const identityLinks = [...(overlay?.identityLinks ?? [])]
+    .filter((link) => link.members.length >= 2)
+    .sort((a, b) => a.id.localeCompare(b.id));
+  // Manual links follow the same environment selection as automatic aggregation:
+  // members found only in an unselected environment remain visible as stale.
+  const survivingByLinkId = new Map(identityLinks.map((link) => [
+    link.id,
+    link.members.flatMap((member) => {
+      const external = selected.get(member.ws)?.externals.find((candidate) => candidate.id === member.key);
+      return external ? [{ member, external }] : [];
+    }).sort((a, b) => a.member.ws.localeCompare(b.member.ws) || a.member.key.localeCompare(b.member.key)),
+  ]));
+  const bandCount = activeShared.length + identityLinks.length;
+  const bandWidth = bandCount * SHARED_WIDTH + Math.max(0, bandCount - 1) * SHARED_GAP;
   const canvasWidth = Math.min(PROJECT_COLUMNS, Math.max(1, projects.length)) * PROJECT_WIDTH +
     Math.max(0, Math.min(PROJECT_COLUMNS, projects.length) - 1) * PROJECT_GAP_X;
   const bandStartX = Math.max(0, (canvasWidth - bandWidth) / 2);
@@ -261,10 +300,42 @@ export function buildCrossInfraScene(
         label: shared.label,
         serviceKind: shared.kind,
         category: shared.category,
-        framing: hasQualifiedInstance(shared.key)
-          ? "Detected shared service instance"
-          : "Same detected service type",
+        framing: "Same detected service type",
         consumerCount: consumers.length,
+        sharedKey: shared.key,
+        members: consumers.map((consumer) => ({ ws: consumer.ws, key: shared.key })),
+      },
+    });
+  }
+
+  for (const [linkIndex, link] of identityLinks.entries()) {
+    const surviving = survivingByLinkId.get(link.id) ?? [];
+    const staleCount = link.members.length - surviving.length;
+    const warning = staleCount > 0 ? `${staleCount} linked member${staleCount === 1 ? " is" : "s are"} no longer detected` : undefined;
+    if (warning) warnings.push(`${link.label ?? link.id}: ${warning}`);
+    const first: (typeof surviving)[number] | undefined = surviving[0];
+    nodes.push({
+      id: `${IDENTITY_LINK_NODE_PREFIX}${link.id}`,
+      type: "crossInfra",
+      position: {
+        x: bandStartX + (activeShared.length + linkIndex) * (SHARED_WIDTH + SHARED_GAP),
+        y: projectBottom + SHARED_BAND_GAP,
+      },
+      draggable: true,
+      selectable: false,
+      style: { width: SHARED_WIDTH, height: warning ? SHARED_HEIGHT + 16 : SHARED_HEIGHT },
+      data: {
+        kind: "shared",
+        label: link.label ?? mostCommonLabel(surviving.map(({ external }) => external.label)),
+        serviceKind: first?.external.kind ?? "external",
+        category: first?.external.category,
+        framing: "Linked — same instance (user)",
+        consumerCount: new Set(surviving.map(({ member }) => member.ws)).size,
+        members: [...link.members]
+          .sort((a, b) => a.ws.localeCompare(b.ws) || a.key.localeCompare(b.key))
+          .map((member) => ({ ...member })),
+        identityLinkId: link.id,
+        warning,
       },
     });
   }
@@ -282,6 +353,22 @@ export function buildCrossInfraScene(
       .filter((edge) => nodeIds.has(edge.target))
       .sort((a, b) => a.id.localeCompare(b.id)),
   );
+  for (const link of identityLinks) {
+    const source = `${IDENTITY_LINK_NODE_PREFIX}${link.id}`;
+    if (!nodeIds.has(source)) continue;
+    const survivingProjects = new Set((survivingByLinkId.get(link.id) ?? []).map(({ member }) => member.ws));
+    for (const ws of [...survivingProjects].sort()) {
+      if (!nodeIds.has(`${PROJECT_NODE_PREFIX}${ws}`)) continue;
+      edges.push({
+        id: `edge:idlink:${link.id}:${ws}`,
+        source,
+        target: `${PROJECT_NODE_PREFIX}${ws}`,
+        type: "smoothstep",
+        data: { relationship: "linked-same-instance" },
+      });
+    }
+  }
+  edges.sort((a, b) => a.id.localeCompare(b.id));
 
   if (overlay) {
     for (const node of nodes) {

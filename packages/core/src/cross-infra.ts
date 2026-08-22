@@ -44,12 +44,24 @@ export interface CrossInfraMap {
   generatedAt: string;
 }
 
+export const IdentityLinkMemberSchema = z.object({
+  ws: z.string(),
+  key: z.string(),
+});
+export const IdentityLinkSchema = z.object({
+  id: z.string(),
+  label: z.string().optional(),
+  members: z.array(IdentityLinkMemberSchema),
+});
+export type IdentityLink = z.infer<typeof IdentityLinkSchema>;
+
 export const CrossInfraOverlaySchema = z.object({
   id: z.literal("default"),
   createdAt: z.string(),
   updatedAt: z.string(),
   envSelection: z.record(z.string().nullable()).default({}),
   pins: z.record(z.object({ x: z.number(), y: z.number() })).default({}),
+  identityLinks: z.array(IdentityLinkSchema).default([]),
 });
 export type CrossInfraOverlay = z.infer<typeof CrossInfraOverlaySchema>;
 

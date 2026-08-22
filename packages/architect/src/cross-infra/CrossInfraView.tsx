@@ -15,27 +15,36 @@ import {
   type NodeProps,
 } from "@xyflow/react";
 import { useStore } from "zustand";
-import { AlertTriangle, Boxes, Cloud, RotateCcw, Server, X } from "lucide-react";
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { AlertTriangle, Boxes, Cloud, Link2, RotateCcw, Server, Unlink, X } from "lucide-react";
+import { createContext, memo, useContext, useEffect, useMemo, useRef, useState } from "react";
+import type { IdentityLink } from "@crystal/core";
 import { crossInfraStoreFor, useCrystal } from "@crystal/client";
 import { EmptyState, cn } from "@crystal/ui";
 import {
   buildCrossInfraScene,
   type CrossSceneNodeData,
 } from "./cross-scene.js";
+import { LinkServicesDialog } from "./LinkServicesDialog.js";
 
 export interface CrossInfraViewProps {
   onEnterWorkspace: (ws: string) => void;
 }
 
 type FlowNode = Node<CrossSceneNodeData, "crossInfra">;
+const MAX_PROJECT_EXTERNAL_ROWS = 6;
+
+const IdentityActionsContext = createContext<{
+  link: (members: IdentityLink["members"], label?: string) => void;
+  unlink: (id: string) => void;
+}>({ link: () => {}, unlink: () => {} });
 
 const CrossInfraNode = memo(function CrossInfraNode({ data }: NodeProps<FlowNode>) {
+  const identityActions = useContext(IdentityActionsContext);
   if (data.kind === "project") {
     return (
       <div
         className={cn(
-          "h-full w-full rounded-xl border bg-surface-1/95 shadow-lg",
+          "relative h-full w-full rounded-xl border bg-surface-1/95 shadow-lg",
           data.error ? "border-danger/60" : "border-edge-strong",
         )}
       >
@@ -61,6 +70,25 @@ const CrossInfraNode = memo(function CrossInfraNode({ data }: NodeProps<FlowNode
             <span className="line-clamp-2">{data.error}</span>
           </div>
         ) : null}
+        {data.externals.length ? (
+          <div className="absolute bottom-2 left-3 right-3 space-y-1">
+            {data.externals.slice(0, MAX_PROJECT_EXTERNAL_ROWS).map((external) => (
+              <div key={external.key} className="flex items-center justify-between gap-2 rounded border border-edge bg-surface-2 px-2 py-1">
+                <span className="min-w-0 truncate text-[9px] text-ink-muted">{external.label}</span>
+                <button
+                  type="button"
+                  onClick={(event) => { event.stopPropagation(); identityActions.link([{ ws: data.ws, key: external.key }], external.label); }}
+                  className="nodrag flex shrink-0 items-center gap-1 rounded px-1 text-[9px] text-crystal-400 hover:bg-surface-3 hover:text-crystal-300"
+                ><Link2 className="h-2.5 w-2.5" /> Link…</button>
+              </div>
+            ))}
+            {data.externals.length > MAX_PROJECT_EXTERNAL_ROWS ? (
+              <div className="px-2 py-1 text-[9px] text-ink-faint">
+                +{data.externals.length - MAX_PROJECT_EXTERNAL_ROWS} more
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </div>
     );
   }
@@ -79,7 +107,7 @@ const CrossInfraNode = memo(function CrossInfraNode({ data }: NodeProps<FlowNode
     );
   }
   return (
-    <div className="h-full w-full rounded-xl border border-crystal-500/40 bg-surface-2 px-3 py-2 shadow-lg">
+    <div className="relative h-full w-full rounded-xl border border-crystal-500/40 bg-surface-2 px-3 py-2 shadow-lg">
       <Handle type="source" position={Position.Top} className="!h-1 !w-1 !border-0 !bg-transparent" />
       <div className="flex items-center gap-2">
         <Cloud className="h-3.5 w-3.5 text-crystal-400" />
@@ -87,6 +115,20 @@ const CrossInfraNode = memo(function CrossInfraNode({ data }: NodeProps<FlowNode
       </div>
       <div className="mt-1 truncate text-[9px] text-ink-muted">{data.framing}</div>
       <div className="mt-1 text-[8px] text-ink-faint">{data.consumerCount} consuming projects</div>
+      {data.warning ? <div className="mt-1 truncate text-[8px] text-warn">{data.warning}</div> : null}
+      {data.identityLinkId ? (
+        <button
+          type="button"
+          onClick={(event) => { event.stopPropagation(); identityActions.unlink(data.identityLinkId!); }}
+          className="nodrag absolute bottom-1.5 right-2 flex items-center gap-1 rounded px-1 text-[8px] text-ink-muted hover:bg-surface-3 hover:text-ink"
+        ><Unlink className="h-2.5 w-2.5" /> Unlink</button>
+      ) : (
+        <button
+          type="button"
+          onClick={(event) => { event.stopPropagation(); identityActions.link(data.members ?? [], data.label); }}
+          className="nodrag absolute bottom-1.5 right-2 flex items-center gap-1 rounded px-1 text-[8px] text-crystal-400 hover:bg-surface-3 hover:text-crystal-300"
+        ><Link2 className="h-2.5 w-2.5" /> Link…</button>
+      )}
     </div>
   );
 });
@@ -117,6 +159,13 @@ function CrossInfraInner({ onEnterWorkspace }: CrossInfraViewProps) {
   const updateNodeInternals = useUpdateNodeInternals();
   const lastIds = useRef("");
   const [dismissedError, setDismissedError] = useState<string | null>(null);
+  const [linkDialog, setLinkDialog] = useState<{ nonce: number; members: IdentityLink["members"]; label?: string } | null>(null);
+  const linkDialogNonce = useRef(0);
+  const identityActions = useMemo(() => ({
+    link: (members: IdentityLink["members"], label?: string) =>
+      setLinkDialog({ nonce: ++linkDialogNonce.current, members, label }),
+    unlink: (id: string) => store.getState().removeIdentityLink(id),
+  }), [store]);
 
   useEffect(() => {
     void store.getState().ensure();
@@ -170,6 +219,7 @@ function CrossInfraInner({ onEnterWorkspace }: CrossInfraViewProps) {
   }
 
   return (
+    <IdentityActionsContext.Provider value={identityActions}>
     <div className="relative flex h-full min-h-0 flex-col bg-surface-0">
       <div className="flex shrink-0 items-start justify-between gap-3 border-b border-edge bg-surface-1 px-3 py-2">
         <div className="min-w-0">
@@ -254,6 +304,16 @@ function CrossInfraInner({ onEnterWorkspace }: CrossInfraViewProps) {
           <Controls position="bottom-left" showInteractive={false} className="!overflow-hidden !rounded-lg !border !border-edge !bg-surface-2 !shadow-lg" />
         </ReactFlow>
       </div>
+      <LinkServicesDialog
+        key={linkDialog?.nonce ?? "closed"}
+        open={linkDialog != null}
+        map={map}
+        initialMembers={linkDialog?.members ?? []}
+        initialLabel={linkDialog?.label}
+        onOpenChange={(open) => { if (!open) setLinkDialog(null); }}
+        onConfirm={(members, label) => store.getState().addIdentityLink(members, label)}
+      />
     </div>
+    </IdentityActionsContext.Provider>
   );
 }

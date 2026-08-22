@@ -1,5 +1,5 @@
 import { createStore, type StoreApi } from "zustand/vanilla";
-import type { CrossInfraMap, CrossInfraOverlay } from "@crystal/core";
+import type { CrossInfraMap, CrossInfraOverlay, IdentityLink } from "@crystal/core";
 import type { BridgeClient } from "./bridge-client.js";
 
 const DATA_REFRESH_DEBOUNCE_MS = 300;
@@ -18,6 +18,8 @@ export interface CrossInfraState {
   setPin(sceneId: string, position: { x: number; y: number } | null): void;
   setEnvSelection(ws: string, envId: string | null): void;
   clearPins(): void;
+  addIdentityLink(members: IdentityLink["members"], label?: string): string | undefined;
+  removeIdentityLink(id: string): void;
   flush(): Promise<void>;
 }
 
@@ -150,6 +152,40 @@ export function createCrossInfraStore(client: BridgeClient): CrossInfraStore {
           pins: {},
           updatedAt: new Date().toISOString(),
         }));
+      },
+
+      addIdentityLink(members, label) {
+        const overlay = get().overlay;
+        if (!overlay) return undefined;
+        const memberSet = (items: IdentityLink["members"]) =>
+          JSON.stringify([...new Set(items.map((member) => JSON.stringify([member.ws, member.key])))].sort());
+        const signature = memberSet(members);
+        const existing = overlay.identityLinks.find((link) => memberSet(link.members) === signature);
+        if (existing) return existing.id;
+        const id = crypto.randomUUID();
+        updateOverlay((current) => ({
+          ...current,
+          identityLinks: [...current.identityLinks, {
+            id,
+            ...(label?.trim() ? { label: label.trim() } : {}),
+            members: members.map((member) => ({ ...member })),
+          }],
+          updatedAt: new Date().toISOString(),
+        }));
+        return id;
+      },
+
+      removeIdentityLink(id) {
+        updateOverlay((overlay) => {
+          const pins = { ...overlay.pins };
+          delete pins[`idlink:${id}`];
+          return {
+            ...overlay,
+            pins,
+            identityLinks: overlay.identityLinks.filter((link) => link.id !== id),
+            updatedAt: new Date().toISOString(),
+          };
+        });
       },
 
       async flush() {
