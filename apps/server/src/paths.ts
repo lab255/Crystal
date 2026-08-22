@@ -82,6 +82,19 @@ export function isIgnoredDir(name: string): boolean {
   return IGNORED_DIRS.has(name);
 }
 
+/** Generated-code path heuristic safe for hot watcher callbacks (no I/O). */
+export function isGeneratedCodePath(rel: string): boolean {
+  const normalized = rel.replace(/\\/g, "/");
+  const parts = normalized.split("/");
+  const name = parts.at(-1) ?? "";
+  return (
+    parts.some((part) => part === "generated" || part === "__generated__") ||
+    name.includes(".generated.") ||
+    name.endsWith(".pb.ts") ||
+    name.endsWith("_pb.ts")
+  );
+}
+
 /** True when `p` exists (any kind) — the shared fs.access idiom. */
 export async function exists(p: string): Promise<boolean> {
   return fsp.access(p).then(

@@ -12,6 +12,8 @@ import type {
 } from "@crystal/core";
 import {
   CodeMapAnalyzer,
+  createCodeMapExclusionMatcher,
+  hasGeneratedMarker,
   isCodeFile,
   isTestFile,
   parseSource,
@@ -64,8 +66,36 @@ async function loadRefTree(root: string, repoRel: string, ref: string): Promise<
   const cwd = resolveInRoot(root, repoRel || ".");
   const commit = await gitResolveRef(cwd, ref);
 
+  const prefix =
+    !repoRel || repoRel === "." ? "" : repoRel.replace(/\\/g, "/").replace(/\/+$/, "") + "/";
+  const rebase = (p: string): string => (prefix ? (p === "." ? prefix.slice(0, -1) : prefix + p) : p);
+  let exclusionConfig = { exclude: [] as string[], include: [] as string[] };
+  try {
+    const value: unknown = JSON.parse(
+      await fs.readFile(resolveInRoot(root, ".crystal/codemap.json"), "utf8"),
+    );
+    const object = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+    exclusionConfig = {
+      exclude: Array.isArray(object.exclude)
+        ? object.exclude.filter((item): item is string => typeof item === "string")
+        : [],
+      include: Array.isArray(object.include)
+        ? object.include.filter((item): item is string => typeof item === "string")
+        : [],
+    };
+  } catch {
+    /* absent or invalid working-tree config — use generated-path defaults */
+  }
+  const isExcluded = createCodeMapExclusionMatcher(exclusionConfig);
+
   const tree = (await gitLsTree(cwd, ref)).filter((p) => !underIgnoredDir(p));
-  const codePaths = tree.filter((p) => isCodeFile(p)).slice(0, MAX_FILES);
+  const codePaths = tree
+    .filter((p) => isCodeFile(p) && !isExcluded(rebase(p)))
+    .slice(0, MAX_FILES);
+  const contents = await gitCatFiles(cwd, ref, codePaths);
+  for (const [rel, text] of contents) {
+    if (hasGeneratedMarker(text)) contents.delete(rel);
+  }
   const packagePaths = tree.filter(
     (p) =>
       (p === "package.json" || p.endsWith("/package.json")) &&
@@ -97,7 +127,7 @@ async function loadRefTree(root: string, repoRel: string, ref: string): Promise<
   // Single-package repo at the ref: directory-level modules, exactly like the
   // live analyzer — a ref diff must compare like with like.
   if (moduleDirs.length === 1) {
-    moduleDirs.push(...synthesizeDirModules(codePaths));
+    moduleDirs.push(...synthesizeDirModules([...contents.keys()]));
   }
 
   // Each file is owned by the deepest module containing it.
@@ -107,10 +137,6 @@ async function loadRefTree(root: string, repoRel: string, ref: string): Promise<
 
   // The workspace's paths are workspace-relative; prefix when the repo is a
   // subdirectory of the workspace.
-  const prefix =
-    !repoRel || repoRel === "." ? "" : repoRel.replace(/\\/g, "/").replace(/\/+$/, "") + "/";
-  const rebase = (p: string): string => (prefix ? (p === "." ? prefix.slice(0, -1) : prefix + p) : p);
-
   // tsconfig `paths` aliases, read from the same tree so ref snapshots
   // resolve alias imports exactly like the live analyzer.
   const tsconfigPaths = tree.filter(
@@ -125,7 +151,6 @@ async function loadRefTree(root: string, repoRel: string, ref: string): Promise<
   }
   const tsPaths = sortTsPathsConfigs(tsPathsConfigs);
 
-  const contents = await gitCatFiles(cwd, ref, codePaths);
   return { commit, contents, moduleDirs, packageNameToModule, tsPaths, ownerOf, rebase };
 }
 
@@ -214,10 +239,13 @@ export function surfacesSnapshotAtRef(
   const cwd = resolveInRoot(root, repoRel || ".");
   return (async () => {
     const commit = await gitResolveRef(cwd, ref);
-    const key = `${cwd}\0${commit}`;
+    const configText = await fs
+      .readFile(resolveInRoot(root, ".crystal/codemap.json"), "utf8")
+      .catch(() => null);
+    const key = `${cwd}\0${commit}\0${configText ?? ""}`;
     const hit = surfacesSnapshotCache.get(key);
     if (hit) return hit;
-    const pending = buildSurfacesSnapshot(cwd, repoRel, ref, commit).catch((err) => {
+    const pending = buildSurfacesSnapshot(cwd, repoRel, ref, commit, configText).catch((err) => {
       surfacesSnapshotCache.delete(key); // failures must not stick
       throw err;
     });
@@ -235,6 +263,7 @@ async function buildSurfacesSnapshot(
   repoRel: string,
   ref: string,
   commit: string,
+  configText: string | null,
 ): Promise<SurfacesSnapshot> {
   const tree = (await gitLsTree(cwd, ref)).filter((p) => !underIgnoredDir(p));
   const wanted = [
@@ -261,6 +290,11 @@ async function buildSurfacesSnapshot(
           }
         }),
       );
+    }
+    if (configText !== null) {
+      const configPath = path.join(tmp, ".crystal", "codemap.json");
+      await fs.mkdir(path.dirname(configPath), { recursive: true });
+      await fs.writeFile(configPath, configText, "utf8");
     }
     // realpath: mkdtemp can hand back an 8.3 short path on Windows and the
     // analyzer's path arithmetic must match what fs resolves.

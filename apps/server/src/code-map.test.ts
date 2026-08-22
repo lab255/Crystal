@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { CodeMapProgress } from "@crystal/core";
+import type { CodeIndex, CodeMapProgress } from "@crystal/core";
 import {
   buildCallGraph,
   callKey,
@@ -1699,6 +1699,119 @@ describe("CodeMapAnalyzer refresh lifecycle", () => {
 
       await refreshed;
       expect((await analyzer.summary()).fileTotal).toBe(2);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("CodeMapAnalyzer exclusions and payload bounds", () => {
+  it("excludes generated paths and content, while config include overrides exclusions", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "crystal-exclusions-"));
+    try {
+      await fs.mkdir(path.join(root, "src", "generated"), { recursive: true });
+      await fs.mkdir(path.join(root, "src", "manual"), { recursive: true });
+      await fs.mkdir(path.join(root, ".crystal"), { recursive: true });
+      await fs.writeFile(path.join(root, "package.json"), JSON.stringify({ name: "fixture" }));
+      await fs.writeFile(path.join(root, "src", "keep.ts"), "export const keep = 1;\n");
+      await fs.writeFile(path.join(root, "src", "generated", "client.ts"), "export const client = 1;\n");
+      await fs.writeFile(path.join(root, "src", "model.generated.ts"), "export const model = 1;\n");
+      await fs.writeFile(
+        path.join(root, "src", "content.ts"),
+        "// This file was automatically generated\nexport const content = 1;\n",
+      );
+      await fs.writeFile(path.join(root, "src", "manual", "hidden.ts"), "export const hidden = 1;\n");
+      await fs.writeFile(path.join(root, "src", "manual", "allowed.ts"), "// @generated\nexport const allowed = 1;\n");
+      await fs.writeFile(
+        path.join(root, ".crystal", "codemap.json"),
+        JSON.stringify({ exclude: ["src/manual/**"], include: ["src/manual/allowed.ts"] }),
+      );
+
+      const analyzer = new CodeMapAnalyzer(root);
+      const summary = await analyzer.summary();
+      expect(summary.fileTotal).toBe(2);
+      expect(summary.excluded).toEqual({
+        files: 4,
+        roots: [
+          { path: "src", files: 2 },
+          { path: "src/generated", files: 1 },
+          { path: "src/manual", files: 1 },
+        ],
+      });
+      await expect(analyzer.fileDetail("src/manual/allowed.ts")).resolves.toBeTruthy();
+      await expect(analyzer.fileDetail("src/generated/client.ts")).rejects.toThrow(
+        "Not an analyzed code file",
+      );
+      expect((await analyzer.overviewSourceFiles()).map((file) => file.path).sort()).toEqual([
+        "src/keep.ts",
+        "src/manual/allowed.ts",
+      ]);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("omits a package module whose files are all excluded", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "crystal-excluded-module-"));
+    try {
+      await fs.writeFile(path.join(root, "package.json"), JSON.stringify({ name: "root" }));
+      await fs.writeFile(path.join(root, "main.ts"), "export const main = 1;\n");
+      await fs.mkdir(path.join(root, "packages", "generated"), { recursive: true });
+      await fs.writeFile(
+        path.join(root, "packages", "generated", "package.json"),
+        JSON.stringify({ name: "generated-package" }),
+      );
+      await fs.writeFile(path.join(root, "packages", "generated", "index.ts"), "export const x = 1;\n");
+      const summary = await new CodeMapAnalyzer(root).summary();
+      expect(summary.modules.map((module) => module.path)).toEqual(["."]);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("caps importedBy and reports its true total", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "crystal-importers-cap-"));
+    try {
+      await fs.writeFile(path.join(root, "barrel.ts"), "export const value = 1;\n");
+      await Promise.all(
+        Array.from({ length: 81 }, (_, index) =>
+          fs.writeFile(
+            path.join(root, `use-${String(index).padStart(2, "0")}.ts`),
+            'import { value } from "./barrel.js";\nexport const used = value;\n',
+          ),
+        ),
+      );
+      const detail = await new CodeMapAnalyzer(root).fileDetail("barrel.ts");
+      expect(detail.importedBy).toHaveLength(80);
+      expect(detail.importedByTotal).toBe(81);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("memoizes the system overview until invalidation and refresh", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "crystal-overview-memo-"));
+    try {
+      await fs.writeFile(path.join(root, "a.ts"), "export const a = 1;\n");
+      const analyzer = new CodeMapAnalyzer(root);
+      const first = await analyzer.systemOverview(null);
+      expect(await analyzer.systemOverview(null)).toBe(first);
+      const indexed = await analyzer.systemOverview({
+        schemaVersion: 1,
+        generatedAt: "one",
+        files: [],
+      } satisfies CodeIndex);
+      expect(indexed).not.toBe(first);
+      expect(
+        await analyzer.systemOverview({ schemaVersion: 1, generatedAt: "one", files: [] }),
+      ).toBe(indexed);
+      expect(
+        await analyzer.systemOverview({ schemaVersion: 1, generatedAt: "two", files: [] }),
+      ).not.toBe(indexed);
+      await fs.writeFile(path.join(root, "b.ts"), "export const b = 2;\n");
+      analyzer.invalidate();
+      await analyzer.fileDetail("b.ts");
+      expect(await analyzer.systemOverview(null)).not.toBe(first);
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
