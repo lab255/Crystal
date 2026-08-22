@@ -29,7 +29,13 @@ import { launchInteractiveRun } from "./interactive.js";
 import { CodeIndexService } from "./code-index.js";
 import { type CrossSurface } from "./code-map.js";
 import { OrchestrationService } from "./orchestration.js";
-import { appDataDir, globalAgentsDir, globalTemplatesDir, isIgnoredDir, workspaceIdFor } from "./paths.js";
+import {
+  appDataDir,
+  globalAgentsDir,
+  globalTemplatesDir,
+  isIgnoredDir,
+  workspaceIdFor,
+} from "./paths.js";
 import { QualityService } from "./quality-runner.js";
 import { DevServerService } from "./dev-servers.js";
 import { ApiClientStore } from "./api-client-store.js";
@@ -429,29 +435,39 @@ export class WorkspaceRuntime {
         if (!filename) return;
         const rel = filename.split(path.sep).join("/");
         if (rel.split("/").some((part) => isIgnoredDir(part))) return;
-        this.pendingPaths.add(rel);
-        this.watchTimer ??= setTimeout(() => {
-          this.watchTimer = null;
-          const paths = [...this.pendingPaths];
-          this.pendingPaths.clear();
-          // A throw here (a broadcast listener, an invalidation) would ride
-          // the timer straight to uncaughtException — contain it.
-          try {
-            broadcast("fs.changed", { ws: this.id, paths });
-            const codeChanged = paths.some((p) => CODE_FILE_RE.test(p) && !INDEX_FILE_RE.test(p));
-            if (codeChanged) {
-              void this.codemap.invalidate();
-              broadcast("codemap.changed", { ws: this.id });
+        const queue = (): void => {
+          this.pendingPaths.add(rel);
+          this.watchTimer ??= setTimeout(async () => {
+            this.watchTimer = null;
+            const paths = [...this.pendingPaths];
+            this.pendingPaths.clear();
+            // A throw here (a broadcast listener, an invalidation) would ride
+            // the timer straight to uncaughtException — contain it.
+            try {
+              broadcast("fs.changed", { ws: this.id, paths });
+              const codePaths = paths.filter((p) => CODE_FILE_RE.test(p) && !INDEX_FILE_RE.test(p));
+              const excluded = await Promise.all(
+                codePaths.map((p) => this.codemap.isExcludedPath(p).catch(() => false)),
+              );
+              const codeChanged = excluded.some((value) => !value);
+              if (codeChanged) {
+                void this.codemap.invalidate();
+                broadcast("codemap.changed", { ws: this.id });
+              }
+              // The index follows both the code and agent-written enrichments.
+              if (codeChanged || paths.some((p) => INDEX_FILE_RE.test(p))) {
+                this.codeindex.invalidate();
+                broadcast("codeindex.changed", { ws: this.id });
+              }
+            } catch (err) {
+              console.warn(
+                `[crystal] watcher flush failed for ${this.root}:`,
+                (err as Error).message,
+              );
             }
-            // The index follows both the code and agent-written enrichments.
-            if (codeChanged || paths.some((p) => INDEX_FILE_RE.test(p))) {
-              this.codeindex.invalidate();
-              broadcast("codeindex.changed", { ws: this.id });
-            }
-          } catch (err) {
-            console.warn(`[crystal] watcher flush failed for ${this.root}:`, (err as Error).message);
-          }
-        }, 250);
+          }, 250);
+        };
+        queue();
       });
       // An unhandled 'error' on the watcher would crash the process.
       this.watcher.on("error", (err) => {

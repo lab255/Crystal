@@ -844,12 +844,9 @@ export async function startCrystalServer(opts: {
     "codemap.cross": () => registry.crossMap(),
     "codemap.overview": async ({ ws }) => {
       const rt = registry.get(ws);
-      const [sources, { index }] = await Promise.all([
-        rt.codemap.overviewSourceFiles(),
-        rt.codeindex.get(),
-      ]);
+      const { index } = await rt.codeindex.get();
       return {
-        ...buildSystemOverview(sources, index),
+        ...(await rt.codemap.systemOverview(index)),
         generatedAt: new Date().toISOString(),
       };
     },
