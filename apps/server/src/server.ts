@@ -609,7 +609,7 @@ export async function startCrystalServer(opts: {
     },
     "arch.saveOverlay": async ({ ws, overlay }) => {
       const rt = registry.get(ws);
-      await rt.store.saveArchOverlay(overlay);
+      await rt.saveArchOverlay(overlay);
       // Announce like agents.changed does: another window holding a stale
       // overlay must refetch before its next debounced save clobbers this one.
       broadcast("arch.overlayChanged", { ws: rt.id });
