@@ -171,6 +171,12 @@ export { workflowRunForest } from "./workflow-runs.js";
 export { managerSessionEnded } from "./workflow-manager.js";
 export { RunList, runHeadline } from "./run-list.js";
 export { createLensStore, type LensState, type LensStore } from "./lens-store.js";
+export {
+  createCrossInfraStore,
+  crossInfraStoreFor,
+  type CrossInfraState,
+  type CrossInfraStore,
+} from "./cross-infra-store.js";
 export { createNavStore, type NavPatch, type NavState, type NavStore } from "./nav-store.js";
 export { requestOpenFile } from "./open-file.js";
 export { useNeedsYou, type NeedsYou, type NeedsYouQuestion } from "./needs-you.js";
