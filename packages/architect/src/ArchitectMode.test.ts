@@ -7,6 +7,7 @@ import {
 } from "@crystal/core";
 import { splitInfraOnly } from "./arch-view-filter.js";
 import { transformCanvasCommit } from "./ArchitectMode.js";
+import { shouldPersistCanonicalEdit } from "./use-canonical-architecture.js";
 
 describe("ArchitectMode canonical canvas integration", () => {
   it("repairs split-canvas omissions before overlay extraction", () => {
@@ -58,5 +59,23 @@ describe("ArchitectMode canonical canvas integration", () => {
     expect(transformed.edges.map((edge) => edge.id)).toEqual(
       expect.arrayContaining(["filtered-edge", "zone-edge"]),
     );
+  });
+});
+
+describe("canonical viewport persistence", () => {
+  it("does not persist a mount-only viewport delta before a user graph edit", () => {
+    const rendered = createArchitectureGraph("architecture");
+    const viewportOnly = { ...rendered, viewport: { x: 1.25, y: -3.5, zoom: 0.9 } };
+    expect(shouldPersistCanonicalEdit(rendered, viewportOnly, false)).toEqual({
+      persist: false,
+      sessionHasUserEdit: false,
+    });
+
+    const edited = { ...rendered, name: "Edited" };
+    expect(shouldPersistCanonicalEdit(rendered, edited, false)).toEqual({
+      persist: true,
+      sessionHasUserEdit: true,
+    });
+    expect(shouldPersistCanonicalEdit(rendered, viewportOnly, true).persist).toBe(true);
   });
 });

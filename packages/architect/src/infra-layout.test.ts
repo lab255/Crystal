@@ -5,6 +5,7 @@ import {
   buildInfraTargetLayoutInput,
   infraFreeSpaceOrigin,
   infraTargetLayoutKey,
+  provisionalInfraTargetLayout,
   requestInfraTargetLayout,
   solveSeparateBands,
   solveInfraTargetLayout,
@@ -93,6 +94,27 @@ describe("infra target ELK solve", () => {
     expect(bottom("data")).toBeLessThanOrEqual(y.get("other")!);
   });
 
+  it("accepts an incoming edge into an entry target without forbidden FIRST/LAST constraints", async () => {
+    const seen: { layoutOptions?: Record<string, string> }[][] = [];
+    const engine = {
+      layout: vi.fn(async (graph: { children?: { id: string; layoutOptions?: Record<string, string> }[] }) => {
+        seen.push(graph.children ?? []);
+        return { ...graph, children: graph.children?.map((node, index) => ({ ...node, x: 0, y: index * 240 })) };
+      }),
+    } as unknown as ElkEngine;
+    const input = { ...base, edges: [...base.edges, { id: "data->entry", source: "data", target: "entry" }] };
+    const result = await solveInfraTargetLayout(input, engine);
+    expect(seen.flat().every((node) => !Object.keys(node.layoutOptions ?? {}).some((key) => key.includes("layerConstraint")))).toBe(true);
+    expect(bandsAreOrdered(input, result.positions)).toBe(true);
+  });
+
+  it("degrades combined and separate-band ELK failures to the provisional grid", async () => {
+    const engine = { layout: vi.fn(async () => { throw new Error("unsupported"); }) } as unknown as ElkEngine;
+    const result = await solveInfraTargetLayout(base, engine);
+    expect(result).toEqual(provisionalInfraTargetLayout(buildInfraTargetLayoutInput(base)));
+    expect(bandsAreOrdered(base, result.positions)).toBe(true);
+  });
+
   it("detects unordered bands and explicitly takes the separate-band fallback", async () => {
     const unordered = base.targets.map((target, index) => ({ id: target.id, x: index * 10, y: 0 }));
     expect(bandsAreOrdered(base, unordered)).toBe(false);
@@ -142,5 +164,15 @@ describe("infra target async coordinator seam", () => {
     await requestInfraTargetLayout(base, worker, 8, solve, warn);
     expect(warn).toHaveBeenCalledOnce();
     expect(solve).toHaveBeenCalledTimes(2);
+  });
+
+  it("contains an in-process fallback rejection with the provisional grid", async () => {
+    const raw = {
+      ...base,
+      targets: [base.targets[1]!, base.targets[2]!, ...base.targets.slice(3), base.targets[0]!],
+      aspectRatio: 1.86,
+    };
+    const result = await requestInfraTargetLayout(raw, null, 9, async () => { throw new Error("boom"); });
+    expect(result).toEqual(provisionalInfraTargetLayout(buildInfraTargetLayoutInput(raw)));
   });
 });

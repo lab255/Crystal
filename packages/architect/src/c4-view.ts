@@ -227,6 +227,15 @@ export function applyC4Edit(args: {
     });
   }
 
+  if (
+    overlay === args.overlay &&
+    !manualNodesChanged &&
+    !manualEdgesChanged &&
+    !hiddenChanged &&
+    !hiddenEdgesChanged &&
+    !facetsChanged
+  ) return args.overlay;
+
   return {
     ...overlay,
     ...(manualNodesChanged ? { manualNodes } : {}),

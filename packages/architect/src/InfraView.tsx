@@ -89,6 +89,7 @@ import {
   placedEdges,
   targetMemberColumns,
   zoneNestingRejection,
+  type InfraGroup,
   type InfraZoneKind,
 } from "./infra.js";
 import {
@@ -173,6 +174,40 @@ interface GroupData extends Record<string, unknown> {
 }
 type GroupRfNode = RfNode<GroupData>;
 
+export function infraGroupSceneNode(
+  group: InfraGroup,
+  position: { x: number; y: number },
+  size: { width: number; height: number },
+  options: { parentId?: string; local: boolean; selected: boolean; simActive: boolean },
+): GroupRfNode {
+  return {
+    id: `target:${group.target.id}`,
+    type: "infragroup",
+    ...(options.parentId ? { parentId: options.parentId } : {}),
+    position,
+    ...size,
+    zIndex: -1,
+    draggable: true,
+    selectable: true,
+    selected: options.selected,
+    deletable: false,
+    dragHandle: ".infra-target-header",
+    data: {
+      targetId: group.target.id,
+      target: group.target.name,
+      count: group.nodes.length,
+      local: options.local,
+      memberIds: group.nodes.map((node) => node.id),
+      simActive: options.simActive,
+      deadCount: 0,
+    },
+  };
+}
+
+export function isInfraDropTarget(node: RfNode): node is GroupRfNode {
+  return node.type === "infragroup" && !(node.data as GroupData).detected;
+}
+
 const InfraGroupNode = memo(function InfraGroupNode({ data }: NodeProps<GroupRfNode>) {
   const Icon = data.detected ? Waypoints : data.local ? Laptop : Cloud;
   const actions = useSimActions();
@@ -223,6 +258,11 @@ const InfraGroupNode = memo(function InfraGroupNode({ data }: NodeProps<GroupRfN
           </Tooltip>
         ) : null}
       </div>
+      {data.count === 0 && !data.detected ? (
+        <div className="pointer-events-none flex h-[calc(100%-32px)] items-center justify-center px-4 text-center text-[10px] text-ink-faint">
+          Empty — drop a component here
+        </div>
+      ) : null}
       {/* Handles keep react-flow quiet; edges attach to child nodes. */}
       <Handle type="target" position={Position.Top} className="!invisible" />
       <Handle type="source" position={Position.Bottom} className="!invisible" />
@@ -772,7 +812,7 @@ function InfraInner({
       const packedCount = members.filter((member) => !member.pinned).length;
       const viewportAspect = Math.max(0.75, canvasSize.width / Math.max(canvasSize.height, 1));
       const cols = targetMemberColumns(packedCount || 1, viewportAspect, { width: CELL_W, height: cellH });
-      const rows = Math.ceil(packedCount / cols);
+      const rows = Math.max(1, Math.ceil(packedCount / cols));
       let width = GROUP_PAD * 2 + cols * CELL_W + (cols - 1) * CELL_GAP;
       let height = GROUP_HEADER + GROUP_PAD + rows * cellH + Math.max(rows - 1, 0) * CELL_GAP + GROUP_PAD;
       for (const member of members) {
@@ -889,29 +929,12 @@ function InfraInner({
     ) => {
       const { group, members, cols, width, height } = geometry;
       const groupId = `target:${group.target.id}`;
-      targetNodes.push({
-        id: groupId,
-        type: "infragroup",
+      targetNodes.push(infraGroupSceneNode(group, position, { width, height }, {
         ...(parentId ? { parentId } : {}),
-        position,
-        width,
-        height,
-        zIndex: -1,
-        draggable: true,
-        selectable: true,
+        local: isLocal,
         selected: parsedSelection.kind === "target" && selectedId === group.target.id,
-        deletable: false,
-        dragHandle: ".infra-target-header",
-        data: {
-          targetId: group.target.id,
-          target: group.target.name,
-          count: group.nodes.length,
-          local: isLocal,
-          memberIds: group.nodes.map((node) => node.id),
-          simActive: simOn,
-          deadCount: 0,
-        },
-      });
+        simActive: simOn,
+      }));
       const parentAbs = parentId
         ? graphAbsolutePosition(graph, parentId)
         : { x: 0, y: 0 };
@@ -1252,8 +1275,7 @@ function InfraInner({
   const groupAtPoint = useCallback(
     (point: { x: number; y: number }): GroupRfNode | null => {
       for (const n of nodes) {
-        if (n.type !== "infragroup") continue;
-        if ((n.data as GroupData).detected) continue; // not a real deployment target
+        if (!isInfraDropTarget(n)) continue;
         const abs = rfAbsolutePosition(nodes, n.id);
         const w = n.width ?? 0;
         const h = n.height ?? 0;

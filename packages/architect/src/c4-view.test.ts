@@ -89,6 +89,17 @@ describe("filterC4DeletionIds", () => {
 });
 
 describe("applyC4Edit", () => {
+  it("preserves overlay identity when the canvas edit changes nothing", () => {
+    const overlay = createArchOverlay();
+    expect(applyC4Edit({
+      overlay,
+      derived: DERIVED,
+      projected: PROJECTED,
+      edited: PROJECTED,
+      viewKey: "containers",
+    })).toBe(overlay);
+  });
+
   it("records drags as per-level pins", () => {
     const edited = {
       ...PROJECTED,

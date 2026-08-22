@@ -87,7 +87,7 @@ export function requestInfraTargetLayout(
   solve: (input: InfraTargetLayoutInput) => Promise<InfraTargetLayoutOutput> = solveInfraTargetLayout,
   warn: (...args: unknown[]) => void = console.warn,
 ): Promise<InfraTargetLayoutOutput> {
-  if (!worker) return solve(input);
+  if (!worker) return solve(input).catch(() => provisionalInfraTargetLayout(buildInfraTargetLayoutInput(input)));
   return new Promise((resolve) => {
     let fellBack = false;
     const fallback = (error?: string) => {
@@ -97,7 +97,10 @@ export function requestInfraTargetLayout(
         warnedWorkerFailure = true;
         warn("Infra target layout worker failed; retrying in-process", error);
       }
-      void solve(input).then(resolve);
+      void solve(input).then(
+        resolve,
+        () => resolve(provisionalInfraTargetLayout(buildInfraTargetLayoutInput(input))),
+      );
     };
     worker.onmessage = (event) => {
       if (event.data.reqId !== reqId) return;
@@ -117,13 +120,27 @@ function elkNode(target: InfraTargetRect): ElkNode {
     height: target.height,
     layoutOptions: {
       "org.eclipse.elk.partitioning.partition": String(partition),
-      ...(target.layer === "entry"
-        ? { "org.eclipse.elk.layered.layering.layerConstraint": "FIRST" }
-        : target.layer === "data"
-          ? { "org.eclipse.elk.layered.layering.layerConstraint": "LAST" }
-          : {}),
     },
   };
+}
+
+/** Deterministic, dependency-free last resort. Targets remain in layer bands. */
+export function provisionalInfraTargetLayout(input: InfraTargetLayoutInput): InfraTargetLayoutOutput {
+  const positions: InfraTargetLayoutOutput["positions"] = [];
+  let cursorY = 0;
+  for (const partition of [0, 1, 2, 3]) {
+    const targets = input.targets.filter((target) => (target.layer == null ? 3 : PARTITION[target.layer]) === partition);
+    if (targets.length === 0) continue;
+    let cursorX = 0;
+    let bandHeight = 0;
+    for (const target of targets) {
+      positions.push({ id: target.id, x: cursorX, y: cursorY });
+      cursorX += target.width + GROUP_GAP;
+      bandHeight = Math.max(bandHeight, target.height);
+    }
+    cursorY += bandHeight + BAND_GAP;
+  }
+  return { positions: positions.sort((a, b) => a.id.localeCompare(b.id)) };
 }
 
 function root(input: InfraTargetLayoutInput, targets = input.targets, edges = input.edges): ElkNode {
@@ -190,6 +207,15 @@ export async function solveInfraTargetLayout(raw: InfraTargetLayoutInput, engine
   const input = buildInfraTargetLayoutInput(raw);
   if (input.targets.length === 0) return { positions: [] };
   const elk = engine ?? (defaultElk ??= new ELK());
-  const positions = positionsOf(await elk.layout(root(input)));
-  return bandsAreOrdered(input, positions) ? { positions } : solveSeparateBands(input, elk);
+  try {
+    const positions = positionsOf(await elk.layout(root(input)));
+    if (bandsAreOrdered(input, positions)) return { positions };
+  } catch {
+    // Invalid/adversarial cross-band edges can make a combined layered solve fail.
+  }
+  try {
+    return await solveSeparateBands(input, elk);
+  } catch {
+    return provisionalInfraTargetLayout(input);
+  }
 }
