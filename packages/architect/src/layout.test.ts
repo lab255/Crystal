@@ -24,8 +24,36 @@ function graph(nodes: ArchNode[], edges: ArchitectureGraph["edges"] = []): Archi
 }
 
 const topOf = (g: ArchitectureGraph, id: string) => g.nodes.find((n) => n.id === id)!.position.y;
+const geometryOf = (g: ArchitectureGraph) =>
+  Object.fromEntries(
+    g.nodes
+      .map((n) => [n.id, { position: n.position, size: n.size }] as const)
+      .sort(([a], [b]) => a.localeCompare(b)),
+  );
 
 describe("autoLayout — flow mode", () => {
+  it("is invariant to node and edge permutations without mutating persisted order", () => {
+    const nodes = ["b2", "a1", "solo-b", "b1", "a2", "solo-a"].map((id) =>
+      node(id, "service"),
+    );
+    const edges: ArchitectureGraph["edges"] = [
+      { id: "b", source: "b1", target: "b2", kind: "sync", label: "" },
+      { id: "a", source: "a1", target: "a2", kind: "sync", label: "" },
+    ];
+    const originalNodeOrder = nodes.map((n) => n.id);
+    const originalEdgeOrder = edges.map((e) => e.id);
+    const expected = geometryOf(autoLayout(graph(nodes, edges)));
+
+    for (const [nodeOrder, edgeOrder] of [
+      [[...nodes].reverse(), [...edges].reverse()],
+      [[nodes[2]!, nodes[5]!, nodes[3]!, nodes[0]!, nodes[4]!, nodes[1]!], edges],
+    ] as const) {
+      expect(geometryOf(autoLayout(graph([...nodeOrder], [...edgeOrder])))).toEqual(expected);
+    }
+    expect(nodes.map((n) => n.id)).toEqual(originalNodeOrder);
+    expect(edges.map((e) => e.id)).toEqual(originalEdgeOrder);
+  });
+
   it("lays out a zone-stripped projection exactly like a graph that never had zones", () => {
     const clean = graph([node("a", "service"), node("b", "datastore")], [{ id: "ab", source: "a", target: "b", kind: "sync", label: "" }]);
     const withZone = { ...clean, nodes: [...clean.nodes, node("region", "region")], edges: [...clean.edges, { id: "zone-edge", source: "region", target: "a", kind: "sync" as const, label: "" }] };
@@ -165,6 +193,27 @@ describe("autoLayoutFitted — C4 boundaries", () => {
 });
 
 describe("autoLayout — layers mode", () => {
+  it("keeps band geometry invariant under input permutations", () => {
+    const nodes = [
+      node("data-b", "datastore"),
+      node("entry-b", "gateway"),
+      node("service-b", "service"),
+      node("entry-a", "external"),
+      node("data-a", "queue"),
+      node("service-a", "service"),
+    ];
+    const edges: ArchitectureGraph["edges"] = [
+      { id: "z", source: "entry-b", target: "entry-a", kind: "sync", label: "" },
+      { id: "a", source: "service-a", target: "service-b", kind: "sync", label: "" },
+    ];
+    const expected = geometryOf(autoLayout(graph(nodes, edges), { mode: "layers" }));
+    expect(
+      geometryOf(
+        autoLayout(graph([...nodes].reverse(), [...edges].reverse()), { mode: "layers" }),
+      ),
+    ).toEqual(expected);
+  });
+
   it("stacks entry above service above data (backend-only scope)", () => {
     const g = graph([
       node("db", "datastore"),

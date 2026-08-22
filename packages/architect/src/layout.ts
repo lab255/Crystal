@@ -65,6 +65,7 @@ export function autoLayout(
     list.push(n.id);
     nodesByParent.set(key, list);
   }
+  for (const ids of nodesByParent.values()) ids.sort((a, b) => a.localeCompare(b));
 
   const dims = new Map<string, { width: number; height: number }>();
   for (const n of graph.nodes) {
@@ -269,21 +270,28 @@ function dagrePass(
   dims: Map<string, { width: number; height: number }>,
   edgeScope: Set<string>,
 ): Map<string, { x: number; y: number }> {
+  const orderedIds = [...ids].sort((a, b) => a.localeCompare(b));
   const g = new dagre.graphlib.Graph();
   g.setGraph({ rankdir: "TB", nodesep: 48, ranksep: 72, marginx: 16, marginy: 16 });
   g.setDefaultEdgeLabel(() => ({}));
-  for (const id of ids) {
+  for (const id of orderedIds) {
     const d = dims.get(id)!;
     g.setNode(id, { width: d.width, height: d.height });
   }
-  for (const e of graph.edges) {
+  const orderedEdges = [...graph.edges].sort(
+    (a, b) =>
+      a.source.localeCompare(b.source) ||
+      a.target.localeCompare(b.target) ||
+      a.id.localeCompare(b.id),
+  );
+  for (const e of orderedEdges) {
     if (edgeScope.has(e.source) && edgeScope.has(e.target) && e.source !== e.target) {
       g.setEdge(e.source, e.target);
     }
   }
   dagre.layout(g);
   const out = new Map<string, { x: number; y: number }>();
-  for (const id of ids) {
+  for (const id of orderedIds) {
     const pos = g.node(id);
     const d = dims.get(id)!;
     out.set(id, { x: pos.x - d.width / 2, y: pos.y - d.height / 2 });
@@ -329,8 +337,9 @@ function packRows<T>(items: readonly RowItem<T>[]): {
 
 /** Undirected components of the edges that remain inside one parent scope. */
 function connectedComponents(graph: ArchitectureGraph, ids: readonly string[]): string[][] {
-  const scope = new Set(ids);
-  const adjacent = new Map(ids.map((id) => [id, new Set<string>()]));
+  const orderedIds = [...ids].sort((a, b) => a.localeCompare(b));
+  const scope = new Set(orderedIds);
+  const adjacent = new Map(orderedIds.map((id) => [id, new Set<string>()]));
   for (const edge of graph.edges) {
     if (edge.source === edge.target || !scope.has(edge.source) || !scope.has(edge.target)) continue;
     adjacent.get(edge.source)!.add(edge.target);
@@ -339,7 +348,7 @@ function connectedComponents(graph: ArchitectureGraph, ids: readonly string[]): 
 
   const seen = new Set<string>();
   const components: string[][] = [];
-  for (const start of ids) {
+  for (const start of orderedIds) {
     if (seen.has(start)) continue;
     const component: string[] = [];
     const pending = [start];
@@ -347,15 +356,17 @@ function connectedComponents(graph: ArchitectureGraph, ids: readonly string[]): 
     while (pending.length > 0) {
       const id = pending.pop()!;
       component.push(id);
-      for (const neighbor of adjacent.get(id)!) {
+      const neighbors = [...adjacent.get(id)!].sort((a, b) => b.localeCompare(a));
+      for (const neighbor of neighbors) {
         if (seen.has(neighbor)) continue;
         seen.add(neighbor);
         pending.push(neighbor);
       }
     }
+    component.sort((a, b) => a.localeCompare(b));
     components.push(component);
   }
-  return components;
+  return components.sort((a, b) => a[0]!.localeCompare(b[0]!));
 }
 
 interface FlowBlock {
@@ -429,6 +440,7 @@ function layoutScopeLayers(
     const layer = scopeLayerOf(graph, byId.get(id)!);
     bands[LAYER_ORDER.indexOf(layer)]!.ids.push(id);
   }
+  for (const band of bands) band.ids.sort((a, b) => a.localeCompare(b));
 
   interface LaidBand {
     nodes: { id: string; x: number; y: number }[];
@@ -486,6 +498,7 @@ function layoutScopeStacks(
     const band = scopeStackBandOf(graph, byId.get(id)!);
     bands[STACK_ORDER.indexOf(band)]!.ids.push(id);
   }
+  for (const band of bands) band.ids.sort((a, b) => a.localeCompare(b));
 
   interface LaidBand {
     nodes: { id: string; x: number; y: number }[];
