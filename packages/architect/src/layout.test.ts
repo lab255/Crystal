@@ -23,6 +23,17 @@ function graph(nodes: ArchNode[], edges: ArchitectureGraph["edges"] = []): Archi
   return { ...createArchitectureGraph("g"), id: "arch_1", environments: [], nodes, edges };
 }
 
+function fixedSeedShuffle<T>(items: readonly T[], seed: number): T[] {
+  const shuffled = [...items];
+  let state = seed >>> 0;
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    const j = state % (i + 1);
+    [shuffled[i], shuffled[j]] = [shuffled[j]!, shuffled[i]!];
+  }
+  return shuffled;
+}
+
 const topOf = (g: ArchitectureGraph, id: string) => g.nodes.find((n) => n.id === id)!.position.y;
 const geometryOf = (g: ArchitectureGraph) =>
   Object.fromEntries(
@@ -210,6 +221,13 @@ describe("autoLayout — layers mode", () => {
     expect(
       geometryOf(
         autoLayout(graph([...nodes].reverse(), [...edges].reverse()), { mode: "layers" }),
+      ),
+    ).toEqual(expected);
+    expect(
+      geometryOf(
+        autoLayout(graph(fixedSeedShuffle(nodes, 0x51a7), fixedSeedShuffle(edges, 0xc0de)), {
+          mode: "layers",
+        }),
       ),
     ).toEqual(expected);
   });

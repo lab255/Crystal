@@ -590,6 +590,7 @@ export function buildMapScene(input: MapSceneInput): MapScene {
   const visibleDeps = summary.deps
     .filter(depVisible)
     .sort(
+      // (source, target) is unique per CodeModuleDep aggregation, so weight is an inert tiebreak.
       (a, b) =>
         a.source.localeCompare(b.source) ||
         a.target.localeCompare(b.target) ||
