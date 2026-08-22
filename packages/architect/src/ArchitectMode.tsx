@@ -102,6 +102,12 @@ import { ReviewPanel } from "./codemap/ReviewPanel.js";
 import type { MoveLikeIntent } from "./codemap/map-model.js";
 import { projectTrace, stepKeyOf } from "./dataflow.js";
 import { InfraView } from "./InfraView.js";
+import { CrossInfraView } from "./cross-infra/CrossInfraView.js";
+import {
+  reinjectInfraOnly,
+  splitInfraOnly,
+  type InfraOnlyProjection,
+} from "./arch-view-filter.js";
 import { ContractsPanel } from "./panels/ContractsPanel.js";
 import { DiffPanel } from "./panels/DiffPanel.js";
 import { InsightsPanel } from "./panels/InsightsPanel.js";
@@ -148,6 +154,52 @@ const ANALYSIS_PHASE_LABEL: Record<CodeMapProgress["phase"], string> = {
 };
 const FILE_COUNT_FORMAT = new Intl.NumberFormat();
 
+/** Restore display-only omissions before a flat canvas edit is extracted. */
+export function transformCanvasCommit({
+  edited,
+  rendered,
+  ghostIds,
+  viewFilteredIds,
+  infraOnly,
+}: {
+  edited: ArchitectureGraph;
+  rendered: ArchitectureGraph;
+  ghostIds: ReadonlySet<string>;
+  viewFilteredIds: ReadonlySet<string>;
+  infraOnly?: InfraOnlyProjection;
+}): ArchitectureGraph {
+  let clean =
+    ghostIds.size === 0
+      ? edited
+      : {
+          ...edited,
+          nodes: edited.nodes.filter((node) => !ghostIds.has(node.id)),
+          edges: edited.edges.filter((edge) => !ghostIds.has(edge.id)),
+        };
+  if (viewFilteredIds.size > 0) {
+    const present = new Set(clean.nodes.map((node) => node.id));
+    const cleanEdgeIds = new Set(clean.edges.map((edge) => edge.id));
+    clean = {
+      ...clean,
+      nodes: [
+        ...clean.nodes,
+        ...rendered.nodes.filter(
+          (node) => viewFilteredIds.has(node.id) && !present.has(node.id),
+        ),
+      ],
+      edges: [
+        ...clean.edges,
+        ...rendered.edges.filter(
+          (edge) =>
+            !cleanEdgeIds.has(edge.id) &&
+            (viewFilteredIds.has(edge.source) || viewFilteredIds.has(edge.target)),
+        ),
+      ],
+    };
+  }
+  return infraOnly ? reinjectInfraOnly(clean, infraOnly) : clean;
+}
+
 type ArchitectView = "architecture" | "infra" | "codebase";
 
 export function ArchitectMode() {
@@ -181,6 +233,15 @@ export function ArchitectMode() {
   const setActiveWs = useWorkspaces((s) => s.setActive);
   const linkedWs = useNav((l) => l.ws) ?? null;
   const codeMapLevel = useNav((l) => l.architect?.codemap) ?? null;
+  // `architect.scope` doubles as the C4 components scope; "all" is the
+  // infra-owned overload and is guarded by the navigation codec.
+  const infraScope = useNav((l) => l.architect?.scope) === "all" ? "all" : "project";
+  const workspaceCount = useWorkspaces((s) => s.workspaces.length);
+  const setInfraScope = useCallback(
+    (scope: "project" | "all") =>
+      nav({ architect: { scope: scope === "all" ? "all" : null } }),
+    [nav],
+  );
 
   // A bare legacy code-map link has no drill payload. Seed it without losing
   // the aliased codebase view while workspace state settles.
@@ -290,6 +351,45 @@ export function ArchitectMode() {
           {/* The C4 deployment diagram; the view id stays "infra" so deep links hold. */}
           {tab("infra", <Globe2 className="h-3.5 w-3.5" />, "Deployment")}
         </div>
+        {view === "infra" ? (
+          <div className="flex items-center gap-0.5 rounded-lg border border-edge bg-surface-1 p-0.5">
+            <button
+              type="button"
+              onClick={() => setInfraScope("project")}
+              aria-pressed={infraScope === "project"}
+              className={cn(
+                "rounded-md px-2 py-0.5 text-[10px] font-medium transition-colors",
+                infraScope === "project" ? "bg-surface-3 text-ink" : "text-ink-muted hover:text-ink",
+              )}
+            >
+              This project
+            </button>
+            <Tooltip
+              content={
+                workspaceCount < 2
+                  ? "Open another workspace to compare infrastructure"
+                  : "Show infrastructure across open projects"
+              }
+            >
+              <span>
+                <button
+                  type="button"
+                  onClick={() => setInfraScope("all")}
+                  disabled={workspaceCount < 2}
+                  aria-pressed={infraScope === "all"}
+                  className={cn(
+                    "rounded-md px-2 py-0.5 text-[10px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40",
+                    infraScope === "all"
+                      ? "bg-surface-3 text-ink"
+                      : "text-ink-muted hover:text-ink",
+                  )}
+                >
+                  All projects
+                </button>
+              </span>
+            </Tooltip>
+          </div>
+        ) : null}
       </header>
       <div className="min-h-0 flex-1">
         {view === "codebase" ? (
@@ -303,6 +403,13 @@ export function ArchitectMode() {
             onRevealInDiagram={expandCode}
             activeDraftPath={draftPath}
             onOpenDraft={setDraftPath}
+          />
+        ) : view === "infra" && infraScope === "all" ? (
+          <CrossInfraView
+            onEnterWorkspace={(ws) => {
+              if (ws !== activeWs) setActiveWs(ws);
+              nav({ architect: { view: "infra", scope: null, vs: null } });
+            }}
           />
         ) : (
           <DiagramsView
@@ -559,9 +666,13 @@ function DiagramsView({
    * `rendered` itself stays untouched — it is the baseline drafts and
    * overlay extraction diff against.
    */
+  const canonicalCanvas = useMemo(
+    () => (rendered ? splitInfraOnly(rendered) : null),
+    [rendered],
+  );
   const displayGraph = useMemo(() => {
     if (!rendered) return null;
-    let out = rendered;
+    let out = canonicalCanvas?.view ?? rendered;
     if (archDiff && ghostIds.size > 0) {
       const nodeIds = new Set(out.nodes.map((n) => n.id));
       const merged: ArchitectureGraph = {
@@ -586,45 +697,64 @@ function DiagramsView({
       };
     }
     return out;
+  }, [rendered, canonicalCanvas, archDiff, ghostIds, viewFilteredIds]);
+
+  /** Infra keeps deployment topology while sharing review ghosts and view filters. */
+  const infraDisplayGraph = useMemo(() => {
+    if (!rendered) return null;
+    let out = rendered;
+    if (archDiff && ghostIds.size > 0) {
+      const nodeIds = new Set(out.nodes.map((node) => node.id));
+      const edgeIds = new Set(out.edges.map((edge) => edge.id));
+      const merged: ArchitectureGraph = {
+        ...out,
+        nodes: [...out.nodes, ...archDiff.ghosts.nodes.filter((ghost) => !nodeIds.has(ghost.id))],
+        edges: [...out.edges, ...archDiff.ghosts.edges.filter((ghost) => !edgeIds.has(ghost.id))],
+      };
+      const laid = autoLayout(merged, { mode: "flow" });
+      const renderedById = new Map(out.nodes.map((node) => [node.id, node]));
+      out = { ...laid, nodes: laid.nodes.map((node) => renderedById.get(node.id) ?? node) };
+    }
+    if (viewFilteredIds.size > 0) {
+      out = {
+        ...out,
+        nodes: out.nodes.filter((node) => !viewFilteredIds.has(node.id)),
+        edges: out.edges.filter(
+          (edge) => !viewFilteredIds.has(edge.source) && !viewFilteredIds.has(edge.target),
+        ),
+      };
+    }
+    return out;
   }, [rendered, archDiff, ghostIds, viewFilteredIds]);
 
-  /** A canvas edit of the canonical graph → overlay ops, debounce-persisted. */
+  /** A full canonical graph → overlay ops, debounce-persisted. */
   const commitCanonical = useCallback(
+    (edited: ArchitectureGraph) => commitEdited(edited),
+    [commitEdited],
+  );
+  const commitCanvas = useCallback(
     (edited: ArchitectureGraph) => {
       if (!rendered) return;
-      // Review ghosts exist only at the base ref — never part of the edit.
-      let clean =
-        ghostIds.size === 0
-          ? edited
-          : {
-              ...edited,
-              nodes: edited.nodes.filter((n) => !ghostIds.has(n.id)),
-              edges: edited.edges.filter((e) => !ghostIds.has(e.id)),
-            };
-      // View-filtered nodes were only hidden from display — put them back so
-      // extraction never records them as user deletions.
-      if (viewFilteredIds.size > 0) {
-        const present = new Set(clean.nodes.map((n) => n.id));
-        const cleanEdgeIds = new Set(clean.edges.map((e) => e.id));
-        clean = {
-          ...clean,
-          nodes: [
-            ...clean.nodes,
-            ...rendered.nodes.filter((n) => viewFilteredIds.has(n.id) && !present.has(n.id)),
-          ],
-          edges: [
-            ...clean.edges,
-            ...rendered.edges.filter(
-              (e) =>
-                !cleanEdgeIds.has(e.id) &&
-                (viewFilteredIds.has(e.source) || viewFilteredIds.has(e.target)),
-            ),
-          ],
-        };
-      }
-      commitEdited(clean);
+      commitCanonical(
+        transformCanvasCommit({
+          edited,
+          rendered,
+          ghostIds,
+          viewFilteredIds,
+          infraOnly: canonicalCanvas?.infraOnly,
+        }),
+      );
     },
-    [rendered, ghostIds, viewFilteredIds, commitEdited],
+    [rendered, ghostIds, viewFilteredIds, canonicalCanvas, commitCanonical],
+  );
+  const commitInfra = useCallback(
+    (edited: ArchitectureGraph) => {
+      if (!rendered) return;
+      commitCanonical(
+        transformCanvasCommit({ edited, rendered, ghostIds, viewFilteredIds }),
+      );
+    },
+    [rendered, ghostIds, viewFilteredIds, commitCanonical],
   );
 
   // Old `?diagram=` deep links resolve to the facet their diagram migrated to.
@@ -1587,8 +1717,8 @@ function DiagramsView({
           {variant === "infra" ? (
             <InfraView
               key="canonical"
-              graph={displayGraph ?? rendered}
-              onChange={commitCanonical}
+              graph={infraDisplayGraph ?? rendered}
+              onChange={commitInfra}
               summary={codeSummary}
               diffMarks={archDiff?.marks ?? null}
             />
@@ -1618,7 +1748,7 @@ function DiagramsView({
                         ? (c4Marks ?? null)
                         : (archDiff?.marks ?? null)
                   }
-                  onChange={c4Enabled && c4Laid ? commitC4 : commitGraph}
+                  onChange={c4Enabled && c4Laid ? commitC4 : activeDraft ? commitGraph : commitCanvas}
                   edgeRoutes={c4Enabled ? c4Routes : undefined}
                   layoutRevision={c4Enabled ? layoutRevision : undefined}
                   onMeasured={c4Enabled ? mergeMeasuredDims : undefined}
