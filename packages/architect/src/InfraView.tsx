@@ -11,6 +11,7 @@ import {
   ReactFlowProvider,
   useNodesState,
   useReactFlow,
+  useUpdateNodeInternals,
   type Edge as RfEdge,
   type Node as RfNode,
   type NodeChange,
@@ -74,14 +75,26 @@ import {
   INFRA_ZONE_KINDS,
   environmentPlacementCount,
   environmentSubgraph,
+  groupLayer,
   infraGroups,
-  infraTargetBandStart,
+  infraTargetEdges,
   layerBands,
   placedEdges,
   targetMemberColumns,
   zoneNestingRejection,
   type InfraZoneKind,
 } from "./infra.js";
+import {
+  buildInfraTargetLayoutInput,
+  BAND_GAP,
+  GROUP_GAP,
+  infraFreeSpaceOrigin,
+  infraTargetLayoutKey,
+  LAYOUT_TOP,
+  requestInfraTargetLayout,
+  type InfraTargetLayoutInput,
+  type InfraTargetLayoutOutput,
+} from "./infra-layout.js";
 import { detectedExternals, detectedInternalEdges, externalNodeId } from "./infra-deps.js";
 import { EDGE_KIND_STYLE, KIND_META, accentOf } from "./model.js";
 import { SimActionsContext, SimEditor, SimPanel, applyTrafficToEdges, useSimActions } from "./SimPanel.js";
@@ -337,9 +350,6 @@ const SIM_TICK_MS = 600;
 const SIM_HISTORY_TICKS = 48;
 const GROUP_PAD = 14;
 const GROUP_HEADER = 32;
-const GROUP_GAP = 56;
-const BAND_GAP = 104;
-const LAYOUT_TOP = 96;
 
 function zoneSize(kind: ZoneKind): { width: number; height: number } {
   if (kind === "vpc") return { width: 760, height: 520 };
@@ -376,18 +386,45 @@ function rfNestingDepth(nodes: readonly RfNode[], nodeId: string): number {
   return depth;
 }
 
-function adaptiveColumns(
-  count: number,
-  canvas: { width: number; height: number },
-  bandCount: number,
-  average: { width: number; height: number },
-): number {
-  if (count <= 1) return 1;
-  const usableWidth = Math.max(680, canvas.width - 220);
-  const bandHeight = Math.max(320, (canvas.height - LAYOUT_TOP) / Math.max(1, bandCount));
-  const aspect = usableWidth / bandHeight;
-  const target = Math.round(Math.sqrt(count * aspect * (average.height / average.width)));
-  return Math.max(1, Math.min(count, target));
+export function useInfraTargetLayout(input: InfraTargetLayoutInput | null): InfraTargetLayoutOutput | null {
+  const [output, setOutput] = useState<InfraTargetLayoutOutput | null>(null);
+  const requestId = useRef(0);
+  const workerRef = useRef<Worker | null>(null);
+  useEffect(() => () => {
+    requestId.current++;
+    workerRef.current?.terminate();
+    workerRef.current = null;
+  }, []);
+  const contentKey = input ? infraTargetLayoutKey(input) : null;
+  useEffect(() => {
+    if (!input) {
+      setOutput(null);
+      return;
+    }
+    const reqId = ++requestId.current;
+    let cancelled = false;
+    const publish = (next: InfraTargetLayoutOutput) => {
+      if (!cancelled && requestId.current === reqId) setOutput(next);
+    };
+    const compute = (worker: Worker | null) => void requestInfraTargetLayout(input, worker, reqId).then(publish, () => undefined);
+    if (typeof Worker === "undefined") {
+      compute(null);
+    } else {
+      try {
+        const worker = workerRef.current ?? new Worker(new URL("./infra-layout.worker.ts", import.meta.url), { type: "module" });
+        workerRef.current = worker;
+        compute(worker);
+      } catch {
+        workerRef.current?.terminate();
+        workerRef.current = null;
+        compute(null);
+      }
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [contentKey]);
+  return output;
 }
 
 /** Keep a pinned card inside its container — clear of the left edge and header. */
@@ -502,6 +539,7 @@ function InfraInner({
   const [externalPlacement, setExternalPlacement] = useState<TargetPrompt | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const { fitView, screenToFlowPosition } = useReactFlow();
+  const updateNodeInternals = useUpdateNodeInternals();
   const canvasRef = useRef<HTMLDivElement>(null);
   const workspaceName = useWorkspaces(
     (s) => s.workspaces.find((workspace) => workspace.id === s.activeId)?.name ?? "workspace",
@@ -515,7 +553,8 @@ function InfraInner({
       const rect = element.getBoundingClientRect();
       const ratio = rect.height > 0 ? rect.width / rect.height : 1;
       const quantized = Math.round(Math.max(0.5, Math.min(3, ratio)) * 4) / 4;
-      setCanvasSize({ width: Math.round(rect.height * quantized), height: Math.round(rect.height) });
+      const next = { width: Math.round(rect.height * quantized), height: Math.round(rect.height) };
+      setCanvasSize((previous) => previous.width === next.width && previous.height === next.height ? previous : next);
     };
     measure();
     const observer = new ResizeObserver(measure);
@@ -684,6 +723,57 @@ function InfraInner({
     setRemoveEnvId(null);
   };
 
+  const targetGeometries = useMemo(() => {
+    if (!activeEnv) return [];
+    const cellH = simOn ? CELL_H_SIM : CELL_H;
+    return groups.map((group) => {
+      const members = group.nodes.map((node) => {
+        const placement = node.placements[activeEnv.id];
+        const pinned = placement?.x != null && placement.y != null
+          ? { x: placement.x, y: placement.y }
+          : null;
+        return { node, pinned };
+      });
+      const packedCount = members.filter((member) => !member.pinned).length;
+      const viewportAspect = Math.max(0.75, canvasSize.width / Math.max(canvasSize.height, 1));
+      const cols = targetMemberColumns(packedCount || 1, viewportAspect, { width: CELL_W, height: cellH });
+      const rows = Math.ceil(packedCount / cols);
+      let width = GROUP_PAD * 2 + cols * CELL_W + (cols - 1) * CELL_GAP;
+      let height = GROUP_HEADER + GROUP_PAD + rows * cellH + Math.max(rows - 1, 0) * CELL_GAP + GROUP_PAD;
+      for (const member of members) {
+        if (!member.pinned) continue;
+        width = Math.max(width, member.pinned.x + CELL_W + GROUP_PAD);
+        height = Math.max(height, member.pinned.y + cellH + GROUP_PAD);
+      }
+      return { group, members, cols, width, height };
+    });
+  }, [activeEnv, groups, simOn, canvasSize]);
+
+  const infraLayoutInput = useMemo(() => {
+    if (!activeEnv) return null;
+    const targetLayout = new Map((activeEnv.targets ?? []).map((target) => [target.id, target]));
+    const targets = [];
+    for (const geometry of targetGeometries) {
+      const pin = targetLayout.get(geometry.group.target.id);
+      if (pin?.x != null && pin.y != null) {
+        continue;
+      }
+      targets.push({
+        id: geometry.group.target.id,
+        width: geometry.width,
+        height: geometry.height,
+        layer: groupLayer(geometry.group),
+      });
+    }
+    return buildInfraTargetLayoutInput({
+      targets,
+      edges: infraTargetEdges(graph, activeEnv.id),
+      aspectRatio: canvasSize.width / Math.max(canvasSize.height, 1),
+      direction: "DOWN",
+    });
+  }, [activeEnv, graph, targetGeometries, canvasSize]);
+  const infraLayout = useInfraTargetLayout(infraLayoutInput);
+
   /**
    * Place (or re-place) a component on a target, keeping any runtime detail.
    * `at` pins the card at a parent-relative position inside the target's
@@ -743,32 +833,8 @@ function InfraInner({
       rootBottom = Math.max(rootBottom, abs.y + size.height);
     }
 
-    type SceneGroup = (typeof groups)[number];
-    const geometryFor = (group: SceneGroup) => {
-      // Cards the user dragged carry a pinned position on the placement;
-      // the rest grid-pack. The container stretches to hold the pins.
-      const members = group.nodes.map((node) => {
-        const p = node.placements[activeEnv.id];
-        const pinned = p?.x != null && p?.y != null ? { x: p.x, y: p.y } : null;
-        return { node, pinned };
-      });
-      const packedCount = members.filter((m) => !m.pinned).length;
-      const viewportAspect = Math.max(0.75, canvasSize.width / Math.max(canvasSize.height, 1));
-      const cols = targetMemberColumns(packedCount || 1, viewportAspect, { width: CELL_W, height: cellH });
-      const rows = Math.ceil(packedCount / cols);
-      let width = GROUP_PAD * 2 + cols * CELL_W + (cols - 1) * CELL_GAP;
-      let height =
-        GROUP_HEADER + GROUP_PAD + rows * cellH + Math.max(rows - 1, 0) * CELL_GAP + GROUP_PAD;
-      for (const m of members) {
-        if (!m.pinned) continue;
-        width = Math.max(width, m.pinned.x + CELL_W + GROUP_PAD);
-        height = Math.max(height, m.pinned.y + cellH + GROUP_PAD);
-      }
-      return { group, members, cols, width, height };
-    };
-
     const appendTarget = (
-      geometry: ReturnType<typeof geometryFor>,
+      geometry: (typeof targetGeometries)[number],
       position: { x: number; y: number },
       parentId?: string,
     ) => {
@@ -834,11 +900,12 @@ function InfraInner({
       const pin = targetLayout.get(group.target.id);
       if (pin?.x == null || pin.y == null) continue;
       const parentId = pin.zone && zoneIds.has(pin.zone) ? pin.zone : undefined;
-      appendTarget(geometryFor(group), { x: pin.x, y: pin.y }, parentId);
+      const geometry = targetGeometries.find((item) => item.group.target.id === group.target.id);
+      if (geometry) appendTarget(geometry, { x: pin.x, y: pin.y }, parentId);
     }
 
-    // Unpinned targets retain deterministic band/grid packing, with the
-    // column count derived from the measured canvas aspect instead of fixed.
+    // Only free target rectangles enter ELK. Keep a deterministic first paint
+    // (and fill any newly-added ids) while the asynchronous solve is pending.
     const fallbackBands = layerBands(groups)
       .map((band) => ({
         ...band,
@@ -849,43 +916,56 @@ function InfraInner({
       }))
       .filter((band) => band.groups.length > 0);
     const usableWidth = Math.max(680, canvasSize.width - 220);
-    let bandY = infraTargetBandStart(rootBottom, zones.length > 0, LAYOUT_TOP, BAND_GAP);
+    const solved = new Map(infraLayout?.positions.map((position) => [position.id, position]) ?? []);
+    const occupied = zoneNodes
+      .filter((node) => !node.parentId)
+      .map((node) => ({ x: node.position.x, y: node.position.y, width: node.width ?? 0, height: node.height ?? 0 }));
+    for (const geometry of targetGeometries) {
+      const pin = targetLayout.get(geometry.group.target.id);
+      if (pin?.x != null && pin.y != null && (!pin.zone || !zoneIds.has(pin.zone))) {
+        occupied.push({ x: pin.x, y: pin.y, width: geometry.width, height: geometry.height });
+      }
+    }
+    const origin = infraFreeSpaceOrigin(occupied, 48, LAYOUT_TOP, BAND_GAP);
+    let bandY = origin.y;
     for (const band of fallbackBands) {
-      const geometries = band.groups.map(geometryFor);
-      const average = {
-        width: geometries.reduce((sum, item) => sum + item.width, 0) / geometries.length,
-        height: geometries.reduce((sum, item) => sum + item.height, 0) / geometries.length,
-      };
-      const columns = adaptiveColumns(
-        geometries.length,
-        canvasSize,
-        fallbackBands.length,
-        average,
-      );
+      const geometries = band.groups.flatMap((group) => {
+        const geometry = targetGeometries.find((item) => item.group.target.id === group.target.id);
+        return geometry ? [geometry] : [];
+      });
+      const laidOut = geometries.map((geometry) => ({ geometry, position: solved.get(geometry.group.target.id) }));
+      const solvedInBand = laidOut.filter((item) => item.position);
+      const labelY = solvedInBand.length > 0
+        ? origin.y + Math.min(...solvedInBand.map((item) => item.position!.y)) - 24
+        : bandY - 24;
       bandNodes.push({
         id: `band:${band.layer ?? "other"}`,
         type: "bandlabel",
-        position: { x: 24, y: bandY - 24 },
+        position: { x: 24, y: labelY },
         draggable: false,
         selectable: false,
         deletable: false,
         data: { label: band.layer ?? "other" },
       });
-      let cursorY = bandY;
-      for (let rowStart = 0; rowStart < geometries.length; rowStart += columns) {
-        const row = geometries.slice(rowStart, rowStart + columns);
-        const rowWidth =
-          row.reduce((sum, item) => sum + item.width, 0) +
-          Math.max(0, row.length - 1) * GROUP_GAP;
-        const rowHeight = Math.max(...row.map((item) => item.height));
-        let cursorX = Math.max(48, (usableWidth - rowWidth) / 2);
-        for (const geometry of row) {
-          appendTarget(geometry, { x: Math.round(cursorX), y: Math.round(cursorY) });
-          cursorX += geometry.width + GROUP_GAP;
+      let cursorX = origin.x;
+      let rowY = bandY;
+      let fallbackBottom = bandY;
+      for (const { geometry, position } of laidOut) {
+        if (!position && cursorX > origin.x && cursorX + geometry.width > origin.x + usableWidth) {
+          cursorX = origin.x;
+          rowY = fallbackBottom + GROUP_GAP;
         }
-        cursorY += rowHeight + GROUP_GAP;
+        const targetPosition = position
+          ? { x: origin.x + position.x, y: origin.y + position.y }
+          : { x: cursorX, y: rowY };
+        appendTarget(geometry, targetPosition);
+        if (!position) {
+          cursorX += geometry.width + GROUP_GAP;
+          fallbackBottom = Math.max(fallbackBottom, targetPosition.y + geometry.height);
+        }
+        fallbackBottom = Math.max(fallbackBottom, targetPosition.y + geometry.height);
       }
-      bandY = cursorY - GROUP_GAP + BAND_GAP;
+      bandY = fallbackBottom + BAND_GAP;
     }
 
     // Detected external services follow every real root/zone arrangement so
@@ -1020,12 +1100,19 @@ function InfraInner({
       }
     }
     return { nodes, edges };
-  }, [graph, groups, zones, activeEnv, selectedId, parsedSelection.kind, simOn, detected, diffMarks, canvasSize]);
+  }, [graph, groups, zones, activeEnv, selectedId, parsedSelection.kind, simOn, detected, diffMarks, canvasSize, targetGeometries, infraLayout, infraLayoutInput]);
 
   // Drag needs live node state; the derived scene resets it (drop snaps back
   // unless the placement actually changed, in which case the scene moves it).
   const [nodes, setNodes, applyNodesChange] = useNodesState<InfraRfNode>(scene.nodes);
-  useEffect(() => setNodes(scene.nodes), [scene, setNodes]);
+  useEffect(() => {
+    setNodes(scene.nodes);
+    const targetIds = scene.nodes
+      .filter((node) => node.type === "infragroup")
+      .map((node) => node.id);
+    const frame = requestAnimationFrame(() => updateNodeInternals(targetIds));
+    return () => cancelAnimationFrame(frame);
+  }, [scene, setNodes, updateNodeInternals]);
   const sceneIds = useMemo(() => scene.nodes.map((node) => node.id).sort().join("\n"), [scene.nodes]);
   const previousSceneIds = useRef(sceneIds);
   useEffect(() => {
