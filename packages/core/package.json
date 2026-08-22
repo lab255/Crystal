@@ -13,6 +13,7 @@
     "build": "tsup && node ../../scripts/copy-css.mjs"
   },
   "dependencies": {
+    "yaml": "^2.7.1",
     "zod": "^3.25.0"
   },
   "devDependencies": {

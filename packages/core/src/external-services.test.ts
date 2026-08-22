@@ -5,6 +5,8 @@ import {
   aggregateExternalDeps,
   aggregateExternalLibraries,
   classifyExternalPackage,
+  classifyExternalImage,
+  normalizeContainerImage,
   extractServiceInstances,
 } from "./external-services.js";
 
@@ -32,6 +34,19 @@ describe("classifyExternalPackage", () => {
     for (const category of EXTERNAL_SERVICE_CATEGORIES) {
       expect(ARCH_KIND_OF_CATEGORY[category]).toBeTruthy();
     }
+  });
+});
+
+describe("classifyExternalImage", () => {
+  it("normalizes registry hosts, tags, digests and case", () => {
+    expect(classifyExternalImage("docker.io/library/postgres:16")).toMatchObject({ id: "postgres" });
+    expect(classifyExternalImage("GHCR.IO/redis/redis-stack@sha256:abc")).toMatchObject({ id: "redis" });
+    expect(normalizeContainerImage("localhost:5000/minio/minio:latest")).toBe("minio/minio");
+    expect(classifyExternalImage("docker.elastic.co/elasticsearch/elasticsearch:8")).toMatchObject({ id: "elasticsearch" });
+  });
+  it("uses exact aliases, never substrings", () => {
+    expect(classifyExternalImage("acme/my-postgres-backup:1")).toBeNull();
+    expect(classifyExternalImage("redis-commander")).toBeNull();
   });
 });
 

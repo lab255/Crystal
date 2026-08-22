@@ -55,6 +55,8 @@ interface ServiceRule extends ExternalServiceMeta {
   packages?: string[];
   /** Package-name prefixes implying this service (e.g. "@aws-sdk/client-s3"). */
   prefixes?: string[];
+  /** Exact normalized container repositories implying this service. */
+  images?: string[];
 }
 
 /**
@@ -65,26 +67,26 @@ interface ServiceRule extends ExternalServiceMeta {
  */
 const SERVICE_RULES: ServiceRule[] = [
   // --- databases ---
-  { id: "postgres", name: "PostgreSQL", category: "database", packages: ["pg", "postgres", "pg-promise", "@vercel/postgres", "@neondatabase/serverless"] },
-  { id: "mysql", name: "MySQL", category: "database", packages: ["mysql", "mysql2", "@planetscale/database"] },
+  { id: "postgres", name: "PostgreSQL", category: "database", packages: ["pg", "postgres", "pg-promise", "@vercel/postgres", "@neondatabase/serverless"], images: ["postgres"] },
+  { id: "mysql", name: "MySQL", category: "database", packages: ["mysql", "mysql2", "@planetscale/database"], images: ["mysql", "mariadb"] },
   { id: "sqlite", name: "SQLite", category: "database", packages: ["sqlite3", "better-sqlite3", "sql.js", "@libsql/client"] },
-  { id: "mongodb", name: "MongoDB", category: "database", packages: ["mongodb", "mongoose"] },
+  { id: "mongodb", name: "MongoDB", category: "database", packages: ["mongodb", "mongoose"], images: ["mongo", "mongodb/mongodb-community-server"] },
   { id: "dynamodb", name: "DynamoDB", category: "database", packages: ["@aws-sdk/client-dynamodb", "@aws-sdk/lib-dynamodb", "dynamoose"] },
   { id: "sql-orm", name: "SQL database", category: "database", packages: ["prisma", "@prisma/client", "drizzle-orm", "typeorm", "sequelize", "knex", "kysely", "mikro-orm", "@mikro-orm/core"] },
   { id: "supabase", name: "Supabase", category: "database", packages: ["@supabase/supabase-js"], prefixes: ["@supabase/"] },
   { id: "firebase", name: "Firebase", category: "database", packages: ["firebase", "firebase-admin"], prefixes: ["@firebase/"] },
   // --- caches ---
-  { id: "redis", name: "Redis", category: "cache", packages: ["redis", "ioredis", "@upstash/redis", "@redis/client"] },
-  { id: "memcached", name: "Memcached", category: "cache", packages: ["memcached", "memjs"] },
+  { id: "redis", name: "Redis", category: "cache", packages: ["redis", "ioredis", "@upstash/redis", "@redis/client"], images: ["redis", "redis/redis-stack", "redis/redis-stack-server"] },
+  { id: "memcached", name: "Memcached", category: "cache", packages: ["memcached", "memjs"], images: ["memcached"] },
   // --- queues / streams ---
-  { id: "kafka", name: "Kafka", category: "queue", packages: ["kafkajs", "node-rdkafka", "@confluentinc/kafka-javascript"] },
-  { id: "rabbitmq", name: "RabbitMQ", category: "queue", packages: ["amqplib", "amqp-connection-manager", "rascal"] },
+  { id: "kafka", name: "Kafka", category: "queue", packages: ["kafkajs", "node-rdkafka", "@confluentinc/kafka-javascript"], images: ["apache/kafka", "bitnami/kafka", "confluentinc/cp-kafka"] },
+  { id: "rabbitmq", name: "RabbitMQ", category: "queue", packages: ["amqplib", "amqp-connection-manager", "rascal"], images: ["rabbitmq"] },
   { id: "redis-queue", name: "Redis queue", category: "queue", packages: ["bullmq", "bull", "bee-queue"] },
   { id: "sqs", name: "SQS", category: "queue", packages: ["@aws-sdk/client-sqs", "sqs-consumer", "sqs-producer"] },
-  { id: "nats", name: "NATS", category: "queue", packages: ["nats"] },
+  { id: "nats", name: "NATS", category: "queue", packages: ["nats"], images: ["nats"] },
   { id: "mqtt", name: "MQTT broker", category: "queue", packages: ["mqtt", "async-mqtt"] },
   // --- object storage ---
-  { id: "s3", name: "S3", category: "storage", packages: ["@aws-sdk/client-s3", "aws-sdk", "minio", "@aws-sdk/s3-request-presigner"] },
+  { id: "s3", name: "S3", category: "storage", packages: ["@aws-sdk/client-s3", "aws-sdk", "minio", "@aws-sdk/s3-request-presigner"], images: ["minio/minio"] },
   { id: "gcs", name: "Cloud Storage", category: "storage", packages: ["@google-cloud/storage"] },
   { id: "azure-blob", name: "Azure Blob", category: "storage", packages: ["@azure/storage-blob"] },
   // --- generic outbound HTTP ---
@@ -104,17 +106,36 @@ const SERVICE_RULES: ServiceRule[] = [
   { id: "sentry", name: "Sentry", category: "monitoring", prefixes: ["@sentry/"] },
   { id: "monitoring", name: "Telemetry", category: "monitoring", packages: ["dd-trace", "prom-client", "newrelic", "statsd-client", "hot-shots", "posthog-node", "posthog-js", "@amplitude/analytics-node"], prefixes: ["@opentelemetry/"] },
   // --- search ---
-  { id: "elasticsearch", name: "Elasticsearch", category: "search", packages: ["@elastic/elasticsearch", "elasticsearch"] },
-  { id: "search", name: "Search", category: "search", packages: ["algoliasearch", "meilisearch", "typesense"] },
+  { id: "elasticsearch", name: "Elasticsearch", category: "search", packages: ["@elastic/elasticsearch", "elasticsearch"], images: ["elasticsearch", "docker.elastic.co/elasticsearch/elasticsearch"] },
+  { id: "search", name: "Search", category: "search", packages: ["algoliasearch", "meilisearch", "typesense"], images: ["getmeili/meilisearch", "typesense/typesense"] },
   // --- realtime ---
   { id: "realtime", name: "Realtime", category: "realtime", packages: ["pusher", "pusher-js", "ably", "socket.io", "socket.io-client"] },
 ];
 
 const byPackage = new Map<string, ExternalServiceMeta>();
 const byPrefix: { prefix: string; meta: ExternalServiceMeta }[] = [];
-for (const { packages, prefixes, ...meta } of SERVICE_RULES) {
+const byImage = new Map<string, ExternalServiceMeta>();
+for (const { packages, prefixes, images, ...meta } of SERVICE_RULES) {
   for (const pkg of packages ?? []) byPackage.set(pkg, meta);
   for (const prefix of prefixes ?? []) byPrefix.push({ prefix, meta });
+  for (const image of images ?? []) byImage.set(normalizeContainerImage(image), meta);
+}
+
+/** Strip transport-only image syntax while retaining the repository namespace. */
+export function normalizeContainerImage(image: string): string {
+  let repository = image.trim().toLowerCase().split("@", 1)[0] ?? "";
+  const slash = repository.lastIndexOf("/");
+  const colon = repository.lastIndexOf(":");
+  if (colon > slash) repository = repository.slice(0, colon);
+  const parts = repository.split("/").filter(Boolean);
+  if (parts.length > 1 && (parts[0]!.includes(".") || parts[0]!.includes(":") || parts[0] === "localhost")) parts.shift();
+  if (parts[0] === "library") parts.shift();
+  return parts.join("/");
+}
+
+/** Service implied by one exact normalized container repository. */
+export function classifyExternalImage(image: string): ExternalServiceMeta | null {
+  return byImage.get(normalizeContainerImage(image)) ?? null;
 }
 
 /** Service implied by one npm package name, or null for plain libraries. */
