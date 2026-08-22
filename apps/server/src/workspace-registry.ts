@@ -3,6 +3,11 @@ import fsSync from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
+  composeArchitecture,
+  deriveArchGraph,
+  migrateLegacyToOverlay,
+  normalizeDeployTargets,
+  reconcileOverlay,
   buildWatchFirePrompt,
   type BridgeEventName,
   type BridgeEvents,
@@ -10,6 +15,8 @@ import {
   type CrossPackageUse,
   type CrossWorkspaceEdge,
   type CrossWorkspaceMap,
+  type CrossInfraMap,
+  type ArchOverlay,
   type RecentWorkspace,
   type WorkspaceDescriptor,
 } from "@crystal/core";
@@ -48,6 +55,7 @@ import { StandingTaskEngine } from "./standing-tasks.js";
 import { TerminalManager, pasteInput, type TerminalSeed } from "./terminal-manager.js";
 import { WorkflowEngine } from "./workflow-engine.js";
 import { WorkspaceStore } from "./workspace-store.js";
+import { computeSharedServices, projectCrossInfraProject } from "./cross-infra.js";
 
 const CODE_FILE_RE = /\.(ts|tsx|js|jsx|mjs|cjs)$/;
 /** Enrichment files an indexing agent may drop while running. */
@@ -104,6 +112,8 @@ export class WorkspaceRuntime {
   private pendingPaths = new Set<string>();
   private disposeAgentListeners: (() => void)[] = [];
   private refactorEngine: RefactorEngine | null = null;
+  /** One canonical overlay load/migration for this runtime's lifetime. */
+  private archOverlayLoad: Promise<ArchOverlay> | null = null;
   /** Worker thread hosting the CPU-heavy code-map analysis (see analysis-host). */
   private readonly analysis: AnalysisBackend;
 
@@ -280,6 +290,38 @@ export class WorkspaceRuntime {
         // already gone
       });
     };
+  }
+
+  /**
+   * Canonical architecture-overlay read seam, including the one-time legacy
+   * migration used by arch.getOverlay. Cross-project projection must use this
+   * instead of bypassing migration with a direct store read.
+   */
+  async loadArchOverlay(): Promise<ArchOverlay> {
+    return (this.archOverlayLoad ??= this.loadArchOverlayOnce().catch((error) => {
+      // Reads can recover (for example after a transient filesystem failure),
+      // but a successful legacy migration must never be run a second time.
+      this.archOverlayLoad = null;
+      throw error;
+    }));
+  }
+
+  private async loadArchOverlayOnce(): Promise<ArchOverlay> {
+    const existing = await this.store.loadArchOverlay();
+    if (existing) return existing;
+    const [info, layout, { index }] = await Promise.all([
+      this.store.load(),
+      this.store.loadSystemsLayout(),
+      this.codeindex.get(),
+    ]);
+    const overview = await this.codemap.systemOverview(index);
+    const overlay = migrateLegacyToOverlay({
+      diagrams: info.architectures,
+      layout,
+      overview: { ...overview, generatedAt: new Date().toISOString() },
+    });
+    await this.store.saveArchOverlay(overlay);
+    return overlay;
   }
 
   /** Set by start(): board writes announce themselves like manifest edits do. */
@@ -973,6 +1015,58 @@ export class WorkspaceRegistry {
         packages: [...surfaces.get(r.id)!.packages.keys()].sort(),
       })),
       edges: computeCrossEdges(surfaces),
+      generatedAt: new Date().toISOString(),
+    };
+  }
+
+  /** Cross-project deployment facts across open runtimes, failure-bounded per project. */
+  async crossInfra(): Promise<CrossInfraMap> {
+    const runtimes = [...this.runtimes.values()];
+    const settled = await Promise.allSettled(
+      runtimes.map(async (runtime) => {
+        const [overlay, summary, { index }] = await Promise.all([
+          runtime.loadArchOverlay(),
+          runtime.codemap.summary(),
+          runtime.codeindex.get(),
+        ]);
+        const surfaces = await Promise.all([
+          runtime.codemap.surfaces(),
+          runtime.codemap.surfaceMap(),
+        ]).then(
+          ([report, map]) => ({ screens: report.screens, calls: map.calls }),
+          () => undefined,
+        );
+        const overview = await runtime.codemap.systemOverview(index);
+        const derived = deriveArchGraph({
+          overview,
+          externals: summary.externals ?? [],
+          modules: summary.modules,
+          surfaces,
+        });
+        const reconciled = reconcileOverlay(overlay, derived).overlay;
+        const composed = normalizeDeployTargets(composeArchitecture(derived, reconciled));
+        return projectCrossInfraProject({
+          ws: runtime.id,
+          name: runtime.name,
+          composed,
+          summary,
+        });
+      }),
+    );
+    const projects: CrossInfraMap["projects"] = settled.map((result, index) =>
+      result.status === "fulfilled"
+        ? result.value
+        : {
+            ws: runtimes[index]!.id,
+            name: runtimes[index]!.name,
+            environments: [],
+            error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+          },
+    );
+    projects.sort((a, b) => a.name.localeCompare(b.name) || a.ws.localeCompare(b.ws));
+    return {
+      projects,
+      shared: computeSharedServices(projects),
       generatedAt: new Date().toISOString(),
     };
   }
