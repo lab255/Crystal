@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.37.1 (2026-08-22)
+
+### Bug Fixes
+
+- dogfood findings — ELK band crash containment, viewer overlay writes, empty targets ([`6eb68b1`](https://github.com/lab255/Crystal/commit/6eb68b1))
+
 ## v0.37.0 (2026-08-22)
 
 ### Features
