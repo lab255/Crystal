@@ -216,6 +216,48 @@ describe("WorkspaceRuntime.loadArchOverlay", () => {
     await expect(load()).resolves.toBe(overlay);
     expect(loadArchOverlay).toHaveBeenCalledTimes(2);
   });
+
+  it("serves the saved overlay instead of the boot-time memo", async () => {
+    const bootOverlay = createArchOverlay();
+    const savedOverlay = { ...createArchOverlay(), version: 2 as const };
+    const loadArchOverlay = vi.fn(async () => bootOverlay);
+    const saveArchOverlay = vi.fn(async () => {});
+    const runtime = Object.assign(Object.create(WorkspaceRuntime.prototype), {
+      archOverlayLoad: null, store: { loadArchOverlay, saveArchOverlay },
+    }) as WorkspaceRuntime;
+
+    await expect(runtime.loadArchOverlay()).resolves.toBe(bootOverlay);
+    await runtime.saveArchOverlay(savedOverlay);
+
+    await expect(runtime.loadArchOverlay()).resolves.toBe(savedOverlay);
+    expect(loadArchOverlay).toHaveBeenCalledTimes(1);
+    expect(saveArchOverlay).toHaveBeenCalledWith(savedOverlay);
+  });
+
+  it("does not let a concurrent first load resurrect the old overlay after save", async () => {
+    const bootOverlay = createArchOverlay();
+    const savedOverlay = { ...createArchOverlay(), version: 2 as const };
+    let finishLoad!: (overlay: typeof bootOverlay) => void;
+    const loadArchOverlay = vi.fn(() => new Promise<typeof bootOverlay>((resolve) => {
+      finishLoad = resolve;
+    }));
+    const saveArchOverlay = vi.fn(async () => {});
+    const runtime = Object.assign(Object.create(WorkspaceRuntime.prototype), {
+      archOverlayLoad: null, store: { loadArchOverlay, saveArchOverlay },
+    }) as WorkspaceRuntime;
+
+    const firstGet = runtime.loadArchOverlay();
+    const save = runtime.saveArchOverlay(savedOverlay);
+    expect(saveArchOverlay).not.toHaveBeenCalled();
+
+    finishLoad(bootOverlay);
+    await expect(firstGet).resolves.toBe(bootOverlay);
+    await save;
+
+    await expect(runtime.loadArchOverlay()).resolves.toBe(savedOverlay);
+    expect(loadArchOverlay).toHaveBeenCalledTimes(1);
+    expect(saveArchOverlay).toHaveBeenCalledWith(savedOverlay);
+  });
 });
 
 describe("WorkspaceRuntime question filing", () => {

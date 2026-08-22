@@ -306,6 +306,18 @@ export class WorkspaceRuntime {
     }));
   }
 
+  /**
+   * Canonical architecture-overlay write seam. Wait for the lifetime load to
+   * settle before saving so an in-flight disk read/migration cannot later
+   * replace the saved value. Replacing (rather than clearing) the memo keeps
+   * successful legacy migration strictly once per runtime.
+   */
+  async saveArchOverlay(overlay: ArchOverlay): Promise<void> {
+    await this.loadArchOverlay();
+    await this.store.saveArchOverlay(overlay);
+    this.archOverlayLoad = Promise.resolve(overlay);
+  }
+
   private async loadArchOverlayOnce(): Promise<ArchOverlay> {
     const existing = await this.store.loadArchOverlay();
     if (existing) return existing;
