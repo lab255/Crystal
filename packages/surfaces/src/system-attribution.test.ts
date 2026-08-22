@@ -42,7 +42,7 @@ describe("makeSystemAttributor", () => {
     expect(makeSystemAttributor([broad, narrow])("packages/api/src/routes.ts")).toBe(narrow);
   });
 
-  it("breaks equal-length prefix ties lexicographically", () => {
+  it("identical part path: first system in input order wins", () => {
     const later = system("sys:later", "packages/api");
     const earlier = system("sys:earlier", "packages/api");
 
@@ -55,7 +55,7 @@ describe("makeSystemAttributor", () => {
     expect(makeSystemAttributor([owner])("packages/web/src/app.tsx")).toBeNull();
   });
 
-  it("returns a memo-stable result for repeated files", () => {
+  it("returns the identical system object for repeated files", () => {
     const owner = system("sys:api", "packages/api");
     const attribute = makeSystemAttributor([owner]);
     const first = attribute("packages/api/src/routes.ts");

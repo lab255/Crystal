@@ -278,16 +278,16 @@ function dagrePass(
     const d = dims.get(id)!;
     g.setNode(id, { width: d.width, height: d.height });
   }
-  const orderedEdges = [...graph.edges].sort(
-    (a, b) =>
-      a.source.localeCompare(b.source) ||
-      a.target.localeCompare(b.target) ||
-      a.id.localeCompare(b.id),
-  );
+  const orderedEdges = graph.edges
+    .filter((e) => edgeScope.has(e.source) && edgeScope.has(e.target) && e.source !== e.target)
+    .sort(
+      (a, b) =>
+        a.source.localeCompare(b.source) ||
+        a.target.localeCompare(b.target) ||
+        a.id.localeCompare(b.id),
+    );
   for (const e of orderedEdges) {
-    if (edgeScope.has(e.source) && edgeScope.has(e.target) && e.source !== e.target) {
-      g.setEdge(e.source, e.target);
-    }
+    g.setEdge(e.source, e.target);
   }
   dagre.layout(g);
   const out = new Map<string, { x: number; y: number }>();

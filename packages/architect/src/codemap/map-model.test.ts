@@ -49,6 +49,17 @@ const A = "packages/core/src/a.ts";
 const B = "packages/ui/src/b.ts";
 const C = "packages/ui/src/c.ts";
 
+function fixedSeedShuffle<T>(items: readonly T[], seed: number): T[] {
+  const shuffled = [...items];
+  let state = seed >>> 0;
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    const j = state % (i + 1);
+    [shuffled[i], shuffled[j]] = [shuffled[j]!, shuffled[i]!];
+  }
+  return shuffled;
+}
+
 function summary(): CodeMapSummary {
   return {
     modules: [
@@ -196,6 +207,12 @@ describe("buildMapScene — collapsed overview", () => {
     };
 
     expect(sceneGeometry(buildMapScene(input({ summary: permuted })))).toEqual(expected);
+    const shuffled: CodeMapSummary = {
+      ...original,
+      modules: fixedSeedShuffle(original.modules, 0x51a7),
+      deps: fixedSeedShuffle(original.deps, 0xc0de),
+    };
+    expect(sceneGeometry(buildMapScene(input({ summary: shuffled })))).toEqual(expected);
     expect(original.modules.map((module) => module.path)).toEqual(moduleOrder);
     expect(original.deps.map((dep) => `${dep.source}->${dep.target}`)).toEqual(depOrder);
   });
@@ -270,6 +287,17 @@ describe("buildMapScene — expanded module", () => {
     );
 
     expect(actual).toEqual(expected);
+    const shuffled = { ...detail, files: fixedSeedShuffle(detail.files, 0x51a7) };
+    expect(
+      sceneGeometry(
+        buildMapScene(
+          input({
+            moduleDetails: new Map([["packages/core", shuffled]]),
+            expandedModules: new Set(["packages/core"]),
+          }),
+        ),
+      ),
+    ).toEqual(expected);
     expect(detail.files.map((file) => file.path)).toEqual(fileOrder);
   });
 
