@@ -22,7 +22,7 @@ import type {
 } from "@crystal/core";
 import { requestOpenFile, useCrystal, useLens, useNavUpdate, useWorkspaces } from "@crystal/client";
 import { Tooltip, cn } from "@crystal/ui";
-import { makeSystemAttributor } from "./map/scene.js";
+import { makeSystemAttributor } from "./system-attribution.js";
 
 const EMPTY_SYSTEMS: SystemModule[] = [];
 
