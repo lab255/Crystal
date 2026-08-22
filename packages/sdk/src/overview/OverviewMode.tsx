@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { Bot, FolderPlus, Inbox, LayoutGrid, Unplug } from "lucide-react";
-import type { OverviewViewId } from "@crystal/core";
-import { useFleetConnections, useHub, useNav, useNavUpdate } from "@crystal/client";
+import { Bot, FolderPlus, Globe2, Inbox, LayoutGrid, Unplug } from "lucide-react";
+import { formatWsRef, type OverviewViewId } from "@crystal/core";
+import { useCrystal, useFleetConnections, useHub, useNav, useNavUpdate } from "@crystal/client";
 import { Button, EmptyState, Input, Tooltip, cn } from "@crystal/ui";
 import { ProgramThread, QuestionInbox } from "@crystal/threads";
 import { OpenWorkspaceDialog } from "../OpenWorkspaceDialog.js";
@@ -91,10 +91,33 @@ export function OverviewMode() {
  */
 function Dashboard() {
   const connections = useFleetConnections();
+  const { activeSid, selectWorkspace } = useCrystal();
+  const updateNav = useNavUpdate();
   const [openDialog, setOpenDialog] = useState(false);
 
   const multiServer = connections.length > 1;
   const total = connections.reduce((n, c) => n + c.workspaces.length, 0);
+  // Cross-infrastructure is server-scoped. Prefer the currently active bridge,
+  // then another bridge that actually has enough open projects to compare.
+  const infraConnection =
+    connections.find(
+      (connection) => connection.sid === activeSid && connection.workspaces.length >= 2,
+    ) ??
+    connections.find((connection) => connection.workspaces.length >= 2) ??
+    null;
+  const infraWorkspace = infraConnection
+    ? (infraConnection.workspaces.find((workspace) => workspace.id === infraConnection.activeWs) ??
+      infraConnection.workspaces[0])
+    : null;
+  const openInfrastructure = () => {
+    if (!infraConnection || !infraWorkspace) return;
+    selectWorkspace(infraConnection.sid, infraWorkspace.id);
+    updateNav({
+      ws: formatWsRef(infraConnection.sid, infraWorkspace.id),
+      mode: "architect",
+      architect: { view: "infra", scope: "all", vs: null },
+    });
+  };
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
@@ -127,6 +150,25 @@ function Dashboard() {
         </header>
 
         {/* Insights + costs headline — the agent system's pulse, fleet-wide. */}
+        {infraWorkspace ? (
+          <button
+            type="button"
+            onClick={openInfrastructure}
+            className="mb-4 flex w-full items-center gap-3 rounded-xl border border-edge bg-surface-1 px-4 py-3 text-left transition-colors hover:border-edge-strong hover:bg-surface-2"
+          >
+            <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-surface-3 text-ink-muted">
+              <Globe2 className="h-4 w-4" />
+            </span>
+            <span className="min-w-0">
+              <span className="block text-xs font-semibold text-ink">Infrastructure</span>
+              <span className="block text-[11px] text-ink-muted">
+                Compare deployments and shared services across open projects
+              </span>
+            </span>
+            <span className="ml-auto text-[10px] font-medium text-ink-faint">All projects →</span>
+          </button>
+        ) : null}
+
         <FleetPulse />
 
         <LiveRunsPanel />
