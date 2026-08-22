@@ -12,6 +12,14 @@ export interface ElkLayoutOptions {
   direction?: "DOWN" | "RIGHT";
   /** Width / height of the canvas the packed result should fill. */
   aspectRatio?: number;
+  /** Parent-relative positions from the last structurally similar solve. */
+  previous?: ReadonlyMap<string, { x: number; y: number }>;
+  /** Enables ELK's conservative semi-interactive ordering hints. */
+  incremental?: boolean;
+}
+
+export interface ElkLayoutEngine {
+  layout(graph: ElkNode): Promise<ElkNode>;
 }
 
 export interface ElkRouteLabel {
@@ -69,6 +77,7 @@ function edgeLabelLayoutOptions(): Record<string, string> {
 function rootLayoutOptions(
   direction: "DOWN" | "RIGHT",
   aspectRatio: number,
+  incremental: boolean,
 ): Record<string, string> {
   return {
     "elk.algorithm": "layered",
@@ -85,6 +94,12 @@ function rootLayoutOptions(
     "elk.separateConnectedComponents": "true",
     "elk.aspectRatio": String(aspectRatio),
     ...edgeLabelLayoutOptions(),
+    ...(incremental
+      ? {
+          "elk.interactive": "true",
+          "org.eclipse.elk.layered.crossingMinimization.semiInteractive": "true",
+        }
+      : {}),
   };
 }
 
@@ -304,6 +319,7 @@ export function filterRoutesForMovedEndpoints(
 export async function elkAutoLayout(
   graph: ArchitectureGraph,
   opts: ElkLayoutOptions = {},
+  engine: ElkLayoutEngine = new ELK(),
 ): Promise<ElkLayoutResult> {
   const aspectRatio = opts.aspectRatio ?? DEFAULT_ASPECT_RATIO;
   if (!Number.isFinite(aspectRatio) || aspectRatio <= 0) {
@@ -322,6 +338,9 @@ export async function elkAutoLayout(
     const siblings = childrenOf.get(parent) ?? [];
     siblings.push(node);
     childrenOf.set(parent, siblings);
+  }
+  for (const siblings of childrenOf.values()) {
+    siblings.sort((a, b) => a.id.localeCompare(b.id));
   }
 
   const penIds = new Set<string>();
@@ -413,6 +432,11 @@ export async function elkAutoLayout(
           measured ?? estimated ?? finiteSize(node.size ?? undefined, node.id) ?? FALLBACK_CARD;
         elkNode = { id: node.id, width: size.width, height: size.height, layoutOptions };
       }
+      const previous = opts.incremental ? opts.previous?.get(node.id) : undefined;
+      if (previous) {
+        elkNode.x = finite(previous.x, `previous x for node ${node.id}`);
+        elkNode.y = finite(previous.y, `previous y for node ${node.id}`);
+      }
 
       elkById.set(node.id, elkNode);
       visiting.delete(node.id);
@@ -432,7 +456,7 @@ export async function elkAutoLayout(
       id: rootId,
       children: rootChildren,
       edges: [],
-      layoutOptions: rootLayoutOptions(opts.direction ?? "DOWN", aspectRatio),
+      layoutOptions: rootLayoutOptions(opts.direction ?? "DOWN", aspectRatio, opts.incremental === true),
     };
     elkById.set(rootId, elkRoot);
 
@@ -453,7 +477,7 @@ export async function elkAutoLayout(
     };
     const borderSnapped = new Set<string>();
 
-    for (const edge of graph.edges) {
+    for (const edge of [...graph.edges].sort((a, b) => a.id.localeCompare(b.id))) {
       if (edge.source === edge.target || !byId.has(edge.source) || !byId.has(edge.target)) {
         continue;
       }
@@ -493,9 +517,7 @@ export async function elkAutoLayout(
       (owner.edges ??= []).push(elkEdge);
     }
 
-    // The bundled build runs in-process; these graphs are small enough that a
-    // worker only adds startup and serialization variability.
-    const laidOut = await new ELK().layout(elkRoot);
+    const laidOut = await engine.layout(elkRoot);
 
     const positions = new Map<string, ElkPoint>();
     const fittedSizes = new Map<string, { width: number; height: number }>();
@@ -571,7 +593,10 @@ export async function elkAutoLayout(
   // fact, so re-solve once with the offending scopes packed too.
   const EXTREME_ASPECT = 4;
   const packed = new Set(
-    graph.nodes.filter((node) => penIds.has(node.id) && sparseScope(node.id)).map((n) => n.id),
+    graph.nodes
+      .filter((node) => penIds.has(node.id) && sparseScope(node.id))
+      .map((n) => n.id)
+      .sort((a, b) => a.localeCompare(b)),
   );
   let solved = await solve(packed);
   const offenders = [...solved.fittedSizes]
@@ -580,7 +605,8 @@ export async function elkAutoLayout(
       const aspect = size.width / size.height;
       return aspect > EXTREME_ASPECT || aspect < 1 / EXTREME_ASPECT;
     })
-    .map(([id]) => id);
+    .map(([id]) => id)
+    .sort((a, b) => a.localeCompare(b));
   if (offenders.length > 0) {
     for (const id of offenders) packed.add(id);
     solved = await solve(packed);
