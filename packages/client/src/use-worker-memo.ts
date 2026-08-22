@@ -15,125 +15,158 @@ interface WorkerReply<O> {
 
 const WORKER_STALL_MS = 60_000;
 
+/** @internal Exported for policy tests without requiring a DOM renderer. */
+export class WorkerMemoController<I, O> {
+  private worker: Worker | null = null;
+  private broken: boolean;
+  private reqId = 0;
+  private watchdog: ReturnType<typeof setTimeout> | null = null;
+  private value: O | null = null;
+
+  constructor(
+    private readonly makeWorker: (() => Worker) | null,
+    private readonly computeSync: (input: I) => O,
+    private readonly update: (result: WorkerMemoResult<O>) => void,
+  ) {
+    this.broken = makeWorker === null;
+  }
+
+  start(input: I | null): void {
+    const reqId = ++this.reqId;
+    this.clearWatchdog();
+    if (input === null) {
+      this.value = null;
+      this.update({ value: null, pending: false });
+      return;
+    }
+
+    this.update({ value: this.value, pending: true });
+    if (this.broken) {
+      this.syncFallback(input, reqId);
+      return;
+    }
+    this.run(input, reqId, 0);
+  }
+
+  destroy(): void {
+    this.clearWatchdog();
+    this.worker?.terminate();
+    this.worker = null;
+  }
+
+  private run(input: I, reqId: number, attempt: 0 | 1): void {
+    let worker = this.worker;
+    if (!worker) {
+      try {
+        worker = this.makeWorker!();
+        this.worker = worker;
+      } catch (err) {
+        console.warn("[crystal] scene worker unavailable:", (err as Error).message);
+        this.broken = true;
+        this.syncFallback(input, reqId);
+        return;
+      }
+    }
+
+    worker.onmessage = (event: MessageEvent<WorkerReply<O>>) => {
+      const { reqId: doneReq, output, error } = event.data;
+      if (doneReq !== this.reqId || doneReq !== reqId || this.worker !== worker) return;
+      this.clearWatchdog();
+      if (error !== undefined) {
+        console.warn("[crystal] scene worker failed:", error);
+        this.settle(reqId);
+        return;
+      }
+      this.value = output as O;
+      this.update({ value: this.value, pending: false });
+    };
+    worker.onerror = () => {
+      if (this.reqId !== reqId || this.worker !== worker) return;
+      this.disable(worker);
+      this.broken = true;
+      this.syncFallback(input, reqId);
+    };
+
+    try {
+      worker.postMessage({ reqId, input });
+    } catch (err) {
+      console.warn("[crystal] scene worker post failed:", (err as Error).message);
+      this.disable(worker);
+      this.broken = true;
+      this.syncFallback(input, reqId);
+      return;
+    }
+
+    const stallMs = WORKER_STALL_MS * (attempt + 1);
+    this.watchdog = setTimeout(() => {
+      if (this.reqId !== reqId || this.worker !== worker) return;
+      this.disable(worker);
+      if (attempt === 0) {
+        console.warn(`[crystal] scene worker stalled for ${stallMs / 1_000}s; retrying`);
+        if (this.reqId === reqId) this.run(input, reqId, 1);
+      } else {
+        console.warn(`[crystal] scene worker retry stalled for ${stallMs / 1_000}s; giving up`);
+        this.settle(reqId);
+      }
+    }, stallMs);
+  }
+
+  private disable(worker: Worker): void {
+    worker.terminate();
+    if (this.worker === worker) this.worker = null;
+    this.clearWatchdog();
+  }
+
+  private clearWatchdog(): void {
+    if (this.watchdog !== null) clearTimeout(this.watchdog);
+    this.watchdog = null;
+  }
+
+  private settle(reqId: number): void {
+    if (this.reqId === reqId) this.update({ value: this.value, pending: false });
+  }
+
+  private syncFallback(input: I, reqId: number): void {
+    try {
+      const output = this.computeSync(input);
+      if (this.reqId === reqId) {
+        this.value = output;
+        this.update({ value: output, pending: false });
+      }
+    } catch (err) {
+      console.warn("[crystal] worker-memo compute failed:", (err as Error).message);
+      this.settle(reqId);
+    }
+  }
+}
+
 /**
  * Offload a pure input → output computation to a module Web Worker so heavy
- * scene/layout builds (dagre at FormSG scale) stop blocking the UI thread.
+ * scene/layout builds do not block the UI thread.
  *
- * The worker protocol is `postMessage({reqId, input})` in and
- * `postMessage({reqId, output | error})` out — see the *.worker.ts entries.
- * Both sides must be structured-clonable (Maps and Sets are fine).
- *
- * Falls back to computing synchronously — exactly the old useMemo behavior —
- * when Workers don't exist (tests, SSR) or the worker errors, so the view
- * can never end up scene-less because of worker plumbing.
+ * Worker stalls retry once in a fresh worker and never fall back to the main
+ * thread. Compute errors settle only their request. Worker plumbing failures,
+ * unavailable workers, and non-clonable messages use the synchronous fallback.
  */
 export function useWorkerMemo<I, O>(
   makeWorker: (() => Worker) | null,
   computeSync: (input: I) => O,
   input: I | null,
 ): WorkerMemoResult<O> {
-  const [state, setState] = useState<{ value: O | null; forReq: number }>({
-    value: null,
-    forReq: 0,
-  });
-  const workerRef = useRef<Worker | null>(null);
-  const brokenRef = useRef(makeWorker === null);
-  const reqIdRef = useRef(0);
-  const watchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [result, setResult] = useState<WorkerMemoResult<O>>({ value: null, pending: false });
   const computeRef = useRef(computeSync);
   computeRef.current = computeSync;
-  const makeWorkerRef = useRef(makeWorker);
+  const controllerRef = useRef<WorkerMemoController<I, O> | null>(null);
+  if (!controllerRef.current) {
+    controllerRef.current = new WorkerMemoController(
+      makeWorker,
+      (nextInput) => computeRef.current(nextInput),
+      setResult,
+    );
+  }
 
-  useEffect(() => {
-    return () => {
-      if (watchdogRef.current) clearTimeout(watchdogRef.current);
-      watchdogRef.current = null;
-      workerRef.current?.terminate();
-      workerRef.current = null;
-    };
-  }, []);
+  useEffect(() => () => controllerRef.current?.destroy(), []);
+  useEffect(() => controllerRef.current!.start(input), [input]);
 
-  useEffect(() => {
-    const reqId = ++reqIdRef.current;
-    if (watchdogRef.current) clearTimeout(watchdogRef.current);
-    watchdogRef.current = null;
-    if (input === null) {
-      setState({ value: null, forReq: reqId });
-      return;
-    }
-    const syncFallback = () => {
-      try {
-        const output = computeRef.current(input);
-        if (reqIdRef.current === reqId) setState({ value: output, forReq: reqId });
-      } catch (err) {
-        console.warn("[crystal] worker-memo compute failed:", (err as Error).message);
-        // Keep the last good value, but settle this request so callers do not
-        // remain `pending` forever when both worker and fallback fail.
-        if (reqIdRef.current === reqId) {
-          setState((current) => ({ value: current.value, forReq: reqId }));
-        }
-      }
-    };
-    if (brokenRef.current) {
-      syncFallback();
-      return;
-    }
-    if (!workerRef.current) {
-      try {
-        const worker = makeWorkerRef.current!();
-        workerRef.current = worker;
-      } catch (err) {
-        console.warn("[crystal] scene worker unavailable:", (err as Error).message);
-        brokenRef.current = true;
-        syncFallback();
-        return;
-      }
-    }
-    const worker = workerRef.current;
-    const disableWorker = () => {
-      brokenRef.current = true;
-      worker.terminate();
-      if (workerRef.current === worker) workerRef.current = null;
-      if (watchdogRef.current) clearTimeout(watchdogRef.current);
-      watchdogRef.current = null;
-    };
-    // Refresh the handlers for every input so an error always falls back for
-    // the latest request, not whichever request happened to create the worker.
-    worker.onmessage = (e: MessageEvent<WorkerReply<O>>) => {
-      const { reqId: doneReq, output, error } = e.data;
-      if (doneReq !== reqIdRef.current) return; // stale reply
-      if (watchdogRef.current) clearTimeout(watchdogRef.current);
-      watchdogRef.current = null;
-      if (error !== undefined) {
-        console.warn("[crystal] scene worker failed:", error);
-        disableWorker();
-        syncFallback();
-        return;
-      }
-      setState({ value: output as O, forReq: doneReq });
-    };
-    worker.onerror = () => {
-      // Worker plumbing broke (bundling, CSP) — degrade to the old
-      // synchronous path for the rest of this view's life.
-      disableWorker();
-      syncFallback();
-    };
-    try {
-      worker.postMessage({ reqId, input });
-    } catch (err) {
-      // Non-clonable input is a programming error; keep the view alive.
-      console.warn("[crystal] scene worker post failed:", (err as Error).message);
-      disableWorker();
-      syncFallback();
-      return;
-    }
-    watchdogRef.current = setTimeout(() => {
-      if (reqIdRef.current !== reqId || workerRef.current !== worker) return;
-      console.warn(`[crystal] scene worker stalled for ${WORKER_STALL_MS / 1_000}s; falling back`);
-      disableWorker();
-      syncFallback();
-    }, WORKER_STALL_MS);
-  }, [input]);
-
-  return { value: state.value, pending: state.forReq !== reqIdRef.current };
+  return result;
 }
