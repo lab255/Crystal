@@ -867,10 +867,8 @@ function CodeMapInner({
     [refactors],
   );
 
-  // Members-level footprints: once the bulk details are in, dagre lays every
-  // module out at the size its fully exposed form needs, so the LoD slider
-  // swaps detail without re-arranging the map. A lens compacts instead — it
-  // exists to trim the canvas to one concern.
+  // Members-level footprints: expanded modules keep stable slots while the
+  // modules/members LoD swaps detail. Collapsed package cards stay compact.
   const layoutSizes = useMemo(() => {
     if (bulkLoadedGen !== generation) return undefined;
     const sizes = new Map<string, { w: number; h: number }>();
@@ -878,10 +876,14 @@ function CodeMapInner({
       if (entry.gen !== generation) continue;
       sizes.set(
         path,
-        memberFootprint(entry.detail, (p) => {
-          const fd = fileDetails.get(p);
-          return fd ? (fd.detail.symbols ?? fd.detail.exports).length : 0;
-        }),
+        memberFootprint(
+          entry.detail,
+          (p) => {
+            const fd = fileDetails.get(p);
+            return fd ? (fd.detail.symbols ?? fd.detail.exports).length : 0;
+          },
+          cappedExpansionFiles(entry.detail),
+        ),
       );
     }
     return sizes;
