@@ -4,6 +4,7 @@ import type { ArchDraft } from "./arch-draft.js";
 import type { ArchOverlay } from "./arch-overlay.js";
 import type { ArchitectureGraph } from "./architecture.js";
 import type { CrossInfraMap, CrossInfraOverlay } from "./cross-infra.js";
+import type { ComposeSuggestionResult } from "./compose-detect.js";
 import type { ChangedRefFile } from "./code-map-diff.js";
 import type { AgentRole, AgentRun, RunEvent, RunPurpose, WorkerSpec } from "./agent.js";
 import type { CodeIndex, FacetSuggestion } from "./code-index.js";
@@ -818,6 +819,7 @@ export interface BridgeMethods {
   /** Import/export graph across every open workspace. */
   "codemap.cross": { params: Record<string, never>; result: CrossWorkspaceMap };
   "infra.cross": { params: Record<string, never>; result: CrossInfraMap };
+  "infra.composeSuggest": { params: WsScope; result: ComposeSuggestionResult };
   "infra.crossOverlay.get": {
     params: Record<string, never>;
     result: { overlay: CrossInfraOverlay };

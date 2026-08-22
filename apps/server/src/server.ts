@@ -64,6 +64,7 @@ import { PublishManager } from "./publish-manager.js";
 import { sendApiRequest } from "./api-client-store.js";
 import { WorkspaceRegistry, canonicalRoot, type WorkspaceRuntime } from "./workspace-registry.js";
 import { InfraOverlayStore } from "./infra-overlay-store.js";
+import { composeSuggestions } from "./compose-suggestions.js";
 
 type Handlers = {
   [M in BridgeMethodName]: (
@@ -847,6 +848,7 @@ export async function startCrystalServer(opts: {
       registry.get(ws).codemap.bulkDetails(modules, prefer),
     "codemap.cross": () => registry.crossMap(),
     "infra.cross": () => registry.crossInfra(),
+    "infra.composeSuggest": ({ ws }) => composeSuggestions(registry.get(ws).root),
     "infra.crossOverlay.get": async () => ({ overlay: await requireInfraOverlayStore().get() }),
     "infra.crossOverlay.save": async ({ overlay }) => ({
       overlay: await requireInfraOverlayStore().save(overlay),
