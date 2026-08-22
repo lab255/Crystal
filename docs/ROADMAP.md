@@ -22,6 +22,48 @@ then honest presentation of uncertainty, then the ambitious product surfaces.
 
 ---
 
+## Shipped (2026-08-23 — the infrastructure diagramming revamp)
+
+*Three waves in one overnight run, every track codex-built, Fable-reviewed,
+merged sequentially with a green main, and verified against live Playwright
+runs plus the appliance/inventor dogfood codebases (spans v0.35.0–v0.37.0).*
+
+- **Typed deployment model**: environment-owned `ArchDeployTarget` records
+  (id/kind/tech/region/zone/pin) replace free-string targets; deterministic
+  legacy migration at every persisted-graph boundary; display-name mirrors
+  keep old consumers correct. Environment-scoped zone visibility
+  (`infraNodeIds`, seven zone kinds incl. region/AZ/cluster/namespace) with
+  the leak into the architecture/C4 canvases fixed for good.
+- **Deployment view robustness**: selectable targets with a full inspector,
+  env/sel deep links, environment duplicate/remove with real dialogs,
+  adoptable detected externals, environment-scoped simulation, deterministic
+  mermaid C4Deployment export, context menus everywhere (canonical mutation
+  seams + shared symbol block), environment-scoped notes, single-owner
+  Delete routing, declared-but-empty targets as drop targets.
+- **Cross-project infrastructure**: `infra.cross` fans a worker-safe
+  projection over open workspaces; `CrossInfraView` at
+  `#/architect/infra?scope=all` with per-project environment selection,
+  shared-service band (exact canonical-id matching, honest type-vs-instance
+  framing), persistent hub-scoped layout pins, Overview entry card.
+- **docker-compose detection**: pure core parsing (`yaml` dep, per-file
+  diagnostics), container-image classification on the service registry,
+  depth-capped server discovery, and a suggestions band with one-click
+  idempotent adoption.
+- **Auto-layout engine**: the architecture ELK solve moved to a lazy module
+  worker (tuple protocol, stall/fallback controller, optional incremental
+  hints behind a flag); InfraView's hand packer replaced by a dedicated ELK
+  worker honoring zones/pins as an occupied slab with partition-only band
+  order; permutation-independent dagre inputs everywhere; 1,129 lines of
+  dead surfaces layout deleted.
+- **Field-caught fixes**: elkjs cannot boot inside a real Worker without a
+  `document` stub (both workers were silently falling back to the main
+  thread); overlay saves now update the runtime read memo (stale reads were
+  clobbering newer edits on disk); ELK layer constraints crashed on real
+  dependency shapes (appliance) — bands now order by partitions alone;
+  viewing a workspace no longer rewrites its overlay file.
+
+---
+
 ## Shipped (2026-07-28 — the three-diagram consolidation)
 
 *Five separately-grown diagram mechanisms (systems overview, editable diagrams

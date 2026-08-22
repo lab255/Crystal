@@ -440,6 +440,48 @@ build/sign (+notarize on macOS) → signed updater `latest.json`).
   `sourcePath` so old `?diagram=` links resolve). Never let review ghosts reach
   `extractOverlay` — strip them first, or they persist as manual nodes.
 
+- The deployment model (2026-08-23 revamp): targets are typed per-environment
+  records (`ArchDeployTarget` on `ArchEnvironment.targets`; placements
+  reference `targetId` and keep `placement.target` as a display-name MIRROR
+  that only core normalization writes — `normalizeDeployTargets` in
+  `core/arch-deploy.ts`, raw-envelope migration via
+  `DATA_MIGRATORS["arch-overlay"]`). Zone/note visibility is environment-
+  scoped through `ArchEnvironment.infraNodeIds` — ABSENT means legacy =
+  visible everywhere (several bugs came from emitting zero instead); the
+  seven zone kinds live in core (`INFRA_ZONE_KINDS`/`isInfraZone`) and are
+  filtered out of the architecture canvas + C4 via
+  `splitInfraOnly`/`reinjectInfraOnly` (ArchitectMode's
+  `transformCanvasCommit` — canvas edits only; draft applies commit
+  unchanged). `removeEnvironment` prunes only the REMOVED env's own
+  now-unreferenced zones/notes. Deep links: `env=` (id) + `sel=`
+  (`node:`/`target:`/`zone:` grammar) + `scope=all` (cross-project).
+  Cross-project: `infra.cross` (unscoped, like `codemap.cross`) fans out a
+  worker-safe DTO over open workspaces; shared services match by exact
+  canonical `ext:` id and are framed as "same detected service TYPE" (never
+  same instance unless instance-qualified); layout pins persist in the hub
+  record `~/.crystal/hub/infra-overlays/default.json`
+  (`infra.crossOverlay.get/save` + `infra.crossChanged {reason}`).
+  docker-compose detection: `core/compose-detect.ts` (the `yaml` package is
+  a direct core dep; strings in, DTOs out — file I/O stays in
+  `apps/server/src/compose-suggestions.ts` behind `infra.composeSuggest`),
+  container-image aliases are a second evidence channel on `SERVICE_RULES`
+  (normalized exact match only), and the `ComposeSuggestions` band adopts
+  via one pure idempotent graph transform that never repoints a user-chosen
+  placement. Layout: unpinned targets solve in a dedicated ELK worker
+  (`infra-layout.ts` — zones/pins NEVER enter the solve; band order comes
+  from ELK partitions ONLY, `layerConstraint` FIRST/LAST crashes on real
+  back-edges); the architecture ELK solve runs in its own lazy worker
+  (`elk-layout.worker.ts`). Both workers stub `globalThis.document` before
+  loading elkjs — its UMD scope-sniff otherwise installs its own
+  `self.onmessage` and exports nothing inside a real Worker, and everything
+  silently falls back to the main thread (a Vite build probe does NOT prove
+  worker runtime; only a live `page.workers()` check does). Overlay reads
+  memoize per runtime; writes MUST route through
+  `WorkspaceRuntime.saveArchOverlay` (which replaces the memo) — a save
+  path that bypasses it resurrects the boot-time overlay and clobbers
+  newer edits. Viewport-only commits are suppressed until a session has a
+  user edit, so viewing a workspace never dirties its overlay file.
+
 - Ref review ("vs `<ref>`", the `vs` deep-link param) is ONE mechanism across all three
   views: `useRefReview` (client) drives the shared `RefReviewBar` and resolves
   `codemap.snapshotAtRef` — `need: ["overview"]` takes the cheap in-memory blob path,
