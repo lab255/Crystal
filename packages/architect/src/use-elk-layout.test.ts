@@ -5,7 +5,7 @@ import { AsyncLayoutController, canUseIncrementalLayout, startElkLayoutRequest }
 
 class FakeWorker {
   onmessage: ((event: MessageEvent) => void) | null = null;
-  onerror: (() => void) | null = null;
+  onerror: ((event: ErrorEvent) => void) | null = null;
   posted: unknown[] = [];
   terminated = false;
   postError = false;
@@ -87,7 +87,21 @@ describe("AsyncLayoutController", () => {
     const make = failure === "missing" ? null : failure === "constructor" ? () => { throw new Error("no worker"); } : () => worker as unknown as Worker;
     const controller = new AsyncLayoutController(make, async () => reply("local"), (value) => updates.push(value));
     controller.start("input");
-    if (failure === "error") worker.onerror?.();
+    if (failure === "error") worker.onerror?.({ message: "worker exploded" } as ErrorEvent);
+    await vi.waitFor(() => expect((updates.at(-1) as { value: ElkLayoutReply }).value.graph.nodes[0]?.id).toBe("local"));
+  });
+
+  it("surfaces a worker runtime error before recovering locally", async () => {
+    const worker = new FakeWorker();
+    const updates: unknown[] = [];
+    const controller = new AsyncLayoutController(
+      () => worker as unknown as Worker,
+      async () => reply("local"),
+      (value) => updates.push(value),
+    );
+    controller.start("input");
+    worker.onerror?.({ message: "worker exploded" } as ErrorEvent);
+    expect(updates).toContainEqual({ value: null, pending: true, failed: true, error: "worker exploded" });
     await vi.waitFor(() => expect((updates.at(-1) as { value: ElkLayoutReply }).value.graph.nodes[0]?.id).toBe("local"));
   });
 

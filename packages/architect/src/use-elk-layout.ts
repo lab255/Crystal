@@ -99,8 +99,9 @@ export class AsyncLayoutController<I, O> {
       this.value = reply.output as O;
       this.update({ value: this.value, pending: false });
     };
-    worker.onerror = () => {
+    worker.onerror = (event) => {
       if (this.reqId !== reqId || this.worker !== worker) return;
+      this.update({ value: this.value, pending: true, failed: true, error: event.message || "Worker runtime error" });
       this.disable(worker);
       this.broken = true;
       void this.local(input, reqId);
