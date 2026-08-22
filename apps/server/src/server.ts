@@ -23,10 +23,8 @@ import {
   attributedOpenQuestions,
   buildSystemOverview,
   computeReviewFindings,
-  createCrossInfraOverlay,
   facetIndexProjection,
   isQuestionOpen,
-  migrateLegacyToOverlay,
   profileOverlay,
   questionClosure,
   resolveProjectBoard,
@@ -65,6 +63,7 @@ import { pasteInput } from "./terminal-manager.js";
 import { PublishManager } from "./publish-manager.js";
 import { sendApiRequest } from "./api-client-store.js";
 import { WorkspaceRegistry, canonicalRoot, type WorkspaceRuntime } from "./workspace-registry.js";
+import { InfraOverlayStore } from "./infra-overlay-store.js";
 
 type Handlers = {
   [M in BridgeMethodName]: (
@@ -332,6 +331,18 @@ export async function startCrystalServer(opts: {
   // /health and /mcp — no console, no WS upgrade.
   let registryRef: WorkspaceRegistry | null = null;
   let hubRef: HubEngine | null = null;
+  const crossInfraTimers = new Map<string, NodeJS.Timeout>();
+  let crossInfraClosed = false;
+  const scheduleCrossInfraDataChanged = (ws?: string): void => {
+    if (crossInfraClosed) return;
+    const key = ws ?? "__workspaces";
+    const pending = crossInfraTimers.get(key);
+    if (pending) clearTimeout(pending);
+    crossInfraTimers.set(key, setTimeout(() => {
+      crossInfraTimers.delete(key);
+      broadcast("infra.crossChanged", { reason: "data", ...(ws ? { ws } : {}) });
+    }, 500));
+  };
   const permissionBroadcastDisposers = new Map<string, () => void>();
 
   /** Follow runtime open/close so broker-local changes become bridge pushes. */
@@ -442,8 +453,12 @@ export async function startCrystalServer(opts: {
   // reach the hub toolset at /mcp/hub/<runId>.
   const hubRoot = opts.hubDir === undefined ? hubDataDir() : opts.hubDir;
   let hub: HubEngine | null = null;
+  let infraOverlayStore: InfraOverlayStore | null = null;
   if (hubRoot) {
     await fs.mkdir(hubRoot, { recursive: true }).catch(() => {});
+    infraOverlayStore = new InfraOverlayStore(hubRoot, () => {
+      broadcast("infra.crossChanged", { reason: "layout" });
+    });
     const hubAgents = new AgentManager(hubRoot, hubRoot, undefined, {
       baseUrl: mcpBaseUrl,
       scope: HUB_MCP_ID,
@@ -492,6 +507,10 @@ export async function startCrystalServer(opts: {
   const requireHub = (): HubEngine => {
     if (!hub) throw new Error("The cross-project hub is disabled on this server.");
     return hub;
+  };
+  const requireInfraOverlayStore = (): InfraOverlayStore => {
+    if (!infraOverlayStore) throw new Error("The cross-project hub is disabled on this server.");
+    return infraOverlayStore;
   };
 
   // --- Publishing: an outbound relay connection that turns remote browsers
@@ -585,23 +604,7 @@ export async function startCrystalServer(opts: {
     },
     "arch.getOverlay": async ({ ws }) => {
       const rt = registry.get(ws);
-      const existing = await rt.store.loadArchOverlay();
-      if (existing) return { overlay: existing };
-      // First read: fold the legacy per-diagram world in, losslessly and
-      // once. Legacy files are read, never rewritten or deleted.
-      const [info, layout, sources, { index }] = await Promise.all([
-        rt.store.load(),
-        rt.store.loadSystemsLayout(),
-        rt.codemap.overviewSourceFiles(),
-        rt.codeindex.get(),
-      ]);
-      const overlay = migrateLegacyToOverlay({
-        diagrams: info.architectures,
-        layout,
-        overview: { ...buildSystemOverview(sources, index), generatedAt: new Date().toISOString() },
-      });
-      await rt.store.saveArchOverlay(overlay);
-      return { overlay };
+      return { overlay: await rt.loadArchOverlay() };
     },
     "arch.saveOverlay": async ({ ws, overlay }) => {
       const rt = registry.get(ws);
@@ -843,13 +846,11 @@ export async function startCrystalServer(opts: {
     "codemap.details": ({ ws, modules, prefer }) =>
       registry.get(ws).codemap.bulkDetails(modules, prefer),
     "codemap.cross": () => registry.crossMap(),
-    // Cross-project infrastructure — placeholder handlers keeping the bridge
-    // surface whole until the server projection + hub overlay store land.
-    "infra.cross": async () => ({ projects: [], shared: [], generatedAt: new Date().toISOString() }),
-    "infra.crossOverlay.get": async () => ({ overlay: createCrossInfraOverlay() }),
-    "infra.crossOverlay.save": async () => {
-      throw new Error("Cross-infra overlay persistence is not available yet");
-    },
+    "infra.cross": () => registry.crossInfra(),
+    "infra.crossOverlay.get": async () => ({ overlay: await requireInfraOverlayStore().get() }),
+    "infra.crossOverlay.save": async ({ overlay }) => ({
+      overlay: await requireInfraOverlayStore().save(overlay),
+    }),
     "codemap.overview": async ({ ws }) => {
       const rt = registry.get(ws);
       const { index } = await rt.codeindex.get();
@@ -1282,6 +1283,10 @@ export async function startCrystalServer(opts: {
     // rename funnels through here as `workspaces.changed` (registry and
     // handlers alike), making this the one seam a rewrite can watch.
     if (event === "workspaces.changed") scheduleInstanceRewrite();
+    if (event === "workspaces.changed") scheduleCrossInfraDataChanged();
+    if (event === "arch.overlayChanged" || event === "codemap.changed") {
+      scheduleCrossInfraDataChanged((payload as { ws: string }).ws);
+    }
     const msg: BridgeEventMessage<E> = { type: "evt", event, payload };
     const text = JSON.stringify(msg);
     for (const client of clients) client.send(text);
@@ -1502,6 +1507,9 @@ export async function startCrystalServer(opts: {
     hubMcpUrl,
     pipe: pipePath,
     close: async () => {
+      crossInfraClosed = true;
+      for (const timer of crossInfraTimers.values()) clearTimeout(timer);
+      crossInfraTimers.clear();
       // Stop instance-file rewrites first: cancel the pending timer, then
       // await the in-flight chain so nothing lands after the unlink below.
       instanceClosed = true;

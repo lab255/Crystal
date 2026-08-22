@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createAgentRun } from "@crystal/core";
+import { createAgentRun, createArchOverlay } from "@crystal/core";
 import { browseDirs, expandHome } from "./browse.js";
 import { packageNameOf, type CrossSurface } from "./code-map.js";
 import type { TerminalSeed } from "./terminal-manager.js";
@@ -92,6 +92,129 @@ describe("computeCrossEdges", () => {
       ["wsB", surface({ packages: new Map([["@b/sdk", "."]]) })],
     ]);
     expect(computeCrossEdges(surfaces)).toEqual([]);
+  });
+});
+
+describe("WorkspaceRegistry.crossInfra", () => {
+  it("sorts projects by name and bounds a runtime failure", async () => {
+    const registry = new WorkspaceRegistry(() => {}, null);
+    const good = {
+      id: "good",
+      name: "Zulu",
+      loadArchOverlay: vi.fn(async () => ({ ...createArchOverlay(), environments: [] })),
+      codemap: {
+        summary: vi.fn(async () => ({ modules: [], deps: [], externals: [], fileTotal: 0, generatedAt: "then" })),
+        systemOverview: vi.fn(async () => ({ systems: [], links: [], fileTotal: 0, generatedAt: "then" })),
+        surfaces: vi.fn(async () => ({ screens: [] })),
+        surfaceMap: vi.fn(async () => ({ calls: [] })),
+      },
+      codeindex: { get: vi.fn(async () => ({ index: {} })) },
+    };
+    const bad = {
+      id: "bad",
+      name: "Alpha",
+      loadArchOverlay: vi.fn(async () => { throw new Error("overlay corrupt"); }),
+      codemap: good.codemap,
+      codeindex: good.codeindex,
+    };
+    (registry as unknown as { runtimes: Map<string, unknown> }).runtimes = new Map([
+      ["good", good], ["bad", bad],
+    ]);
+
+    const result = await registry.crossInfra();
+    expect(result.projects.map((project) => project.name)).toEqual(["Alpha", "Zulu"]);
+    expect(result.projects[0]).toEqual({
+      ws: "bad", name: "Alpha", environments: [], error: "overlay corrupt",
+    });
+    expect(result.projects[1]).toMatchObject({ ws: "good", name: "Zulu", environments: [] });
+    expect(result.shared).toEqual([]);
+    expect(result.generatedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it("includes placements on screen nodes derived from runtime surfaces", async () => {
+    const registry = new WorkspaceRegistry(() => {}, null);
+    const screenId = "screen:react-router:/checkout";
+    const runtime = {
+      id: "shop",
+      name: "Shop",
+      loadArchOverlay: vi.fn(async () => ({
+        ...createArchOverlay(),
+        environments: [{
+          id: "prod", name: "Production", kind: "cloud" as const,
+          targets: [{ id: "web", name: "Web", kind: "static" as const }],
+        }],
+        overrides: {
+          [screenId]: { placements: { prod: { target: "Web", targetId: "web", runtime: "" } } },
+        },
+      })),
+      codemap: {
+        summary: vi.fn(async () => ({
+          modules: [{ path: "apps/web", name: "web", fileCount: 1 }],
+          deps: [], externals: [], fileTotal: 1, generatedAt: "then",
+        })),
+        systemOverview: vi.fn(async () => ({ systems: [], links: [], fileTotal: 1, generatedAt: "then" })),
+        surfaces: vi.fn(async () => ({ screens: [{
+          id: "react-router:/checkout", route: "/checkout",
+          file: "apps/web/src/Checkout.tsx", source: "react-router" as const,
+        }] })),
+        surfaceMap: vi.fn(async () => ({ calls: [] })),
+      },
+      codeindex: { get: vi.fn(async () => ({ index: {} })) },
+    };
+    (registry as unknown as { runtimes: Map<string, unknown> }).runtimes = new Map([["shop", runtime]]);
+
+    const result = await registry.crossInfra();
+
+    expect(result.projects[0]!.environments[0]!.nodes).toContainEqual({
+      id: screenId, label: "/checkout", kind: "frontend", targetId: "web",
+    });
+  });
+
+  it("derives without surfaces when surface analysis is unavailable", async () => {
+    const registry = new WorkspaceRegistry(() => {}, null);
+    const runtime = {
+      id: "plain", name: "Plain",
+      loadArchOverlay: vi.fn(async () => ({ ...createArchOverlay(), environments: [] })),
+      codemap: {
+        summary: vi.fn(async () => ({ modules: [], deps: [], externals: [], fileTotal: 0, generatedAt: "then" })),
+        systemOverview: vi.fn(async () => ({ systems: [], links: [], fileTotal: 0, generatedAt: "then" })),
+        surfaces: vi.fn(async () => { throw new Error("surfaces unavailable"); }),
+        surfaceMap: vi.fn(async () => ({ calls: [] })),
+      },
+      codeindex: { get: vi.fn(async () => ({ index: {} })) },
+    };
+    (registry as unknown as { runtimes: Map<string, unknown> }).runtimes = new Map([["plain", runtime]]);
+    expect((await registry.crossInfra()).projects[0]).toMatchObject({
+      ws: "plain", name: "Plain", environments: [],
+    });
+  });
+});
+
+describe("WorkspaceRuntime.loadArchOverlay", () => {
+  it("shares an in-flight successful load for the runtime lifetime", async () => {
+    const loadArchOverlay = vi.fn(async () => createArchOverlay());
+    const runtime = Object.assign(Object.create(WorkspaceRuntime.prototype), {
+      archOverlayLoad: null, store: { loadArchOverlay },
+    }) as WorkspaceRuntime;
+    const load = runtime.loadArchOverlay.bind(runtime);
+    const [first, second] = await Promise.all([load(), load()]);
+    expect(first).toBe(second);
+    await load();
+    expect(loadArchOverlay).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears a failed load so the next call can retry", async () => {
+    const overlay = createArchOverlay();
+    const loadArchOverlay = vi.fn()
+      .mockRejectedValueOnce(new Error("temporary read failure"))
+      .mockResolvedValueOnce(overlay);
+    const runtime = Object.assign(Object.create(WorkspaceRuntime.prototype), {
+      archOverlayLoad: null, store: { loadArchOverlay },
+    }) as WorkspaceRuntime;
+    const load = runtime.loadArchOverlay.bind(runtime);
+    await expect(load()).rejects.toThrow("temporary read failure");
+    await expect(load()).resolves.toBe(overlay);
+    expect(loadArchOverlay).toHaveBeenCalledTimes(2);
   });
 });
 
