@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.34.0 (2026-08-22)
+
+### Features
+
+- codemap exclusion summary + importedBy cap seams ([`e61d5df`](https://github.com/lab255/Crystal/commit/e61d5df))
+
+### Bug Fixes
+
+- collapsed modules stop reserving fully-expanded layout slots ([`204d492`](https://github.com/lab255/Crystal/commit/204d492))
+
+### Performance
+
+- exclude generated code from the code map analyzer ([`bc91ed1`](https://github.com/lab255/Crystal/commit/bc91ed1))
+- code map rebuild batching, scene caps, O(N^2) hot-spot fixes ([`f434ffb`](https://github.com/lab255/Crystal/commit/f434ffb))
+- worker-memo restarts on stall instead of freezing the main thread ([`580ca89`](https://github.com/lab255/Crystal/commit/580ca89))
+
 ## v0.33.0 (2026-08-19)
 
 ### Features
