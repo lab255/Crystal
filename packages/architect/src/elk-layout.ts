@@ -44,6 +44,27 @@ export interface ElkLayoutResult {
   routes: ReadonlyMap<string, ElkRoute>;
 }
 
+const LAYER_CONSTRAINT_OPTION = "elk.layered.layering.layerConstraint";
+
+function stripLayerConstraints(node: ElkNode): void {
+  if (node.layoutOptions) delete node.layoutOptions[LAYER_CONSTRAINT_OPTION];
+  for (const child of node.children ?? []) stripLayerConstraints(child);
+}
+
+async function layoutWithConstraintRetry(
+  engine: ElkLayoutEngine,
+  graph: ElkNode,
+): Promise<ElkNode> {
+  try {
+    return await engine.layout(graph);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!message.includes("UnsupportedConfigurationException")) throw error;
+    stripLayerConstraints(graph);
+    return engine.layout(graph);
+  }
+}
+
 type Point = { x: number; y: number };
 
 const COMPOUND_PADDING = "[top=56,left=24,bottom=24,right=24]";
@@ -404,12 +425,12 @@ export async function elkAutoLayout(
           layoutOptions["elk.spacing.nodeNode"] = "32";
         }
       } else if (node.kind === "person") {
-        layoutOptions["elk.layered.layering.layerConstraint"] = "FIRST";
+        layoutOptions[LAYER_CONSTRAINT_OPTION] = "FIRST";
       } else if (
         parentOf.get(node.id) == null &&
         (node.kind === "external" || node.id.startsWith("ext:"))
       ) {
-        layoutOptions["elk.layered.layering.layerConstraint"] = "LAST";
+        layoutOptions[LAYER_CONSTRAINT_OPTION] = "LAST";
       }
 
       let elkNode: ElkNode;
@@ -517,7 +538,7 @@ export async function elkAutoLayout(
       (owner.edges ??= []).push(elkEdge);
     }
 
-    const laidOut = await engine.layout(elkRoot);
+    const laidOut = await layoutWithConstraintRetry(engine, elkRoot);
 
     const positions = new Map<string, ElkPoint>();
     const fittedSizes = new Map<string, { width: number; height: number }>();

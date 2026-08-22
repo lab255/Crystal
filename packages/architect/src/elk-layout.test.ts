@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   createArchNode,
   createArchitectureGraph,
@@ -171,6 +171,35 @@ function labelsOverlap(a: ElkRouteLabel, b: ElkRouteLabel): boolean {
 }
 
 describe("elkAutoLayout", () => {
+  it("retries without layer constraints when ELK rejects edges across FIRST and LAST", async () => {
+    const input = graph(
+      [node("person", "person"), node("service", "service"), node("external", "external")],
+      [
+        { id: "into-person", source: "service", target: "person", kind: "sync", label: "" },
+        { id: "out-of-external", source: "external", target: "service", kind: "sync", label: "" },
+      ],
+    );
+    const layout = vi.fn(async (elkGraph: import("elkjs/lib/elk-api.js").ElkNode) => {
+      const constrained = (elkGraph.children ?? []).some((child) => Object.keys(child.layoutOptions ?? {}).some((key) => key.includes("layerConstraint")));
+      if (constrained) throw new Error("org.eclipse.elk.core.UnsupportedConfigurationException: invalid layer constraint");
+      return {
+        ...elkGraph,
+        width: 640,
+        height: 480,
+        children: elkGraph.children?.map((child, index) => ({ ...child, x: 20 + index * 180, y: 40 + index * 80 })),
+      };
+    });
+
+    const result = await elkAutoLayout(input, {}, { layout });
+
+    expect(layout).toHaveBeenCalledTimes(2);
+    expect(Object.fromEntries(result.graph.nodes.map((item) => [item.id, item.position]))).toEqual({
+      external: { x: 20, y: 40 },
+      person: { x: 200, y: 120 },
+      service: { x: 380, y: 200 },
+    });
+  });
+
   it("fits compounds, separates every sibling scope, and follows C4 ranks", async () => {
     const input = fixture();
     const { graph: laid } = await elkAutoLayout(input.graph, { dims: input.dims });

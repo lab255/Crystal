@@ -17,7 +17,8 @@ vi.mock("react", () => ({
   useRef: <T,>(value: T) => ({ current: value }),
   useState: vi.fn()
     .mockImplementationOnce(() => [harness.result, harness.setResult])
-    .mockImplementation(() => [true, vi.fn()]),
+    .mockImplementationOnce(() => [true, vi.fn()])
+    .mockImplementation(() => [false, vi.fn()]),
 }));
 vi.mock("@crystal/client", () => ({
   useCrystal: () => ({ client: { request: harness.request, events: { on: harness.subscribe } } }),
@@ -25,9 +26,26 @@ vi.mock("@crystal/client", () => ({
 }));
 
 import { ComposeSuggestions } from "./ComposeSuggestions.js";
+import { useState as mockedUseState } from "react";
 
 const graph: ArchitectureGraph = { id: "g", name: "G", description: "", nodes: [], edges: [], environments: [], journeys: [], facets: [] };
 const empty: ComposeSuggestionResult = { files: [], topology: [], suggestions: [], diagnostics: [] };
+
+function configureState(result: ComposeSuggestionResult | null, collapsed = true, dismissed = false) {
+  harness.result = result;
+  const React = vi.mocked(mockedUseState);
+  React.mockReset()
+    .mockImplementationOnce(() => [result, harness.setResult] as never)
+    .mockImplementationOnce(() => [collapsed, vi.fn()] as never)
+    .mockImplementationOnce(() => [dismissed, vi.fn()] as never);
+}
+
+function textOf(value: unknown): string {
+  if (typeof value === "string" || typeof value === "number") return String(value);
+  if (Array.isArray(value)) return value.map(textOf).join("");
+  if (value && typeof value === "object" && "props" in value) return textOf((value as { props: { children?: unknown } }).props.children);
+  return "";
+}
 
 describe("ComposeSuggestions", () => {
   beforeEach(async () => {
@@ -35,11 +53,7 @@ describe("ComposeSuggestions", () => {
     vi.useFakeTimers();
     harness.effects.length = 0;
     harness.result = null;
-    const React = await import("react");
-    vi.mocked(React.useState)
-      .mockReset()
-      .mockImplementationOnce(() => [harness.result, harness.setResult] as never)
-      .mockImplementation(() => [true, vi.fn()] as never);
+    configureState(null);
     harness.request.mockResolvedValue(empty);
   });
 
@@ -71,5 +85,36 @@ describe("ComposeSuggestions", () => {
     expect(harness.request).not.toHaveBeenCalled();
     vi.advanceTimersByTime(1);
     expect(harness.request).toHaveBeenCalledOnce();
+  });
+
+  it("renders an expandable warning when every compose file failed", () => {
+    configureState({
+      files: ["compose.yml", "nested/compose.yaml"],
+      topology: [],
+      suggestions: [],
+      diagnostics: [
+        { path: "compose.yml", severity: "error", message: "bad YAML" },
+        { path: "nested/compose.yaml", severity: "error", message: "services: Required" },
+      ],
+    }, false);
+
+    const output = ComposeSuggestions({ graph, environment: null, onAdopt: vi.fn() });
+    expect(textOf(output)).toContain("2 compose files could not be read");
+    expect(textOf(output)).toContain("compose.yml: bad YAML");
+    expect(textOf(output)).toContain("nested/compose.yaml: services: Required");
+  });
+
+  it("keeps parse diagnostics visible alongside valid suggestions", () => {
+    configureState({
+      files: ["compose.yml", "bad/compose.yml"],
+      topology: [],
+      suggestions: [{ key: "compose.yml:web", project: ".", path: "compose.yml", service: "web", image: "nginx", tech: "nginx", external: null, ports: [], volumes: [], networks: [], dependsOn: [], profiles: [] }],
+      diagnostics: [{ path: "bad/compose.yml", severity: "error", message: "bad YAML" }],
+    }, false);
+
+    const output = ComposeSuggestions({ graph, environment: null, onAdopt: vi.fn() });
+    expect(textOf(output)).toContain("Compose topology");
+    expect(textOf(output)).toContain("web");
+    expect(textOf(output)).toContain("bad/compose.yml: bad YAML");
   });
 });
