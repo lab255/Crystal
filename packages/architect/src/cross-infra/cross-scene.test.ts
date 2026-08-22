@@ -64,6 +64,7 @@ describe("buildCrossInfraScene", () => {
       updatedAt: "2026-08-23T00:00:00.000Z",
       envSelection: {},
       pins: { "project:a": { x: 44, y: 55 } },
+      identityLinks: [],
     };
     const scene = buildCrossInfraScene(map, overlay);
     expect(scene.nodes.map((node) => node.id)).toEqual([
@@ -100,7 +101,7 @@ describe("buildCrossInfraScene", () => {
     expect(scene.edges).toHaveLength(2);
   });
 
-  it("uses instance framing only for ext-prefixed instance-qualified keys", () => {
+  it("keeps automatic matches framed as service types even for qualified keys", () => {
     const a = env("a", "Production", "cloud", []);
     const b = env("b", "Production", "cloud", []);
     const map = mapOf([
@@ -116,7 +117,7 @@ describe("buildCrossInfraScene", () => {
     const framings = buildCrossInfraScene(map, null).nodes.flatMap((node) =>
       node.data.kind === "shared" ? [node.data.framing] : [],
     );
-    expect(framings).toEqual(["Same detected service type", "Detected shared service instance"]);
+    expect(framings).toEqual(["Same detected service type", "Same detected service type"]);
   });
 
   it("warns when a suggested selection must break a same-name ambiguity", () => {
@@ -130,26 +131,43 @@ describe("buildCrossInfraScene", () => {
     );
   });
 
-  it("is deterministic across project, shared, and environment permutations", () => {
+  it("is deterministic across project, shared, environment, identity-link, and member permutations", () => {
     const projectA = { ws: "a", name: "Alpha", environments: [env("a-stage", "Stage", "cloud", [1]), env("a-prod", "Production", "cloud", [3])] };
     const projectB = { ws: "b", name: "Beta", environments: [env("b-stage", "Stage", "cloud", [1]), env("b-prod", "Production", "cloud", [3])] };
+    projectA.environments[1]!.externals.push({ id: "ext:linked", label: "Linked A", kind: "datastore", clientNodeIds: [] });
+    projectB.environments[1]!.externals.push({ id: "ext:linked", label: "Linked B", kind: "datastore", clientNodeIds: [] });
     const shared = ["ext:queue", "ext:db"].map((key) => ({
       key, label: key, kind: "datastore" as const,
       projects: [{ ws: "b", envId: "b-prod", clientNodeIds: [] }, { ws: "a", envId: "a-prod", clientNodeIds: [] }],
     }));
     const variants: CrossInfraMap[] = [];
+    const links: CrossInfraOverlay["identityLinks"] = [
+      { id: "linked", members: [{ ws: "b", key: "ext:linked" }, { ws: "a", key: "ext:linked" }] },
+      { id: "stale", members: [{ ws: "missing-b", key: "ext:q" }, { ws: "missing-a", key: "ext:q" }] },
+    ];
+    const scenes = [];
     for (const reverseProjects of [false, true])
       for (const reverseShared of [false, true])
-        for (const reverseEnvs of [false, true]) {
+        for (const reverseEnvs of [false, true])
+          for (const reverseLinks of [false, true])
+            for (const reverseMembers of [false, true]) {
           const projects = [projectA, projectB].map((project) => ({
             ...project,
             environments: reverseEnvs ? [...project.environments].reverse() : [...project.environments],
           }));
-          variants.push(mapOf(reverseProjects ? projects.reverse() : projects));
-          variants.at(-1)!.shared = reverseShared ? [...shared].reverse() : [...shared];
+          const variant = mapOf(reverseProjects ? projects.reverse() : projects);
+          variant.shared = reverseShared ? [...shared].reverse() : [...shared];
+          variants.push(variant);
+          const identityLinks = (reverseLinks ? [...links].reverse() : [...links]).map((link) => ({
+            ...link,
+            members: reverseMembers ? [...link.members].reverse() : [...link.members],
+          }));
+          scenes.push(buildCrossInfraScene(variant, {
+            id: "default", createdAt: "now", updatedAt: "now", envSelection: {}, pins: {}, identityLinks,
+          }));
         }
-    const expected = buildCrossInfraScene(variants[0]!, null);
-    for (const variant of variants.slice(1)) expect(buildCrossInfraScene(variant, null)).toEqual(expected);
+    const expected = scenes[0]!;
+    for (const scene of scenes.slice(1)) expect(scene).toEqual(expected);
   });
 
   it("honors an explicit null selection instead of applying a suggestion", () => {
@@ -163,8 +181,78 @@ describe("buildCrossInfraScene", () => {
       updatedAt: "2026-08-23T00:00:00.000Z",
       envSelection: { a: null },
       pins: {},
+      identityLinks: [],
     };
     const project = buildCrossInfraScene(map, overlay).nodes.find((node) => node.id === "project:a");
     expect(project?.data).toMatchObject({ envId: null });
+  });
+
+  it("collapses asserted members, removes them from automatic matching, and applies link pins", () => {
+    const a = env("a", "Production", "cloud", []);
+    const b = env("b", "Production", "cloud", []);
+    a.externals.push({ id: "ext:db", label: "Database", kind: "datastore", clientNodeIds: [] });
+    b.externals.push({ id: "ext:db", label: "DB", kind: "datastore", clientNodeIds: [] });
+    const map = mapOf([{ ws: "a", name: "A", environments: [a] }, { ws: "b", name: "B", environments: [b] }]);
+    map.shared.push({ key: "ext:db", label: "Database", kind: "datastore", projects: [
+      { ws: "a", envId: "a", clientNodeIds: [] }, { ws: "b", envId: "b", clientNodeIds: [] },
+    ] });
+    const overlay: CrossInfraOverlay = {
+      id: "default", createdAt: "now", updatedAt: "now", envSelection: {}, pins: { "idlink:one": { x: 7, y: 8 } },
+      identityLinks: [{ id: "one", members: [{ ws: "b", key: "ext:db" }, { ws: "a", key: "ext:db" }] }],
+    };
+    const scene = buildCrossInfraScene(map, overlay);
+    expect(scene.nodes.filter((node) => node.data.kind === "shared")).toHaveLength(1);
+    expect(scene.nodes.find((node) => node.id === "idlink:one")).toMatchObject({
+      position: { x: 7, y: 8 }, data: { label: "Database", framing: "Linked — same instance (user)", consumerCount: 2 },
+    });
+    expect(scene.edges.map((edge) => edge.data.relationship)).toEqual(["linked-same-instance", "linked-same-instance"]);
+  });
+
+  it("keeps stale members and fully stale links visible for unlinking, warns, ignores degenerate links, and sorts by id", () => {
+    const a = env("a", "Production", "cloud", []);
+    a.externals.push({ id: "ext:db", label: "Database", kind: "datastore", clientNodeIds: [] });
+    const overlay: CrossInfraOverlay = {
+      id: "default", createdAt: "now", updatedAt: "now", envSelection: {}, pins: {},
+      identityLinks: [
+        { id: "z", label: "Primary", members: [{ ws: "a", key: "ext:db" }, { ws: "gone", key: "ext:db" }] },
+        { id: "a", members: [{ ws: "a", key: "ext:db" }] },
+        { id: "stale", members: [{ ws: "gone", key: "ext:db" }, { ws: "missing", key: "ext:q" }] },
+      ],
+    };
+    const scene = buildCrossInfraScene(mapOf([{ ws: "a", name: "A", environments: [a] }]), overlay);
+    expect(scene.nodes.filter((node) => node.id.startsWith("idlink:")).map((node) => node.id)).toEqual(["idlink:stale", "idlink:z"]);
+    expect(scene.nodes.find((node) => node.id === "idlink:z")?.data).toMatchObject({ warning: "1 linked member is no longer detected" });
+    expect(scene.warnings).toContain("Primary: 1 linked member is no longer detected");
+    expect(scene.nodes.find((node) => node.id === "idlink:stale")?.data).toMatchObject({
+      consumerCount: 0, warning: "2 linked members are no longer detected",
+    });
+  });
+
+  it("detects identity-link survivors only in each project's selected environment", () => {
+    const selected = env("prod", "Production", "cloud", []);
+    const unselected = env("stage", "Stage", "cloud", []);
+    unselected.externals.push({ id: "ext:db", label: "Staging DB", kind: "datastore", clientNodeIds: [] });
+    const overlay: CrossInfraOverlay = {
+      id: "default", createdAt: "now", updatedAt: "now", envSelection: { a: "prod" }, pins: {},
+      identityLinks: [{ id: "db", members: [{ ws: "a", key: "ext:db" }, { ws: "gone", key: "ext:db" }] }],
+    };
+    const scene = buildCrossInfraScene(mapOf([{ ws: "a", name: "A", environments: [selected, unselected] }]), overlay);
+    expect(scene.nodes.find((node) => node.id === "idlink:db")?.data).toMatchObject({
+      consumerCount: 0,
+      warning: "2 linked members are no longer detected",
+    });
+    expect(scene.edges).toEqual([]);
+  });
+
+  it("caps project-card external-row height at six plus an overflow row", () => {
+    const projectEnv = env("prod", "Production", "cloud", []);
+    projectEnv.externals = Array.from({ length: 8 }, (_, index) => ({
+      id: `ext:${index}`, label: `Service ${index}`, kind: "external" as const, clientNodeIds: [],
+    }));
+    const map = mapOf([{ ws: "a", name: "A", environments: [projectEnv] }]);
+    const eight = buildCrossInfraScene(map, null).nodes.find((node) => node.id === "project:a")!;
+    projectEnv.externals.pop();
+    const seven = buildCrossInfraScene(map, null).nodes.find((node) => node.id === "project:a")!;
+    expect(eight.style.height).toBe(seven.style.height);
   });
 });

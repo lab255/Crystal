@@ -9,6 +9,7 @@ const overlay = (): CrossInfraOverlay => ({
   updatedAt: "2026-08-23T00:00:00.000Z",
   envSelection: {},
   pins: {},
+  identityLinks: [],
 });
 const map = (): CrossInfraMap => ({ projects: [], shared: [], generatedAt: "2026-08-23T00:00:00.000Z" });
 
@@ -103,5 +104,38 @@ describe("cross infrastructure store", () => {
     await vi.advanceTimersByTimeAsync(1);
     expect(request).toHaveBeenCalledTimes(1);
     expect(request).toHaveBeenCalledWith("infra.cross", {});
+  });
+
+  it("optimistically adds and removes identity links without clearing them with pins", async () => {
+    vi.useFakeTimers();
+    const { client, request } = mockClient();
+    const store = createCrossInfraStore(client);
+    await store.getState().ensure();
+
+    const addedId = store.getState().addIdentityLink(
+      [{ ws: "a", key: "ext:db" }, { ws: "b", key: "ext:database" }],
+      " Primary DB ",
+    );
+    const link = store.getState().overlay!.identityLinks[0]!;
+    expect(addedId).toBe(link.id);
+    expect(link).toMatchObject({ label: "Primary DB", members: [{ ws: "a", key: "ext:db" }, { ws: "b", key: "ext:database" }] });
+    await vi.advanceTimersByTimeAsync(300);
+    request.mockClear();
+    const duplicateId = store.getState().addIdentityLink(
+      [{ ws: "b", key: "ext:database" }, { ws: "a", key: "ext:db" }],
+      "Ignored replacement label",
+    );
+    expect(duplicateId).toBe(link.id);
+    expect(store.getState().overlay!.identityLinks).toEqual([link]);
+    expect(store.getState().dirty).toBe(false);
+    await vi.advanceTimersByTimeAsync(300);
+    expect(request).not.toHaveBeenCalled();
+    store.getState().setPin("idlink:test", { x: 1, y: 2 });
+    store.getState().clearPins();
+    expect(store.getState().overlay!.identityLinks).toHaveLength(1);
+    store.getState().setPin(`idlink:${link.id}`, { x: 3, y: 4 });
+    store.getState().removeIdentityLink(link.id);
+    expect(store.getState().overlay!.identityLinks).toEqual([]);
+    expect(store.getState().overlay!.pins[`idlink:${link.id}`]).toBeUndefined();
   });
 });

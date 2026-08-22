@@ -10,8 +10,20 @@ describe("cross infrastructure contract", () => {
       updatedAt: "2026-08-22T00:00:00.000Z",
       envSelection: {},
       pins: {},
+      identityLinks: [],
     });
     expect(CrossInfraOverlaySchema.parse(structuredClone(overlay))).toEqual(overlay);
+  });
+
+  it("defaults identity links for old records and tolerates degenerate links", () => {
+    const old = CrossInfraOverlaySchema.parse({
+      id: "default", createdAt: "now", updatedAt: "now", envSelection: {}, pins: {},
+    });
+    expect(old.identityLinks).toEqual([]);
+    expect(CrossInfraOverlaySchema.parse({
+      ...old,
+      identityLinks: [{ id: "link-1", members: [{ ws: "a", key: "ext:db" }] }],
+    }).identityLinks[0]?.members).toHaveLength(1);
   });
 
   it("models per-project fan-out failures without rejecting the map", () => {
