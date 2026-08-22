@@ -119,6 +119,30 @@ function boxesOf(graph: ArchitectureGraph, dims: ReadonlyMap<string, Size>): Map
   );
 }
 
+function medianRetainedDisplacement(before: ArchitectureGraph, after: ArchitectureGraph): number {
+  const previous = absolutePositions(before);
+  const next = absolutePositions(after);
+  const values = [...previous]
+    .flatMap(([id, point]) => {
+      const nextPoint = next.get(id);
+      return nextPoint ? [Math.hypot(nextPoint.x - point.x, nextPoint.y - point.y)] : [];
+    })
+    .sort((a, b) => a - b);
+  return values[Math.floor(values.length / 2)]!;
+}
+
+function expectFiniteContained(result: Awaited<ReturnType<typeof elkAutoLayout>>, dims: ReadonlyMap<string, Size>): void {
+  const boxes = boxesOf(result.graph, dims);
+  for (const item of result.graph.nodes) {
+    expect(Number.isFinite(item.position.x)).toBe(true);
+    expect(Number.isFinite(item.position.y)).toBe(true);
+    if (item.parentId) expect(boxes.get(item.parentId)).toBeDefined();
+  }
+  for (const route of result.routes.values()) {
+    expect(route.points.every((point) => Number.isFinite(point.x) && Number.isFinite(point.y))).toBe(true);
+  }
+}
+
 function expandedBy(box: Box, amount: number): Box {
   return {
     x: box.x - amount,
@@ -249,6 +273,77 @@ describe("elkAutoLayout", () => {
         graphBounds.bottom,
       );
     }
+  });
+
+  it("is canonical across permuted node, edge, and dimension input", async () => {
+    const input = fixture();
+    const first = await elkAutoLayout(input.graph, { dims: input.dims });
+    const permuted = await elkAutoLayout(
+      { ...input.graph, nodes: [...input.graph.nodes].reverse(), edges: [...input.graph.edges].reverse() },
+      { dims: new Map([...input.dims].reverse()) },
+    );
+    const geometry = (result: Awaited<ReturnType<typeof elkAutoLayout>>) => ({
+      nodes: [...result.graph.nodes].sort((a, b) => a.id.localeCompare(b.id)).map(({ id, position, size }) => ({ id, position, size })),
+      routes: [...result.routes].sort(([a], [b]) => a.localeCompare(b)),
+    });
+    expect(geometry(permuted)).toEqual(geometry(first));
+  });
+
+  it("produces finite contained incremental output for a retained-sibling leaf addition", async () => {
+    const input = fixture();
+    const coldBase = await elkAutoLayout(input.graph, { dims: input.dims });
+    const added = node("ctr:000-new", "container", { parentId: "c4:appliance.sh" });
+    const next = { ...input.graph, nodes: [...input.graph.nodes, added] };
+    const dims = new Map(input.dims).set(added.id, { width: 240, height: 120 });
+    const incremental = await elkAutoLayout(next, {
+      dims,
+      incremental: true,
+      previous: new Map(coldBase.graph.nodes.map((item) => [item.id, item.position])),
+    });
+    const cold = await elkAutoLayout(next, { dims });
+    expect(medianRetainedDisplacement(coldBase.graph, cold.graph)).toBeGreaterThan(0);
+    expect(medianRetainedDisplacement(coldBase.graph, incremental.graph))
+      .toBeLessThanOrEqual(medianRetainedDisplacement(coldBase.graph, cold.graph));
+    expectFiniteContained(incremental, dims);
+  });
+
+  it("produces finite contained incremental output after removing a leaf", async () => {
+    const input = fixture();
+    const coldBase = await elkAutoLayout(input.graph, { dims: input.dims });
+    const removed = "ctr:events";
+    const next = {
+      ...input.graph,
+      nodes: input.graph.nodes.filter((item) => item.id !== removed),
+      edges: input.graph.edges.filter((edge) => edge.source !== removed && edge.target !== removed),
+    };
+    const dims = new Map([...input.dims].filter(([id]) => id !== removed));
+    const incremental = await elkAutoLayout(next, {
+      dims,
+      incremental: true,
+      previous: new Map(coldBase.graph.nodes.map((item) => [item.id, item.position])),
+    });
+    const cold = await elkAutoLayout(next, { dims });
+    expect(medianRetainedDisplacement(coldBase.graph, incremental.graph))
+      .toBeLessThanOrEqual(medianRetainedDisplacement(coldBase.graph, cold.graph));
+    expectFiniteContained(incremental, dims);
+  });
+
+  it("produces finite contained incremental output for dimension-only refinement", async () => {
+    const input = fixture();
+    const coldBase = await elkAutoLayout(input.graph, { dims: input.dims });
+    const dims = new Map([...input.dims].map(([id, size], index) => [
+      id,
+      { width: size.width + (index % 2 === 0 ? 2 : -2), height: size.height + (index % 3 === 0 ? 2 : -2) },
+    ]));
+    const incremental = await elkAutoLayout(input.graph, {
+      dims,
+      incremental: true,
+      previous: new Map(coldBase.graph.nodes.map((item) => [item.id, item.position])),
+    });
+    const cold = await elkAutoLayout(input.graph, { dims });
+    expect(medianRetainedDisplacement(coldBase.graph, incremental.graph))
+      .toBeLessThanOrEqual(medianRetainedDisplacement(coldBase.graph, cold.graph));
+    expectFiniteContained(incremental, dims);
   });
 
   it("packs sparse scopes toward the diagram aspect instead of one endless row", async () => {
