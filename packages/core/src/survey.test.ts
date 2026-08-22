@@ -87,7 +87,12 @@ describe("surveyToArchitecture", () => {
     expect(graph.environments).toHaveLength(1);
     const env = graph.environments[0]!;
     expect(env).toMatchObject({ name: "Production", kind: "cloud" });
-    expect(api.placements[env.id]).toEqual({ target: "aws / ecs", runtime: "fargate ×2" });
+    expect(env.targets).toHaveLength(2);
+    expect(api.placements[env.id]).toEqual({
+      target: "aws / ecs",
+      targetId: env.targets!.find((target) => target.name === "aws / ecs")!.id,
+      runtime: "fargate ×2",
+    });
 
     expect(graph.journeys).toHaveLength(1);
     expect(graph.journeys[0]!.entry.symbol).toBe("createOrder");

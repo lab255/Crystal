@@ -76,6 +76,8 @@ export type CodeMapLevelLink =
 
 export interface ArchitectLink {
   view?: ArchitectViewId;
+  /** Active infrastructure environment id (names are accepted on inbound links). */
+  env?: string;
   /**
    * Focus this system's node on the architecture canvas (e.g. "sys:auth") —
    * consumed once and settled into `sel`. Minted by surfaces/hub links.
@@ -153,7 +155,7 @@ export interface ArchitectLink {
    * closest to the classic canvas and the C4 diagram most teams live on).
    */
   level?: C4Level;
-  /** Scoped container id at the components level ("ctr:apps-server"). */
+  /** Scoped C4 container id, or `all` for cross-project infrastructure. */
   scope?: string;
 }
 
@@ -331,6 +333,8 @@ export function formatDeepLink(link: DeepLink): string {
       if (a.file) add("file", a.file);
     } else {
       // infra
+      if (a.env) add("env", a.env);
+      if (a.scope === "all") add("scope", "all");
       if (a.facet) add("facet", a.facet);
       if (a.draft) add("draft", a.draft);
       if (a.draft && a.review) add("review", "1");
@@ -472,7 +476,9 @@ export function parseDeepLink(hash: string): DeepLink {
     const level = params.get("level");
     if (level && (C4_LEVELS as readonly string[]).includes(level)) a.level = level as C4Level;
     const scope = params.get("scope");
-    if (scope) a.scope = scope;
+    if (scope && (a.view !== "infra" || scope === "all")) a.scope = scope;
+    const env = params.get("env");
+    if (env && a.view === "infra") a.env = env;
     const system = params.get("system");
     if (system) a.system = system;
     const diagram = params.get("diagram");
@@ -643,7 +649,7 @@ export function parseDeepLink(hash: string): DeepLink {
 const ARCHITECT_VIEW_FIELDS: Record<ArchitectViewId, readonly (keyof ArchitectLink)[]> = {
   architecture: ["view", "system", "diagram", "lensCtx", "edge", "focus", "focusSolo", "insights", "contracts", "facets", "facet", "draft", "review", "journey", "overlay", "layers", "duplicates", "findings", "changes", "sel", "find", "vs"],
   codebase: ["view", "codemap", "lod", "lensCtx", "duplicates", "findings", "changes", "facets", "file", "sel", "find", "vs"],
-  infra: ["view", "diagram", "facet", "draft", "review", "journey", "overlay", "sel", "find", "vs"],
+  infra: ["view", "env", "scope", "diagram", "facet", "draft", "review", "journey", "overlay", "sel", "find", "vs"],
 };
 
 const SURFACES_VIEW_FIELDS: Record<SurfaceViewId, readonly (keyof SurfacesLink)[]> = {
@@ -749,7 +755,9 @@ export function deepLinkNavIdentity(link: DeepLink): string {
             : `${cm.kind}:${cm.ws}:${cm.path}`;
       return `architect/${view}/${at}`;
     }
-    if (view === "infra") return `architect/${view}/${a.draft ?? ""}`;
+    if (view === "infra") return a.scope === "all"
+      ? "architect/infra/all"
+      : `architect/${view}/${a.draft ?? ""}`;
     return `architect/architecture/${a.facet ?? ""}|${a.draft ?? ""}`;
   }
   if (mode === "threads") {

@@ -1,5 +1,6 @@
 import type { ArchEdge, ArchNode, ArchitectureGraph } from "./architecture.js";
 import { canonicalSystemIds } from "./arch-derive.js";
+import { isInfraZone } from "./arch-deploy.js";
 import type { CodeModule, CodeModuleDep } from "./codemap.js";
 import type { DiffMark, DiffMarks } from "./diagram-diff.js";
 import type { CodeExternalDep, ExternalServiceCategory } from "./external-services.js";
@@ -692,7 +693,23 @@ function relEdges(rels: Map<string, RelAccumulator>, edgeRollup: Record<string, 
  * pins any per-level manual positions from the overlay).
  */
 export function projectC4(input: C4ProjectInput): C4Projection {
-  const { graph, model, view } = input;
+  const { graph: sourceGraph, model, view } = input;
+  const excluded = new Set(sourceGraph.nodes.filter((node) => isInfraZone(node.kind)).map((node) => node.id));
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const node of sourceGraph.nodes) {
+      if (node.parentId && excluded.has(node.parentId) && !excluded.has(node.id)) {
+        excluded.add(node.id);
+        changed = true;
+      }
+    }
+  }
+  const graph = excluded.size === 0 ? sourceGraph : {
+    ...sourceGraph,
+    nodes: sourceGraph.nodes.filter((node) => !excluded.has(node.id)),
+    edges: sourceGraph.edges.filter((edge) => !excluded.has(edge.source) && !excluded.has(edge.target)),
+  };
   const byId = new Map(graph.nodes.map((n) => [n.id, n]));
   const classOf = new Map<string, NodeClass>();
   for (const n of graph.nodes) classOf.set(n.id, classify(n, model, byId));

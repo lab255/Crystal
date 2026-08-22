@@ -69,9 +69,13 @@ export const KIND_META: Record<ArchNodeKind, KindMeta> = {
   person: { label: "Person", icon: UserRound, defaultAccent: "blue" },
   container: { label: "Container", icon: Container, defaultAccent: "cyan" },
   entity: { label: "Entity", icon: Table2, defaultAccent: "emerald" },
+  region: { label: "Region", icon: Globe, defaultAccent: "blue" },
+  zone: { label: "Availability zone", icon: Cloud, defaultAccent: "cyan" },
   vpc: { label: "VPC", icon: Cloud, defaultAccent: "blue" },
   subnet: { label: "Subnet", icon: LayoutGrid, defaultAccent: "cyan" },
   securitygroup: { label: "Security group", icon: Shield, defaultAccent: "rose" },
+  cluster: { label: "Cluster", icon: Boxes, defaultAccent: "violet" },
+  namespace: { label: "Namespace", icon: Folder, defaultAccent: "slate" },
 };
 
 export const ACCENT_CSS: Record<AccentName, string> = {

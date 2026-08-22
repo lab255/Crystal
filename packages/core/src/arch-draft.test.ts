@@ -124,7 +124,7 @@ describe("mergeGraphs", () => {
 });
 
 describe("mergeGraphs — environments and journeys", () => {
-  const env = (id: string, name = id, kind: "local" | "cloud" = "local") => ({ id, name, kind });
+  const env = (id: string, name = id, kind: "local" | "cloud" = "local") => ({ id, name, kind, targets: [] });
   const journey = (id: string, name = id, symbol = "main") => ({
     id,
     name,
