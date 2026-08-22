@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.37.0 (2026-08-22)
+
+### Features
+
+- mount compose suggestions band on the Deployment canvas ([`fbd186f`](https://github.com/lab255/Crystal/commit/fbd186f))
+- docker-compose detection with suggested deployment topology ([`45a8ebb`](https://github.com/lab255/Crystal/commit/45a8ebb))
+- deployment context menus, environment-scoped notes, guarded delete routing ([`93a38fd`](https://github.com/lab255/Crystal/commit/93a38fd))
+
+### Bug Fixes
+
+- arch overlay saves update the runtime read memo ([`84b544d`](https://github.com/lab255/Crystal/commit/84b544d))
+
 ## v0.36.0 (2026-08-22)
 
 ### Features
