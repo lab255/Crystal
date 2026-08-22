@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.38.0 (2026-08-22)
+
+### Features
+
+- user-asserted cross-project service identity links ([`2183dff`](https://github.com/lab255/Crystal/commit/2183dff))
+
 ## v0.37.2 (2026-08-22)
 
 ### Bug Fixes
