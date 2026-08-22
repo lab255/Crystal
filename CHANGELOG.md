@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.37.2 (2026-08-22)
+
+### Bug Fixes
+
+- contain ELK layer-constraint crashes, surface compose diagnostics ([`d4ff776`](https://github.com/lab255/Crystal/commit/d4ff776))
+
 ## v0.37.1 (2026-08-22)
 
 ### Bug Fixes
