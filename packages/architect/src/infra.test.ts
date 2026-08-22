@@ -10,7 +10,7 @@ import {
   environmentSubgraph,
   groupLayer,
   infraGroups,
-  infraTargetBandStart,
+  infraTargetEdges,
   knownTargets,
   layerBands,
   placedEdges,
@@ -65,11 +65,6 @@ describe("infraGroups", () => {
 });
 
 describe("fallback target packing", () => {
-  it("starts below the deepest visible zone", () => {
-    expect(infraTargetBandStart(720, true)).toBe(824);
-    expect(infraTargetBandStart(96, false)).toBe(96);
-  });
-
   it("uses the viewport aspect to grow beyond three member columns", () => {
     expect(targetMemberColumns(24, 4, { width: 190, height: 58 })).toBe(5);
     expect(targetMemberColumns(24, 0.8, { width: 190, height: 58 })).toBe(2);
@@ -86,6 +81,26 @@ describe("placedEdges", () => {
       ],
     );
     expect(placedEdges(g, "prod").map((e) => e.id)).toEqual(["e1"]);
+  });
+});
+
+describe("infraTargetEdges", () => {
+  it("aggregates stable target pairs and drops within-target dependencies", () => {
+    const g = graph(
+      [
+        node("a", "service", { prod: ecs }),
+        node("b", "service", { prod: ecs }),
+        node("c", "service", { prod: vercel }),
+      ],
+      [
+        { id: "z", source: "b", target: "c", kind: "sync", label: "" },
+        { id: "a", source: "a", target: "c", kind: "sync", label: "" },
+        { id: "self", source: "a", target: "b", kind: "sync", label: "" },
+      ],
+    );
+    expect(infraTargetEdges(g, "prod")).toEqual([
+      { id: "tgt_ecs->tgt_vercel", source: "tgt_ecs", target: "tgt_vercel" },
+    ]);
   });
 });
 

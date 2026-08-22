@@ -71,6 +71,31 @@ export function placedEdges(graph: ArchitectureGraph, envId: string): ArchEdge[]
   return graph.edges.filter((e) => placed.has(e.source) && placed.has(e.target));
 }
 
+export interface InfraTargetEdge {
+  id: string;
+  source: string;
+  target: string;
+}
+
+/** Aggregate component dependencies to stable target-pair edges for layout only. */
+export function infraTargetEdges(graph: ArchitectureGraph, envId: string): InfraTargetEdge[] {
+  const targetOf = new Map(
+    placeableNodes(graph).flatMap((node) => {
+      const targetId = node.placements[envId]?.targetId;
+      return targetId ? [[node.id, targetId] as const] : [];
+    }),
+  );
+  const pairs = new Map<string, InfraTargetEdge>();
+  for (const edge of placedEdges(graph, envId)) {
+    const source = targetOf.get(edge.source);
+    const target = targetOf.get(edge.target);
+    if (!source || !target || source === target) continue;
+    const id = `${source}->${target}`;
+    if (!pairs.has(id)) pairs.set(id, { id, source, target });
+  }
+  return [...pairs.values()].sort((a, b) => a.id.localeCompare(b.id));
+}
+
 /** Exact induced graph simulated by the deployment view for one environment. */
 export function environmentSubgraph(graph: ArchitectureGraph, envId: string): ArchitectureGraph {
   const nodes = placeableNodes(graph).filter((node) => node.placements[envId]?.targetId);
@@ -116,11 +141,6 @@ export function knownTargets(graph: ArchitectureGraph): ArchDeployTarget[] {
     for (const target of environment.targets ?? []) targets.set(target.id, target);
   }
   return [...targets.values()].sort((a, b) => a.id.localeCompare(b.id));
-}
-
-/** First fallback band y; zones reserve their complete root-space footprint. */
-export function infraTargetBandStart(rootBottom: number, hasZones: boolean, top = 96, gap = 104): number {
-  return Math.max(top, rootBottom + (hasZones ? gap : 0));
 }
 
 /** Aspect-aware grid width for target members; no fixed column ceiling. */
