@@ -374,6 +374,26 @@ build/sign (+notarize on macOS) → signed updater `latest.json`).
   a scene web worker; derive plain id Sets on the main thread and dim at render time
   (same rule as react-flow node data).
 
+- The code map analyzer EXCLUDES generated code: path heuristics (`generated`/
+  `__generated__` segments, `.generated.`/`.pb.ts`/`_pb.ts` names — `isGeneratedCodePath`
+  in paths.ts) plus a content sniff of the first ~1200 bytes (`@generated`, `DO NOT
+  EDIT`…) skip the TS parse and drop the file from EVERY projection (module lists, deps,
+  overview, index, bulk details, both ref-snapshot paths — the working tree's config
+  lenses both sides of a vs-ref diff). `.crystal/codemap.json` `{exclude, include}`
+  globs override in both directions (`include` wins). The only trace is
+  `summary.excluded {files, roots}` (client renders a "hidden" chip). The fs watcher
+  still broadcasts `fs.changed` for excluded paths (editor file tree / buffer conflict
+  detection depend on it) but fires `codemap.changed` only when a non-excluded code file
+  moved — that split is what stops Prisma-regeneration storms; don't collapse it. The
+  system overview is memoized per (analysis generation, index generatedAt) — a new
+  overview consumer must go through `analyzer.systemOverview`, never bare
+  `buildSystemOverview`. Scene-side guards live in `lod-config.ts`
+  (file-card/selection-edge caps, MiniMap node ceiling); collapsed modules lay out at
+  card size — only expanded modules get their `memberFootprint` slot, and the footprint
+  models the capped render (14 expanded + ≤60 cards + overflow), never every file fully
+  exposed (a 200-file module's uncapped footprint is ~48k px tall, past what fitView can
+  frame at minZoom).
+
 - The architect mode is exactly three views — `architecture`, `codebase`, `infra`
   (legacy `systems`/`diagrams`/`codemap` ids are permanent parse aliases in
   `deeplink.ts`; `?system=` focuses a node and settles into `sel`). The
