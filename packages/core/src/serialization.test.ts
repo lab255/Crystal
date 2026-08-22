@@ -59,4 +59,19 @@ describe("crystal file envelope", () => {
     expect(graph.nodes).toEqual([]);
     expect(graph.edges).toEqual([]);
   });
+
+  it("migrates legacy overlay targets before schema validation", () => {
+    const text = JSON.stringify({ crystal: 1, kind: "arch-overlay", data: {
+      environments: [{ id: "prod", name: "Prod", kind: "cloud", layout: { ECS: { x: 1, y: 2 } } }],
+      overrides: { "sys:a": { placements: { prod: { target: "ecs", runtime: "" } } } },
+      manualNodes: [],
+    } });
+    const overlay = parseCrystalFile("arch-overlay", text);
+    expect(overlay.environments[0]!.targets).toEqual([
+      { id: "tgt:prod:ecs", name: "ecs", kind: "other", x: 1, y: 2 },
+    ]);
+    expect(overlay.overrides["sys:a"]!.placements!.prod).toEqual({
+      target: "ecs", targetId: "tgt:prod:ecs", runtime: "",
+    });
+  });
 });

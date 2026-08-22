@@ -14,6 +14,7 @@ import {
   type ArchNode,
   type ArchitectureGraph,
 } from "./architecture.js";
+import { normalizeDeployTargets } from "./arch-deploy.js";
 
 /**
  * The architecture overlay — everything the user adds on top of the derived
@@ -172,7 +173,7 @@ export function composeArchitecture(
     edgeIds.add(e.id);
     return nodeIds.has(e.source) && nodeIds.has(e.target);
   });
-  return {
+  return normalizeDeployTargets({
     ...derived,
     nodes,
     edges,
@@ -180,7 +181,7 @@ export function composeArchitecture(
     journeys: overlay.journeys,
     facets: overlay.facets,
     viewport: overlay.viewport ?? null,
-  };
+  });
 }
 
 export interface OverlayReconciliation {

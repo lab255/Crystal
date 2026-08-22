@@ -59,6 +59,7 @@ describe("architecture helpers", () => {
         id: "prod",
         name: "Production",
         kind: "cloud",
+        targets: [],
         layout: {
           "aws / ecs": { x: 48, y: 72, zone: "subnet:private" },
           vercel: { x: 680, y: 120 },
@@ -72,8 +73,8 @@ describe("architecture helpers", () => {
   it("updates and clears one target layout without disturbing other environments", () => {
     const graph = createArchitectureGraph("deployment");
     graph.environments = [
-      { id: "prod", name: "Production", kind: "cloud" },
-      { id: "stage", name: "Staging", kind: "cloud", layout: { ecs: { x: 1, y: 2 } } },
+      { id: "prod", name: "Production", kind: "cloud", targets: [] },
+      { id: "stage", name: "Staging", kind: "cloud", targets: [], layout: { ecs: { x: 1, y: 2 } } },
     ];
 
     const pinned = updateEnvironmentTargetLayout(graph, "prod", "ecs", {

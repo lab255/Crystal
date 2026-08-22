@@ -7,7 +7,6 @@ import {
   CONTAINER_KINDS,
   createLocalEnvironment,
   topoOrderNodes,
-  type ArchEnvironment,
   type ArchNode,
   type ArchitectureGraph,
 } from "./architecture.js";
@@ -264,10 +263,13 @@ export function surveyToArchitecture(
     return [{ id: uid("edge"), source, target, kind: r.kind, label: r.label }];
   });
 
-  const environments: ArchEnvironment[] = [];
+  const environments: ArchitectureGraph["environments"] = [];
   for (const dep of survey.deployments) {
-    const env: ArchEnvironment = { id: uid("env"), name: dep.environment, kind: dep.kind };
+    const env: ArchitectureGraph["environments"][number] = {
+      id: uid("env"), name: dep.environment, kind: dep.kind, targets: [],
+    };
     environments.push(env);
+    const targetIds = new Map<string, string>();
     for (const p of dep.placements) {
       const nodeId = idMap.get(p.componentId);
       const node = nodeId ? nodes.find((n) => n.id === nodeId) : undefined;
@@ -277,7 +279,15 @@ export function surveyToArchitecture(
         );
         continue;
       }
-      node.placements[env.id] = { target: p.target, runtime: p.runtime };
+      const key = p.target.trim().toLowerCase().replace(/\s+/g, " ");
+      let targetId = targetIds.get(key);
+      if (!targetId) {
+        targetId = uid("tgt");
+        targetIds.set(key, targetId);
+        (env.targets ??= []).push({ id: targetId, name: p.target.trim(), kind: "other" });
+      }
+      const target = (env.targets ?? []).find((candidate) => candidate.id === targetId)!;
+      node.placements[env.id] = { target: target.name, targetId, runtime: p.runtime };
     }
   }
   if (environments.length === 0) environments.push(createLocalEnvironment());

@@ -6,6 +6,7 @@ import {
   type ArchitectureGraph,
 } from "./architecture.js";
 import { uid } from "./ids.js";
+import { normalizeDeployTargets } from "./arch-deploy.js";
 import { RefactorIntentSchema } from "./refactor.js";
 
 /**
@@ -37,7 +38,11 @@ export const ArchDraftSchema = z.object({
   refactors: z.array(RefactorIntentSchema).default([]),
   createdAt: z.string(),
   updatedAt: z.string(),
-});
+}).transform((draft) => ({
+  ...draft,
+  base: normalizeDeployTargets(draft.base),
+  graph: normalizeDeployTargets(draft.graph),
+}));
 export type ArchDraft = z.infer<typeof ArchDraftSchema>;
 
 export function createArchDraft(
@@ -46,7 +51,8 @@ export function createArchDraft(
   graph: ArchitectureGraph,
   now: string,
 ): ArchDraft {
-  const clone = (g: ArchitectureGraph) => JSON.parse(JSON.stringify(g)) as ArchitectureGraph;
+  const clone = (g: ArchitectureGraph) =>
+    JSON.parse(JSON.stringify(normalizeDeployTargets(g))) as ArchitectureGraph;
   return {
     id: uid("draft"),
     name,
@@ -61,6 +67,8 @@ export function createArchDraft(
 
 /** Structural equality of graph content (viewport excluded, order-insensitive). */
 export function graphsEqual(a: ArchitectureGraph, b: ArchitectureGraph): boolean {
+  a = normalizeDeployTargets(a);
+  b = normalizeDeployTargets(b);
   const norm = (g: ArchitectureGraph) =>
     JSON.stringify({
       name: g.name,
@@ -170,6 +178,9 @@ export function mergeGraphs(
   ours: ArchitectureGraph,
   theirs: ArchitectureGraph,
 ): RebaseResult {
+  base = normalizeDeployTargets(base);
+  ours = normalizeDeployTargets(ours);
+  theirs = normalizeDeployTargets(theirs);
   const conflicts: string[] = [];
   const baseNodes = new Map(base.nodes.map((n) => [n.id, n]));
   const ourNodes = new Map(ours.nodes.map((n) => [n.id, n]));

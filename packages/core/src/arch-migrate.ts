@@ -2,13 +2,13 @@ import { canonicalSystemIds } from "./arch-derive.js";
 import { ArchOverlaySchema, type ArchOverlay } from "./arch-overlay.js";
 import type {
   ArchEdge,
-  ArchEnvironment,
   ArchFacet,
   ArchNode,
   ArchitectureGraph,
   Journey,
 } from "./architecture.js";
 import { createLocalEnvironment } from "./architecture.js";
+import { normalizeOverlayDeployTargets } from "./arch-deploy.js";
 import type { SystemOverview } from "./system-overview.js";
 import type { SystemsLayout } from "./systems-layout.js";
 
@@ -56,7 +56,7 @@ export function migrateLegacyToOverlay(input: {
   const journeys: Journey[] = [];
   const journeyIds = new Set<string>();
   const facets: ArchFacet[] = [];
-  const environments: ArchEnvironment[] = [];
+  const environments: ArchitectureGraph["environments"] = [];
   const envByName = new Map<string, string>();
 
   /** Match a legacy diagram node onto a derived system's canonical id. */
@@ -207,7 +207,7 @@ export function migrateLegacyToOverlay(input: {
   overlay.environments = environments.length > 0 ? environments : [createLocalEnvironment()];
   overlay.journeys = journeys;
   overlay.facets = facets;
-  return overlay;
+  return ArchOverlaySchema.parse(normalizeOverlayDeployTargets(overlay));
 }
 
 /**
@@ -227,7 +227,7 @@ export function mergeDiagramIntoOverlay(
   const envNames = new Set(overlay.environments.map((e) => e.name.toLowerCase()));
   const journeyIds = new Set(overlay.journeys.map((j) => j.id));
   const facetIds = new Set(overlay.facets.map((f) => f.id));
-  return {
+  return ArchOverlaySchema.parse(normalizeOverlayDeployTargets({
     ...overlay,
     overrides: { ...m.overrides, ...overlay.overrides },
     manualNodes: [
@@ -247,5 +247,5 @@ export function mergeDiagramIntoOverlay(
       ...overlay.facets.filter((f) => f.sourcePath !== diagram.path),
       ...m.facets.filter((f) => f.sourcePath === diagram.path || !facetIds.has(f.id)),
     ],
-  };
+  }));
 }

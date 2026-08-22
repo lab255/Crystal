@@ -7,6 +7,7 @@ import {
   type ArchitectureGraph,
 } from "./architecture.js";
 import { diffEdgeStatus, diffGraphs, diffNodeStatus, diffTotal } from "./arch-diff.js";
+import { normalizeDeployTargets } from "./arch-deploy.js";
 
 function node(id: string, kind: ArchNode["kind"] = "service"): ArchNode {
   return { ...createArchNode(kind, id, { x: 0, y: 0 }), id };
@@ -70,6 +71,25 @@ describe("diffGraphs", () => {
       { ...node("a"), placements: { prod: { target: "ecs", runtime: "" } } },
     ]);
     expect(diffGraphs(base, placed).changedNodes[0]!.fields).toEqual(["placements"]);
+  });
+
+  it("treats a legacy graph and its canonical twin as equal", () => {
+    const legacy = graph([{ ...node("a"), placements: { prod: { target: "ecs", runtime: "" } } }]);
+    legacy.environments = [{
+      id: "prod", name: "Prod", kind: "cloud", targets: [],
+      layout: { ecs: { x: 1, y: 2 } },
+    }];
+    expect(diffTotal(diffGraphs(legacy, normalizeDeployTargets(legacy)))).toBe(0);
+  });
+
+  it("still reports a genuine target move with placement detail", () => {
+    const base = graph([{ ...node("a"), placements: { prod: { target: "ECS", targetId: "t1", runtime: "" } } }]);
+    base.environments = [{ id: "prod", name: "Prod", kind: "cloud", targets: [
+      { id: "t1", name: "ECS", kind: "compute" }, { id: "t2", name: "Lambda", kind: "serverless" },
+    ] }];
+    const target = structuredClone(base);
+    target.nodes[0]!.placements.prod = { target: "Lambda", targetId: "t2", runtime: "" };
+    expect(diffGraphs(base, target).changedNodes[0]!.fields).toEqual(["placements"]);
   });
 });
 

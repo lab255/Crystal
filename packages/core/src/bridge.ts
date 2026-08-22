@@ -3,6 +3,7 @@ import type { GrantsLedger } from "./grants.js";
 import type { ArchDraft } from "./arch-draft.js";
 import type { ArchOverlay } from "./arch-overlay.js";
 import type { ArchitectureGraph } from "./architecture.js";
+import type { CrossInfraMap, CrossInfraOverlay } from "./cross-infra.js";
 import type { ChangedRefFile } from "./code-map-diff.js";
 import type { AgentRole, AgentRun, RunEvent, RunPurpose, WorkerSpec } from "./agent.js";
 import type { CodeIndex, FacetSuggestion } from "./code-index.js";
@@ -816,6 +817,15 @@ export interface BridgeMethods {
   };
   /** Import/export graph across every open workspace. */
   "codemap.cross": { params: Record<string, never>; result: CrossWorkspaceMap };
+  "infra.cross": { params: Record<string, never>; result: CrossInfraMap };
+  "infra.crossOverlay.get": {
+    params: Record<string, never>;
+    result: { overlay: CrossInfraOverlay };
+  };
+  "infra.crossOverlay.save": {
+    params: { overlay: CrossInfraOverlay };
+    result: { overlay: CrossInfraOverlay };
+  };
   /**
    * The logical system overview: the codebase clustered into architecture
    * modules (authentication, submission, external integrations…) with the
@@ -1375,6 +1385,9 @@ export const UNSCOPED_METHODS: readonly BridgeMethodName[] = [
   "workspaces.restorePending",
   "workspaces.dismissRestore",
   "codemap.cross",
+  "infra.cross",
+  "infra.crossOverlay.get",
+  "infra.crossOverlay.save",
   // The hub sits above workspaces: its programs span them, so none of its
   // methods may have the active workspace injected.
   "hub.list",
@@ -1458,6 +1471,7 @@ export interface BridgeEvents {
   "standing.changed": { ws: string };
   /** The derived code map was re-analyzed after source changes. */
   "codemap.changed": { ws: string };
+  "infra.crossChanged": { reason: "data" | "layout"; ws?: string };
   /** A full code-map pass advanced (file counts are present while parsing). */
   "codemap.progress": CodeMapProgress;
   /** The code index changed (code re-analyzed or an enrichment file landed). */

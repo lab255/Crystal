@@ -459,6 +459,30 @@ describe("projectC4 · components", () => {
   });
 });
 
+describe("projectC4 · deployment-only zones", () => {
+  it("excludes zones and their descendants identically at every level", () => {
+    const baseline = derivedGraph();
+    const seed = baseline.nodes[0]!;
+    const withZones = {
+      ...baseline,
+      nodes: [
+        ...baseline.nodes,
+        { ...seed, id: "vpc:prod", kind: "vpc" as const, label: "Prod VPC", parentId: null },
+        { ...seed, id: "inside-vpc", label: "Deployment child", parentId: "vpc:prod" },
+      ],
+    };
+    for (const view of [
+      { level: "context" as const },
+      { level: "containers" as const },
+      { level: "components" as const, scope: "ctr:apps-server" },
+    ]) {
+      expect(projectC4({ graph: withZones, model: derive(), view })).toEqual(
+        projectC4({ graph: baseline, model: derive(), view }),
+      );
+    }
+  });
+});
+
 describe("rollupC4Marks", () => {
   it("folds hidden marks into their aggregates with a counting detail", () => {
     const projection = projectC4({ graph: derivedGraph(), model: derive(), view: { level: "containers" } });

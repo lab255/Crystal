@@ -38,9 +38,13 @@ export const ARCH_NODE_KINDS = [
   "entity",
   // Deployment-topology zones (the infra view's grouping constructs): never
   // derived — always user-authored placement structure.
+  "region",
+  "zone",
   "vpc",
   "subnet",
   "securitygroup",
+  "cluster",
+  "namespace",
 ] as const;
 
 export const ArchNodeKindSchema = z.enum(ARCH_NODE_KINDS);
@@ -50,9 +54,13 @@ export type ArchNodeKind = z.infer<typeof ArchNodeKindSchema>;
 export const CONTAINER_KINDS: readonly ArchNodeKind[] = [
   "system",
   "group",
+  "region",
+  "zone",
   "vpc",
   "subnet",
   "securitygroup",
+  "cluster",
+  "namespace",
 ];
 
 /**
@@ -92,21 +100,64 @@ export const ArchTargetLayoutSchema = z.object({
 });
 export type ArchTargetLayout = z.infer<typeof ArchTargetLayoutSchema>;
 
+export const TARGET_KINDS = [
+  "compute",
+  "cluster",
+  "serverless",
+  "vm",
+  "paas",
+  "edge",
+  "static",
+  "device",
+  "other",
+] as const;
+export const TargetKindSchema = z.enum(TARGET_KINDS);
+export type TargetKind = z.infer<typeof TargetKindSchema>;
+
+/** A stable deployment target owned by one environment. */
+export const ArchDeployTargetSchema = z
+  .object({
+    id: z.string(),
+    name: z.string(),
+    kind: TargetKindSchema.default("other"),
+    tech: z.string().optional(),
+    region: z.string().optional(),
+    description: z.string().optional(),
+    /** Infra-zone node id providing semantic containment. */
+    zone: z.string().optional(),
+    /** Root coordinates, or zone-relative coordinates when `zone` is set. */
+    x: z.number().optional(),
+    y: z.number().optional(),
+  })
+  .refine((target) => (target.x === undefined) === (target.y === undefined), {
+    message: "target x and y must both be present or both be absent",
+  });
+export type ArchDeployTarget = z.infer<typeof ArchDeployTargetSchema>;
+
 /** A deployment environment the architecture runs in (dev/staging/prod…). */
 export const ArchEnvironmentSchema = z.object({
   id: z.string(),
   name: z.string(),
   /** Local development vs deployed cloud infrastructure. */
   kind: z.enum(["local", "cloud"]).default("local"),
-  /** Target name → free-arrangement pin in this environment's deployment view. */
+  /** Stable deployment targets; environments are authoritative for these records. */
+  targets: z.array(ArchDeployTargetSchema).optional(),
+  /**
+   * Infra-zone/manual-note ids visible in this environment. Absence is legacy
+   * input and is seeded by the raw overlay migrator.
+   */
+  infraNodeIds: z.array(z.string()).optional(),
+  /** @deprecated Legacy target-name pins; normalized onto `targets`. */
   layout: z.record(ArchTargetLayoutSchema).optional(),
 });
 export type ArchEnvironment = z.infer<typeof ArchEnvironmentSchema>;
 
 /** Where a component runs within one environment. */
 export const ArchPlacementSchema = z.object({
-  /** Deployment target grouping, e.g. "aws us-east-1 / ecs", "vercel", "on-prem". */
+  /** Display-name mirror maintained by target normalization for legacy UI consumers. */
   target: z.string(),
+  /** Stable target reference; optional only while accepting legacy input. */
+  targetId: z.string().optional(),
   /** Runtime detail, e.g. "fargate ×3", "k8s deployment", "lambda". */
   runtime: z.string().default(""),
   /**
@@ -353,8 +404,8 @@ export function filterGraphToFacet(graph: ArchitectureGraph, facet: ArchFacet): 
 }
 
 /** The default environment every architecture starts with. */
-export function createLocalEnvironment(): ArchEnvironment {
-  return { id: uid("env"), name: "Local", kind: "local" };
+export function createLocalEnvironment(): z.output<typeof ArchEnvironmentSchema> {
+  return { id: uid("env"), name: "Local", kind: "local", targets: [] };
 }
 
 /** Effective layer of a node: explicit override, else derived from its kind. */
@@ -402,7 +453,10 @@ export function updateNodePlacement(
   };
 }
 
-/** Pin, move, zone, or unpin one deployment target in one environment. */
+/**
+ * Pin, move, zone, or unpin one legacy name-keyed deployment target.
+ * @deprecated Use `moveDeployTarget` with a stable target id.
+ */
 export function updateEnvironmentTargetLayout(
   graph: ArchitectureGraph,
   envId: string,

@@ -148,6 +148,24 @@ describe("parseDeepLink", () => {
 });
 
 describe("round trips", () => {
+  it("round-trips infra environment, scope, and selection state", () => {
+    for (const architect of [
+      { view: "infra" as const, env: "env:prod" },
+      { view: "infra" as const, scope: "all" },
+      { view: "infra" as const, env: "env:prod", sel: "target:t1" },
+    ]) {
+      expect(roundTrip({ mode: "architect", architect })).toEqual({ mode: "architect", architect });
+    }
+    expect(parseDeepLink("#/architect/infra").architect).toEqual({ view: "infra" });
+  });
+
+  it("keeps C4 scope partitioned from infra scope", () => {
+    expect(parseDeepLink("#/architect/architecture?level=components&scope=ctr%3Aapi").architect?.scope).toBe("ctr:api");
+    expect(parseDeepLink("#/architect?level=components&scope=ctr%3Aapi").architect?.scope).toBe("ctr:api");
+    expect(parseDeepLink("#/architect/infra?scope=ctr%3Aapi").architect?.scope).toBeUndefined();
+    expect(deepLinkNavIdentity({ mode: "architect", architect: { view: "infra", scope: "all" } })).toBe("architect/infra/all");
+  });
+
   it("legacy diagrams links land on the architecture view with their state intact", () => {
     const parsed = parseDeepLink(
       "#/architect/diagrams?ws=1a2b3c4d5e6f&diagram=.crystal/architecture/my%20api.crystal&facet=facet-auth1&draft=.crystal/arch-drafts/plan%261.crystal&journey=j-1&overlay=1",

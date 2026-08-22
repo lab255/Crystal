@@ -1,4 +1,5 @@
 import type { ArchEdge, ArchNode, ArchitectureGraph } from "./architecture.js";
+import { normalizeDeployTargets } from "./arch-deploy.js";
 
 /**
  * Architecture diff — the structured difference between two graphs, built for
@@ -63,6 +64,8 @@ function edgeKey(e: ArchEdge): string {
 
 /** Structured semantic diff of `base` → `target`. Nodes match by id, edges by connection. */
 export function diffGraphs(base: ArchitectureGraph, target: ArchitectureGraph): ArchDiff {
+  base = normalizeDeployTargets(base);
+  target = normalizeDeployTargets(target);
   const baseNodes = new Map(base.nodes.map((n) => [n.id, n]));
   const targetNodes = new Map(target.nodes.map((n) => [n.id, n]));
 

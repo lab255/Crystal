@@ -68,6 +68,19 @@ describe("composeArchitecture", () => {
     expect(composed.environments).toBe(o.environments);
   });
 
+  it("preserves canonical environment and node identity through target normalization", () => {
+    const d = derived([node("sys:a", {
+      placements: { prod: { target: "ECS", targetId: "t1", runtime: "" } },
+    })]);
+    const o = overlay({ environments: [{
+      id: "prod", name: "Production", kind: "cloud",
+      targets: [{ id: "t1", name: "ECS", kind: "compute" }],
+    }] });
+    const composed = composeArchitecture(d, o);
+    expect(composed.environments[0]).toBe(o.environments[0]);
+    expect(composed.nodes[0]).toBe(d.nodes[0]);
+  });
+
   it("hides subtrees: a hidden container removes its descendants and their edges", () => {
     const d = derived(
       [node("sys:a", { kind: "system" }), node("part", { parentId: "sys:a" }), node("sys:b")],
@@ -322,5 +335,35 @@ describe("extractOverlay", () => {
     expect(recomposed.nodes.map((n) => n.id)).toContain("note:1");
     // un-overridden node falls back to the derived position (layout re-poses it)
     expect(recomposed.nodes.find((n) => n.id === "sys:ui")!.position).toEqual({ x: 0, y: 0 });
+  });
+});
+
+describe("typed target round trips", () => {
+  it("preserves empty, renamed, and pinned environment targets wholesale", () => {
+    const d = derived([]);
+    const env = {
+      id: "prod", name: "Prod", kind: "cloud" as const,
+      targets: [{ id: "t1", name: "Renamed", kind: "compute" as const, x: 12, y: 34 }],
+    };
+    const edited = { ...d, environments: [env] };
+    const extracted = extractOverlay({ derived: d, rendered: d, edited, prev: overlay() });
+    expect(extracted.environments).toEqual([env]);
+    expect(composeArchitecture(d, extracted).environments).toEqual([env]);
+  });
+
+  it("preserves target ids on manual-node placements", () => {
+    const d = derived([]);
+    const manual = node("manual", { placements: {
+      prod: { target: "ECS", targetId: "t1", runtime: "worker" },
+    } });
+    const edited: ArchitectureGraph = {
+      ...d,
+      nodes: [manual],
+      environments: [{ id: "prod", name: "Prod", kind: "cloud", targets: [
+        { id: "t1", name: "ECS", kind: "compute" },
+      ] }],
+    };
+    const extracted = extractOverlay({ derived: d, rendered: d, edited, prev: overlay() });
+    expect(composeArchitecture(d, extracted).nodes[0]!.placements.prod!.targetId).toBe("t1");
   });
 });

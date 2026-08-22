@@ -2,6 +2,7 @@ import { z } from "zod";
 import { AgentRosterSchema, type AgentRoster } from "./agent-profile.js";
 import { ArchDraftSchema, type ArchDraft } from "./arch-draft.js";
 import { ArchOverlaySchema, type ArchOverlay } from "./arch-overlay.js";
+import { normalizeOverlayDeployTargets } from "./arch-deploy.js";
 import { ArchitectureGraphSchema, type ArchitectureGraph } from "./architecture.js";
 import {
   CodeEnrichmentSchema,
@@ -102,11 +103,11 @@ export interface KindDataMap {
 }
 
 /**
- * Kinds whose payload carries its own `schemaVersion` and migrates on read —
- * interchange formats written by external generators (agents, tracers), which
- * evolve independently of the envelope version.
+ * Payload migrations run before validation. They serve both independently
+ * versioned interchange formats and in-repo envelope shapes that evolve.
  */
 const DATA_MIGRATORS: Partial<Record<CrystalFileKind, (data: unknown) => unknown>> = {
+  "arch-overlay": normalizeOverlayDeployTargets,
   survey: migrateSurveyData,
   trace: migrateTraceProfileData,
   enrichment: migrateEnrichmentData,
