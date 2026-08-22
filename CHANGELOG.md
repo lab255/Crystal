@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.36.0 (2026-08-22)
+
+### Features
+
+- ELK-based deployment target layout with occupied-slab free space ([`cf0a697`](https://github.com/lab255/Crystal/commit/cf0a697))
+
+### Bug Fixes
+
+- make elkjs actually run inside the layout workers ([`8614712`](https://github.com/lab255/Crystal/commit/8614712))
+
+### Performance
+
+- architecture ELK solve moves to a lazy module worker ([`c9b336e`](https://github.com/lab255/Crystal/commit/c9b336e))
+- permutation-independent layout inputs for dagre paths ([`c71c614`](https://github.com/lab255/Crystal/commit/c71c614))
+
 ## v0.35.0 (2026-08-22)
 
 ### Features
