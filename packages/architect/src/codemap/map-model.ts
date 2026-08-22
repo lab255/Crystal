@@ -13,6 +13,7 @@ import type {
   MoveFileIntent,
   MoveIntent,
 } from "@crystal/core";
+import { MAX_FILE_CARDS_PER_MODULE, MAX_SELECTION_EDGES } from "../lod-config.js";
 
 /** The intent kinds the map renders as overlays (hoists live in panels). */
 export type MoveLikeIntent = MoveIntent | MoveFileIntent;
@@ -278,6 +279,8 @@ export interface MapSceneInput extends FileBuildInput {
 export interface MapScene {
   nodes: MapRfNode[];
   edges: RfEdge[];
+  /** Selection-neighborhood edges omitted by the scene cap. */
+  hiddenSelectionEdges?: number;
 }
 
 /* ---- grid packing ---- */
@@ -403,6 +406,17 @@ export function buildMapScene(input: MapSceneInput): MapScene {
   }[] = [];
 
   const marks = input.marks ?? undefined;
+  const ghostFilesByModule = new Map<string, string[]>();
+  if (marks) {
+    for (const [key, mark] of Object.entries(marks)) {
+      if (!mark.ghost || !key.startsWith("f:")) continue;
+      const path = key.slice(2);
+      const owner = moduleOfPath(path, summary.modules);
+      const files = ghostFilesByModule.get(owner) ?? [];
+      files.push(path);
+      ghostFilesByModule.set(owner, files);
+    }
+  }
 
   for (const m of visibleModules) {
     // Context neighbors always render collapsed — their files are outside the
@@ -424,9 +438,21 @@ export function buildMapScene(input: MapSceneInput): MapScene {
       continue;
     }
 
-    const shownFiles = lens
+    const eligibleFiles = lens
       ? detail.files.filter((f) => lensFileVisibility(lens, f.path) != null)
       : detail.files;
+    const shownFiles = eligibleFiles.slice(0, MAX_FILE_CARDS_PER_MODULE);
+    const shownPaths = new Set(shownFiles.map((file) => file.path));
+    const pinned = (path: string): boolean =>
+      input.expandedFiles.has(path) ||
+      input.selectedFile === path ||
+      moves.some((move) => move.fromFile === path || (move.kind === "move" && move.toFile === path));
+    for (const file of eligibleFiles) {
+      if (pinned(file.path) && !shownPaths.has(file.path)) {
+        shownFiles.push(file);
+        shownPaths.add(file.path);
+      }
+    }
     const files: BuiltFile[] = shownFiles.map((f) =>
       buildFile(f.path, f.name, m.path, f.exportCount, input, moves),
     );
@@ -466,11 +492,9 @@ export function buildMapScene(input: MapSceneInput): MapScene {
     // the marks (the head detail can't list them), rendered collapsed so the
     // deletion occupies space instead of silently vanishing
     if (marks) {
-      for (const [key, mark] of Object.entries(marks)) {
-        if (!mark.ghost || !key.startsWith("f:")) continue;
-        const path = key.slice(2);
-        if (moduleOfPath(path, summary.modules) !== m.path) continue;
-        if (detail.files.some((f) => f.path === path)) continue;
+      const detailPaths = new Set(detail.files.map((file) => file.path));
+      for (const path of ghostFilesByModule.get(m.path) ?? []) {
+        if (detailPaths.has(path)) continue;
         if (lens && lensFileVisibility(lens, path) == null) continue;
         files.push({
           node: {
@@ -497,6 +521,32 @@ export function buildMapScene(input: MapSceneInput): MapScene {
           h: FILE_COLLAPSED_H,
         });
       }
+    }
+
+    const hiddenFiles = eligibleFiles.length - shownFiles.length;
+    if (hiddenFiles > 0) {
+      files.push({
+        node: {
+          id: `overflow:${m.path}`,
+          type: "codeOverflow",
+          parentId: moduleId(m.path),
+          position: { x: 0, y: 0 },
+          width: FILE_COLLAPSED_W,
+          height: FILE_COLLAPSED_H,
+          draggable: false,
+          selectable: false,
+          data: {
+            nodeKind: "overflow",
+            nodeId: moduleId(m.path),
+            hidden: hiddenFiles,
+            showingAll: false,
+            accent: accentFor(m.path),
+          },
+        },
+        symbols: [],
+        w: FILE_COLLAPSED_W,
+        h: FILE_COLLAPSED_H,
+      });
     }
 
     const packed = packGrid(
@@ -585,6 +635,7 @@ export function buildMapScene(input: MapSceneInput): MapScene {
 
   /* ---- edges ---- */
   const edges: RfEdge[] = [];
+  let hiddenSelectionEdges = 0;
   for (const d of summary.deps) {
     if (!depVisible(d)) continue;
     edges.push(depEdge(d.source, d.target, d.weight, marks?.[`dep:${d.source}->${d.target}`]));
@@ -617,7 +668,9 @@ export function buildMapScene(input: MapSceneInput): MapScene {
       for (const by of detail.importedBy) {
         add(by, moduleOfPath(by, summary.modules), true);
       }
-      for (const [key, e] of agg) {
+      const selectedEdges = [...agg.entries()].sort((a, b) => b[1].count - a[1].count);
+      hiddenSelectionEdges = Math.max(0, selectedEdges.length - MAX_SELECTION_EDGES);
+      for (const [key, e] of selectedEdges.slice(0, MAX_SELECTION_EDGES)) {
         edges.push(
           e.incoming
             ? selectionEdge(`sel:${key}`, e.target, selId, e.count, true)
@@ -627,7 +680,7 @@ export function buildMapScene(input: MapSceneInput): MapScene {
     }
   }
 
-  return { nodes, edges };
+  return { nodes, edges, ...(hiddenSelectionEdges > 0 ? { hiddenSelectionEdges } : {}) };
 }
 
 /**
@@ -936,8 +989,8 @@ export interface PositionedNode {
 export function absolutePositionOf(
   nodes: readonly PositionedNode[],
   id: string,
+  byId: ReadonlyMap<string, PositionedNode> = new Map(nodes.map((n) => [n.id, n])),
 ): { x: number; y: number } | null {
-  const byId = new Map(nodes.map((n) => [n.id, n]));
   let n = byId.get(id);
   if (!n) return null;
   let x = n.position.x;
@@ -966,8 +1019,9 @@ export function dropTargetAt(
   center: { x: number; y: number },
   source: { file: string; module: string },
 ): DropTarget | null {
+  const byId = new Map<string, PositionedNode>(nodes.map((n) => [n.id, n]));
   const contains = (n: MapRfNode): boolean => {
-    const abs = absolutePositionOf(nodes, n.id);
+    const abs = absolutePositionOf(nodes, n.id, byId);
     if (!abs) return false;
     const w = n.width ?? 0;
     const h = n.height ?? 0;
