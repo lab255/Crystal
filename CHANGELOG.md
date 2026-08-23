@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.40.0 (2026-08-23)
+
+### Features
+
+- C4 component cards on the Components altitude + cross-links ([`d4c8d15`](https://github.com/lab255/Crystal/commit/d4c8d15))
+- C4 component tier — derivation + Components-level projection ([`c61b77f`](https://github.com/lab255/Crystal/commit/c61b77f))
+- component live previews + concern grouping ([`e511e4d`](https://github.com/lab255/Crystal/commit/e511e4d))
+- seam types for the C4 component tier ([`5229753`](https://github.com/lab255/Crystal/commit/5229753))
+
+### Bug Fixes
+
+- role banding never sees package-path tokens + zero-count descriptions ([`e43b2ee`](https://github.com/lab255/Crystal/commit/e43b2ee))
+
 ## v0.39.0 (2026-08-22)
 
 ### Features
