@@ -5,6 +5,11 @@ import ELK, {
 } from "elkjs/lib/elk.bundled.js";
 import { type ArchNode, type ArchitectureGraph } from "@crystal/core";
 import { estimateCardSize, rendersAsPen } from "./card-metrics.js";
+import {
+  countRouteCrossings,
+  layoutMessiness,
+  type LayoutMessinessMetrics,
+} from "./layout-messiness.js";
 
 export interface ElkLayoutOptions {
   /** Authoritative browser measurements, or deterministic estimates upstream. */
@@ -42,6 +47,7 @@ export interface ElkLayoutResult {
   graph: ArchitectureGraph;
   /** Absolute-canvas routes and label boxes, keyed by architecture edge id. */
   routes: ReadonlyMap<string, ElkRoute>;
+  metrics: LayoutMessinessMetrics & { score: number };
 }
 
 const LAYER_CONSTRAINT_OPTION = "elk.layered.layering.layerConstraint";
@@ -659,6 +665,35 @@ export async function elkAutoLayout(
   }
   const { positions, fittedSizes, routes } = solved;
 
+  const labels = [...routes.values()].flatMap((route) => route.label ? [route.label] : []);
+  let labelOverlaps = 0;
+  for (let left = 0; left < labels.length; left += 1) {
+    for (let right = left + 1; right < labels.length; right += 1) {
+      if (labelBoxesOverlap(labels[left]!, labels[right]!)) labelOverlaps += 1;
+    }
+  }
+  const edgeLengths = [...routes.values()].map((route) => route.points.slice(1).reduce(
+    (total, point, index) => total + Math.hypot(
+      point.x - route.points[index]!.x,
+      point.y - route.points[index]!.y,
+    ),
+    0,
+  ));
+  const baseMetrics: LayoutMessinessMetrics = {
+    nodes: graph.nodes.length,
+    edges: graph.edges.length,
+    crossings: countRouteCrossings(routes),
+    labelOverlaps,
+    ...(edgeLengths.length > 0
+      ? { avgEdgeLength: edgeLengths.reduce((sum, length) => sum + length, 0) / edgeLengths.length }
+      : {}),
+    extremeAspects: [...fittedSizes].filter(([id, size]) => {
+      if (packed.has(id) || (childrenOf.get(id)?.length ?? 0) === 0) return false;
+      const aspect = size.width / size.height;
+      return aspect > EXTREME_ASPECT || aspect < 1 / EXTREME_ASPECT;
+    }).length,
+  };
+
   return {
     graph: {
       ...graph,
@@ -670,5 +705,6 @@ export async function elkAutoLayout(
       }),
     },
     routes,
+    metrics: { ...baseMetrics, score: layoutMessiness(baseMetrics) },
   };
 }

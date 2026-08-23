@@ -214,7 +214,7 @@ export interface ArchitectCanvasProps {
   /** C4 resets its per-view pins; other canvases commit a dagre layout. */
   onAutoLayout?: () => void;
   /** Compact view controls that share a header lane above the canvas toolbar. */
-  headerExtra?: ReactNode;
+  headerExtra?: ReactNode | ((actions: { runAutoLayout: (mode?: "flow" | "layers") => void }) => ReactNode);
   /** Live code map for the overlay + code expansion; null while unavailable. */
   codeSummary?: CodeMapSummary | null;
   /**
@@ -2543,7 +2543,7 @@ function CanvasInner({
             canvas (the right-side review cluster keeps its corner). */}
         <Panel position="top-left" className="max-w-[calc(100%-11rem)]">
           <div className="flex max-w-full flex-col items-start gap-2">
-            {headerExtra}
+            {typeof headerExtra === "function" ? headerExtra({ runAutoLayout }) : headerExtra}
             <Toolbar
               graph={graph}
               facet={

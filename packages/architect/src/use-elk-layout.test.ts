@@ -29,7 +29,15 @@ const graph = (ids: string[], parent?: Record<string, string>): ArchitectureGrap
   })),
 });
 
-const reply = (id: string): ElkLayoutReply => ({ graph: graph([id]), routes: [] });
+const metrics = {
+  nodes: 1,
+  edges: 0,
+  crossings: 0,
+  labelOverlaps: 0,
+  extremeAspects: 0,
+  score: 0,
+} as const;
+const reply = (id: string): ElkLayoutReply => ({ graph: graph([id]), routes: [], metrics });
 
 afterEach(() => vi.useRealTimers());
 
@@ -49,6 +57,7 @@ describe("ELK layout protocol", () => {
         ["z", { points: [{ x: 1, y: 2 }] }],
         ["a", { points: [{ x: 3, y: 4 }, { x: 5, y: 6 }], label: { x: 7, y: 8, width: 9, height: 10 } }],
       ]),
+      metrics,
     });
     expect(encoded.routes.map(([id]) => id)).toEqual(["a", "z"]);
     expect(decodeElkLayoutReply(encoded).routes.get("a")).toEqual({
@@ -60,7 +69,7 @@ describe("ELK layout protocol", () => {
   it("rejects non-finite dimensions, positions, routes, and labels", () => {
     expect(() => encodeElkLayoutRequest(graph(["a"]), { dims: new Map([["a", { width: Infinity, height: 2 }]]) })).toThrow("Non-finite");
     expect(() => encodeElkLayoutRequest(graph(["a"]), { previous: new Map([["a", { x: NaN, y: 2 }]]) })).toThrow("Non-finite");
-    expect(() => encodeElkLayoutReply({ graph: graph(["a"]), routes: new Map([["e", { points: [{ x: NaN, y: 0 }] }]]) })).toThrow("Non-finite");
+    expect(() => encodeElkLayoutReply({ graph: graph(["a"]), routes: new Map([["e", { points: [{ x: NaN, y: 0 }] }]]), metrics })).toThrow("Non-finite");
   });
 });
 

@@ -1,7 +1,11 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
+import { X } from "lucide-react";
 import type { ScreenApiCall, ScreenSurface } from "@crystal/core";
+import { useWorkspaces } from "@crystal/client";
 import { ArchitectCanvas } from "./ArchitectCanvas.js";
+import { layoutMessiness, shouldOfferMessyLayout } from "./layout-messiness.js";
 import { useCanonicalArchitecture } from "./use-canonical-architecture.js";
+import { useElkLayout } from "./use-elk-layout.js";
 
 /**
  * The canonical architecture as an embeddable pane — the surfaces mode docks
@@ -28,11 +32,38 @@ export function ArchPane({
   const { overviewData, codeSummary, rendered, commitEdited } = useCanonicalArchitecture({
     surfaces: surfacesInput,
   });
+  const activeWs = useWorkspaces((state) => state.activeId);
+  const { metrics, revision } = useElkLayout(rendered, null);
+  const dismissKey = `${activeWs ?? ""}:codebase-embed:${revision}`;
+  const [dismissedMessiness, setDismissedMessiness] = useState<string | null>(null);
+  const showMessinessBanner = metrics != null
+    && shouldOfferMessyLayout(layoutMessiness(metrics), false, 0)
+    && dismissedMessiness !== dismissKey;
   if (!rendered) return null;
   return (
     <ArchitectCanvas
       graph={rendered}
       onChange={commitEdited}
+      headerExtra={({ runAutoLayout }) => showMessinessBanner ? (
+        <div className="flex items-center gap-2 rounded-lg border border-warn/40 bg-surface-2/95 px-3 py-1.5 text-xs text-ink shadow-lg backdrop-blur">
+          <span>This layout looks tangled</span>
+          <button
+            type="button"
+            className="font-medium text-crystal-300 hover:text-crystal-200"
+            onClick={() => runAutoLayout("flow")}
+          >
+            Re-layout
+          </button>
+          <button
+            type="button"
+            className="ml-1 text-ink-faint hover:text-ink"
+            aria-label="Dismiss tangled layout suggestion"
+            onClick={() => setDismissedMessiness(dismissKey)}
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      ) : null}
       codeSummary={codeSummary}
       overview={overviewData}
     />

@@ -137,6 +137,7 @@ import { C4Bar } from "./C4Bar.js";
 import { buildSystemCardFacts, systemCardSlot } from "./system-card.js";
 import { filterRoutesForMovedEndpoints } from "./elk-layout.js";
 import { useElkLayout } from "./use-elk-layout.js";
+import { layoutMessiness, shouldOfferMessyLayout } from "./layout-messiness.js";
 import { summarizeOverride } from "./canonical-overlay.js";
 import { bareCodeMapPatch } from "./navigation.js";
 
@@ -912,16 +913,21 @@ function DiagramsView({
     () => (withOverrides ? c4Reserve(withOverrides, mergedBase) : null),
     [withOverrides, mergedBase],
   );
-  const { laid, routes, revision: layoutRevision } = useElkLayout(
-    withOverrides,
-    dims,
+  const layoutProbeGraph = c4Enabled
+    ? withOverrides
+    : variant === "architecture"
+      ? (activeDraft?.draft.graph ?? displayGraph)
+      : null;
+  const { laid, routes, metrics: layoutMetrics, revision: layoutRevision } = useElkLayout(
+    layoutProbeGraph,
+    c4Enabled ? dims : null,
     canvasAspectRatio,
   );
 
   // Pins remain a final, view-specific overlay on the solved geometry. This
   // is intentionally the same application logic as the previous dagre path.
   const c4Laid = useMemo(() => {
-    if (!laid || !reconciled) return null;
+    if (!c4Enabled || !laid || !reconciled) return null;
     const pins = reconciled.c4Layouts[viewKeyStr] ?? {};
     if (Object.keys(pins).length === 0) return laid;
     return {
@@ -931,7 +937,7 @@ function DiagramsView({
         return pin ? { ...n, position: { ...pin } } : n;
       }),
     };
-  }, [laid, reconciled, viewKeyStr]);
+  }, [c4Enabled, laid, reconciled, viewKeyStr]);
   const canvasC4 = useMemo(
     () => c4Enabled && c4Laid && c4Projection
       ? {
@@ -951,6 +957,17 @@ function DiagramsView({
         : null,
     [laid, c4Laid, routes],
   );
+  const currentPins = reconciled?.c4Layouts[viewKeyStr] ?? {};
+  const pinCount = Object.keys(currentPins).length;
+  const pinBrokenRoutes = routes && c4Routes ? routes.size - c4Routes.size : 0;
+  const effectiveMessiness = layoutMetrics
+    ? layoutMessiness({ ...layoutMetrics, pinBrokenRoutes })
+    : 0;
+  const messyLayout = layoutMetrics != null
+    && shouldOfferMessyLayout(effectiveMessiness, c4Enabled, pinCount);
+  const messinessDismissKey = `${activeWs ?? ""}:${viewKeyStr}:${layoutRevision}`;
+  const [dismissedMessiness, setDismissedMessiness] = useState<string | null>(null);
+  const showMessinessBanner = messyLayout && dismissedMessiness !== messinessDismissKey;
   const clearCurrentC4Layout = useCallback(() => {
     if (!reconciled) return;
     updateArchOverlay(clearC4Layout(reconciled, viewKeyStr));
@@ -1834,13 +1851,35 @@ function DiagramsView({
                       ? activeDraft.draft.graph
                       : ((c4Enabled ? c4Laid : null) ?? displayGraph ?? rendered)
                   }
-                  headerExtra={
-                    activeDraft
-                      ? renderDraftBar(true)
-                      : c4Enabled && c4Model && !reviewOn
-                        ? <C4Bar view={{ level, scope }} model={c4Model} onNavigate={setC4View} />
-                        : null
-                  }
+                  headerExtra={({ runAutoLayout }) => (
+                    <>
+                      {activeDraft
+                        ? renderDraftBar(true)
+                        : c4Enabled && c4Model && !reviewOn
+                          ? <C4Bar view={{ level, scope }} model={c4Model} onNavigate={setC4View} />
+                          : null}
+                      {showMessinessBanner ? (
+                        <div className="flex items-center gap-2 rounded-lg border border-warn/40 bg-surface-2/95 px-3 py-1.5 text-xs text-ink shadow-lg backdrop-blur">
+                          <span>This layout looks tangled</span>
+                          <button
+                            type="button"
+                            className="font-medium text-crystal-300 hover:text-crystal-200"
+                            onClick={() => c4Enabled ? clearCurrentC4Layout() : runAutoLayout("flow")}
+                          >
+                            Re-layout
+                          </button>
+                          <button
+                            type="button"
+                            className="ml-1 text-ink-faint hover:text-ink"
+                            aria-label="Dismiss tangled layout suggestion"
+                            onClick={() => setDismissedMessiness(messinessDismissKey)}
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      ) : null}
+                    </>
+                  )}
                   diffMarks={
                     activeDraft
                       ? null
