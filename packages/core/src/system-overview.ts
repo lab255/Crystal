@@ -6,6 +6,7 @@ import {
   identifierWords,
   type ConceptDef,
 } from "./code-index.js";
+import type { CodeRole } from "./code-roles.js";
 import type { CodeSymbolKind } from "./codemap.js";
 import type { EndpointValidation } from "./endpoint-validation.js";
 import { classifyExternalPackage, isPlatformImport } from "./external-services.js";
@@ -167,6 +168,29 @@ export interface SystemExternal {
   weight: number;
 }
 
+/**
+ * A role-band partition of one system's files (entry / service / data /
+ * provider / layout / component / query / other — see code-roles.ts). One
+ * group per role that actually has files. The C4 component tier is minted
+ * from (system × group); the file lists are what let diff marks, lenses and
+ * live-code expansion resolve a component back to real code.
+ */
+export interface SystemRoleGroup {
+  role: CodeRole;
+  fileCount: number;
+  /** Member files, capped at ROLE_GROUP_FILE_CAP (heaviest-connected first). */
+  files: string[];
+  filesTruncated?: boolean;
+}
+
+/** An import edge between two role groups of the same system. */
+export interface SystemGroupLink {
+  source: CodeRole;
+  target: CodeRole;
+  /** Import statements crossing between the groups. */
+  weight: number;
+}
+
 /** An import edge between two parts of the same system. */
 export interface SystemPartLink {
   /** Source part path (see SystemPart.path). */
@@ -207,6 +231,13 @@ export interface SystemModule {
   componentCount: number;
   /** Intra-system imports between parts, heaviest first (capped). Absent when nothing crosses. */
   partLinks?: SystemPartLink[];
+  /**
+   * Role-band partition of the system's files, band order first (see
+   * ROLE_BANDS). Absent on overviews generated before the component tier.
+   */
+  groups?: SystemRoleGroup[];
+  /** Intra-system imports between role groups, heaviest first. Absent when nothing crosses. */
+  groupLinks?: SystemGroupLink[];
 }
 
 /** One symbol crossing a link, with what is known about its shape. */
@@ -235,6 +266,8 @@ export interface SystemLink {
   apis?: (HttpEndpoint & { weight: number })[];
   /** Cross-boundary imports attributed to (source part → target part) pairs, heaviest first (capped). */
   parts?: { sourcePart: string; targetPart: string; weight: number }[];
+  /** Cross-boundary imports attributed to (source group → target group) role pairs, heaviest first (capped). */
+  groups?: { sourceGroup: CodeRole; targetGroup: CodeRole; weight: number }[];
 }
 
 export interface SystemOverview {

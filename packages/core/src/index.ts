@@ -9,6 +9,8 @@ export * from "./arch-migrate.js";
 export * from "./arch-overlay.js";
 export * from "./cross-infra.js";
 export * from "./c4.js";
+export * from "./c4-components.js";
+export * from "./code-roles.js";
 export * from "./arch-review.js";
 export * from "./diagram-diff.js";
 export * from "./code-map-diff.js";
