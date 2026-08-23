@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { uid } from "./ids.js";
-import { parseLensTags } from "./code-index.js";
+import { CONCEPT_LEXICON, parseLensTags, type ConceptDef } from "./code-index.js";
 
 /**
  * The lens — Crystal's one cross-tool filter. A lens names a slice of the
@@ -108,6 +108,20 @@ export type WorkspaceFacetsFile = z.infer<typeof WorkspaceFacetsFileSchema>;
 export function createWorkspaceFacet(name: string, spec: LensSpec): WorkspaceFacet {
   if (spec.kind === "facet") throw new Error("a workspace facet cannot reference another facet");
   return { id: uid("facet"), name, description: "", spec };
+}
+
+/** Intent tag for a user-entered facet name (known concepts accept display-name or slug/value). */
+export function inferFacetIntentTags(
+  name: string,
+  lexicon: readonly ConceptDef[] = CONCEPT_LEXICON,
+): string[] {
+  const slug = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  if (!slug) return [];
+  const concept = lexicon.find((item) => {
+    const displaySlug = item.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    return item.value.toLowerCase() === slug || displaySlug === slug;
+  });
+  return [`intent:${concept?.value ?? slug}`];
 }
 
 /** Display label for a lens chip. `facets` names saved-facet lenses. */

@@ -1,11 +1,11 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Sparkles, X } from "lucide-react";
 import {
   suggestIndexFacets,
   type CodeIndex,
   type IndexFacetSuggestion,
 } from "@crystal/core";
-import { useNavUpdate } from "@crystal/client";
+import { useCrystal, useLens, useNavUpdate } from "@crystal/client";
 import { Badge, Button, Spinner, Tooltip, cn } from "@crystal/ui";
 
 /**
@@ -22,6 +22,7 @@ export function FacetsPanel({
   onSelect,
   onClear,
   onClose,
+  ws,
 }: {
   /** Loaded code index (null while fetching). */
   index: CodeIndex | null;
@@ -33,8 +34,12 @@ export function FacetsPanel({
   onSelect: (suggestion: IndexFacetSuggestion) => void;
   onClear: () => void;
   onClose: () => void;
+  ws: string;
 }) {
   const updateNav = useNavUpdate();
+  const { lensStore } = useCrystal();
+  const [indexError, setIndexError] = useState<string | null>(null);
+  const indexing = useLens((s) => s.indexingByWs[ws] === true);
 
   const suggestions = useMemo(() => (index ? suggestIndexFacets(index) : []), [index]);
   const activeKey = activeTags.join(",");
@@ -109,14 +114,26 @@ export function FacetsPanel({
       </div>
 
       <div className="border-t border-edge px-3 py-2.5">
-        <div className="mb-1.5 text-[10px] text-ink-faint">
-          {staleFiles.length > 0
+        <div className={cn("mb-1.5 text-[10px]", indexError ? "text-danger" : "text-ink-faint")}>
+          {indexError ?? (indexing
+            ? "Indexing intents…"
+            : staleFiles.length > 0
             ? `${staleFiles.length} file${staleFiles.length !== 1 ? "s" : ""} not yet agent-indexed — symbolic tags (names, paths, call graph) only.`
-            : "Every file carries a fresh agent enrichment."}
+            : "Every file carries a fresh agent enrichment.")}
         </div>
-        <Button variant="secondary" size="xs" onClick={() => updateNav({ mode: "jobs" })}>
-          <Sparkles className="h-3 w-3" />
-          Index intents in Jobs
+        {staleFiles.length > 0 && !indexing ? (
+          <Button variant="secondary" size="xs" onClick={() => {
+            setIndexError(null);
+            void lensStore.getState().requestIntentIndex(ws, { full: true }).catch((error: Error) => {
+              setIndexError(error.message);
+            });
+          }}>
+            <Sparkles className="h-3 w-3" />
+            Index intents
+          </Button>
+        ) : null}
+        <Button variant="ghost" size="xs" onClick={() => updateNav({ mode: "jobs" })}>
+          {indexing ? "run in Jobs" : "Jobs"}
         </Button>
       </div>
     </aside>

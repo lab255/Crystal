@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import type { BridgeMethods, CodeIndex, SystemOverview } from "@crystal/core";
-import { createWorkspaceFacet } from "@crystal/core";
+import type { BridgeEvents, BridgeMethods, CodeIndex, SystemOverview } from "@crystal/core";
+import { createWorkspaceFacet, Emitter } from "@crystal/core";
 import { createLensStore } from "./lens-store.js";
 import type { BridgeClient } from "./bridge-client.js";
 
@@ -24,6 +24,7 @@ function stubClient(handlers: {
   ) => BridgeMethods[M]["result"] | Promise<BridgeMethods[M]["result"]>;
 }): BridgeClient {
   return {
+    events: new Emitter<BridgeEvents>(),
     request: vi.fn(async (method: string, params: unknown) => {
       const handler = handlers[method as keyof BridgeMethods];
       if (!handler) throw new Error(`unexpected bridge call: ${method}`);
@@ -173,5 +174,45 @@ describe("lens store", () => {
 
     expect(store.getState().facetsWs).toBe("b");
     expect(store.getState().facets).toEqual([facetB]);
+  });
+
+  it("rejects a duplicate intent-index request while the first guard is awaiting server state", async () => {
+    const list = deferred<BridgeMethods["agent.list"]["result"]>();
+    const client = stubClient({
+      "agent.list": () => list.promise,
+      "codeindex.enrich": () => ({ run: {} as never, files: [], remaining: 0 }),
+    });
+    const store = createLensStore(client);
+
+    const first = store.getState().requestIntentIndex("ws1", { full: true });
+    await expect(store.getState().requestIntentIndex("ws1", { full: true })).resolves.toBe(false);
+    expect(client.request).toHaveBeenCalledTimes(1);
+
+    list.resolve({ runs: [], auth: { broken: false, detail: null } });
+    await expect(first).resolves.toBe(true);
+    expect(client.request).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the request guard held when a settling event arrives during dispatch", async () => {
+    const enrich = deferred<BridgeMethods["codeindex.enrich"]["result"]>();
+    const client = stubClient({
+      "agent.list": () => ({ runs: [], auth: { broken: false, detail: null } }),
+      "codeindex.enrich": () => enrich.promise,
+    });
+    const store = createLensStore(client);
+
+    const first = store.getState().requestIntentIndex("ws1", { full: true });
+    await vi.waitFor(() => expect(client.request).toHaveBeenCalledTimes(2));
+    client.events.emit("agent.runChanged", {
+      ws: "ws1",
+      run: { purpose: "index", status: "completed" },
+    } as never);
+
+    expect(store.getState().indexingByWs.ws1).toBe(true);
+    await expect(store.getState().requestIntentIndex("ws1", { full: true })).resolves.toBe(false);
+    expect(client.request).toHaveBeenCalledTimes(2);
+
+    enrich.resolve({ run: {} as never, files: [], remaining: 0 });
+    await expect(first).resolves.toBe(true);
   });
 });

@@ -33,6 +33,8 @@ export interface LensState {
   /** Saved workspace facets of `facetsWs` (empty until first load). */
   facets: WorkspaceFacet[];
   facetsWs: string | null;
+  /** Workspaces with a live intent-index agent run. */
+  indexingByWs: Record<string, boolean>;
   /** Resolve the raw lens param for a workspace; cheap no-op when unchanged. */
   ensure(ws: string | null, raw: string | null | undefined, force?: boolean): Promise<void>;
   /** Re-resolve the current lens (diff lenses go stale as files change). */
@@ -41,6 +43,8 @@ export interface LensState {
   /** Add or replace one saved facet and persist the registry. */
   saveFacet(ws: string, facet: WorkspaceFacet): Promise<void>;
   removeFacet(ws: string, id: string): Promise<void>;
+  /** Start intent indexing unless that workspace already has a live index run. */
+  requestIntentIndex(ws: string, options?: { files?: string[]; full?: boolean }): Promise<boolean>;
 }
 
 export type LensStore = StoreApi<LensState>;
@@ -50,8 +54,9 @@ const EMPTY_MATCHER = buildLensMatcher(null);
 export function createLensStore(client: BridgeClient): LensStore {
   let epoch = 0;
   let facetsEpoch = 0;
+  const intentIndexRequests = new Set<string>();
 
-  return createStore<LensState>((set, get) => {
+  const store = createStore<LensState>((set, get) => {
     async function resolveSpec(ws: string, spec: LensSpec): Promise<LensMembership> {
       if (spec.kind === "facet") {
         const facets = await get().loadFacets(ws);
@@ -97,6 +102,7 @@ export function createLensStore(client: BridgeClient): LensStore {
       error: null,
       facets: [],
       facetsWs: null,
+      indexingByWs: {},
 
       async ensure(ws, raw, force = false) {
         const spec = raw ? parseLensParam(raw) : null;
@@ -161,6 +167,44 @@ export function createLensStore(client: BridgeClient): LensStore {
         set({ facets, facetsWs: ws });
         await client.request("facets.save", { ws, facets });
       },
+
+      async requestIntentIndex(ws, options = {}) {
+        if (intentIndexRequests.has(ws) || get().indexingByWs[ws]) return false;
+        intentIndexRequests.add(ws);
+        set((state) => ({ indexingByWs: { ...state.indexingByWs, [ws]: true } }));
+        try {
+          const { runs } = await client.request("agent.list", { ws });
+          if (runs.some((run) => run.purpose === "index" && (run.status === "queued" || run.status === "running"))) {
+            return false;
+          }
+          await client.request("codeindex.enrich", { ws, ...options });
+          return true;
+        } catch (error) {
+          set((state) => ({ indexingByWs: { ...state.indexingByWs, [ws]: false } }));
+          throw error;
+        } finally {
+          intentIndexRequests.delete(ws);
+        }
+      },
     };
   });
+
+  client.events?.on("agent.runChanged", ({ ws, run }) => {
+    if (run.purpose !== "index") return;
+    const live = run.status === "queued" || run.status === "running";
+    if (!live && intentIndexRequests.has(ws)) return;
+    store.setState((state) => ({ indexingByWs: { ...state.indexingByWs, [ws]: live } }));
+  });
+  client.events?.on("codeindex.changed", ({ ws }) => {
+    // A full drain may start another batch after each index write; reconcile
+    // against server truth rather than briefly presenting it as settled.
+    void client.request("agent.list", { ws }).then(({ runs }) => {
+      if (intentIndexRequests.has(ws)) return;
+      const live = runs.some((run) =>
+        run.purpose === "index" && (run.status === "queued" || run.status === "running")
+      );
+      store.setState((state) => ({ indexingByWs: { ...state.indexingByWs, [ws]: live } }));
+    }).catch(() => undefined);
+  });
+  return store;
 }

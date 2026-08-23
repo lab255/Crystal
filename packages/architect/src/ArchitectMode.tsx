@@ -37,6 +37,7 @@ import {
   createEpic,
   createTask,
   diffSystemOverviews,
+  facetNameMatchesSuggestion,
   formatDiffCounts,
   linkEdgeId,
   overviewDiffGhosts,
@@ -75,6 +76,7 @@ import {
   useAgents,
   useConnectionState,
   useCrystal,
+  useLens,
   useNav,
   useNavUpdate,
   useRefReview,
@@ -2208,13 +2210,15 @@ function FacetsSection({
 }) {
   const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null);
 
-  const { client } = useCrystal();
+  const { client, lensStore } = useCrystal();
   const connection = useConnectionState();
   const activeWs = useWorkspaces((s) => s.activeId);
   const updateNav = useNavUpdate();
   const [index, setIndex] = useState<CodeIndex | null>(null);
   const [staleCount, setStaleCount] = useState(0);
   const [dismissed, setDismissed] = useState<string[]>([]);
+  const [populated, setPopulated] = useState<{ id: string; count: number } | null>(null);
+  const indexing = useLens((s) => (activeWs ? s.indexingByWs[activeWs] === true : false));
 
   const fetchIndex = useCallback(async () => {
     try {
@@ -2249,7 +2253,7 @@ function FacetsSection({
   /** Materialize a suggestion — filling a same-named empty facet if one exists. */
   const accept = (s: FacetSuggestion) => {
     const existing = graph.facets.find(
-      (f) => f.nodeIds.length === 0 && f.name.trim().toLowerCase() === s.name.trim().toLowerCase(),
+      (f) => f.nodeIds.length === 0 && facetNameMatchesSuggestion(f.name, s),
     );
     if (existing) {
       onGraphChange({
@@ -2261,6 +2265,7 @@ function FacetsSection({
         ),
       });
       onActivate(existing.id);
+      setPopulated({ id: existing.id, count: s.nodeIds.length });
       return;
     }
     const facet = { ...createArchFacet(s.name, s.nodeIds), description: s.description };
@@ -2268,11 +2273,31 @@ function FacetsSection({
     onActivate(facet.id);
   };
 
+  useEffect(() => {
+    const empty = graph.facets.find((facet) =>
+      facet.nodeIds.length === 0 && suggestions.some((s) => facetNameMatchesSuggestion(facet.name, s)),
+    );
+    if (!empty) return;
+    const suggestion = suggestions.find((s) => facetNameMatchesSuggestion(empty.name, s));
+    if (suggestion) accept(suggestion);
+    // accept is intentionally driven only by recomputed index suggestions.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [suggestions]);
+
+  useEffect(() => {
+    if (!populated) return;
+    const timer = window.setTimeout(() => setPopulated(null), 3000);
+    return () => window.clearTimeout(timer);
+  }, [populated]);
+
   const create = () => {
     const facet = createArchFacet(`Facet ${graph.facets.length + 1}`);
     onGraphChange({ ...graph, facets: [...graph.facets, facet] });
     onActivate(facet.id);
     setRenaming({ id: facet.id, value: facet.name });
+    if (staleCount > 0 && activeWs) {
+      void lensStore.getState().requestIntentIndex(activeWs, { full: true }).catch(() => undefined);
+    }
   };
 
   const rename = (id: string, name: string) => {
@@ -2283,6 +2308,9 @@ function FacetsSection({
       });
     }
     setRenaming(null);
+    if (name.trim() && staleCount > 0 && activeWs) {
+      void lensStore.getState().requestIntentIndex(activeWs, { full: true }).catch(() => undefined);
+    }
   };
 
   const remove = (id: string) => {
@@ -2334,7 +2362,7 @@ function FacetsSection({
             <span className="min-w-0 flex-1 truncate">{f.name}</span>
           )}
           <span className="text-[10px] text-ink-faint">
-            {f.nodeIds.length > 0 ? f.nodeIds.length : "all"}
+            {populated?.id === f.id ? `populated · ${populated.count}` : f.nodeIds.length > 0 ? f.nodeIds.length : "all"}
           </span>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -2402,18 +2430,20 @@ function FacetsSection({
       {index ? (
         <div className="flex items-center justify-between px-2 py-1 text-[11px] text-ink-faint">
           <span>
-            {staleCount > 0
+            {indexing
+              ? "Indexing intents…"
+              : staleCount > 0
               ? `${staleCount} file${staleCount === 1 ? "" : "s"} without intent tags`
               : "intent index fresh"}
           </span>
-          {staleCount > 0 ? (
-            <Tooltip content="Run intent indexing in the Jobs view — a small agent tags what each symbol is for, scoped to your diff by default">
+          {indexing || staleCount > 0 ? (
+            <Tooltip content="Open the indexing run in Jobs">
               <button
                 type="button"
                 className="flex items-center gap-1 text-ink-faint hover:text-ink"
                 onClick={() => updateNav({ mode: "jobs" })}
               >
-                <Bot className="h-3 w-3" /> Index intents
+                <Bot className="h-3 w-3" /> {indexing ? "run in Jobs" : "Jobs"}
               </button>
             </Tooltip>
           ) : null}

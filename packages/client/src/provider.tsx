@@ -354,7 +354,8 @@ function createFleetRuntime(defaultTarget: string | BridgeTransportFactory): Fle
       }),
     );
 
-    // Re-resolve diff lenses when the code map re-analyzes (files changed).
+    // Re-resolve diff lenses when source changes, and empty tag/facet lenses
+    // when intent enrichment lands.
     disposers.push(
       client.events.on("codemap.changed", ({ ws }) => {
         const { spec } = lensStore.getState();
@@ -364,6 +365,19 @@ function createFleetRuntime(defaultTarget: string | BridgeTransportFactory): Fle
           ws === workspacesStore.getState().activeId
         ) {
           void lensStore.getState().refresh();
+        }
+      }),
+    );
+    disposers.push(
+      client.events.on("codeindex.changed", ({ ws }) => {
+        const state = lensStore.getState();
+        if (
+          fleet.activeSid === sid &&
+          ws === workspacesStore.getState().activeId &&
+          (state.spec?.kind === "tags" || state.spec?.kind === "facet") &&
+          state.matcher.empty
+        ) {
+          void state.refresh();
         }
       }),
     );
