@@ -33,6 +33,7 @@ import {
 } from "./fleet-client.js";
 import { createAgentStore, type AgentState, type AgentStore } from "./agent-store.js";
 import { createFleetStore, type FleetState, type FleetStore } from "./fleet-store.js";
+import { crossInfraStoreFor } from "./cross-infra-store.js";
 import {
   createHighlightStore,
   type HighlightState,
@@ -428,6 +429,10 @@ function createFleetRuntime(defaultTarget: string | BridgeTransportFactory): Fle
           .getState()
           .flush()
           .catch(() => {});
+        void crossInfraStoreFor(client)
+          .getState()
+          .flush()
+          .catch(() => {});
       },
     });
   }
@@ -514,6 +519,10 @@ function createFleetRuntime(defaultTarget: string | BridgeTransportFactory): Fle
       void fleetStore.getState().flush();
       for (const bundle of bundles.values()) {
         void bundle.workspaceStore
+          .getState()
+          .flush()
+          .catch(() => {});
+        void crossInfraStoreFor(bundle.client)
           .getState()
           .flush()
           .catch(() => {});

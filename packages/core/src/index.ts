@@ -16,6 +16,7 @@ export * from "./diagram-diff.js";
 export * from "./code-map-diff.js";
 export * from "./external-services.js";
 export * from "./compose-detect.js";
+export * from "./compose-adopt.js";
 export * from "./refactor.js";
 export * from "./project.js";
 export * from "./tags.js";

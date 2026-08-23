@@ -18,6 +18,7 @@ export function isComposePath(path: string): boolean {
 
 const StringMapSchema = z.record(z.union([z.string(), z.number(), z.boolean(), z.null()]));
 const ServiceInputSchema = z.object({
+  container_name: z.string().optional(),
   image: z.string().optional(),
   build: z.union([z.string(), z.object({ context: z.string().optional(), dockerfile: z.string().optional() }).passthrough()]).optional(),
   command: z.union([z.string(), z.array(z.string())]).optional(),
@@ -39,6 +40,7 @@ export interface ComposeFileInput { path: string; content: string }
 export interface ComposeDiagnostic { path: string; message: string; severity: "warning" | "error" }
 export interface ComposeService {
   name: string;
+  containerName?: string;
   image?: string;
   build?: string;
   command?: string[];
@@ -55,6 +57,8 @@ export interface ComposeServiceSuggestion {
   project: string;
   path: string;
   service: string;
+  containerName?: string;
+  environment?: Record<string, string>;
   image?: string;
   build?: string;
   tech: string;
@@ -100,7 +104,7 @@ function normalizeService(name: string, input: z.infer<typeof ServiceInputSchema
     : Object.fromEntries(Object.entries(input.environment ?? {}).map(([k, v]) => [k, v == null ? "" : String(v)]));
   const build = typeof input.build === "string" ? input.build : input.build?.context;
   return {
-    name, ...(input.image ? { image: input.image } : {}), ...(build ? { build } : {}),
+    name, ...(input.container_name ? { containerName: input.container_name } : {}), ...(input.image ? { image: input.image } : {}), ...(build ? { build } : {}),
     ...(input.command ? { command: Array.isArray(input.command) ? input.command : [input.command] } : {}),
     environment,
     ports: (input.ports ?? []).map((p) => typeof p === "object" ? `${p.published ?? ""}:${p.target ?? ""}` : String(p)),
@@ -145,7 +149,7 @@ export function parseComposeFiles(files: readonly ComposeFileInput[]): ComposeSu
   const suggestions = topology.flatMap((project) => project.services.map((service): ComposeServiceSuggestion => {
     const image = service.image;
     const tech = image ? normalizeContainerImage(image) || image : service.build ? `build:${service.build}` : service.name;
-    return { key: `${project.path.toLowerCase()}:${service.name.toLowerCase()}`, project: project.project, path: project.path, service: service.name, ...(image ? { image } : {}), ...(service.build ? { build: service.build } : {}), tech, external: image ? classifyExternalImage(image) : null, ports: service.ports, volumes: service.volumes, networks: service.networks, dependsOn: service.dependsOn, profiles: service.profiles };
+    return { key: `${project.path.toLowerCase()}:${service.name.toLowerCase()}`, project: project.project, path: project.path, service: service.name, ...(service.containerName ? { containerName: service.containerName } : {}), ...(Object.keys(service.environment).length ? { environment: service.environment } : {}), ...(image ? { image } : {}), ...(service.build ? { build: service.build } : {}), tech, external: image ? classifyExternalImage(image) : null, ports: service.ports, volumes: service.volumes, networks: service.networks, dependsOn: service.dependsOn, profiles: service.profiles };
   }));
   return { files: ordered.map((f) => f.path), topology, suggestions, diagnostics };
 }
