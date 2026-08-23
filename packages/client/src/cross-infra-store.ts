@@ -30,12 +30,16 @@ export function createCrossInfraStore(client: BridgeClient): CrossInfraStore {
   let dataTimer: ReturnType<typeof setTimeout> | null = null;
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
   let savePromise: Promise<void> | null = null;
+  let scheduledOverlay: CrossInfraOverlay | null = null;
   let retryUsed = false;
   let mapEpoch = 0;
   let overlayEpoch = 0;
 
   const store = createStore<CrossInfraState>((set, get) => {
     const scheduleSave = (delay = OVERLAY_SAVE_DEBOUNCE_MS): void => {
+      // Capture the immutable snapshot now. A later flush must save the edit
+      // that scheduled it, even if the active view/workspace has changed.
+      scheduledOverlay = get().overlay;
       if (saveTimer) clearTimeout(saveTimer);
       saveTimer = setTimeout(() => {
         saveTimer = null;
@@ -44,12 +48,16 @@ export function createCrossInfraStore(client: BridgeClient): CrossInfraStore {
     };
 
     const persistOverlay = async (): Promise<void> => {
-      if (savePromise) return savePromise;
+      if (savePromise) {
+        await savePromise;
+        return;
+      }
       if (saveTimer) {
         clearTimeout(saveTimer);
         saveTimer = null;
       }
-      const overlay = get().overlay;
+      const overlay = scheduledOverlay;
+      scheduledOverlay = null;
       if (!overlay) return;
       savePromise = client
         .request("infra.crossOverlay.save", { overlay })
@@ -72,8 +80,7 @@ export function createCrossInfraStore(client: BridgeClient): CrossInfraStore {
         })
         .finally(() => {
           savePromise = null;
-          // An edit made during the request schedules its own snapshot.
-          if (get().overlay !== overlay && !saveTimer) scheduleSave();
+          if (scheduledOverlay && !saveTimer) scheduleSave(0);
         });
       return savePromise;
     };
@@ -189,7 +196,15 @@ export function createCrossInfraStore(client: BridgeClient): CrossInfraStore {
       },
 
       async flush() {
-        await persistOverlay();
+        if (saveTimer) {
+          clearTimeout(saveTimer);
+          saveTimer = null;
+        }
+        // An edit may be scheduled while an older snapshot is in flight.
+        // Drain both saves before resolving so shutdown/switch callers are safe.
+        do {
+          await persistOverlay();
+        } while (savePromise || scheduledOverlay);
       },
     };
   });

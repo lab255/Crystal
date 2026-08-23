@@ -12,6 +12,15 @@ describe("parseComposeFiles", () => {
     expect(result.suggestions.find((s) => s.service === "db")?.external).toMatchObject({ id: "postgres" });
   });
 
+  it("carries instance evidence from container_name and environment", () => {
+    const result = parseComposeFiles([{ path: "compose.yml", content: `services:\n  uploads:\n    image: minio/minio:latest\n    container_name: asset-bucket\n    environment:\n      BUCKET_NAME: uploads\n` }]);
+    expect(result.suggestions[0]).toMatchObject({
+      service: "uploads",
+      containerName: "asset-bucket",
+      environment: { BUCKET_NAME: "uploads" },
+    });
+  });
+
   it("keeps valid files when another file is malformed", () => {
     const result = parseComposeFiles([
       { path: "compose.yml", content: "services:\n  cache:\n    image: redis:7" },

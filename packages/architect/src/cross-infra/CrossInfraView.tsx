@@ -83,7 +83,10 @@ const CrossInfraNode = memo(function CrossInfraNode({ data }: NodeProps<FlowNode
               </div>
             ))}
             {data.externals.length > MAX_PROJECT_EXTERNAL_ROWS ? (
-              <div className="px-2 py-1 text-[9px] text-ink-faint">
+              <div
+                className="px-2 py-1 text-[9px] text-ink-faint"
+                title={data.externals.slice(MAX_PROJECT_EXTERNAL_ROWS).map((external) => external.label).join("\n")}
+              >
                 +{data.externals.length - MAX_PROJECT_EXTERNAL_ROWS} more
               </div>
             ) : null}

@@ -54,6 +54,66 @@ describe("cross infrastructure store", () => {
     expect(store.getState().dirty).toBe(false);
   });
 
+  it("flushes a snapshot scheduled during an in-flight save", async () => {
+    vi.useFakeTimers();
+    const { client, request } = mockClient();
+    const store = createCrossInfraStore(client);
+    await store.getState().ensure();
+    request.mockClear();
+    let release!: () => void;
+    const firstSave = new Promise<void>((resolve) => { release = resolve; });
+    request.mockImplementationOnce(async (_method: string, params: unknown) => {
+      await firstSave;
+      return { overlay: (params as { overlay: CrossInfraOverlay }).overlay };
+    });
+
+    store.getState().setPin("project:a", { x: 1, y: 2 });
+    await vi.advanceTimersByTimeAsync(300);
+    store.getState().setPin("project:b", { x: 3, y: 4 });
+    const flush = store.getState().flush();
+    release();
+    await flush;
+
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(request).toHaveBeenLastCalledWith("infra.crossOverlay.save", {
+      overlay: expect.objectContaining({ pins: {
+        "project:a": { x: 1, y: 2 },
+        "project:b": { x: 3, y: 4 },
+      } }),
+    });
+    expect(store.getState().dirty).toBe(false);
+  });
+
+  it("unattended save reschedules an edit made during an in-flight save", async () => {
+    vi.useFakeTimers();
+    const { client, request } = mockClient();
+    const store = createCrossInfraStore(client);
+    await store.getState().ensure();
+    request.mockClear();
+    let release!: () => void;
+    const firstSave = new Promise<void>((resolve) => { release = resolve; });
+    request.mockImplementationOnce(async (_method: string, params: unknown) => {
+      await firstSave;
+      return { overlay: (params as { overlay: CrossInfraOverlay }).overlay };
+    });
+
+    store.getState().setPin("project:a", { x: 1, y: 2 });
+    await vi.advanceTimersByTimeAsync(300);
+    store.getState().setPin("project:b", { x: 3, y: 4 });
+    await vi.advanceTimersByTimeAsync(300);
+    release();
+    await vi.runAllTimersAsync();
+
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(request).toHaveBeenLastCalledWith("infra.crossOverlay.save", {
+      overlay: expect.objectContaining({ pins: {
+        "project:a": { x: 1, y: 2 },
+        "project:b": { x: 3, y: 4 },
+      } }),
+    });
+    expect(store.getState().dirty).toBe(false);
+  });
+
   it("does not refresh the overlay for layout events while a save is pending", async () => {
     vi.useFakeTimers();
     const { client, events, request } = mockClient();
