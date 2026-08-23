@@ -125,11 +125,11 @@ export const ENTITY_NEST_CAP = 6;
 
 export function describeComponent(component: C4Component): string {
   const head = component.role === "entry"
-    ? `Serves ${component.endpointCount} routes`
+    ? component.endpointCount > 0 ? `Serves ${component.endpointCount} routes` : "Request surface"
     : component.role === "layout"
-      ? `${component.screenCount} screens`
+      ? component.screenCount > 0 ? `${component.screenCount} screens` : "Screens"
       : component.role === "component"
-        ? `${component.fileCount} UI components`
+        ? component.fileCount > 0 ? `${component.fileCount} UI components` : "UI components"
         : component.role === "data"
           ? "Data access"
           : component.role === "service"

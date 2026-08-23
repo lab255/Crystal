@@ -147,6 +147,18 @@ describe("buildSystemOverview", () => {
     ]);
   });
 
+  it("excludes package and app directory names from role banding", () => {
+    const client = buildSystemOverview([
+      src("packages/client/src/XtermView.tsx", "packages/client"),
+    ]);
+    expect(client.systems[0]?.groups?.map((group) => group.role)).toEqual(["component"]);
+
+    const server = buildSystemOverview([
+      src("apps/server/src/routes/foo.ts", "apps/server"),
+    ]);
+    expect(server.systems[0]?.groups?.map((group) => group.role)).toEqual(["entry"]);
+  });
+
   it("caps files carried by a role group and marks truncation", () => {
     const files = Array.from({ length: 201 }, (_, i) =>
       src(`packages/core/src/services/service-${String(i).padStart(3, "0")}.ts`, "packages/core"));

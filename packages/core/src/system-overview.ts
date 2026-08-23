@@ -824,6 +824,16 @@ export function buildSystemOverview(
   const roleOfPath = new Map<string, CodeRole>();
   const fileMeta = new Map(sources.map((f) => [f.path, f]));
 
+  /** Module-relative path for role heuristics: package/unit names are not code roles. */
+  const rolePathOf = (filePath: string, parts: readonly SystemPart[]): string => {
+    const prefix = parts
+      .flatMap((part) => [part.path, part.pkg])
+      .filter((candidate) =>
+        candidate !== "." && (filePath === candidate || filePath.startsWith(`${candidate}/`)))
+      .sort((a, b) => b.length - a.length || a.localeCompare(b))[0];
+    return prefix ? filePath.slice(prefix.length).replace(/^\//, "") : filePath;
+  };
+
   for (const cluster of [...clusters].sort(
     (a, b) =>
       b.profiles.reduce((n, p) => n + p.unit.files.length, 0) -
@@ -948,7 +958,7 @@ export function buildSystemOverview(
     const flavor = layer === "frontend" ? "frontend" : "backend";
     const filesByRole = new Map<CodeRole, string[]>();
     for (const file of memberFiles) {
-      const fileRole = roleOfFile(file.path, flavor);
+      const fileRole = roleOfFile(rolePathOf(file.path, parts), flavor);
       roleOfPath.set(file.path, fileRole);
       filesByRole.set(fileRole, [...(filesByRole.get(fileRole) ?? []), file.path]);
     }

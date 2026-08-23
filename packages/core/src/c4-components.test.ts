@@ -65,6 +65,9 @@ describe("deriveC4Components", () => {
   it("composes descriptions only from component facts", () => {
     const component = deriveC4Components({ model: model(["sys:booking"]), overview: overview([fixture()]) }).byContainer["ctr:app"]![0]!;
     expect(describeComponent({ ...component, role: "data", interface: [], entityCount: 2 })).toBe("Data access · 5 files · 2 entities");
+    expect(describeComponent({ ...component, role: "entry", endpointCount: 0 })).toBe("Request surface · exposes route · 5 files");
+    expect(describeComponent({ ...component, role: "layout", screenCount: 0 })).toBe("Screens · exposes route · 5 files");
+    expect(describeComponent({ ...component, role: "component", fileCount: 0 })).toBe("UI components · exposes route · 0 files");
   });
 
   it("counts screen and schema inputs and reports capped member files", () => {
