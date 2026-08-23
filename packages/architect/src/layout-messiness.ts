@@ -13,25 +13,59 @@ export interface RouteForCrossings {
 }
 
 export const LAYOUT_MESSINESS_THRESHOLD = 0.35;
+export const LAYOUT_MESSINESS_HIDE_THRESHOLD = 0.28;
 export const MAX_CROSSING_SEGMENTS = 2_000;
 
 const clamp01 = (value: number): number => Math.max(0, Math.min(1, value));
 
 /** C4 re-layout only has an effect when the current view has pins to clear. */
-export function shouldOfferMessyLayout(score: number, c4Enabled: boolean, pinCount: number): boolean {
-  return score >= LAYOUT_MESSINESS_THRESHOLD && (!c4Enabled || pinCount > 0);
+export function shouldOfferMessyLayout(
+  score: number,
+  c4Enabled: boolean,
+  pinCount: number,
+  currentlyShown = false,
+): boolean {
+  const threshold = currentlyShown
+    ? LAYOUT_MESSINESS_HIDE_THRESHOLD
+    : LAYOUT_MESSINESS_THRESHOLD;
+  return score >= threshold && (!c4Enabled || pinCount > 0);
 }
 
 /** A stable, bounded score suitable for deciding whether re-layout is worth offering. */
 export function layoutMessiness(metrics: LayoutMessinessMetrics): number {
   const edges = Math.max(1, metrics.edges);
   const nodes = Math.max(1, metrics.nodes);
-  const crossings = metrics.crossings == null ? 0 : clamp01(metrics.crossings / edges);
+  // A crossing per edge is common in merely busy layered graphs. Four per
+  // edge is the calibrated saturation point that separates those from tangles.
+  const crossings = metrics.crossings == null ? 0 : clamp01(metrics.crossings / (edges * 4));
   const labels = clamp01(metrics.labelOverlaps / edges);
   const extreme = clamp01(metrics.extremeAspects / nodes);
   const brokenPins = clamp01((metrics.pinBrokenRoutes ?? 0) / edges);
-  // The weights deliberately total 1.25 so multiple strong signals saturate the offer score.
-  return clamp01(crossings * 0.45 + labels * 0.3 + extreme * 0.15 + brokenPins * 0.35);
+  // Crossings lead because calibration tangles become costly well before the
+  // normalization clamp. The deliberate 1.32 total lets combined signals saturate.
+  return clamp01(crossings * 0.67 + labels * 0.15 + extreme * 0.15 + brokenPins * 0.35);
+}
+
+export function isMessinessDebugEnabled(storage: Pick<Storage, "getItem"> | undefined =
+  typeof localStorage === "undefined" ? undefined : localStorage): boolean {
+  try {
+    return storage?.getItem("crystal.debug.messiness") === "true";
+  } catch {
+    return false;
+  }
+}
+
+export function describeMessiness(metrics: LayoutMessinessMetrics & { score?: number }): string {
+  const score = metrics.score ?? layoutMessiness(metrics);
+  const cells: [string, string][] = [
+    ["score", score.toFixed(3)],
+    ["crossings", metrics.crossings == null ? "capped" : String(metrics.crossings)],
+    ["label overlaps", String(metrics.labelOverlaps)],
+    ["extreme aspects", String(metrics.extremeAspects)],
+    ["pin-broken routes", String(metrics.pinBrokenRoutes ?? 0)],
+  ];
+  const width = Math.max(...cells.map(([label]) => label.length));
+  return cells.map(([label, value]) => `${label.padEnd(width)}  ${value}`).join("\n");
 }
 
 function samePoint(a: { x: number; y: number }, b: { x: number; y: number }): boolean {

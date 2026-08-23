@@ -12,6 +12,13 @@ export { ArchPane } from "./ArchPane.js";
 export { useCanonicalArchitecture } from "./use-canonical-architecture.js";
 export * from "./graph-ops.js";
 export { autoLayout } from "./layout.js";
+export {
+  describeMessiness,
+  layoutMessiness,
+  LAYOUT_MESSINESS_HIDE_THRESHOLD,
+  LAYOUT_MESSINESS_THRESHOLD,
+  type LayoutMessinessMetrics,
+} from "./layout-messiness.js";
 export { KIND_META, ACCENT_CSS } from "./model.js";
 export {
   adoptAutoLinks,

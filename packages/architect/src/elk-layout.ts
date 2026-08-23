@@ -250,6 +250,16 @@ function labelBoxesOverlap(a: ElkRouteLabel, b: ElkRouteLabel): boolean {
   );
 }
 
+function labelBoxesCrowd(a: ElkRouteLabel, b: ElkRouteLabel): boolean {
+  const gap = EDGE_LABEL_SPACING + 1;
+  return (
+    a.x < b.x + b.width + gap &&
+    a.x + a.width + gap > b.x &&
+    a.y < b.y + b.height + gap &&
+    a.y + a.height + gap > b.y
+  );
+}
+
 /**
  * Fill in labels ELK could not position, in edge-id order. Existing ELK
  * boxes stay fixed; fallback boxes walk in alternating steps along their
@@ -669,7 +679,7 @@ export async function elkAutoLayout(
   let labelOverlaps = 0;
   for (let left = 0; left < labels.length; left += 1) {
     for (let right = left + 1; right < labels.length; right += 1) {
-      if (labelBoxesOverlap(labels[left]!, labels[right]!)) labelOverlaps += 1;
+      if (labelBoxesCrowd(labels[left]!, labels[right]!)) labelOverlaps += 1;
     }
   }
   const edgeLengths = [...routes.values()].map((route) => route.points.slice(1).reduce(
@@ -679,6 +689,13 @@ export async function elkAutoLayout(
     ),
     0,
   ));
+  const remainingExtremeAspects = [...fittedSizes]
+    .filter(([id, size]) => {
+      if (packed.has(id) || (childrenOf.get(id)?.length ?? 0) === 0) return false;
+      const aspect = size.width / size.height;
+      return aspect > EXTREME_ASPECT || aspect < 1 / EXTREME_ASPECT;
+    })
+    .map(([id]) => id);
   const baseMetrics: LayoutMessinessMetrics = {
     nodes: graph.nodes.length,
     edges: graph.edges.length,
@@ -687,11 +704,10 @@ export async function elkAutoLayout(
     ...(edgeLengths.length > 0
       ? { avgEdgeLength: edgeLengths.reduce((sum, length) => sum + length, 0) / edgeLengths.length }
       : {}),
-    extremeAspects: [...fittedSizes].filter(([id, size]) => {
-      if (packed.has(id) || (childrenOf.get(id)?.length ?? 0) === 0) return false;
-      const aspect = size.width / size.height;
-      return aspect > EXTREME_ASPECT || aspect < 1 / EXTREME_ASPECT;
-    }).length,
+    // Include scopes whose extreme first-pass aspect triggered corrective
+    // packing. That intervention is itself the structural signal this metric
+    // represents, even when the second pass makes the rendered pen compact.
+    extremeAspects: new Set([...offenders, ...remainingExtremeAspects]).size,
   };
 
   return {
