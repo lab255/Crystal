@@ -6,8 +6,10 @@ import {
   Globe,
   MonitorPlay,
   MonitorX,
+  Boxes,
 } from "lucide-react";
-import type { ScreenSource, ScreenSurface } from "@crystal/core";
+import { componentForFile, containerForFile } from "@crystal/core";
+import type { C4ComponentModel, C4Model, ScreenSource, ScreenSurface } from "@crystal/core";
 import { useNav, useNavUpdate, useSymbolMenu } from "@crystal/client";
 import {
   Badge,
@@ -50,7 +52,7 @@ const SOURCE_LABEL: Record<ScreenSource, string> = {
 
 const SOURCE_ORDER: ScreenSource[] = ["next-app", "next-pages", "react-router", "convention"];
 
-export function ScreensView() {
+export function ScreensView({ c4Model, c4Components }: { c4Model?: C4Model | null; c4Components?: C4ComponentModel | null }) {
   const { report } = useSurfaces();
   const nav = useNavUpdate();
   const selectedId = useNav((l) => l.surfaces?.screen ?? null);
@@ -111,8 +113,27 @@ export function ScreensView() {
     );
   }
 
-  const rowMenu = (s: ScreenSurface): Parameters<typeof menu.open>[1] => [
+  const rowMenu = (s: ScreenSurface): Parameters<typeof menu.open>[1] => {
+    const file = s.componentFile ?? s.file;
+    const containerId = c4Model ? containerForFile(c4Model, file) : null;
+    const c4ComponentId = c4Components ? componentForFile(c4Components, file) : null;
+    return [
     { type: "heading", label: s.route },
+    ...(containerId && c4ComponentId
+      ? [{
+          type: "item" as const,
+          label: "Show on architecture",
+          icon: Boxes,
+          onSelect: () => {
+            nav({ mode: "architect", architect: {
+              view: "architecture",
+              level: "components",
+              scope: containerId,
+              sel: `node:${c4ComponentId}`,
+            } });
+          },
+        }]
+      : []),
     ...(s.component
       ? [
           {
@@ -166,7 +187,8 @@ export function ScreensView() {
           },
         ]
       : []),
-  ];
+    ];
+  };
 
   return (
     <Split storageKey="surfaces:screens" direction="horizontal">

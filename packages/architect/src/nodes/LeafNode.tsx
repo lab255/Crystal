@@ -110,6 +110,7 @@ export const LeafNode = memo(function LeafNode({ data, selected }: NodeProps<Arc
   const entity = arch.kind === "entity";
   const entityFields = arch.entityFields ?? [];
   const slot = data.slot;
+  const component = data.c4Component;
 
   const hlAttrs = highlightAttrs(
     data.hlRef ?? {
@@ -192,6 +193,16 @@ export const LeafNode = memo(function LeafNode({ data, selected }: NodeProps<Arc
               {arch.description}
             </div>
           ) : null}
+          {component?.interfaceNames.length ? (
+            <div className="flex min-w-0 flex-wrap gap-1 border-t border-edge/60 pt-1.5">
+              {component.interfaceNames.slice(0, 3).map((name) => (
+                <span key={name} className="max-w-28 truncate rounded bg-surface-3 px-1.5 py-0.5 font-mono text-[9px] text-ink-muted">{name}</span>
+              ))}
+              {component.interfaceNames.length > 3 ? (
+                <span className="px-1 py-0.5 font-mono text-[9px] text-ink-faint">+{component.interfaceNames.length - 3}</span>
+              ) : null}
+            </div>
+          ) : null}
           {facts ? (
             <SystemCardBody facts={facts} rowPx={Math.max(9, Math.round(subPx * 0.95))} />
           ) : null}
@@ -203,6 +214,16 @@ export const LeafNode = memo(function LeafNode({ data, selected }: NodeProps<Arc
                 </Badge>
               ))}
               {arch.tech.length > 4 ? <Badge tone="neutral">+{arch.tech.length - 4}</Badge> : null}
+            </div>
+          ) : null}
+          {component && (component.fileCount > 0 || component.screenCount > 0 || component.routeCount > 0 || component.entityCount > 0) ? (
+            <div className="mt-auto border-t border-edge/60 pt-1 text-[9px] text-ink-faint">
+              {[
+                component.fileCount ? `${component.fileCount} files` : "",
+                component.screenCount ? `${component.screenCount} screens` : "",
+                component.routeCount ? `${component.routeCount} routes` : "",
+                component.entityCount ? `${component.entityCount} entities` : "",
+              ].filter(Boolean).join(" · ")}
             </div>
           ) : null}
         </div>
@@ -299,6 +320,14 @@ export const LeafNode = memo(function LeafNode({ data, selected }: NodeProps<Arc
           {arch.description}
         </div>
       ) : null}
+      {component?.interfaceNames.length ? (
+        <div className="mt-1.5 flex min-w-0 flex-wrap gap-1 border-t border-edge/60 pt-1.5">
+          {component.interfaceNames.slice(0, 3).map((name) => (
+            <span key={name} className="max-w-28 truncate rounded bg-surface-3 px-1.5 py-0.5 font-mono text-[9px] text-ink-muted">{name}</span>
+          ))}
+          {component.interfaceNames.length > 3 ? <span className="px-1 py-0.5 font-mono text-[9px] text-ink-faint">+{component.interfaceNames.length - 3}</span> : null}
+        </div>
+      ) : null}
       {!entity && arch.tech.length > 0 ? (
         <div className="mt-1.5 flex flex-wrap gap-1">
           {arch.tech.slice(0, 4).map((t) => (
@@ -307,6 +336,16 @@ export const LeafNode = memo(function LeafNode({ data, selected }: NodeProps<Arc
             </Badge>
           ))}
           {arch.tech.length > 4 ? <Badge tone="neutral">+{arch.tech.length - 4}</Badge> : null}
+        </div>
+      ) : null}
+      {component && (component.fileCount > 0 || component.screenCount > 0 || component.routeCount > 0 || component.entityCount > 0) ? (
+        <div className="mt-1.5 border-t border-edge/60 pt-1 text-[9px] text-ink-faint">
+          {[
+            component.fileCount ? `${component.fileCount} files` : "",
+            component.screenCount ? `${component.screenCount} screens` : "",
+            component.routeCount ? `${component.routeCount} routes` : "",
+            component.entityCount ? `${component.entityCount} entities` : "",
+          ].filter(Boolean).join(" · ")}
         </div>
       ) : null}
       {data.code ? (

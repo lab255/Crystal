@@ -64,12 +64,12 @@ describe("filterC4DeletionIds", () => {
   it("blocks every derived node aggregate while preserving ordinary node deletes", () => {
     expect(
       filterC4DeletionIds(
-        ["sys:api", "ctr:apps-server", "c4:system", "c4:boundary:payments", "person:user"],
+        ["sys:api", "ctr:apps-server", "cmp:apps-server/auth.service", "c4:system", "c4:boundary:payments", "person:user"],
         "node",
       ),
     ).toEqual({
       deletable: ["sys:api"],
-      blocked: ["ctr:apps-server", "c4:system", "c4:boundary:payments", "person:user"],
+      blocked: ["ctr:apps-server", "cmp:apps-server/auth.service", "c4:system", "c4:boundary:payments", "person:user"],
     });
   });
 
@@ -133,6 +133,32 @@ describe("applyC4Edit", () => {
       viewKey: "containers",
     });
     expect(out.overrides["ctr:apps-server"]).toEqual({ label: "Bridge server" });
+  });
+
+  it("pins and renames derived component ids in their components view", () => {
+    const component = node("cmp:apps-server/auth.service", {
+      parentId: "ctr:apps-server",
+      position: { x: 20, y: 60 },
+    });
+    const projected = { ...PROJECTED, nodes: [...PROJECTED.nodes, component] };
+    const edited = {
+      ...projected,
+      nodes: projected.nodes.map((n) => n.id === component.id
+        ? { ...n, label: "Identity service", position: { x: 140, y: 110 } }
+        : n),
+    };
+    const out = applyC4Edit({
+      overlay: createArchOverlay(),
+      derived: DERIVED,
+      projected,
+      edited,
+      viewKey: "components:ctr:apps-server",
+    });
+    expect(out.c4Layouts["components:ctr:apps-server"]?.[component.id]).toEqual({
+      x: 140,
+      y: 110,
+    });
+    expect(out.overrides[component.id]).toEqual({ label: "Identity service" });
   });
 
   it("hides deleted derived nodes, ignores deleted aggregates", () => {

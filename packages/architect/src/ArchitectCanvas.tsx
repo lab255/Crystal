@@ -293,6 +293,14 @@ export interface ArchitectCanvasProps {
     typeLines: Record<string, string>;
     drill: Record<string, C4View>;
     onDrill: (view: C4View) => void;
+    components?: Record<string, {
+      interfaceNames: string[];
+      fileCount: number;
+      screenCount: number;
+      routeCount: number;
+      entityCount: number;
+      files: string[];
+    }>;
   } | null;
   /** The full architect mode owns export; embedded canvases keep their compact surface. */
   exportEnabled?: boolean;
@@ -676,8 +684,9 @@ function CanvasInner({
         openCode,
         moves,
         showAllFiles,
+        explicitFiles: c4?.components,
       }),
-    [expanded, moduleDetailMap, fileDetailMap, expandedFiles, openCode, moves, showAllFiles],
+    [expanded, moduleDetailMap, fileDetailMap, expandedFiles, openCode, moves, showAllFiles, c4?.components],
   );
 
   const toggleAllFiles = useCallback((nodeId: string) => {
@@ -983,7 +992,17 @@ function CanvasInner({
     if (c4) {
       nodes = nodes.map((n) => {
         const c4Type = c4.typeLines[n.id];
-        return c4Type ? ({ ...n, data: { ...n.data, c4Type } } as ArchRfNode) : n;
+        const component = c4.components?.[n.id];
+        return c4Type || component
+          ? ({
+              ...n,
+              data: {
+                ...n.data,
+                ...(c4Type ? { c4Type } : {}),
+                ...(component ? { c4Component: component } : {}),
+              },
+            } as ArchRfNode)
+          : n;
       });
     }
     if (overlay) {

@@ -9,6 +9,8 @@ import {
   CloudUpload,
   Crosshair,
   Eye,
+  FileCode2,
+  FolderGit2,
   GitBranch,
   GitCompareArrows,
   GitMerge,
@@ -18,6 +20,7 @@ import {
   PencilRuler,
   Plus,
   Search,
+  ShieldCheck,
   Sparkles,
   Trash2,
   Waypoints,
@@ -541,6 +544,7 @@ function DiagramsView({
     codeSummary,
     derived,
     c4Model,
+    c4Components: canonicalC4Components,
     reconciled,
     staleIds,
     rendered,
@@ -552,7 +556,7 @@ function DiagramsView({
   } = useCanonicalArchitecture({
     surfaces: surfacesInput,
     screens: screensData?.screens ?? null,
-    schemas: schemasData,
+    schemas: showData ? schemasData : null,
   });
 
   /* ---- C4 altitude: level + scope live in the deep-linkable nav store ---- */
@@ -865,12 +869,28 @@ function DiagramsView({
         ? projectC4({
             graph: displayGraph,
             model: c4Model,
+            components: canonicalC4Components,
             view: { level, scope },
             schemas: showData ? (schemasData ?? undefined) : undefined,
             manualEdges: reconciled?.manualEdges,
           })
         : null,
-    [c4Enabled, displayGraph, c4Model, level, scope, showData, schemasData, reconciled],
+    [c4Enabled, displayGraph, c4Model, canonicalC4Components, level, scope, showData, schemasData, reconciled],
+  );
+  const componentById = useMemo(
+    () => new Map(Object.values(canonicalC4Components?.byContainer ?? {}).flat().map((c) => [c.id, c])),
+    [canonicalC4Components],
+  );
+  const componentCardData = useMemo(
+    () => Object.fromEntries([...componentById].map(([id, c]) => [id, {
+      interfaceNames: c.interface.map((entry) => entry.name),
+      fileCount: c.fileCount,
+      screenCount: c.screenCount,
+      routeCount: c.endpointCount,
+      entityCount: c.entityCount,
+      files: c.files,
+    }])),
+    [componentById],
   );
   const withOverrides = useMemo(() => {
     if (!c4Projection || !reconciled || !rendered) return null;
@@ -910,6 +930,18 @@ function DiagramsView({
       }),
     };
   }, [laid, reconciled, viewKeyStr]);
+  const canvasC4 = useMemo(
+    () => c4Enabled && c4Laid && c4Projection
+      ? {
+          view: c4Projection.view,
+          typeLines: c4Projection.typeLines,
+          drill: c4Projection.drill,
+          onDrill: setC4View,
+          components: componentCardData,
+        }
+      : null,
+    [c4Enabled, c4Laid, c4Projection, setC4View, componentCardData],
+  );
   const c4Routes = useMemo(
     () =>
       laid && c4Laid && routes
@@ -1059,8 +1091,59 @@ function DiagramsView({
   const extraNodeEntries = useCallback(
     (node: ArchNode): MenuEntry[] => {
       const entries: MenuEntry[] = [];
+      const component = componentById.get(node.id);
+      if (component) {
+        const owner = c4Model?.containers.find((c) => c.id === component.containerId);
+        const modulePath = owner?.modulePath ?? node.codeModule ?? null;
+        const find = component.concern ?? component.name;
+        entries.push({
+          type: "item",
+          label: "Open in Surfaces · Components",
+          icon: Boxes,
+          onSelect: () => nav({ mode: "surfaces", surfaces: { view: "components", find } }),
+        });
+        if (component.screenCount > 0) entries.push({
+          type: "item",
+          label: `View screens (${component.screenCount})`,
+          icon: AppWindow,
+          onSelect: () => nav({ mode: "surfaces", surfaces: { view: "screens", find } }),
+        });
+        if (modulePath) {
+          entries.push({
+            type: "item",
+            label: "Show in code map",
+            icon: FolderGit2,
+            onSelect: () => nav({
+              mode: "architect",
+              architect: { view: "codebase", codemap: { kind: "module", ws: activeWs!, path: modulePath }, sel: `mod:${modulePath}` },
+            }),
+          }, {
+            type: "item",
+            label: "Show coverage",
+            icon: ShieldCheck,
+            onSelect: () => nav({ mode: "quality", quality: { view: "coverage", covPath: modulePath } }),
+          });
+        }
+        if (component.concern) entries.push({
+          type: "item",
+          label: `Lens: ${component.concern}`,
+          icon: Eye,
+          onSelect: () => nav({ lens: `intent:${component.concern}` }),
+        });
+        if (component.interface.length > 0) entries.push({
+          type: "submenu",
+          label: "Interface",
+          icon: FileCode2,
+          entries: component.interface.map((entry) => ({
+            type: "item" as const,
+            label: entry.name,
+            hint: entry.file,
+            onSelect: () => requestOpenFile(entry.file),
+          })),
+        });
+      }
       // A component knows its container — jump up an altitude with it lit.
-      const ctr = c4Model?.containerOfSystem[node.id];
+      const ctr = component?.containerId ?? c4Model?.containerOfSystem[node.id];
       if (c4Enabled && level === "components" && ctr) {
         entries.push({
           type: "item",
@@ -1138,7 +1221,7 @@ function DiagramsView({
       }
       return entries;
     },
-    [roleOfCanonical, systemOfCanonical, focusIds, focusParam, nav, c4Model, c4Enabled, level, setC4View],
+    [roleOfCanonical, systemOfCanonical, focusIds, focusParam, nav, c4Model, componentById, c4Enabled, level, setC4View, activeWs],
   );
 
   // `?system=` links (surfaces "show on architecture", hub menus, old
@@ -1159,6 +1242,21 @@ function DiagramsView({
       },
     });
   }, [systemParam, overviewData, rendered, c4Model, nav]);
+
+  // A surfaces deep-link can name a component before its container is the
+  // active scope. Move to that altitude first; the durable selection then
+  // lets the canvas center/highlight it through its normal sel path.
+  const selectionParam = useNav((l) => l.architect?.sel) ?? null;
+  const lastHandledComponentSelection = useRef<string | null>(null);
+  useEffect(() => {
+    const id = selectionParam?.replace(/^node:/, "") ?? "";
+    const component = componentById.get(id);
+    if (!component || lastHandledComponentSelection.current === selectionParam) return;
+    lastHandledComponentSelection.current = selectionParam;
+    if (level === "components" && scope === component.containerId) return;
+    nav({ architect: { level: "components", scope: component.containerId } });
+    setHighlightRequest({ nodeId: id, nonce: ++highlightNonce.current });
+  }, [selectionParam, componentById, level, scope, nav]);
 
 
   const draftRefactors = activeDraft?.draft.refactors ?? EMPTY_REFACTORS;
@@ -1787,16 +1885,7 @@ function DiagramsView({
                   onOpenContract={activeDraft ? undefined : openContractForEdge}
                   onNotice={setNotice}
                   exportEnabled
-                  c4={
-                    c4Enabled && c4Laid && c4Projection
-                      ? {
-                          view: c4Projection.view,
-                          typeLines: c4Projection.typeLines,
-                          drill: c4Projection.drill,
-                          onDrill: setC4View,
-                        }
-                      : null
-                  }
+                  c4={canvasC4}
                 />
               )}
               {activeDraft && reviewOn ? renderDraftBar() : null}

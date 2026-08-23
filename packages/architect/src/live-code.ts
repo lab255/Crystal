@@ -54,6 +54,8 @@ export interface CodeContentInput extends FileBuildInput {
   moves: readonly MoveLikeIntent[];
   /** Diagram node ids showing every file despite the cap. */
   showAllFiles?: ReadonlySet<string>;
+  /** Component expansions select these members from the owning module detail. */
+  explicitFiles?: Readonly<Record<string, { files: readonly string[] }>>;
 }
 
 export interface CodeContent {
@@ -105,7 +107,9 @@ export function buildCodeContent(input: CodeContentInput): CodeContent {
   const loading = new Set<string>();
 
   for (const [nodeId, modulePath] of input.expanded) {
-    const detail = input.moduleDetails.get(modulePath);
+    const moduleDetail = input.moduleDetails.get(modulePath);
+    const explicit = input.explicitFiles?.[nodeId]?.files;
+    const detail = moduleDetail && explicit ? selectExpansionFiles(moduleDetail, explicit) : moduleDetail;
     if (!detail) {
       loading.add(nodeId);
       sizes.set(nodeId, CODE_LOADING_SIZE);
@@ -192,6 +196,16 @@ export function buildCodeContent(input: CodeContentInput): CodeContent {
   }
 
   return { nodes, edges, sizes, loading };
+}
+
+/** Restrict module detail to component members before the normal cap/banding pass. */
+export function selectExpansionFiles(detail: CodeModuleDetail, files: readonly string[]): CodeModuleDetail {
+  const selected = new Set(files);
+  return {
+    ...detail,
+    files: detail.files.filter((file) => selected.has(file.path)),
+    edges: detail.edges.filter((edge) => selected.has(edge.source) && selected.has(edge.target)),
+  };
 }
 
 /** Module-relative path of a file summary (role heuristics never see the module prefix). */

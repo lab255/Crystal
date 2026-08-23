@@ -7,6 +7,7 @@ import {
   LIVE_FILE_CAP,
   buildCodeContent,
   overflowChipId,
+  selectExpansionFiles,
   unifiedDropTargetAt,
   type CodeContentInput,
   type HitTestNode,
@@ -40,6 +41,30 @@ function input(patch: Partial<CodeContentInput>): CodeContentInput {
     ...patch,
   };
 }
+
+describe("selectExpansionFiles", () => {
+  it("filters to component members while leaving capping and pins to buildCodeContent", () => {
+    const paths = Array.from({ length: LIVE_FILE_CAP + 2 }, (_, i) => `pkg/src/f${i}.ts`);
+    const detail = moduleDetail("pkg", [...paths, "pkg/src/outside.ts"], [
+      [paths[0]!, paths[1]!],
+      [paths[0]!, "pkg/src/outside.ts"],
+    ]);
+    const selected = selectExpansionFiles(detail, paths);
+    expect(selected.files.map((file) => file.path)).toEqual(paths);
+    expect(selected.edges).toEqual([{ source: paths[0], target: paths[1] }]);
+
+    const pinned = paths.at(-1)!;
+    const content = buildCodeContent(input({
+      expanded: new Map([["cmp:one", "pkg"]]),
+      moduleDetails: new Map([["pkg", detail]]),
+      explicitFiles: { "cmp:one": { files: paths } },
+      expandedFiles: new Set([pinned]),
+    }));
+    expect(content.nodes.find((node) => node.id === overflowChipId("cmp:one"))?.data)
+      .toMatchObject({ nodeKind: "overflow", hidden: 1, showingAll: false });
+    expect(content.nodes.some((node) => node.id === fileId(pinned))).toBe(true);
+  });
+});
 
 describe("buildCodeContent", () => {
   it("parents file cards to the diagram node and sizes the container", () => {

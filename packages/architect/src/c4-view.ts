@@ -42,7 +42,7 @@ export const C4_AGGREGATE_DELETE_NOTICE =
 /** Projection-only C4 elements re-derive and cannot be removed durably. */
 export function isC4AggregateId(id: string, kind: "node" | "edge"): boolean {
   if (kind === "edge") return id.startsWith("c4rel:");
-  return id.startsWith("ctr:") || id.startsWith("c4:") || id === "person:user";
+  return id.startsWith("ctr:") || id.startsWith("cmp:") || id.startsWith("c4:") || id === "person:user";
 }
 
 /** Split a React Flow delete batch before any subtree-inclusive graph operation runs. */

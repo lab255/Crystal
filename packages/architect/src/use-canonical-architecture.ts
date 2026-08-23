@@ -4,11 +4,13 @@ import {
   composeArchitecture,
   deriveArchGraph,
   deriveC4Model,
+  deriveC4Components,
   extractOverlay,
   schemaNodeId,
   type ArchOverlay,
   type ArchitectureGraph,
   type C4Model,
+  type C4ComponentModel,
   type CodeMapProgress,
   type CodeMapSummary,
   type ScreenApiCall,
@@ -85,6 +87,8 @@ export function useCanonicalArchitecture(options?: {
    * aggregate ids count as known during overlay reconciliation.
    */
   c4Model: C4Model | null;
+  /** Semantic component tier used by the Components altitude and cross-view locators. */
+  c4Components: C4ComponentModel | null;
   reconciled: ArchOverlay | null;
   /** Semantic overrides whose derived/manual node no longer exists. */
   staleIds: readonly string[];
@@ -272,6 +276,17 @@ export function useCanonicalArchitecture(options?: {
         : null,
     [overviewData, codeSummary, surfaces, screensInfo],
   );
+  const c4Components = useMemo(
+    () => c4Model && overviewData
+      ? deriveC4Components({
+          model: c4Model,
+          overview: overviewData,
+          screens: surfaces?.screens ?? screensInfo,
+          schemas: schemasInfo,
+        })
+      : null,
+    [c4Model, overviewData, surfaces, screensInfo, schemasInfo],
+  );
   // The surfaces report arrives independently of the code map. Until it
   // resolves, preserve existing schema projection ids so a quick edit cannot
   // prune their pins; an eventual empty report still removes genuinely stale
@@ -300,12 +315,13 @@ export function useCanonicalArchitecture(options?: {
                   "c4:system",
                   "person:user",
                   ...c4Model.containers.map((c) => c.id),
+                  ...Object.values(c4Components?.byContainer ?? {}).flat().map((c) => c.id),
                   ...knownSchemaIds,
                 ]
               : undefined,
           )
         : null,
-    [overlay, derived, c4Model, knownSchemaIds],
+    [overlay, derived, c4Model, c4Components, knownSchemaIds],
   );
   const reconciled = reconciliation?.overlay ?? null;
   const staleIds = reconciliation?.staleIds ?? EMPTY_STALE_IDS;
@@ -358,6 +374,7 @@ export function useCanonicalArchitecture(options?: {
     codeSummary,
     derived,
     c4Model,
+    c4Components,
     reconciled,
     staleIds,
     rendered,

@@ -15,7 +15,7 @@ import {
 import type { SurfaceViewId } from "@crystal/core";
 import { useNav, useNavUpdate } from "@crystal/client";
 import { Pane as SplitPane, Split, Spinner, Tooltip, cn, useSidePaneLayout } from "@crystal/ui";
-import { ArchPane } from "@crystal/architect";
+import { ArchPane, useCanonicalArchitecture } from "@crystal/architect";
 import { ApiExplorer } from "./ApiExplorer.js";
 import { ComponentsView } from "./ComponentsView.js";
 import { SchemasView } from "./SchemasView.js";
@@ -56,6 +56,12 @@ function SurfacesShell() {
   const archOpen = useNav((l) => l.surfaces?.arch ?? false);
   const archPane = useSidePaneLayout();
   const { report, loading, error, refresh } = useSurfaces();
+  // Derive the same IDs as the full architecture view so row links never
+  // guess at component ownership from surface grouping alone.
+  const { c4Model, c4Components } = useCanonicalArchitecture({
+    screens: report?.screens ?? null,
+    schemas: report?.schemas ?? null,
+  });
   const { appUrl } = useLiveDevUrls();
   const findRef = useRef<HTMLInputElement>(null);
 
@@ -193,9 +199,9 @@ function SurfacesShell() {
                 </button>
               </div>
             ) : view === "screens" ? (
-              <ScreensView />
+              <ScreensView c4Model={c4Model} c4Components={c4Components} />
             ) : view === "components" ? (
-              <ComponentsView />
+              <ComponentsView c4Model={c4Model} c4Components={c4Components} />
             ) : view === "stories" ? (
               <StoriesView />
             ) : view === "apis" ? (

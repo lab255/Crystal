@@ -135,6 +135,14 @@ export type ArchRfNode = RfNode<{
    * Absent outside the C4 architecture view.
    */
   c4Type?: string;
+  /** Plain semantic facts carried only by derived `cmp:` cards. */
+  c4Component?: {
+    interfaceNames: string[];
+    fileCount: number;
+    screenCount: number;
+    routeCount: number;
+    entityCount: number;
+  };
 }>;
 export type ArchRfEdge = RfEdge<{
   kind: ArchEdgeKind;

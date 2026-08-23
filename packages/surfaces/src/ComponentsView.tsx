@@ -11,8 +11,8 @@ import {
   Import,
   MonitorPlay,
 } from "lucide-react";
-import { roleOfFile, storybookStorySlug } from "@crystal/core";
-import type { CodeRole, CodeSymbolSites, CodeSymbolSource, ComponentSurface } from "@crystal/core";
+import { componentForFile, containerForFile, roleOfFile, storybookStorySlug } from "@crystal/core";
+import type { C4ComponentModel, C4Model, CodeRole, CodeSymbolSites, CodeSymbolSource, ComponentSurface, SystemModule } from "@crystal/core";
 import { requestOpenFile, useCrystal, useNav, useNavUpdate, useSymbolMenu } from "@crystal/client";
 import {
   Badge,
@@ -57,8 +57,15 @@ const ROLE_LABEL: Partial<Record<CodeRole, string>> = {
   query: "query",
 };
 
-function roleLabelOf(file: string): string | null {
-  const role = roleOfFile(file, "frontend");
+function roleLabelOf(file: string, componentRole: CodeRole | undefined, system: SystemModule | null): string | null {
+  const prefixes = system
+    ? [...system.parts.flatMap((part) => [part.path, part.pkg])]
+        .filter((prefix) => file === prefix || file.startsWith(`${prefix}/`))
+        .sort((a, b) => b.length - a.length)
+    : [];
+  const prefix = prefixes[0];
+  const relativeFile = prefix ? file.slice(prefix.length).replace(/^\//, "") : file;
+  const role = componentRole ?? roleOfFile(relativeFile, "frontend");
   if (role === "component") return /(^|[/._-])hooks?([/._-]|$)/i.test(file) ? "hook" : null;
   return ROLE_LABEL[role] ?? null;
 }
@@ -69,7 +76,7 @@ function importStatementOf(c: ComponentSurface): string {
   return `import { ${c.name} } from "${spec}";`;
 }
 
-export function ComponentsView() {
+export function ComponentsView({ c4Model, c4Components }: { c4Model?: C4Model | null; c4Components?: C4ComponentModel | null }) {
   const { report, systemOfFile } = useSurfaces();
   const nav = useNavUpdate();
   const selectedId = useNav((l) => l.surfaces?.component ?? null);
@@ -101,6 +108,12 @@ export function ComponentsView() {
     [components, systemOfFile],
   );
   const selected = components.find((c) => componentId(c) === selectedId) ?? null;
+  const componentRoleOfFile = useMemo(() => {
+    const byId = new Map(
+      Object.values(c4Components?.byContainer ?? {}).flat().map((component) => [component.id, component.role]),
+    );
+    return (file: string) => byId.get(c4Components?.componentOfFile[file] ?? "");
+  }, [c4Components]);
 
   useEffect(() => {
     if (!selected) return;
@@ -127,8 +140,27 @@ export function ComponentsView() {
     );
   }
 
-  const rowMenu = (c: ComponentSurface): Parameters<typeof menu.open>[1] => [
+  const rowMenu = (c: ComponentSurface): Parameters<typeof menu.open>[1] => {
+    const containerId = c4Model ? containerForFile(c4Model, c.file) : null;
+    const c4ComponentId = c4Components ? componentForFile(c4Components, c.file) : null;
+    return [
     { type: "heading", label: c.name },
+    ...(containerId && c4ComponentId
+      ? [{
+          type: "item" as const,
+          label: "Show on architecture",
+          icon: Boxes,
+          onSelect: () => nav({
+            mode: "architect",
+            architect: {
+              view: "architecture",
+              level: "components",
+              scope: containerId,
+              sel: `node:${c4ComponentId}`,
+            },
+          }),
+        }]
+      : []),
     ...(c.stories.length > 0 || c.screens.length > 0
       ? [
           {
@@ -187,7 +219,8 @@ export function ComponentsView() {
       icon: Import,
       onSelect: () => copyText(importStatementOf(c)),
     },
-  ];
+    ];
+  };
 
   return (
     <Split storageKey="surfaces:components" direction="horizontal">
@@ -220,7 +253,7 @@ export function ComponentsView() {
                 {!collapsed.has(group.id)
                   ? group.components.map((c) => {
                       const id = componentId(c);
-                      const roleLabel = roleLabelOf(c.file);
+                      const roleLabel = roleLabelOf(c.file, componentRoleOfFile(c.file), systemOfFile(c.file));
                       return (
                         <button
                           key={id}

@@ -9,6 +9,7 @@ export { ArchitectCanvas } from "./ArchitectCanvas.js";
 export { JourneyProfilePanel } from "./ProfilePanel.js";
 export { ROLE_META } from "./systems/role-meta.js";
 export { ArchPane } from "./ArchPane.js";
+export { useCanonicalArchitecture } from "./use-canonical-architecture.js";
 export * from "./graph-ops.js";
 export { autoLayout } from "./layout.js";
 export { KIND_META, ACCENT_CSS } from "./model.js";
