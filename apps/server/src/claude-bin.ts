@@ -34,25 +34,26 @@ export function claudeFallbackDirs(
   platform: NodeJS.Platform = process.platform,
   home: string = os.homedir(),
   env: NodeJS.ProcessEnv = process.env,
+  pathApi: path.PlatformPath = platform === "win32" ? path.win32 : path.posix,
 ): string[] {
   if (platform === "win32") {
-    const local = env.LOCALAPPDATA ?? path.join(home, "AppData", "Local");
+    const local = env.LOCALAPPDATA ?? pathApi.join(home, "AppData", "Local");
     return [
       // Native installer default, then its official per-user program dir.
-      path.join(home, ".local", "bin"),
-      path.join(local, "Programs", "claude"),
+      pathApi.join(home, ".local", "bin"),
+      pathApi.join(local, "Programs", "claude"),
       // npm-global homes: %APPDATA%\npm (default prefix), pnpm's standalone
       // home, and version managers' shim/bin dirs (volta, scoop, fnm).
-      ...(env.APPDATA ? [path.join(env.APPDATA, "npm")] : []),
+      ...(env.APPDATA ? [pathApi.join(env.APPDATA, "npm")] : []),
       ...(env.PNPM_HOME ? [env.PNPM_HOME] : []),
-      path.join(local, "pnpm"),
-      ...(env.VOLTA_HOME ? [path.join(env.VOLTA_HOME, "bin")] : []),
-      path.join(local, "Volta", "bin"),
-      path.join(home, "scoop", "shims"),
+      pathApi.join(local, "pnpm"),
+      ...(env.VOLTA_HOME ? [pathApi.join(env.VOLTA_HOME, "bin")] : []),
+      pathApi.join(local, "Volta", "bin"),
+      pathApi.join(home, "scoop", "shims"),
       // fnm's default alias points at the active node install dir, where an
       // `npm i -g` claude shim lands (layout differs across fnm versions).
-      path.join(local, "fnm", "aliases", "default"),
-      path.join(local, "fnm", "aliases", "default", "installation"),
+      pathApi.join(local, "fnm", "aliases", "default"),
+      pathApi.join(local, "fnm", "aliases", "default", "installation"),
     ];
   }
   return [
@@ -125,6 +126,8 @@ export interface ResolveClaudeOptions {
   env?: NodeJS.ProcessEnv;
   home?: string;
   platform?: NodeJS.Platform;
+  /** Path flavor for filesystem fixtures; defaults to the selected platform. */
+  pathApi?: path.PlatformPath;
   /** Login-shell fallback; injectable so tests never spawn a shell. */
   shellLookup?: (bin: string) => Promise<string | null>;
 }
@@ -149,7 +152,7 @@ export async function resolveClaudeBin(
   const pathValue = env[pathKey(env)] ?? "";
   const onPath = await scanDirs(pathValue.split(path.delimiter), bin, win);
   if (onPath) return onPath;
-  const known = await scanDirs(claudeFallbackDirs(platform, home, env), bin, win);
+  const known = await scanDirs(claudeFallbackDirs(platform, home, env, opts.pathApi), bin, win);
   if (known) return known;
   if (!win) {
     const lookup = opts.shellLookup ?? loginShellLookup;
@@ -192,19 +195,25 @@ export async function findOnPath(
 export function envWithBinDir(
   env: NodeJS.ProcessEnv,
   binPath: string,
+  platform: NodeJS.Platform = process.platform,
 ): NodeJS.ProcessEnv {
-  if (!path.isAbsolute(binPath)) return env;
-  return envWithPathDirs(env, [path.dirname(binPath)]);
+  const pathApi = platform === "win32" ? path.win32 : path.posix;
+  if (!pathApi.isAbsolute(binPath)) return env;
+  return envWithPathDirs(env, [pathApi.dirname(binPath)], pathApi.delimiter);
 }
 
 /** Prepend `dirs` (kept in order, deduped) to the env's PATH, same key rules as above. */
-function envWithPathDirs(env: NodeJS.ProcessEnv, dirs: string[]): NodeJS.ProcessEnv {
+function envWithPathDirs(
+  env: NodeJS.ProcessEnv,
+  dirs: string[],
+  delimiter: string = path.delimiter,
+): NodeJS.ProcessEnv {
   const key = pathKey(env);
   const current = env[key] ?? "";
-  const present = new Set(current.split(path.delimiter));
+  const present = new Set(current.split(delimiter));
   const add = [...new Set(dirs)].filter((d) => d && !present.has(d));
   if (!add.length) return env;
-  return { ...env, [key]: [...add, current].filter(Boolean).join(path.delimiter) };
+  return { ...env, [key]: [...add, current].filter(Boolean).join(delimiter) };
 }
 
 /**

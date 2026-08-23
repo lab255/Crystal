@@ -29,8 +29,8 @@ export function workspaceIdFor(root: string): string {
 }
 
 /** Per-workspace app-data directory (run history, ephemeral state). */
-export function appDataDir(root: string): string {
-  const base = path.basename(path.resolve(root)).replace(/[^a-zA-Z0-9-_]/g, "-");
+export function appDataDir(root: string, rootPath: path.PlatformPath = path): string {
+  const base = rootPath.basename(rootPath.resolve(root)).replace(/[^a-zA-Z0-9-_]/g, "-");
   return path.join(os.homedir(), ".crystal", "workspaces", `${base}-${workspaceIdFor(root)}`);
 }
 

@@ -115,14 +115,14 @@ describe("resolveClaudeBin", () => {
       VOLTA_HOME: "D:\\volta",
     });
     for (const expected of [
-      path.join(home, ".local", "bin"),
+      path.win32.join(home, ".local", "bin"),
       "C:\\Users\\u\\AppData\\Local\\Programs\\claude",
       "C:\\Users\\u\\AppData\\Roaming\\npm",
       "D:\\pnpm",
       "C:\\Users\\u\\AppData\\Local\\pnpm",
-      path.join("D:\\volta", "bin"),
+      path.win32.join("D:\\volta", "bin"),
       "C:\\Users\\u\\AppData\\Local\\Volta\\bin",
-      path.join(home, "scoop", "shims"),
+      path.win32.join(home, "scoop", "shims"),
       "C:\\Users\\u\\AppData\\Local\\fnm\\aliases\\default",
     ]) {
       expect(dirs).toContain(expected);
@@ -130,8 +130,8 @@ describe("resolveClaudeBin", () => {
     // Env-derived entries degrade gracefully when the vars are absent — the
     // list still probes the LOCALAPPDATA-default locations via the home dir.
     const bare = claudeFallbackDirs("win32", home, {});
-    expect(bare).toContain(path.join(home, "AppData", "Local", "Programs", "claude"));
-    expect(bare).toContain(path.join(home, "scoop", "shims"));
+    expect(bare).toContain(path.win32.join(home, "AppData", "Local", "Programs", "claude"));
+    expect(bare).toContain(path.win32.join(home, "scoop", "shims"));
   });
 
   it("finds a Windows install in a fallback dir when PATH misses", async () => {
@@ -143,6 +143,7 @@ describe("resolveClaudeBin", () => {
       env: { Path: "C:\\nowhere" },
       home,
       platform: "win32",
+      pathApi: path,
       shellLookup: noShell,
     });
     expect(resolved).toBe(exe);
@@ -177,8 +178,12 @@ describe("envWithBinDir", () => {
     // Windows: `{ ...env, PATH }` beside an inherited `Path` puts two keys
     // differing only in case into the env block — which one the child sees
     // is undefined.
-    const env = envWithBinDir({ Path: "C:\\Windows" }, "C:\\Users\\x\\.local\\bin\\claude.exe");
-    expect(env.Path).toBe(`C:\\Users\\x\\.local\\bin${path.delimiter}C:\\Windows`);
+    const env = envWithBinDir(
+      { Path: "C:\\Windows" },
+      "C:\\Users\\x\\.local\\bin\\claude.exe",
+      "win32",
+    );
+    expect(env.Path).toBe("C:\\Users\\x\\.local\\bin;C:\\Windows");
     expect(Object.keys(env)).toEqual(["Path"]);
   });
 

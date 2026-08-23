@@ -48,10 +48,14 @@ describe("workspace identity", () => {
   });
 
   it("appDataDir embeds the workspace id, so the two can never drift", () => {
-    const root = "C:\\Repos\\My App";
-    expect(appDataDir(root)).toContain(workspaceIdFor(root));
-    // Unsafe basename characters are flattened, not passed to the filesystem.
-    expect(path.basename(appDataDir(root))).toBe(`My-App-${workspaceIdFor(root)}`);
+    for (const [root, rootPath] of [
+      ["/repos/My App", path.posix],
+      ["C:\\Repos\\My App", path.win32],
+    ] as const) {
+      expect(appDataDir(root, rootPath)).toContain(workspaceIdFor(root));
+      // Unsafe basename characters are flattened, not passed to the filesystem.
+      expect(path.basename(appDataDir(root, rootPath))).toBe(`My-App-${workspaceIdFor(root)}`);
+    }
   });
 });
 
