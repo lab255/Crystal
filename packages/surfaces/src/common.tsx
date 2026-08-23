@@ -7,11 +7,12 @@ import {
   useRef,
   useState,
 } from "react";
-import { ExternalLink, Webhook } from "lucide-react";
-import { endpointKey, formatHighlightSel } from "@crystal/core";
+import { ExternalLink, Globe, MonitorPlay, MonitorX, RefreshCw, Webhook } from "lucide-react";
+import { endpointKey, formatHighlightSel, storybookStorySlug } from "@crystal/core";
 import type {
   ApiTrace,
   ApiTraceCall,
+  ComponentSurface,
   DevServerInfo,
   DevServerKind,
   LensMatcher,
@@ -21,7 +22,7 @@ import type {
   SystemOverview,
 } from "@crystal/core";
 import { requestOpenFile, useCrystal, useLens, useNavUpdate, useWorkspaces } from "@crystal/client";
-import { Tooltip, cn } from "@crystal/ui";
+import { Spinner, Tooltip, cn } from "@crystal/ui";
 import { makeSystemAttributor } from "./system-attribution.js";
 
 const EMPTY_SYSTEMS: SystemModule[] = [];
@@ -223,6 +224,180 @@ export interface LiveDevUrls {
   /** URL fallback retained for non-preview consumers such as curl defaults. */
   appUrl: string | null;
   storybookUrl: string | null;
+}
+
+/** Storybook's canvas URL for one CSF story. */
+export function storybookStoryUrl(base: string, title: string, name: string): string {
+  return `${base.replace(/\/$/, "")}/iframe.html?id=${storybookStorySlug(title, name)}&viewMode=story`;
+}
+
+export interface ComponentGroup {
+  id: string;
+  name: string;
+  components: ComponentSurface[];
+}
+
+/** Group components by their attributed system, with the unattributed group always last. */
+export function groupComponentsBySystem(
+  components: readonly ComponentSurface[],
+  systemOfFile: (file: string) => SystemModule | null,
+): ComponentGroup[] {
+  const grouped = new Map<string, ComponentGroup>();
+  for (const component of components) {
+    const system = systemOfFile(component.file);
+    const id = system?.id ?? "__other__";
+    const group = grouped.get(id) ?? { id, name: system?.name ?? "Other", components: [] };
+    group.components.push(component);
+    grouped.set(id, group);
+  }
+  for (const group of grouped.values()) group.components.sort((a, b) => b.usedBy - a.usedBy);
+  return [...grouped.values()].sort((a, b) => {
+    if (a.id === "__other__") return 1;
+    if (b.id === "__other__") return -1;
+    return b.components.length - a.components.length || a.name.localeCompare(b.name);
+  });
+}
+
+/** Shared responding/stopped dev-server preview, optionally with an editable URL. */
+export function DevServerPreview({
+  control,
+  url,
+  title,
+  hint,
+  noUrlHint,
+  open = true,
+  onOpenChange,
+  manualUrl = false,
+  kind = "app",
+}: {
+  control: DevServerControl;
+  url: string | null;
+  title: string;
+  hint: React.ReactNode;
+  noUrlHint?: React.ReactNode;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  manualUrl?: boolean;
+  kind?: "app" | "storybook";
+}) {
+  const live = control.target?.availability === "live";
+  const expected = control.target?.url ?? null;
+  const [frameUrl, setFrameUrl] = useState(url ?? "");
+  const [frameNonce, setFrameNonce] = useState(0);
+  const [frameFailed, setFrameFailed] = useState(false);
+  useEffect(() => setFrameUrl(url ?? ""), [url]);
+  useEffect(() => setFrameFailed(false), [url, frameNonce]);
+  const storybook = kind === "storybook";
+  const label = storybook ? "Storybook" : "dev server";
+
+  if (!url && live) {
+    return <div className="text-[11px] text-ink-faint">{noUrlHint}</div>;
+  }
+
+  if (!live || !url) {
+    return (
+      <div className="space-y-2 text-[11px] text-ink-faint">
+        <div>
+          {expected ? (
+            <>
+              {storybook ? "Storybook" : "The app"} is expected at{" "}
+              <code className="text-ink-muted">{expected}</code>, but it is not responding. Use{" "}
+              <span className="text-ink-muted">Dev servers</span> in the workspace rail to inspect
+              its output.
+            </>
+          ) : (
+            <>
+              No responding {storybook ? "Storybook" : "app"} server was found. Open{" "}
+              <span className="text-ink-muted">Dev servers</span> in the workspace rail to start or
+              configure one.
+            </>
+          )}
+        </div>
+        {control.candidate ? (
+          <button
+            type="button"
+            disabled={control.busy}
+            onClick={control.launch}
+            className="flex items-center gap-1.5 rounded-lg border border-ok/40 bg-ok/10 px-2.5 py-1.5 text-[11px] font-medium text-ok hover:brightness-110 disabled:opacity-50"
+          >
+            {control.busy ? <Spinner className="h-3.5 w-3.5" /> : <MonitorPlay className="h-3.5 w-3.5" />}
+            {control.candidate.status === "running" ? `Restart ${label}` : `Start ${label}`}
+          </button>
+        ) : null}
+        {control.error ? <div className="text-danger">{control.error}</div> : null}
+      </div>
+    );
+  }
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => onOpenChange?.(true)}
+        className="flex items-center gap-1.5 rounded-lg border border-edge bg-surface-2 px-2.5 py-1.5 text-[11px] text-ink-muted hover:text-ink"
+      >
+        <MonitorPlay className="h-3.5 w-3.5 text-ok" /> {hint}
+      </button>
+    );
+  }
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex justify-end">
+        <button
+          type="button"
+          onClick={() => {
+            setFrameFailed(false);
+            setFrameNonce((nonce) => nonce + 1);
+          }}
+          className="flex items-center gap-1 text-[10px] text-ink-faint hover:text-ink"
+        >
+          <RefreshCw className="h-3 w-3" /> reload
+        </button>
+      </div>
+      {manualUrl ? (
+        <div className="flex items-center gap-1.5">
+          <input
+            value={frameUrl}
+            onChange={(event) => setFrameUrl(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") setFrameNonce((nonce) => nonce + 1);
+            }}
+            spellCheck={false}
+            aria-label="Preview URL"
+            className="min-w-0 flex-1 rounded-lg border border-edge bg-surface-1 px-2 py-1 font-mono text-[10.5px] text-ink outline-none focus:border-crystal-500/60"
+          />
+          <Tooltip content="Open in browser">
+            <button
+              type="button"
+              onClick={() => window.open(frameUrl, "_blank", "noopener")}
+              className="rounded-md border border-edge bg-surface-2 p-1 text-ink-muted hover:text-ink"
+              aria-label="Open in browser"
+            >
+              <Globe className="h-3.5 w-3.5" />
+            </button>
+          </Tooltip>
+        </div>
+      ) : null}
+      {typeof hint !== "string" ? hint : null}
+      {frameFailed ? (
+        <div className="flex h-48 flex-col items-center justify-center gap-2 rounded-lg border border-warn/30 bg-warn/[0.05] px-4 text-center text-[11px] text-ink-muted">
+          <MonitorX className="h-5 w-5 text-warn" />
+          {storybook ? "Storybook" : "The preview"} did not load. Check the Dev servers launcher
+          for errors, then reload.
+        </div>
+      ) : (
+        <iframe
+          key={frameNonce}
+          src={manualUrl ? frameUrl : url}
+          title={title}
+          onError={() => setFrameFailed(true)}
+          className="h-[28rem] w-full rounded-lg border border-edge bg-white"
+          sandbox="allow-scripts allow-same-origin allow-forms"
+        />
+      )}
+    </div>
+  );
 }
 
 export function useLiveDevUrls(): LiveDevUrls {

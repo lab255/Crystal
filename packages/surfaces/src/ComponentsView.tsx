@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AppWindow,
   BookOpenText,
@@ -7,9 +7,12 @@ import {
   Component as ComponentIcon,
   Copy,
   ExternalLink,
+  Globe,
   Import,
+  MonitorPlay,
 } from "lucide-react";
-import type { CodeSymbolSites, CodeSymbolSource, ComponentSurface } from "@crystal/core";
+import { roleOfFile, storybookStorySlug } from "@crystal/core";
+import type { CodeRole, CodeSymbolSites, CodeSymbolSource, ComponentSurface } from "@crystal/core";
 import { requestOpenFile, useCrystal, useNav, useNavUpdate, useSymbolMenu } from "@crystal/client";
 import {
   Badge,
@@ -23,15 +26,21 @@ import {
 } from "@crystal/ui";
 import {
   ApiCallsSection,
+  DevServerPreview,
   DetailSection,
   FileLink,
+  GroupHeader,
   LENS_DIM_CLASS,
   LensHint,
   ListHeader,
   copyText,
+  groupComponentsBySystem,
+  storybookStoryUrl,
   useArchHighlight,
+  useLiveDevUrls,
   useSurfaces,
   useSurfacesLens,
+  type LiveDevUrls,
 } from "./common.js";
 
 /**
@@ -42,6 +51,18 @@ import {
 
 const componentId = (c: ComponentSurface): string => `${c.file}#${c.name}`;
 
+const ROLE_LABEL: Partial<Record<CodeRole, string>> = {
+  provider: "provider",
+  layout: "layout",
+  query: "query",
+};
+
+function roleLabelOf(file: string): string | null {
+  const role = roleOfFile(file, "frontend");
+  if (role === "component") return /(^|[/._-])hooks?([/._-]|$)/i.test(file) ? "hook" : null;
+  return ROLE_LABEL[role] ?? null;
+}
+
 /** `import { Button } from "./components/Button"` for the copy menu. */
 function importStatementOf(c: ComponentSurface): string {
   const spec = c.file.replace(/\.(tsx|ts|jsx|js)$/, "");
@@ -49,13 +70,16 @@ function importStatementOf(c: ComponentSurface): string {
 }
 
 export function ComponentsView() {
-  const { report } = useSurfaces();
+  const { report, systemOfFile } = useSurfaces();
   const nav = useNavUpdate();
   const selectedId = useNav((l) => l.surfaces?.component ?? null);
   const find = (useNav((l) => l.surfaces?.find) ?? "").trim().toLowerCase();
   const menu = useContextMenu();
   const symbolMenu = useSymbolMenu();
   const lens = useSurfacesLens();
+  const servers = useLiveDevUrls();
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
+  const previewRef = useRef<HTMLDivElement>(null);
 
   const components = report?.components ?? [];
   /** Lens members (null when no lens dims) — non-members render dimmed. */
@@ -68,14 +92,31 @@ export function ComponentsView() {
         : null,
     [lens, components],
   );
-  const visible = useMemo(
-    () =>
-      components.filter(
-        (c) => !find || c.name.toLowerCase().includes(find) || c.file.toLowerCase().includes(find),
-      ),
+  const findMembers = useMemo(
+    () => new Set(components.filter((c) => !find || c.name.toLowerCase().includes(find) || c.file.toLowerCase().includes(find)).map(componentId)),
     [components, find],
   );
+  const groups = useMemo(
+    () => groupComponentsBySystem(components, systemOfFile),
+    [components, systemOfFile],
+  );
   const selected = components.find((c) => componentId(c) === selectedId) ?? null;
+
+  useEffect(() => {
+    if (!selected) return;
+    const groupId = systemOfFile(selected.file)?.id ?? "__other__";
+    setCollapsed((current) => {
+      if (!current.has(groupId)) return current;
+      const next = new Set(current);
+      next.delete(groupId);
+      return next;
+    });
+  }, [selectedId, selected, systemOfFile]);
+
+  const focusPreview = (c: ComponentSurface) => {
+    nav({ surfaces: { component: componentId(c) } });
+    requestAnimationFrame(() => previewRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
+  };
 
   if (components.length === 0) {
     return (
@@ -88,6 +129,34 @@ export function ComponentsView() {
 
   const rowMenu = (c: ComponentSurface): Parameters<typeof menu.open>[1] => [
     { type: "heading", label: c.name },
+    ...(c.stories.length > 0 || c.screens.length > 0
+      ? [
+          {
+            type: "item" as const,
+            label: "Open live preview",
+            icon: MonitorPlay,
+            onSelect: () => focusPreview(c),
+          },
+        ]
+      : []),
+    ...(c.stories.length > 0 && servers.storybook.target?.availability === "live"
+      ? [
+          {
+            type: "item" as const,
+            label: "Open story in Storybook",
+            icon: Globe,
+            onSelect: () => {
+              const story = report?.stories.find((item) => item.id === c.stories[0]);
+              if (story)
+                window.open(
+                  `${servers.storybook.target!.url}/?path=/story/${storybookStorySlug(story.title, story.name)}`,
+                  "_blank",
+                  "noopener",
+                );
+            },
+          },
+        ]
+      : []),
     ...(c.stories.length > 0
       ? [
           {
@@ -127,58 +196,92 @@ export function ComponentsView() {
           <ListHeader
             icon={ComponentIcon}
             title="Components"
-            shown={visible.length}
+            shown={findMembers.size}
             total={components.length}
           >
             <LensHint lens={lens} matched={lensMembers?.size ?? 0} total={components.length} />
           </ListHeader>
           <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2">
-            {visible.map((c) => {
-              const id = componentId(c);
-              return (
-                <button
-                  key={id}
-                  type="button"
-                  onClick={() => nav({ surfaces: { component: id } })}
-                  onContextMenu={(e) => menu.open(e, rowMenu(c))}
-                  className={cn(
-                    "flex w-full items-center gap-1.5 rounded-lg px-2 py-1 text-left",
-                    selected === c
-                      ? "bg-crystal-500/15 text-ink"
-                      : "text-ink-muted hover:bg-surface-2 hover:text-ink",
-                    lensMembers && !lensMembers.has(id) && LENS_DIM_CLASS,
-                  )}
-                >
-                  <span className="min-w-0 flex-1 truncate text-[11px] font-medium">{c.name}</span>
-                  {c.stories.length > 0 ? (
-                    <Tooltip content={`${c.stories.length} stor${c.stories.length === 1 ? "y" : "ies"}`}>
-                      <BookOpenText className="h-3 w-3 shrink-0 text-accent-amber" />
-                    </Tooltip>
-                  ) : null}
-                  {c.screens.length > 0 ? (
-                    <Tooltip content={`rendered by ${c.screens.length} screen${c.screens.length === 1 ? "" : "s"}`}>
-                      <AppWindow className="h-3 w-3 shrink-0 text-accent-cyan" />
-                    </Tooltip>
-                  ) : null}
-                  <Tooltip content={`imported by ${c.usedBy} file${c.usedBy === 1 ? "" : "s"}`}>
-                    <span className="w-7 shrink-0 text-right font-mono text-[9.5px] text-ink-faint">
-                      ×{c.usedBy}
-                    </span>
-                  </Tooltip>
-                </button>
-              );
-            })}
-            {visible.length === 0 ? (
-              <div className="px-3 py-6 text-center text-[11px] text-ink-faint">
-                Nothing matches the current filter.
+            {groups.map((group) => (
+              <div key={group.id} className="mb-1.5">
+                <GroupHeader
+                  label={group.name}
+                  count={group.components.length}
+                  collapsed={collapsed.has(group.id)}
+                  onToggle={() =>
+                    setCollapsed((current) => {
+                      const next = new Set(current);
+                      if (next.has(group.id)) next.delete(group.id);
+                      else next.add(group.id);
+                      return next;
+                    })
+                  }
+                />
+                {!collapsed.has(group.id)
+                  ? group.components.map((c) => {
+                      const id = componentId(c);
+                      const roleLabel = roleLabelOf(c.file);
+                      return (
+                        <button
+                          key={id}
+                          type="button"
+                          onClick={() => nav({ surfaces: { component: id } })}
+                          onContextMenu={(e) => menu.open(e, rowMenu(c))}
+                          className={cn(
+                            "flex w-full items-center gap-1.5 rounded-lg px-2 py-1 text-left",
+                            selected === c
+                              ? "bg-crystal-500/15 text-ink"
+                              : "text-ink-muted hover:bg-surface-2 hover:text-ink",
+                            lensMembers && !lensMembers.has(id) && LENS_DIM_CLASS,
+                            !findMembers.has(id) && LENS_DIM_CLASS,
+                          )}
+                        >
+                          <span className="min-w-0 flex-1 truncate text-[11px] font-medium">
+                            {c.name}
+                          </span>
+                          {roleLabel ? (
+                            <span className="shrink-0 rounded bg-surface-3 px-1 text-[8.5px] uppercase text-ink-faint">
+                              {roleLabel}
+                            </span>
+                          ) : null}
+                          {c.stories.length > 0 ? (
+                            <Tooltip
+                              content={`${c.stories.length} stor${c.stories.length === 1 ? "y" : "ies"}`}
+                            >
+                              <BookOpenText className="h-3 w-3 shrink-0 text-accent-amber" />
+                            </Tooltip>
+                          ) : null}
+                          {c.screens.length > 0 ? (
+                            <Tooltip
+                              content={`rendered by ${c.screens.length} screen${c.screens.length === 1 ? "" : "s"}`}
+                            >
+                              <AppWindow className="h-3 w-3 shrink-0 text-accent-cyan" />
+                            </Tooltip>
+                          ) : null}
+                          <Tooltip
+                            content={`imported by ${c.usedBy} file${c.usedBy === 1 ? "" : "s"}`}
+                          >
+                            <span className="w-7 shrink-0 text-right font-mono text-[9.5px] text-ink-faint">
+                              ×{c.usedBy}
+                            </span>
+                          </Tooltip>
+                        </button>
+                      );
+                    })
+                  : null}
               </div>
-            ) : null}
+            ))}
           </div>
         </aside>
       </SplitPane>
       <SplitPane minSize="40%">
         {selected ? (
-          <ComponentDetail key={componentId(selected)} component={selected} />
+          <ComponentDetail
+            key={componentId(selected)}
+            component={selected}
+            previewRef={previewRef}
+            servers={servers}
+          />
         ) : (
           <EmptyState icon={ComponentIcon} title="Pick a component">
             Props signature, definition, its stories and screens, and everywhere it's used.
@@ -192,7 +295,15 @@ export function ComponentsView() {
 
 const SNIPPET_COLLAPSED_LINES = 18;
 
-function ComponentDetail({ component: c }: { component: ComponentSurface }) {
+function ComponentDetail({
+  component: c,
+  previewRef,
+  servers,
+}: {
+  component: ComponentSurface;
+  previewRef: React.RefObject<HTMLDivElement | null>;
+  servers: LiveDevUrls;
+}) {
   const { client } = useCrystal();
   const { report, systemOfFile } = useSurfaces();
   const arch = useArchHighlight();
@@ -200,6 +311,9 @@ function ComponentDetail({ component: c }: { component: ComponentSurface }) {
   const [source, setSource] = useState<CodeSymbolSource | null>(null);
   const [sites, setSites] = useState<CodeSymbolSites | null>(null);
   const [snippetOpen, setSnippetOpen] = useState(false);
+  const { app, storybook } = servers;
+  const [storyId, setStoryId] = useState(c.stories[0] ?? "");
+  const [screenId, setScreenId] = useState(c.screens[0] ?? "");
 
   useEffect(() => {
     let cancelled = false;
@@ -216,8 +330,19 @@ function ComponentDetail({ component: c }: { component: ComponentSurface }) {
     };
   }, [client, c.file, c.name]);
 
-  const stories = (report?.stories ?? []).filter((s) => c.stories.includes(s.id));
-  const screens = (report?.screens ?? []).filter((s) => c.screens.includes(s.id));
+  const stories = c.stories
+    .map((id) => report?.stories.find((story) => story.id === id))
+    .filter((story): story is NonNullable<typeof story> => story != null);
+  const screens = c.screens
+    .map((id) => report?.screens.find((screen) => screen.id === id))
+    .filter((screen): screen is NonNullable<typeof screen> => screen != null);
+  const previewStory = stories.find((story) => story.id === storyId) ?? stories[0] ?? null;
+  const previewScreen = screens.find((screen) => screen.id === screenId) ?? screens[0] ?? null;
+  const storyUrl =
+    previewStory && storybook.target
+      ? storybookStoryUrl(storybook.target.url, previewStory.title, previewStory.name)
+      : null;
+  const screenUrl = previewScreen && app.target ? app.target.url + previewScreen.route : null;
 
   const snippetLines = source?.text.split("\n") ?? null;
   const clipped =
@@ -288,6 +413,81 @@ function ComponentDetail({ component: c }: { component: ComponentSurface }) {
           </div>
         </DetailSection>
       ) : null}
+
+      <div ref={previewRef}>
+        <DetailSection
+          title="Live preview"
+          hint={
+            previewStory
+              ? "the component's first linked story"
+              : previewScreen
+                ? `route ${previewScreen.route}`
+                : "start a dev server when a story or route is added"
+          }
+        >
+          {previewStory ? (
+            <div className="space-y-2">
+              {stories.length > 1 ? (
+                <select
+                  value={previewStory.id}
+                  onChange={(event) => setStoryId(event.target.value)}
+                  aria-label="Preview story"
+                  className="rounded-lg border border-edge bg-surface-1 px-2 py-1 text-[10.5px] text-ink outline-none"
+                >
+                  {stories.map((story) => (
+                    <option key={story.id} value={story.id}>{story.title} / {story.name}</option>
+                  ))}
+                </select>
+              ) : null}
+              <DevServerPreview
+                control={storybook}
+                url={storyUrl}
+                title={`Storybook render of ${previewStory.title}/${previewStory.name}`}
+                hint={`Render ${previewStory.name} live`}
+                kind="storybook"
+              />
+            </div>
+          ) : previewScreen ? (
+            <div className="space-y-2">
+              {screens.length > 1 ? (
+                <select
+                  value={previewScreen.id}
+                  onChange={(event) => setScreenId(event.target.value)}
+                  aria-label="Preview screen"
+                  className="rounded-lg border border-edge bg-surface-1 px-2 py-1 text-[10.5px] text-ink outline-none"
+                >
+                  {screens.map((screen) => <option key={screen.id} value={screen.id}>{screen.route}</option>)}
+                </select>
+              ) : null}
+              <div className="text-[10.5px] text-ink-faint">
+                previewing route <code className="text-ink-muted">{previewScreen.route}</code>, which
+                renders <span className="text-ink-muted">{c.name}</span>
+              </div>
+              <DevServerPreview
+                control={app}
+                url={screenUrl}
+                title={`Preview of ${c.name} on ${previewScreen.route}`}
+                hint={`Preview ${previewScreen.route} live`}
+              />
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {app.target?.availability === "live" ? null : (
+                <div className="text-[11px] text-ink-faint">
+                  No story or routed screen renders {c.name}
+                </div>
+              )}
+              <DevServerPreview
+                control={app}
+                url={null}
+                title={`Preview of ${c.name}`}
+                hint={`Preview ${c.name} live`}
+                noUrlHint={<>No story or routed screen renders {c.name}</>}
+              />
+            </div>
+          )}
+        </DetailSection>
+      </div>
 
       <DetailSection
         title="Definition"

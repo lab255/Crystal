@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   AppWindow,
   Component as ComponentIcon,
@@ -6,7 +6,6 @@ import {
   Globe,
   MonitorPlay,
   MonitorX,
-  RefreshCw,
 } from "lucide-react";
 import type { ScreenSource, ScreenSurface } from "@crystal/core";
 import { useNav, useNavUpdate, useSymbolMenu } from "@crystal/client";
@@ -14,7 +13,6 @@ import {
   Badge,
   EmptyState,
   Pane as SplitPane,
-  Spinner,
   Split,
   Tooltip,
   cn,
@@ -22,6 +20,7 @@ import {
 } from "@crystal/ui";
 import {
   ApiCallsSection,
+  DevServerPreview,
   DetailSection,
   FileLink,
   GroupHeader,
@@ -263,11 +262,6 @@ function ScreenDetail({
   const hasParams = /[:*]/.test(screen.route);
   const live = app.target?.availability === "live";
   const defaultUrl = app.target ? app.target.url + screen.route : null;
-  const [url, setUrl] = useState(defaultUrl ?? "");
-  const [frameNonce, setFrameNonce] = useState(0);
-  const [frameFailed, setFrameFailed] = useState(false);
-  useEffect(() => setUrl(defaultUrl ?? ""), [defaultUrl]);
-  useEffect(() => setFrameFailed(false), [defaultUrl, frameNonce]);
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-y-auto bg-surface-0">
@@ -314,118 +308,35 @@ function ScreenDetail({
         }
         actions={
           live ? (
-            <div className="flex items-center gap-2">
-              {demoOpen ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setFrameFailed(false);
-                    setFrameNonce((n) => n + 1);
-                  }}
-                  className="flex items-center gap-1 text-[10px] text-ink-faint hover:text-ink"
-                >
-                  <RefreshCw className="h-3 w-3" /> reload
-                </button>
-              ) : null}
-              <button
-                type="button"
-                onClick={() => onToggleDemo(!demoOpen)}
-                aria-pressed={demoOpen}
-                className="flex items-center gap-1 text-[10px] text-ink-faint hover:text-ink"
-              >
-                {demoOpen ? <MonitorX className="h-3 w-3" /> : <MonitorPlay className="h-3 w-3" />}
-                {demoOpen ? "close" : "open"}
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={() => onToggleDemo(!demoOpen)}
+              aria-pressed={demoOpen}
+              className="flex items-center gap-1 text-[10px] text-ink-faint hover:text-ink"
+            >
+              {demoOpen ? <MonitorX className="h-3 w-3" /> : <MonitorPlay className="h-3 w-3" />}
+              {demoOpen ? "close" : "open"}
+            </button>
           ) : undefined
         }
       >
-        {!live ? (
-          <div className="space-y-2 text-[11px] text-ink-faint">
-            <div>
-              {app.target ? (
-                <>
-                  The app is expected at <code className="text-ink-muted">{app.target.url}</code>,
-                  but it is not responding. Use <span className="text-ink-muted">Dev servers</span>{" "}
-                  in the workspace rail to inspect its output.
-                </>
-              ) : (
-                <>
-                  No responding app server was found. Open <span className="text-ink-muted">Dev servers</span>{" "}
-                  in the workspace rail to start or configure one.
-                </>
-              )}
-            </div>
-            {app.candidate ? (
-              <button
-                type="button"
-                disabled={app.busy}
-                onClick={app.launch}
-                className="flex items-center gap-1.5 rounded-lg border border-ok/40 bg-ok/10 px-2.5 py-1.5 text-[11px] font-medium text-ok hover:brightness-110 disabled:opacity-50"
-              >
-                {app.busy ? <Spinner className="h-3.5 w-3.5" /> : <MonitorPlay className="h-3.5 w-3.5" />}
-                {app.candidate.status === "running" ? "Restart dev server" : "Start dev server"}
-              </button>
-            ) : null}
-            {app.error ? <div className="text-danger">{app.error}</div> : null}
-          </div>
-        ) : !demoOpen ? (
-          <button
-            type="button"
-            onClick={() => onToggleDemo(true)}
-            className="flex items-center gap-1.5 rounded-lg border border-edge bg-surface-2 px-2.5 py-1.5 text-[11px] text-ink-muted hover:text-ink"
-          >
-            <MonitorPlay className="h-3.5 w-3.5 text-ok" /> Preview {screen.route} live
-          </button>
-        ) : (
-          <div className="space-y-1.5">
-            <div className="flex items-center gap-1.5">
-              <input
-                value={url}
-                onChange={(e) => setUrl(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    setFrameFailed(false);
-                    setFrameNonce((n) => n + 1);
-                  }
-                }}
-                spellCheck={false}
-                aria-label="Preview URL"
-                className="min-w-0 flex-1 rounded-lg border border-edge bg-surface-1 px-2 py-1 font-mono text-[10.5px] text-ink outline-none focus:border-crystal-500/60"
-              />
-              <Tooltip content="Open in browser">
-                <button
-                  type="button"
-                  onClick={() => window.open(url, "_blank", "noopener")}
-                  className="rounded-md border border-edge bg-surface-2 p-1 text-ink-muted hover:text-ink"
-                  aria-label="Open in browser"
-                >
-                  <Globe className="h-3.5 w-3.5" />
-                </button>
-              </Tooltip>
-            </div>
-            {hasParams ? (
+        <DevServerPreview
+          control={app}
+          url={defaultUrl}
+          title={`Preview of ${screen.route}`}
+          hint={
+            demoOpen && hasParams ? (
               <div className="text-[10px] text-warn">
                 This route has parameters — replace <code>:param</code> segments in the URL above.
               </div>
-            ) : null}
-            {frameFailed ? (
-              <div className="flex h-48 flex-col items-center justify-center gap-2 rounded-lg border border-warn/30 bg-warn/[0.05] px-4 text-center text-[11px] text-ink-muted">
-                <MonitorX className="h-5 w-5 text-warn" />
-                The preview did not load. Check the Dev servers launcher for errors, then reload.
-              </div>
             ) : (
-              <iframe
-                key={frameNonce}
-                src={url}
-                title={`Preview of ${screen.route}`}
-                onError={() => setFrameFailed(true)}
-                className="h-[28rem] w-full rounded-lg border border-edge bg-white"
-                sandbox="allow-scripts allow-same-origin allow-forms"
-              />
-            )}
-          </div>
-        )}
+              `Preview ${screen.route} live`
+            )
+          }
+          open={demoOpen}
+          onOpenChange={onToggleDemo}
+          manualUrl
+        />
       </DetailSection>
 
       <DetailSection title="Source" hint="where this screen is declared">
