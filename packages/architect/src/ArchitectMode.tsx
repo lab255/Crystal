@@ -137,7 +137,12 @@ import { C4Bar } from "./C4Bar.js";
 import { buildSystemCardFacts, systemCardSlot } from "./system-card.js";
 import { filterRoutesForMovedEndpoints } from "./elk-layout.js";
 import { useElkLayout } from "./use-elk-layout.js";
-import { layoutMessiness, shouldOfferMessyLayout } from "./layout-messiness.js";
+import {
+  describeMessiness,
+  isMessinessDebugEnabled,
+  layoutMessiness,
+  shouldOfferMessyLayout,
+} from "./layout-messiness.js";
 import { summarizeOverride } from "./canonical-overlay.js";
 import { bareCodeMapPatch } from "./navigation.js";
 
@@ -963,9 +968,19 @@ function DiagramsView({
   const effectiveMessiness = layoutMetrics
     ? layoutMessiness({ ...layoutMetrics, pinBrokenRoutes })
     : 0;
-  const messyLayout = layoutMetrics != null
-    && shouldOfferMessyLayout(effectiveMessiness, c4Enabled, pinCount);
+  const [messyLayout, setMessyLayout] = useState(false);
   const messinessDismissKey = `${activeWs ?? ""}:${viewKeyStr}:${layoutRevision}`;
+  useEffect(() => {
+    setMessyLayout(false);
+  }, [messinessDismissKey]);
+  useEffect(() => {
+    setMessyLayout((shown) => layoutMetrics != null
+      && shouldOfferMessyLayout(effectiveMessiness, c4Enabled, pinCount, shown));
+  }, [layoutMetrics, effectiveMessiness, c4Enabled, pinCount, messinessDismissKey]);
+  const [messinessDebug] = useState(isMessinessDebugEnabled);
+  const messinessDescription = messinessDebug && layoutMetrics
+    ? describeMessiness({ ...layoutMetrics, pinBrokenRoutes, score: effectiveMessiness })
+    : null;
   const [dismissedMessiness, setDismissedMessiness] = useState<string | null>(null);
   const showMessinessBanner = messyLayout && dismissedMessiness !== messinessDismissKey;
   const clearCurrentC4Layout = useCallback(() => {
@@ -1877,6 +1892,14 @@ function DiagramsView({
                             <X className="h-3.5 w-3.5" />
                           </button>
                         </div>
+                      ) : null}
+                      {messinessDebug && messinessDescription ? (
+                        <span
+                          className="rounded-md border border-edge bg-surface-2/95 px-2 py-1 text-[11px] font-medium tabular-nums text-ink-muted shadow-sm"
+                          title={messinessDescription}
+                        >
+                          messiness {effectiveMessiness.toFixed(2)}
+                        </span>
                       ) : null}
                     </>
                   )}
