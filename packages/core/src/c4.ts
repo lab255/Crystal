@@ -1,6 +1,8 @@
 import type { ArchEdge, ArchNode, ArchitectureGraph } from "./architecture.js";
 import { canonicalSystemIds } from "./arch-derive.js";
 import { isInfraZone } from "./arch-deploy.js";
+import { ENTITY_NEST_CAP, type C4ComponentModel } from "./c4-components.js";
+import { isFrontendRole } from "./code-roles.js";
 import type { CodeModule, CodeModuleDep } from "./codemap.js";
 import type { DiffMark, DiffMarks } from "./diagram-diff.js";
 import type { CodeExternalDep, ExternalServiceCategory } from "./external-services.js";
@@ -461,6 +463,10 @@ export function containerForFile(model: C4Model, file: string): string | null {
   return modulePath ? (model.containerOfModule[modulePath] ?? null) : null;
 }
 
+export function componentForFile(components: C4ComponentModel, file: string): string | null {
+  return components.componentOfFile[file] ?? null;
+}
+
 /* ------------------------------------------------------------------ */
 /* Projection                                                          */
 /* ------------------------------------------------------------------ */
@@ -489,6 +495,8 @@ export interface C4ProjectInput {
   view: C4View;
   /** Workspace data schemas; omitted keeps the pre-schema projection unchanged. */
   schemas?: readonly SchemaSurface[];
+  /** Derived semantic components; omitted preserves the legacy file-level projection. */
+  components?: C4ComponentModel | null;
   /**
    * Overlay manual edges — may reference aggregate ids (person→container…)
    * that the canonical composition drops as dangling. Re-attached here when
@@ -900,7 +908,7 @@ export function projectC4(input: C4ProjectInput): C4Projection {
         }
       }
     }
-  } else {
+  } else if (!input.components) {
     /* Components of one container: the boundary is the scoped container, its
        members render verbatim, and everything they talk to shows compactly
        around it. */
@@ -1027,6 +1035,220 @@ export function projectC4(input: C4ProjectInput): C4Projection {
       if (classOf.get(n.id)!.kind === "note" && n.parentId != null && memberIds.has(n.parentId)) {
         nodes.push(n);
       }
+    }
+  } else {
+    /* Members: semantic component cards replace file-level system, screen,
+       route, and endpoint nodes inside the open container boundary. */
+    const components = input.components;
+    const scope = view.scope ? containerById.get(view.scope) : undefined;
+    const scopeId = scope?.id ?? view.scope ?? C4_SHARED_CONTAINER_ID;
+    nodes.push(makeNode({
+      id: scopeId,
+      kind: "system",
+      label: scope?.name ?? scopeId,
+      description: scope ? C4_VARIANT_LABELS[scope.variant] : "",
+      size: { width: 640, height: 420 },
+      tech: scope?.tech ?? [],
+      codeModule: scope?.modulePath ?? null,
+    }));
+    typeLines[scopeId] = scope ? `Container · ${C4_VARIANT_LABELS[scope.variant]}` : "Container";
+    drill[scopeId] = { level: "containers" };
+
+    const members = components.byContainer[scopeId] ?? [];
+    const memberIds = new Set(members.map((c) => c.id));
+    const componentById = new Map(members.map((component) => [component.id, component]));
+    for (const component of members) {
+      const owner = byId.get(component.systemId);
+      nodes.push(makeNode({
+        id: component.id,
+        kind: isFrontendRole(component.role) ? "frontend" : "service",
+        label: component.name,
+        description: component.description,
+        tech: component.tech,
+        parentId: scopeId,
+        codeModule: owner?.codeModule ?? null,
+      }));
+      typeLines[component.id] = `Component · ${component.stereotype}`;
+    }
+
+    /* Rollups: every hidden in-scope node resolves deterministically to a
+       semantic component, with the boundary as the final safe fallback. */
+    const entryOfSystem = (systemId: string): string | null =>
+      members.find((c) => c.systemId === systemId && c.role === "entry")?.id ??
+      components.componentOfSystem[systemId] ?? null;
+    const owningSystemOf = (node: ArchNode): string | null => {
+      let current: ArchNode | undefined = node;
+      const seen = new Set<string>();
+      while (current && !seen.has(current.id)) {
+        seen.add(current.id);
+        if (components.componentOfSystem[current.id]) return current.id;
+        current = current.parentId ? byId.get(current.parentId) : undefined;
+      }
+      return null;
+    };
+    const largestLayout = (modulePath: string | null): string | null =>
+      [...members]
+        .filter((component) =>
+          component.role === "layout" &&
+          (!modulePath || byId.get(component.systemId)?.codeModule === modulePath))
+        .sort((a, b) => b.fileCount - a.fileCount || a.id.localeCompare(b.id))[0]?.id ?? null;
+    const rollupOfNode = (node: ArchNode): string | null => {
+      if (components.componentOfSystem[node.id]) return components.componentOfSystem[node.id]!;
+      if (node.id.startsWith("screen:")) {
+        return (node.codeFile ? componentForFile(components, node.codeFile) : null) ??
+          (node.parentId && byId.has(node.parentId) ? rollupOfNode(byId.get(node.parentId)!) : null) ??
+          scopeId;
+      }
+      if (node.id.startsWith("screens:")) {
+        const child = graph.nodes.find((candidate) =>
+          candidate.parentId === node.id &&
+          candidate.codeFile &&
+          componentForFile(components, candidate.codeFile));
+        if (child?.codeFile) return componentForFile(components, child.codeFile);
+        const owner = owningSystemOf(node);
+        if (owner) return components.componentOfSystem[owner] ?? scopeId;
+        const systems = [...new Set(members
+          .filter((component) => byId.get(component.systemId)?.codeModule === node.codeModule)
+          .map((component) => component.systemId))];
+        if (systems.length === 1) return components.componentOfSystem[systems[0]!] ?? scopeId;
+        return largestLayout(node.codeModule ?? null) ?? largestLayout(null) ?? scopeId;
+      }
+      if (node.id.startsWith("routes:")) return entryOfSystem(node.id.slice("routes:".length));
+      if (node.id.startsWith("ep:") && node.parentId?.startsWith("routes:")) {
+        return entryOfSystem(node.parentId.slice("routes:".length));
+      }
+      const owner = owningSystemOf(node);
+      return owner ? (components.componentOfSystem[owner] ?? scopeId) : scopeId;
+    };
+    for (const node of graph.nodes) {
+      const cls = classOf.get(node.id)!;
+      if (cls.kind === "component" && cls.container === scopeId) {
+        nodeRollup[node.id] = rollupOfNode(node) ?? scopeId;
+      }
+      if (cls.kind === "note" && node.parentId) {
+        const parent = byId.get(node.parentId);
+        const parentClass = parent ? classOf.get(parent.id) : undefined;
+        if (parent && parentClass?.kind === "component" && parentClass.container === scopeId) {
+          const owner = rollupOfNode(parent) ?? scopeId;
+          nodes.push({ ...node, parentId: owner });
+          nodeRollup[node.id] = owner;
+        }
+      }
+    }
+
+    /* Entities: nest the most-used schemas per component, roll all remaining
+       schemas to their owner, and only connect entities that were rendered. */
+    const renderedSchemas: SchemaSurface[] = [];
+    const schemaBuckets = new Map<string, SchemaSurface[]>();
+    for (const schema of schemasOfContainer.get(scopeId) ?? []) {
+      const owner = componentForFile(components, schema.file) ?? scopeId;
+      schemaBuckets.set(owner, [...(schemaBuckets.get(owner) ?? []), schema]);
+    }
+    for (const [owner, owned] of schemaBuckets) {
+      const chosen = [...owned]
+        .sort((a, b) => b.usedBy - a.usedBy || a.id.localeCompare(b.id))
+        .slice(0, ENTITY_NEST_CAP);
+      for (const schema of owned) nodeRollup[schemaNodeId(schema.id)] = owner;
+      for (const schema of chosen) {
+        const id = schemaNodeId(schema.id);
+        nodes.push(makeNode({ id, kind: "entity", label: schema.name, parentId: owner,
+          codeFile: schema.file, entityFields: schema.fields.map((f) => f.name) }));
+        typeLines[id] = `Entity · ${schema.kind}`;
+        renderedSchemas.push(schema);
+        delete nodeRollup[id];
+      }
+    }
+    edges.push(...schemaReferenceEdges(renderedSchemas));
+
+    /* Edges: materialize neighbors only for one-hop relationships, merge
+       parallel component kinds, and map graph edges only to visible edges. */
+    const visible = new Set(nodes.map((n) => n.id));
+    const ensureNeighbor = (id: string): string | null => {
+      if (visible.has(id)) return id;
+      const cls = classOf.get(id);
+      if (!cls) return null;
+      if (cls.kind === "infra" || cls.kind === "externalSystem" || cls.kind === "citizen") {
+        const node = byId.get(id);
+        if (!node) return null;
+        nodes.push({ ...node, parentId: null });
+        visible.add(id);
+        typeLines[id] = cls.kind === "externalSystem" ? externalTypeLine(id) : infraTypeLine(id);
+        return id;
+      }
+      if (cls.kind === "component" && cls.container && cls.container !== scopeId) {
+        if (!visible.has(cls.container)) {
+          const container = containerById.get(cls.container);
+          if (!container) return null;
+          nodes.push(containerCard(container, null));
+          visible.add(cls.container);
+        }
+        nodeRollup[id] = cls.container;
+        return cls.container;
+      }
+      return null;
+    };
+
+    for (const edge of components.edges) {
+      if (!memberIds.has(edge.source) || !memberIds.has(edge.target)) continue;
+      relInto(rels, edge.source, edge.target, {
+        id: `component:${edge.kind}:${edge.source}->${edge.target}`,
+        source: edge.source,
+        target: edge.target,
+        kind: edge.kind === "api" ? "sync" : "dependency",
+        label: "",
+        weight: edge.weight,
+        ...(edge.kind === "api" ? { apiOnly: true } : {}),
+      }, null);
+    }
+    for (const edge of graph.edges) {
+      const sourceInScope = memberIds.has(nodeRollup[edge.source] ?? edge.source);
+      const targetInScope = memberIds.has(nodeRollup[edge.target] ?? edge.target);
+      if (!sourceInScope && !targetInScope) continue;
+      const source = visible.has(edge.source) ? edge.source : (nodeRollup[edge.source] ?? ensureNeighbor(edge.source));
+      const target = visible.has(edge.target) ? edge.target : (nodeRollup[edge.target] ?? ensureNeighbor(edge.target));
+      if (!source || !target || source === target) continue;
+      if (memberIds.has(source) && memberIds.has(target)) {
+        const directId = c4RelId(source, target);
+        let aggregateId = rels.has(directId) ? directId : null;
+        if (!aggregateId) {
+          const sourceSystem = componentById.get(source)?.systemId;
+          const targetSystem = componentById.get(target)?.systemId;
+          aggregateId = [...rels.keys()].sort().find((id) => {
+            const relation = rels.get(id)!;
+            return componentById.get(relation.source)?.systemId === sourceSystem &&
+              componentById.get(relation.target)?.systemId === targetSystem;
+          }) ?? null;
+        }
+        if (!aggregateId) {
+          relInto(rels, source, target, edge, serviceCategoryOfNode(edge.target));
+          aggregateId = directId;
+        }
+        edgeRollup[edge.id] = aggregateId;
+        continue;
+      }
+      relInto(rels, source, target, edge, serviceCategoryOfNode(edge.target));
+    }
+
+    /* Person: attach the default user to the largest layout when screens are
+       present, otherwise retain the legacy web/fullstack boundary edge. */
+    const scopeHasScreens = graph.nodes.some((node) => {
+      const cls = classOf.get(node.id);
+      return node.id.startsWith("screen:") && cls?.kind === "component" && cls.container === scopeId;
+    });
+    if (
+      persons.some((person) => person.id === C4_USER_PERSON_ID) &&
+      (scopeHasScreens || scope?.variant === "web" || scope?.variant === "fullstack")
+    ) {
+      const user = persons.find((p) => p.id === C4_USER_PERSON_ID)!;
+      nodes.push(user);
+      const target = scopeHasScreens ? (largestLayout(null) ?? scopeId) : scopeId;
+      edges.push({
+        id: c4RelId(user.id, target),
+        source: user.id,
+        target,
+        kind: "sync",
+        label: "Uses",
+      });
     }
   }
 

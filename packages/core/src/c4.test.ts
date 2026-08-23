@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { system, overview } from "./arch-derive.test.js";
 import { deriveArchGraph } from "./arch-derive.js";
+import { deriveC4Components, ENTITY_NEST_CAP } from "./c4-components.js";
 import {
   C4_SHARED_CONTAINER_ID,
   C4_SYSTEM_ID,
@@ -375,6 +376,133 @@ describe("projectC4 · containers", () => {
 });
 
 describe("projectC4 · components", () => {
+  it("preserves the exact legacy projection when components are undefined", () => {
+    const projection = projectC4({
+      graph: derivedGraph(),
+      model: derive(),
+      components: undefined,
+      view: { level: "components", scope: "ctr:apps-server" },
+    });
+    expect({
+      nodes: projection.graph.nodes.map((node) => [node.id, node.parentId]),
+      edges: projection.graph.edges.map((edge) => edge.id),
+    }).toEqual({
+      nodes: [
+        ["ctr:apps-server", null],
+        ["sys:api", "ctr:apps-server"],
+        [C4_SHARED_CONTAINER_ID, null],
+        ["ext:postgres", null],
+        ["ext:stripe", null],
+      ],
+      edges: [
+        c4RelId("sys:api", C4_SHARED_CONTAINER_ID),
+        c4RelId("sys:api", "ext:postgres"),
+        c4RelId("sys:api", "ext:stripe"),
+      ],
+    });
+  });
+
+  it("renders semantic components when a component model is supplied", () => {
+    const groupedApi = system({ ...API, fileCount: 18, groups: [
+      { role: "entry", fileCount: 6, files: Array.from({ length: 6 }, (_, i) => `apps/server/src/api/routes${i}.ts`) },
+      { role: "service", fileCount: 9, files: Array.from({ length: 9 }, (_, i) => `apps/server/src/api/services${i}.ts`) },
+      { role: "data", fileCount: 3, files: Array.from({ length: 3 }, (_, i) => `apps/server/src/api/repos${i}.ts`) },
+    ], groupLinks: [{ source: "entry", target: "service", weight: 4 }] });
+    const groupedOverview = overview([groupedApi, SCREENS, MODEL], OVERVIEW.links);
+    const semanticModel = deriveC4Components({ model: deriveC4Model({ ...INPUT, overview: groupedOverview }), overview: groupedOverview });
+    const baseGraph = deriveArchGraph({ overview: groupedOverview, externals: EXTERNALS, modules: MODULES });
+    const apiNode = baseGraph.nodes.find((node) => node.id === "sys:api")!;
+    const screensNode = baseGraph.nodes.find((node) => node.id === "sys:screens")!;
+    const routeGroup = { ...apiNode, id: "routes:sys:api", parentId: null };
+    semanticModel.edges.push({
+      source: "cmp:apps-server/api.entry",
+      target: "cmp:apps-server/api.service",
+      kind: "api",
+      weight: 2,
+    });
+    const projection = projectC4({
+      graph: {
+        ...baseGraph,
+        nodes: [
+          ...baseGraph.nodes,
+          routeGroup,
+          { ...apiNode, id: "manual:worker", label: "Worker", parentId: "sys:api" },
+          { ...apiNode, id: "note:api", kind: "note", label: "API note", parentId: "sys:api" },
+          { ...screensNode, id: "ext:foreign", kind: "external", label: "Foreign" },
+        ],
+        edges: [
+          ...baseGraph.edges,
+          { id: "role-attributed", source: routeGroup.id, target: apiNode.id, kind: "dependency", label: "", weight: 1 },
+          { id: "fully-foreign", source: screensNode.id, target: "ext:foreign", kind: "sync", label: "" },
+        ],
+      },
+      model: deriveC4Model({ ...INPUT, overview: groupedOverview }),
+      components: semanticModel,
+      view: { level: "components", scope: "ctr:apps-server" },
+    });
+    expect(projection.graph.nodes.filter((node) => node.id.startsWith("cmp:")).map((node) => node.id)).toEqual([
+      "cmp:apps-server/api.entry", "cmp:apps-server/api.service", "cmp:apps-server/api.data",
+    ]);
+    expect(projection.graph.nodes.some((node) => node.id === "sys:api")).toBe(false);
+    expect(projection.nodeRollup["sys:api"]).toBe("cmp:apps-server/api.service");
+    expect(projection.graph.edges).toContainEqual(expect.objectContaining({
+      id: "c4rel:cmp:apps-server/api.entry->cmp:apps-server/api.service",
+      label: "Uses · HTTP API",
+      weight: 6,
+    }));
+    expect(projection.graph.edges.filter((edge) =>
+      edge.id === "c4rel:cmp:apps-server/api.entry->cmp:apps-server/api.service")).toHaveLength(1);
+    expect(projection.edgeRollup["role-attributed"]).toBe(
+      "c4rel:cmp:apps-server/api.entry->cmp:apps-server/api.service",
+    );
+    expect(projection.graph.edges.some((edge) =>
+      edge.id === projection.edgeRollup["role-attributed"])).toBe(true);
+    expect(projection.graph.nodes.some((node) => node.id === "ext:foreign")).toBe(false);
+    expect(projection.edgeRollup["fully-foreign"]).toBeUndefined();
+    expect(projection.nodeRollup["manual:worker"]).toBe("cmp:apps-server/api.service");
+    expect(projection.nodeRollup["note:api"]).toBe("cmp:apps-server/api.service");
+    expect(projection.graph.nodes.find((node) => node.id === "note:api")?.parentId).toBe(
+      "cmp:apps-server/api.service",
+    );
+    expect(projection.typeLines["cmp:apps-server/api.entry"]).toBe("Component · API endpoints");
+    expect(projection.graph.nodes.find((node) => node.id === "cmp:apps-server/api.entry")?.kind).toBe("service");
+    expect(projection.drill["cmp:apps-server/api.entry"]).toBeUndefined();
+  });
+
+  it("mints a visible HTTP API edge for a flow with no component-model pair", () => {
+    const groupedApi = system({ ...API, fileCount: 18, groups: [
+      { role: "entry", fileCount: 6, files: ["apps/server/src/api/routes.ts"] },
+      { role: "service", fileCount: 9, files: ["apps/server/src/api/service.ts"] },
+      { role: "data", fileCount: 3, files: ["apps/server/src/api/repo.ts"] },
+    ] });
+    const groupedOverview = overview([groupedApi, SCREENS, MODEL], OVERVIEW.links);
+    const model = deriveC4Model({ ...INPUT, overview: groupedOverview });
+    const components = deriveC4Components({ model, overview: groupedOverview });
+    components.edges = [];
+    const baseGraph = deriveArchGraph({ overview: groupedOverview, externals: EXTERNALS, modules: MODULES });
+    const apiNode = baseGraph.nodes.find((node) => node.id === "sys:api")!;
+    const routes = { ...apiNode, id: "routes:sys:api", parentId: null };
+    const worker = { ...apiNode, id: "manual:worker", parentId: "sys:api" };
+    const flowId = "flow:routes-to-worker";
+    const projection = projectC4({
+      graph: {
+        ...baseGraph,
+        nodes: [...baseGraph.nodes, routes, worker],
+        edges: [...baseGraph.edges, {
+          id: flowId, source: routes.id, target: worker.id, kind: "dependency", label: "", weight: 1,
+        }],
+      },
+      model,
+      components,
+      view: { level: "components", scope: "ctr:apps-server" },
+    });
+
+    const rolledEdgeId = projection.edgeRollup[flowId]!;
+    expect(projection.graph.edges.find((edge) => edge.id === rolledEdgeId)).toMatchObject({
+      label: "Uses · HTTP API",
+    });
+  });
+
   it("scopes to one container with verbatim internals and rolled-up neighbours", () => {
     const projection = projectC4({
       graph: derivedGraph(),
@@ -415,6 +543,159 @@ describe("projectC4 · components", () => {
         (e) => e.source === C4_USER_PERSON_ID && e.target === "ctr:apps-web",
       ),
     ).toBe(true);
+  });
+
+  it("attaches the user to a layout with screens and otherwise to the web boundary", () => {
+    const layoutFile = "apps/web/src/pages/home.tsx";
+    const groupedScreens = system({
+      ...SCREENS,
+      fileCount: 12,
+      groups: [{ role: "layout", fileCount: 12, files: [layoutFile] }],
+    });
+    const groupedOverview = overview([API, groupedScreens, MODEL], OVERVIEW.links);
+    const webModel = deriveC4Model({ ...INPUT, overview: groupedOverview });
+    webModel.hasScreens = true;
+    const semanticModel = deriveC4Components({ model: webModel, overview: groupedOverview });
+    const baseGraph = deriveArchGraph({ overview: groupedOverview, externals: EXTERNALS, modules: MODULES });
+    const seed = baseGraph.nodes.find((node) => node.id === "sys:screens")!;
+    const screensGroup = { ...seed, id: "screens:apps-web", codeModule: "apps/web", parentId: null };
+    const screen = {
+      ...seed,
+      id: "screen:home",
+      codeFile: layoutFile,
+      parentId: screensGroup.id,
+    };
+    const withScreen = projectC4({
+      graph: { ...baseGraph, nodes: [...baseGraph.nodes, screensGroup, screen] },
+      model: webModel,
+      components: semanticModel,
+      view: { level: "components", scope: "ctr:apps-web" },
+    });
+    const layoutId = semanticModel.componentOfSystem["sys:screens"]!;
+    expect(withScreen.nodeRollup[screensGroup.id]).toBe(layoutId);
+    expect(withScreen.nodeRollup[screen.id]).toBe(layoutId);
+    expect(withScreen.graph.edges).toContainEqual(expect.objectContaining({
+      source: C4_USER_PERSON_ID,
+      target: layoutId,
+    }));
+
+    const withoutScreen = projectC4({
+      graph: baseGraph,
+      model: webModel,
+      components: semanticModel,
+      view: { level: "components", scope: "ctr:apps-web" },
+    });
+    expect(withoutScreen.graph.edges).toContainEqual(expect.objectContaining({
+      source: C4_USER_PERSON_ID,
+      target: "ctr:apps-web",
+    }));
+  });
+
+  it("rolls an unmapped screen and group to the deterministic layout fallback", () => {
+    const shell = system({
+      id: "sys:shell",
+      name: "Shell",
+      layer: "frontend",
+      parts: [{ path: "apps/web/src/shell", pkg: "apps/web", fileCount: 15 }],
+      groups: [{ role: "layout", fileCount: 15, files: ["apps/web/src/shell/App.tsx"] }],
+    });
+    const admin = system({
+      id: "sys:admin",
+      name: "Admin",
+      layer: "frontend",
+      parts: [{ path: "apps/web/src/admin", pkg: "apps/web", fileCount: 8 }],
+      groups: [{ role: "layout", fileCount: 8, files: ["apps/web/src/admin/App.tsx"] }],
+    });
+    const groupedOverview = overview([shell, admin]);
+    const model = deriveC4Model({ ...INPUT, overview: groupedOverview });
+    const components = deriveC4Components({ model, overview: groupedOverview });
+    const baseGraph = deriveArchGraph({ overview: groupedOverview, externals: EXTERNALS, modules: MODULES });
+    const seed = baseGraph.nodes.find((node) => node.id === "sys:shell")!;
+    const group = { ...seed, id: "screens:apps-web", codeModule: "apps/web", parentId: null };
+    const screen = {
+      ...seed,
+      id: "screen:unmapped",
+      codeFile: "apps/web/src/outside-capped-members.tsx",
+      parentId: group.id,
+    };
+    const projection = projectC4({
+      graph: { ...baseGraph, nodes: [...baseGraph.nodes, group, screen] },
+      model,
+      components,
+      view: { level: "components", scope: "ctr:apps-web" },
+    });
+    const fallback = components.componentOfSystem["sys:shell"]!;
+
+    expect(components.componentOfFile[screen.codeFile]).toBeUndefined();
+    expect(projection.nodeRollup[group.id]).toBe(fallback);
+    expect(projection.nodeRollup[screen.id]).toBe(fallback);
+  });
+
+  it("caps component and boundary entities and only links rendered schemas", () => {
+    const mappedFile = "apps/server/src/data/mapped.ts";
+    const groupedApi = system({
+      ...API,
+      groups: [{ role: "data", fileCount: 10, files: [mappedFile] }],
+    });
+    const groupedOverview = overview([groupedApi, SCREENS, MODEL], OVERVIEW.links);
+    const model = deriveC4Model({ ...INPUT, overview: groupedOverview });
+    const components = deriveC4Components({ model, overview: groupedOverview });
+    const owner = components.componentOfSystem["sys:api"]!;
+    const mapped = Array.from({ length: ENTITY_NEST_CAP + 1 }, (_, index): SchemaSurface => ({
+      id: `${mappedFile}#Mapped${index}`,
+      name: `Mapped${index}`,
+      file: mappedFile,
+      line: index + 1,
+      kind: "interface",
+      fields: index === 0
+        ? [
+            { name: "visible", type: "Mapped1", references: "Mapped1" },
+            { name: "hidden", type: `Mapped${ENTITY_NEST_CAP}`, references: `Mapped${ENTITY_NEST_CAP}` },
+          ]
+        : [],
+      usedBy: 100 - index,
+    }));
+    const boundary = Array.from({ length: ENTITY_NEST_CAP + 1 }, (_, index): SchemaSurface => ({
+      id: `apps/server/src/unmapped${index}.ts#Boundary${index}`,
+      name: `Boundary${index}`,
+      file: `apps/server/src/unmapped${index}.ts`,
+      line: 1,
+      kind: "type",
+      fields: [],
+      usedBy: 50 - index,
+    }));
+    const projection = projectC4({
+      graph: deriveArchGraph({ overview: groupedOverview, externals: EXTERNALS, modules: MODULES }),
+      model,
+      components,
+      schemas: [...mapped, ...boundary],
+      view: { level: "components", scope: "ctr:apps-server" },
+    });
+    const entityNodes = projection.graph.nodes.filter((node) => node.kind === "entity");
+    const nestedUnder = (parentId: string) => entityNodes.filter((node) => node.parentId === parentId);
+    const mappedRendered = nestedUnder(owner);
+    const boundaryRendered = nestedUnder("ctr:apps-server");
+
+    expect(mappedRendered).toHaveLength(ENTITY_NEST_CAP);
+    expect(mappedRendered.map((node) => node.id)).toEqual(
+      mapped.slice(0, ENTITY_NEST_CAP).map((schema) => schemaNodeId(schema.id)),
+    );
+    expect(boundaryRendered).toHaveLength(ENTITY_NEST_CAP);
+    expect(boundaryRendered.map((node) => node.id)).toEqual(
+      boundary.slice(0, ENTITY_NEST_CAP).map((schema) => schemaNodeId(schema.id)),
+    );
+    for (const schema of mapped.slice(ENTITY_NEST_CAP)) {
+      expect(projection.nodeRollup[schemaNodeId(schema.id)]).toBe(owner);
+    }
+    for (const schema of boundary.slice(ENTITY_NEST_CAP)) {
+      expect(projection.nodeRollup[schemaNodeId(schema.id)]).toBe("ctr:apps-server");
+    }
+    expect(projection.nodeRollup[schemaNodeId(mapped[ENTITY_NEST_CAP]!.id)]).toBe(owner);
+    expect(projection.nodeRollup[schemaNodeId(boundary[ENTITY_NEST_CAP]!.id)]).toBe("ctr:apps-server");
+    expect(projection.graph.edges.some((edge) =>
+      edge.id === schemaRefEdgeId(mapped[0]!.id, mapped[1]!.id))).toBe(true);
+    expect(projection.graph.edges.some((edge) =>
+      edge.id === schemaRefEdgeId(mapped[0]!.id, mapped[ENTITY_NEST_CAP]!.id))).toBe(false);
   });
 
   it("renders owned schemas as entities and only materializes in-scope references", () => {
