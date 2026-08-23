@@ -20,12 +20,14 @@ import {
   formatRunTokens,
   useAgents,
   useCrystal,
+  useGrants,
   useRunSurface,
   useWorkflows,
   useWorkspace,
 } from "@crystal/client";
 import { Badge, Button, StatusDot, Tooltip, cn } from "@crystal/ui";
 import { ThreadComposer } from "./ThreadComposer.js";
+import { RunContextDetails } from "./RunContextDetails.js";
 import { ThreadTranscript } from "./ThreadTranscript.js";
 import { buildTranscriptItems, type TranscriptItem } from "./transcript-items.js";
 import type { ThreadSummary } from "./thread-model.js";
@@ -189,6 +191,8 @@ export function ThreadView({
   // Read-only workflow spend line for workflow-attributed threads.
   const workflowId = useMemo(() => sessionWorkflowId(node), [node]);
   const workflows = useWorkflows((s) => s.workflows);
+  const templates = useWorkflows((s) => s.templates);
+  const grantsLedger = useGrants((s) => s.ledger);
   const runs = useAgents((s) => s.runs);
   const workflow = workflowId ? workflows.find((w) => w.id === workflowId) : null;
   const spend = useMemo(
@@ -233,6 +237,15 @@ export function ThreadView({
           </Tooltip>
         ) : null}
       </header>
+
+      {workflow && spend ? (
+        <RunContextDetails
+          workflow={workflow}
+          spend={spend}
+          ledger={grantsLedger}
+          templates={templates}
+        />
+      ) : null}
 
       {interactive ? <InteractiveRunBanner run={face} /> : null}
 

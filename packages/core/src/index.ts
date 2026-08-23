@@ -40,6 +40,7 @@ export * from "./session-tree.js";
 export * from "./question-liveness.js";
 export * from "./task-attention.js";
 export * from "./workflow.js";
+export * from "./run-context.js";
 export * from "./hub.js";
 export * from "./serialization.js";
 export * from "./survey.js";
