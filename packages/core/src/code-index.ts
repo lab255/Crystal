@@ -710,6 +710,21 @@ export function conceptDisplayName(
   return value.charAt(0).toUpperCase() + value.slice(1).replace(/-/g, " ");
 }
 
+/** Whether an empty authored facet should adopt a freshly computed suggestion. */
+export function facetNameMatchesSuggestion(
+  facetName: string,
+  suggestion: Pick<FacetSuggestion, "name"> & { tags?: readonly string[] },
+  lexicon: readonly ConceptDef[] = CONCEPT_LEXICON,
+): boolean {
+  const name = facetName.trim().toLowerCase();
+  if (!name) return false;
+  if (suggestion.name.trim().toLowerCase() === name) return true;
+  return lexicon.some((concept) =>
+    (concept.name.trim().toLowerCase() === name || concept.value.toLowerCase() === name) &&
+    (suggestion.tags ?? []).includes(`intent:${concept.value}`),
+  );
+}
+
 /**
  * Suggest facets for a diagram from the code index: one per intent with
  * enough tagged symbols, plus combined facets for intents that co-occur in

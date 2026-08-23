@@ -471,8 +471,9 @@ describe("elkAutoLayout", () => {
     );
     const dims = new Map(members.map((m) => [m.id, { width: 224, height: 96 }]));
 
-    const { graph: laid, routes } = await elkAutoLayout(input, { dims });
+    const { graph: laid, routes, metrics } = await elkAutoLayout(input, { dims });
     expect(routes.has("e:in")).toBe(false);
+    expect(metrics.extremeAspects).toBe(0);
     const fitted = laid.nodes.find((n) => n.id === pen.id)!.size!;
     const aspect = fitted.width / fitted.height;
     expect(aspect).toBeLessThan(4);

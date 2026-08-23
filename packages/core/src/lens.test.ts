@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildLensMatcher,
   createWorkspaceFacet,
+  inferFacetIntentTags,
   formatLensParam,
   lensLabel,
   parseLensParam,
@@ -43,6 +44,17 @@ describe("lens param codec", () => {
   it("keeps refs with slashes intact", () => {
     const spec = parseLensParam("diff:ref:feature/scheduled-publish");
     expect(spec).toEqual({ kind: "diff", scope: { ref: "feature/scheduled-publish" } });
+  });
+});
+
+describe("inferFacetIntentTags", () => {
+  it("resolves lexicon display names and values", () => {
+    expect(inferFacetIntentTags("Authentication")).toEqual(["intent:auth"]);
+    expect(inferFacetIntentTags("auth")).toEqual(["intent:auth"]);
+  });
+
+  it("falls back to a name-derived slug", () => {
+    expect(inferFacetIntentTags("General Ledger")).toEqual(["intent:general-ledger"]);
   });
 });
 

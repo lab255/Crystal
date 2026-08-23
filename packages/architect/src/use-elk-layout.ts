@@ -12,6 +12,7 @@ import {
   type ElkWorkerReply,
 } from "./elk-layout-protocol.js";
 import { autoLayoutFitted } from "./layout.js";
+import type { LayoutMessinessMetrics } from "./layout-messiness.js";
 
 type Size = { width: number; height: number };
 interface PublishedLayout {
@@ -20,6 +21,7 @@ interface PublishedLayout {
   aspectRatioKey: string;
   laid: ArchitectureGraph;
   routes: ReadonlyMap<string, ElkRoute> | null;
+  metrics: (LayoutMessinessMetrics & { score: number }) | null;
   /**
    * Bumped when a solve lands for a graph id that had none yet — the moment
    * the canvas should reframe. Same-level refinements (measured dims) keep
@@ -248,7 +250,12 @@ export function useElkLayout(
   graph: ArchitectureGraph | null,
   dims: ReadonlyMap<string, Size> | null,
   aspectRatio = 1.7,
-): { laid: ArchitectureGraph | null; routes: ReadonlyMap<string, ElkRoute> | null; revision: number } {
+): {
+  laid: ArchitectureGraph | null;
+  routes: ReadonlyMap<string, ElkRoute> | null;
+  metrics: (LayoutMessinessMetrics & { score: number }) | null;
+  revision: number;
+} {
   const dimsKey = dimensionsKey(dims);
   const aspectRatioKey = Number.isFinite(aspectRatio) ? aspectRatio.toFixed(3) : "1.700";
   const dimsRef = useRef(dims);
@@ -283,13 +290,19 @@ export function useElkLayout(
       setPublished((previous) =>
         previous?.graph.id === current.graph.id
           ? previous
-          : { ...current, laid: current.fallback, routes: null, revision: revisionFor(previous) },
+          : { ...current, laid: current.fallback, routes: null, metrics: null, revision: revisionFor(previous) },
       );
       return;
     }
     const result: ElkLayoutResult = decodeElkLayoutReply(state.value);
     cache.current = { graph: result.graph, dims: current.dims, key: `${current.graph.id}:DOWN:${current.aspectRatioKey}` };
-    setPublished((previous) => ({ ...current, laid: result.graph, routes: result.routes, revision: revisionFor(previous) }));
+    setPublished((previous) => ({
+      ...current,
+      laid: result.graph,
+      routes: result.routes,
+      metrics: result.metrics,
+      revision: revisionFor(previous),
+    }));
   };
 
   const controllerRef = useRef<AsyncLayoutController<ElkLayoutRequest, ElkLayoutReply> | null>(null);
@@ -327,12 +340,12 @@ export function useElkLayout(
     }, (state) => publishRef.current(state));
   }, [graph, dimsKey, aspectRatioKey, fallback]);
 
-  if (!graph || !fallback) return { laid: null, routes: null, revision: 0 };
+  if (!graph || !fallback) return { laid: null, routes: null, metrics: null, revision: 0 };
   if (published?.graph === graph && published.dimsKey === dimsKey && published.aspectRatioKey === aspectRatioKey) {
-    return { laid: published.laid, routes: published.routes, revision: published.revision };
+    return { laid: published.laid, routes: published.routes, metrics: published.metrics, revision: published.revision };
   }
   if (published?.graph.id === graph.id) {
-    return { laid: published.laid, routes: published.routes, revision: published.revision };
+    return { laid: published.laid, routes: published.routes, metrics: published.metrics, revision: published.revision };
   }
-  return { laid: fallback, routes: null, revision: published?.revision ?? 0 };
+  return { laid: fallback, routes: null, metrics: null, revision: published?.revision ?? 0 };
 }

@@ -1682,6 +1682,7 @@ function CodeMapInner({
         {showFacets && level && level.kind !== "all" ? (
           <Pane defaultSize={320} minSize={240} maxSize={560}>
             <FacetsPanel
+              ws={level.ws}
               index={codeIndex?.index ?? null}
               staleFiles={codeIndex?.staleFiles ?? []}
               activeTags={lensTags}

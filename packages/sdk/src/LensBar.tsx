@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import {
   createWorkspaceFacet,
+  inferFacetIntentTags,
   formatLensParam,
   isProgramLive,
   lensLabel,
@@ -74,6 +75,7 @@ export function LensBar({ onOpenTerminal }: LensBarProps) {
   const [suggested, setSuggested] = useState<IndexFacetSuggestion[] | null>(null);
   const [refValue, setRefValue] = useState("");
   const [saveOpen, setSaveOpen] = useState(false);
+  const [newFacetOpen, setNewFacetOpen] = useState(false);
   const [saveName, setSaveName] = useState("");
   const [askOpen, setAskOpen] = useState(false);
   const [askText, setAskText] = useState("");
@@ -121,18 +123,45 @@ export function LensBar({ onOpenTerminal }: LensBarProps) {
     [activeWsId, lensStore, lensParam, updateNav],
   );
 
-  const saveAsFacet = useCallback(() => {
+  const saveAsFacet = useCallback(async () => {
     const name = saveName.trim();
     if (!name || !activeWsId || !spec || spec.kind === "facet") return;
-    const facet = createWorkspaceFacet(name, spec);
-    lensStore
-      .getState()
-      .saveFacet(activeWsId, facet)
-      .then(() => updateNav({ lens: `facet:${facet.id}` }))
-      .catch((err: Error) => setBarError(err.message));
     setSaveOpen(false);
     setSaveName("");
-  }, [saveName, activeWsId, spec, lensStore, updateNav]);
+    const facet = createWorkspaceFacet(name, spec);
+    try {
+      await lensStore.getState().saveFacet(activeWsId, facet);
+      updateNav({ lens: `facet:${facet.id}` });
+      const { staleFiles } = await client.request("codeindex.get", { ws: activeWsId, projection: "facets" });
+      if (staleFiles.length > 0) {
+        const files = membership?.files ?? [];
+        await lensStore.getState().requestIntentIndex(
+          activeWsId,
+          files.length > 0 ? { files } : { full: true },
+        );
+      }
+    } catch (err) {
+      setBarError((err as Error).message);
+    }
+  }, [saveName, activeWsId, spec, lensStore, updateNav, client, membership]);
+
+  const createNamedFacet = useCallback(async () => {
+    const name = saveName.trim();
+    if (!name || !activeWsId) return;
+    setNewFacetOpen(false);
+    setSaveName("");
+    const facet = createWorkspaceFacet(name, { kind: "tags", tags: inferFacetIntentTags(name) });
+    try {
+      await lensStore.getState().saveFacet(activeWsId, facet);
+      updateNav({ lens: `facet:${facet.id}` });
+      const { staleFiles } = await client.request("codeindex.get", { ws: activeWsId, projection: "facets" });
+      if (staleFiles.length > 0) {
+        await lensStore.getState().requestIntentIndex(activeWsId, { full: true });
+      }
+    } catch (err) {
+      setBarError((err as Error).message);
+    }
+  }, [saveName, activeWsId, lensStore, updateNav, client]);
 
   useEffect(() => {
     const setBase = () => setLens(BASE_BRANCH_LENS_PARAM);
@@ -143,15 +172,24 @@ export function LensBar({ onOpenTerminal }: LensBarProps) {
       setAskOpen(false);
       setSaveOpen(true);
     };
+    const create = () => {
+      if (!activeWsId) return;
+      setMenuOpen(false);
+      setAskOpen(false);
+      setSaveOpen(false);
+      setNewFacetOpen(true);
+    };
     window.addEventListener(CAPABILITY_EVENTS.setBaseLens, setBase);
     window.addEventListener(CAPABILITY_EVENTS.clearLens, clear);
     window.addEventListener(CAPABILITY_EVENTS.saveLens, save);
+    window.addEventListener(CAPABILITY_EVENTS.newFacet, create);
     return () => {
       window.removeEventListener(CAPABILITY_EVENTS.setBaseLens, setBase);
       window.removeEventListener(CAPABILITY_EVENTS.clearLens, clear);
       window.removeEventListener(CAPABILITY_EVENTS.saveLens, save);
+      window.removeEventListener(CAPABILITY_EVENTS.newFacet, create);
     };
-  }, [lensParam, setLens, spec]);
+  }, [activeWsId, lensParam, setLens, spec]);
 
   const submitAsk = useCallback(async () => {
     const question = askText.trim();
@@ -413,14 +451,17 @@ export function LensBar({ onOpenTerminal }: LensBarProps) {
         {menu}
       </DropdownMenu>
 
-      {saveOpen && canSave ? (
+      {(saveOpen && canSave) || newFacetOpen ? (
         <Input
           autoFocus
           value={saveName}
           onChange={(e) => setSaveName(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter") saveAsFacet();
-            else if (e.key === "Escape") setSaveOpen(false);
+            if (e.key === "Enter") void (newFacetOpen ? createNamedFacet() : saveAsFacet());
+            else if (e.key === "Escape") {
+              setSaveOpen(false);
+              setNewFacetOpen(false);
+            }
           }}
           placeholder="Facet name…"
           aria-label="New facet name"

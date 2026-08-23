@@ -19,8 +19,21 @@ describe("paletteCapabilities", () => {
     ]);
   });
 
-  it("only offers saving a facet while a lens is active", () => {
+  it("only offers facet creation and saving while a lens is active", () => {
+    expect(paletteCapabilities(false).some((command) => command.action === "new-facet")).toBe(false);
     expect(paletteCapabilities(false).some((command) => command.action === "save-lens")).toBe(false);
+    expect(paletteCapabilities(true).map((command) => command.id)).toEqual([
+      "review.ref",
+      "lens.diff-base",
+      "lens.new-facet",
+      "lens.save-facet",
+      "lens.clear",
+      "settings.publish",
+      "ws.open",
+      "thread.new",
+      "shortcuts.open",
+    ]);
+    expect(paletteCapabilities(true).some((command) => command.action === "new-facet")).toBe(true);
     expect(paletteCapabilities(true).some((command) => command.action === "save-lens")).toBe(true);
   });
 

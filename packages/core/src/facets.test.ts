@@ -7,6 +7,7 @@ import {
   type ArchEdge,
   type ArchNode,
 } from "./architecture.js";
+import { facetNameMatchesSuggestion } from "./code-index.js";
 
 const node = (id: string, parentId: string | null = null, kind: ArchNode["kind"] = "service"): ArchNode => ({
   id,
@@ -18,6 +19,20 @@ const node = (id: string, parentId: string | null = null, kind: ArchNode["kind"]
   size: null,
   tech: [],
   placements: {},
+});
+
+describe("facetNameMatchesSuggestion", () => {
+  it("matches names case-insensitively and lexicon intent tags", () => {
+    expect(facetNameMatchesSuggestion("payments", { name: "Payments" })).toBe(true);
+    expect(facetNameMatchesSuggestion("auth", {
+      name: "Authentication",
+      tags: ["intent:auth"],
+    })).toBe(true);
+  });
+
+  it("does not match unrelated suggestions", () => {
+    expect(facetNameMatchesSuggestion("Ledger", { name: "Payments", tags: ["intent:payments"] })).toBe(false);
+  });
 });
 
 const edge = (id: string, source: string, target: string): ArchEdge => ({

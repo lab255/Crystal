@@ -37,6 +37,7 @@ import {
   createEpic,
   createTask,
   diffSystemOverviews,
+  facetNameMatchesSuggestion,
   formatDiffCounts,
   linkEdgeId,
   overviewDiffGhosts,
@@ -75,6 +76,7 @@ import {
   useAgents,
   useConnectionState,
   useCrystal,
+  useLens,
   useNav,
   useNavUpdate,
   useRefReview,
@@ -135,6 +137,7 @@ import { C4Bar } from "./C4Bar.js";
 import { buildSystemCardFacts, systemCardSlot } from "./system-card.js";
 import { filterRoutesForMovedEndpoints } from "./elk-layout.js";
 import { useElkLayout } from "./use-elk-layout.js";
+import { layoutMessiness, shouldOfferMessyLayout } from "./layout-messiness.js";
 import { summarizeOverride } from "./canonical-overlay.js";
 import { bareCodeMapPatch } from "./navigation.js";
 
@@ -910,16 +913,21 @@ function DiagramsView({
     () => (withOverrides ? c4Reserve(withOverrides, mergedBase) : null),
     [withOverrides, mergedBase],
   );
-  const { laid, routes, revision: layoutRevision } = useElkLayout(
-    withOverrides,
-    dims,
+  const layoutProbeGraph = c4Enabled
+    ? withOverrides
+    : variant === "architecture"
+      ? (activeDraft?.draft.graph ?? displayGraph)
+      : null;
+  const { laid, routes, metrics: layoutMetrics, revision: layoutRevision } = useElkLayout(
+    layoutProbeGraph,
+    c4Enabled ? dims : null,
     canvasAspectRatio,
   );
 
   // Pins remain a final, view-specific overlay on the solved geometry. This
   // is intentionally the same application logic as the previous dagre path.
   const c4Laid = useMemo(() => {
-    if (!laid || !reconciled) return null;
+    if (!c4Enabled || !laid || !reconciled) return null;
     const pins = reconciled.c4Layouts[viewKeyStr] ?? {};
     if (Object.keys(pins).length === 0) return laid;
     return {
@@ -929,7 +937,7 @@ function DiagramsView({
         return pin ? { ...n, position: { ...pin } } : n;
       }),
     };
-  }, [laid, reconciled, viewKeyStr]);
+  }, [c4Enabled, laid, reconciled, viewKeyStr]);
   const canvasC4 = useMemo(
     () => c4Enabled && c4Laid && c4Projection
       ? {
@@ -949,6 +957,17 @@ function DiagramsView({
         : null,
     [laid, c4Laid, routes],
   );
+  const currentPins = reconciled?.c4Layouts[viewKeyStr] ?? {};
+  const pinCount = Object.keys(currentPins).length;
+  const pinBrokenRoutes = routes && c4Routes ? routes.size - c4Routes.size : 0;
+  const effectiveMessiness = layoutMetrics
+    ? layoutMessiness({ ...layoutMetrics, pinBrokenRoutes })
+    : 0;
+  const messyLayout = layoutMetrics != null
+    && shouldOfferMessyLayout(effectiveMessiness, c4Enabled, pinCount);
+  const messinessDismissKey = `${activeWs ?? ""}:${viewKeyStr}:${layoutRevision}`;
+  const [dismissedMessiness, setDismissedMessiness] = useState<string | null>(null);
+  const showMessinessBanner = messyLayout && dismissedMessiness !== messinessDismissKey;
   const clearCurrentC4Layout = useCallback(() => {
     if (!reconciled) return;
     updateArchOverlay(clearC4Layout(reconciled, viewKeyStr));
@@ -1832,13 +1851,35 @@ function DiagramsView({
                       ? activeDraft.draft.graph
                       : ((c4Enabled ? c4Laid : null) ?? displayGraph ?? rendered)
                   }
-                  headerExtra={
-                    activeDraft
-                      ? renderDraftBar(true)
-                      : c4Enabled && c4Model && !reviewOn
-                        ? <C4Bar view={{ level, scope }} model={c4Model} onNavigate={setC4View} />
-                        : null
-                  }
+                  headerExtra={({ runAutoLayout }) => (
+                    <>
+                      {activeDraft
+                        ? renderDraftBar(true)
+                        : c4Enabled && c4Model && !reviewOn
+                          ? <C4Bar view={{ level, scope }} model={c4Model} onNavigate={setC4View} />
+                          : null}
+                      {showMessinessBanner ? (
+                        <div className="flex items-center gap-2 rounded-lg border border-warn/40 bg-surface-2/95 px-3 py-1.5 text-xs text-ink shadow-lg backdrop-blur">
+                          <span>This layout looks tangled</span>
+                          <button
+                            type="button"
+                            className="font-medium text-crystal-300 hover:text-crystal-200"
+                            onClick={() => c4Enabled ? clearCurrentC4Layout() : runAutoLayout("flow")}
+                          >
+                            Re-layout
+                          </button>
+                          <button
+                            type="button"
+                            className="ml-1 text-ink-faint hover:text-ink"
+                            aria-label="Dismiss tangled layout suggestion"
+                            onClick={() => setDismissedMessiness(messinessDismissKey)}
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      ) : null}
+                    </>
+                  )}
                   diffMarks={
                     activeDraft
                       ? null
@@ -2208,13 +2249,15 @@ function FacetsSection({
 }) {
   const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null);
 
-  const { client } = useCrystal();
+  const { client, lensStore } = useCrystal();
   const connection = useConnectionState();
   const activeWs = useWorkspaces((s) => s.activeId);
   const updateNav = useNavUpdate();
   const [index, setIndex] = useState<CodeIndex | null>(null);
   const [staleCount, setStaleCount] = useState(0);
   const [dismissed, setDismissed] = useState<string[]>([]);
+  const [populated, setPopulated] = useState<{ id: string; count: number } | null>(null);
+  const indexing = useLens((s) => (activeWs ? s.indexingByWs[activeWs] === true : false));
 
   const fetchIndex = useCallback(async () => {
     try {
@@ -2249,7 +2292,7 @@ function FacetsSection({
   /** Materialize a suggestion — filling a same-named empty facet if one exists. */
   const accept = (s: FacetSuggestion) => {
     const existing = graph.facets.find(
-      (f) => f.nodeIds.length === 0 && f.name.trim().toLowerCase() === s.name.trim().toLowerCase(),
+      (f) => f.nodeIds.length === 0 && facetNameMatchesSuggestion(f.name, s),
     );
     if (existing) {
       onGraphChange({
@@ -2261,6 +2304,7 @@ function FacetsSection({
         ),
       });
       onActivate(existing.id);
+      setPopulated({ id: existing.id, count: s.nodeIds.length });
       return;
     }
     const facet = { ...createArchFacet(s.name, s.nodeIds), description: s.description };
@@ -2268,11 +2312,31 @@ function FacetsSection({
     onActivate(facet.id);
   };
 
+  useEffect(() => {
+    const empty = graph.facets.find((facet) =>
+      facet.nodeIds.length === 0 && suggestions.some((s) => facetNameMatchesSuggestion(facet.name, s)),
+    );
+    if (!empty) return;
+    const suggestion = suggestions.find((s) => facetNameMatchesSuggestion(empty.name, s));
+    if (suggestion) accept(suggestion);
+    // accept is intentionally driven only by recomputed index suggestions.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [suggestions]);
+
+  useEffect(() => {
+    if (!populated) return;
+    const timer = window.setTimeout(() => setPopulated(null), 3000);
+    return () => window.clearTimeout(timer);
+  }, [populated]);
+
   const create = () => {
     const facet = createArchFacet(`Facet ${graph.facets.length + 1}`);
     onGraphChange({ ...graph, facets: [...graph.facets, facet] });
     onActivate(facet.id);
     setRenaming({ id: facet.id, value: facet.name });
+    if (staleCount > 0 && activeWs) {
+      void lensStore.getState().requestIntentIndex(activeWs, { full: true }).catch(() => undefined);
+    }
   };
 
   const rename = (id: string, name: string) => {
@@ -2283,6 +2347,9 @@ function FacetsSection({
       });
     }
     setRenaming(null);
+    if (name.trim() && staleCount > 0 && activeWs) {
+      void lensStore.getState().requestIntentIndex(activeWs, { full: true }).catch(() => undefined);
+    }
   };
 
   const remove = (id: string) => {
@@ -2334,7 +2401,7 @@ function FacetsSection({
             <span className="min-w-0 flex-1 truncate">{f.name}</span>
           )}
           <span className="text-[10px] text-ink-faint">
-            {f.nodeIds.length > 0 ? f.nodeIds.length : "all"}
+            {populated?.id === f.id ? `populated · ${populated.count}` : f.nodeIds.length > 0 ? f.nodeIds.length : "all"}
           </span>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -2402,18 +2469,20 @@ function FacetsSection({
       {index ? (
         <div className="flex items-center justify-between px-2 py-1 text-[11px] text-ink-faint">
           <span>
-            {staleCount > 0
+            {indexing
+              ? "Indexing intents…"
+              : staleCount > 0
               ? `${staleCount} file${staleCount === 1 ? "" : "s"} without intent tags`
               : "intent index fresh"}
           </span>
-          {staleCount > 0 ? (
-            <Tooltip content="Run intent indexing in the Jobs view — a small agent tags what each symbol is for, scoped to your diff by default">
+          {indexing || staleCount > 0 ? (
+            <Tooltip content="Open the indexing run in Jobs">
               <button
                 type="button"
                 className="flex items-center gap-1 text-ink-faint hover:text-ink"
                 onClick={() => updateNav({ mode: "jobs" })}
               >
-                <Bot className="h-3 w-3" /> Index intents
+                <Bot className="h-3 w-3" /> {indexing ? "run in Jobs" : "Jobs"}
               </button>
             </Tooltip>
           ) : null}

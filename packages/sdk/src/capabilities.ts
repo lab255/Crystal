@@ -6,6 +6,7 @@ export type PaletteCapabilityAction =
   | "set-base-lens"
   | "clear-lens"
   | "save-lens"
+  | "new-facet"
   | "publish-settings"
   | "open-workspace"
   | "new-thread"
@@ -33,6 +34,7 @@ export const CAPABILITY_EVENTS = {
   setBaseLens: "crystal:set-base-lens",
   clearLens: "crystal:clear-lens",
   saveLens: "crystal:save-lens",
+  newFacet: "crystal:new-facet",
 } as const;
 
 export const BASE_BRANCH_LENS_PARAM = formatLensParam({ kind: "diff", scope: "base" });
@@ -98,9 +100,19 @@ const SAVE_LENS: PaletteCapability = {
   action: "save-lens",
 };
 
+const NEW_FACET: PaletteCapability = {
+  id: "lens.new-facet",
+  title: "New facet…",
+  icon: "save",
+  action: "new-facet",
+};
+
 /** Capability actions mixed into the palette's workspace and navigation entries. */
 export function paletteCapabilities(canSaveLens: boolean): PaletteCapability[] {
   const capabilities = [...ALWAYS_AVAILABLE];
-  if (canSaveLens) capabilities.splice(3, 0, SAVE_LENS);
+  if (canSaveLens) {
+    const clearLensIndex = capabilities.findIndex((capability) => capability.id === "lens.clear");
+    capabilities.splice(clearLensIndex, 0, NEW_FACET, SAVE_LENS);
+  }
   return capabilities;
 }

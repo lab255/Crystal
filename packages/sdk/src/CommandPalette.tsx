@@ -286,6 +286,8 @@ export function CommandPalette({
         window.dispatchEvent(new CustomEvent(CAPABILITY_EVENTS.clearLens));
       } else if (action === "save-lens") {
         window.dispatchEvent(new CustomEvent(CAPABILITY_EVENTS.saveLens));
+      } else if (action === "new-facet") {
+        window.dispatchEvent(new CustomEvent(CAPABILITY_EVENTS.newFacet));
       } else if (action === "publish-settings") {
         onOpenSettings?.("publish");
       } else if (action === "open-workspace") {
