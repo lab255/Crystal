@@ -24,6 +24,11 @@ export const ROLE_BANDS: Record<ModuleFlavor, readonly CodeRole[]> = {
   frontend: ["provider", "layout", "component", "query", "other"],
 };
 
+/** Whether a role belongs to the frontend presentation/data-flow bands. */
+export function isFrontendRole(role: CodeRole): boolean {
+  return ROLE_BANDS.frontend.includes(role) && role !== "other";
+}
+
 const BACKEND_ROLE_TOKENS: Record<string, CodeRole> = tokenTable({
   entry: [
     "route", "routes", "router", "routers", "controller", "controllers",

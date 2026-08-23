@@ -6,7 +6,7 @@ import {
   identifierWords,
   type ConceptDef,
 } from "./code-index.js";
-import type { CodeRole } from "./code-roles.js";
+import { ROLE_BANDS, roleOfFile, type CodeRole } from "./code-roles.js";
 import type { CodeSymbolKind } from "./codemap.js";
 import type { EndpointValidation } from "./endpoint-validation.js";
 import { classifyExternalPackage, isPlatformImport } from "./external-services.js";
@@ -338,6 +338,8 @@ const LINK_SYMBOLS_CAP = 12;
 const LINK_APIS_CAP = 10;
 const LINK_PARTS_CAP = 16;
 const PART_LINKS_CAP = 40;
+const ROLE_GROUP_FILE_CAP = 200;
+const LINK_GROUPS_CAP = 6;
 const ENDPOINTS_CAP = 24;
 const COMPONENTS_CAP = 12;
 const INTENTS_CAP = 5;
@@ -819,6 +821,7 @@ export function buildSystemOverview(
   const systems: SystemModule[] = [];
   const systemOfFile = new Map<string, string>();
   const partOfFile = new Map<string, string>();
+  const roleOfPath = new Map<string, CodeRole>();
   const fileMeta = new Map(sources.map((f) => [f.path, f]));
 
   for (const cluster of [...clusters].sort(
@@ -942,6 +945,26 @@ export function buildSystemOverview(
             ? "frontend"
             : "backend";
 
+    const flavor = layer === "frontend" ? "frontend" : "backend";
+    const filesByRole = new Map<CodeRole, string[]>();
+    for (const file of memberFiles) {
+      const fileRole = roleOfFile(file.path, flavor);
+      roleOfPath.set(file.path, fileRole);
+      filesByRole.set(fileRole, [...(filesByRole.get(fileRole) ?? []), file.path]);
+    }
+    const roleOrder = [...ROLE_BANDS[flavor], ...([...filesByRole.keys()].filter((r) => !ROLE_BANDS[flavor].includes(r)).sort())];
+    const groups: SystemRoleGroup[] = roleOrder.flatMap((fileRole) => {
+      const roleFiles = filesByRole.get(fileRole);
+      if (!roleFiles?.length) return [];
+      const sorted = [...roleFiles].sort();
+      return [{
+        role: fileRole,
+        fileCount: sorted.length,
+        files: sorted.slice(0, ROLE_GROUP_FILE_CAP),
+        ...(sorted.length > ROLE_GROUP_FILE_CAP ? { filesTruncated: true } : {}),
+      }];
+    });
+
     // Served HTTP routes, deduped by method+path (first declaring file wins).
     const endpointMap = new Map<string, SystemEndpoint>();
     for (const file of memberFiles) {
@@ -970,16 +993,18 @@ export function buildSystemOverview(
       endpoints,
       components: [], // filled below, once export consumers are counted
       componentCount: 0,
+      groups,
     });
   }
 
   // D. cross-system links + consumed exports.
   const linkAgg = new Map<
     string,
-    { weight: number; names: Map<string, number>; parts: Map<string, number> }
+    { weight: number; names: Map<string, number>; parts: Map<string, number>; groups: Map<string, number> }
   >();
   // (system, source part, target part) → intra-system import count.
   const intraAgg = new Map<string, number>();
+  const intraGroupAgg = new Map<string, number>();
   // (system, file, exportName) → distinct outside consumer files.
   const exportConsumers = new Map<string, Set<string>>();
 
@@ -1022,15 +1047,27 @@ export function buildSystemOverview(
           const intraKey = [sourceSystem, sourcePart, targetPart].join(SEP);
           intraAgg.set(intraKey, (intraAgg.get(intraKey) ?? 0) + 1);
         }
+        const sourceGroup = roleOfPath.get(file.path);
+        const targetGroup = roleOfPath.get(target.path);
+        if (sourceGroup && targetGroup && sourceGroup !== targetGroup) {
+          const groupKey = [sourceSystem, sourceGroup, targetGroup].join(SEP);
+          intraGroupAgg.set(groupKey, (intraGroupAgg.get(groupKey) ?? 0) + 1);
+        }
         continue;
       }
 
       const key = `${sourceSystem}\u0000${targetSystem}`;
-      const link = linkAgg.get(key) ?? { weight: 0, names: new Map(), parts: new Map() };
+      const link = linkAgg.get(key) ?? { weight: 0, names: new Map(), parts: new Map(), groups: new Map() };
       link.weight += 1;
       if (sourcePart && targetPart) {
         const partKey = sourcePart + SEP + targetPart;
         link.parts.set(partKey, (link.parts.get(partKey) ?? 0) + 1);
+      }
+      const sourceGroup = roleOfPath.get(file.path);
+      const targetGroup = roleOfPath.get(target.path);
+      if (sourceGroup && targetGroup) {
+        const groupKey = sourceGroup + SEP + targetGroup;
+        link.groups.set(groupKey, (link.groups.get(groupKey) ?? 0) + 1);
       }
       for (const name of imp.names) {
         if (name === "*" || name === "default") continue;
@@ -1065,7 +1102,7 @@ export function buildSystemOverview(
   };
 
   const links: SystemLink[] = [...linkAgg.entries()]
-    .map(([key, { weight, names, parts }]) => {
+    .map(([key, { weight, names, parts, groups }]) => {
       const [source, target] = key.split("\u0000") as [string, string];
       const details: SystemLinkSymbol[] = [...names.entries()]
         .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
@@ -1081,6 +1118,14 @@ export function buildSystemOverview(
           return { sourcePart, targetPart, weight: w };
         });
       if (partDetail.length > 0) link.parts = partDetail;
+      const groupDetail = [...groups.entries()]
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+        .slice(0, LINK_GROUPS_CAP)
+        .map(([groupKey, w]) => {
+          const [sourceGroup, targetGroup] = groupKey.split(SEP) as [CodeRole, CodeRole];
+          return { sourceGroup, targetGroup, weight: w };
+        });
+      if (groupDetail.length > 0) link.groups = groupDetail;
       return link;
     })
     .sort((a, b) => b.weight - a.weight || a.source.localeCompare(b.source) || a.target.localeCompare(b.target));
@@ -1102,6 +1147,16 @@ export function buildSystemOverview(
           b.weight - a.weight || a.source.localeCompare(b.source) || a.target.localeCompare(b.target),
       )
       .slice(0, PART_LINKS_CAP);
+  }
+
+  const groupLinksBySystem = new Map<string, SystemGroupLink[]>();
+  for (const [key, weight] of intraGroupAgg) {
+    const [system, source, target] = key.split(SEP) as [string, CodeRole, CodeRole];
+    groupLinksBySystem.set(system, [...(groupLinksBySystem.get(system) ?? []), { source, target, weight }]);
+  }
+  for (const system of systems) {
+    const groupLinks = groupLinksBySystem.get(system.id);
+    if (groupLinks?.length) system.groupLinks = groupLinks.sort((a, b) => b.weight - a.weight || a.source.localeCompare(b.source) || a.target.localeCompare(b.target));
   }
 
   // HTTP calls matched to served routes: an outgoing call in system A whose

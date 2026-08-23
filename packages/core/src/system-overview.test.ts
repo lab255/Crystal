@@ -131,6 +131,54 @@ describe("npmPackageOf", () => {
 });
 
 describe("buildSystemOverview", () => {
+  it("bands frontend provider, layout, component, and query files in order", () => {
+    const files = [
+      "apps/web/src/state/auth.provider.tsx",
+      "apps/web/src/pages/home.layout.tsx",
+      "apps/web/src/components/card.tsx",
+      "apps/web/src/api/users.query.ts",
+    ].map((path) => src(path, "apps/web"));
+    const result = buildSystemOverview(files);
+    expect(result.systems[0]?.groups?.map((group) => group.role)).toEqual([
+      "provider",
+      "layout",
+      "component",
+      "query",
+    ]);
+  });
+
+  it("caps files carried by a role group and marks truncation", () => {
+    const files = Array.from({ length: 201 }, (_, i) =>
+      src(`packages/core/src/services/service-${String(i).padStart(3, "0")}.ts`, "packages/core"));
+    const result = buildSystemOverview(files);
+    const group = result.systems[0]?.groups?.find((candidate) => candidate.role === "service");
+    expect(group).toMatchObject({ fileCount: 201, filesTruncated: true });
+    expect(group?.files).toHaveLength(200);
+  });
+
+  it("emits ordered role groups and attributes intra- and cross-system imports", () => {
+    const auth = (file: string) => `app/src/modules/auth/${file}`;
+    const users = (file: string) => `app/src/modules/users/${file}`;
+    const result = buildSystemOverview([
+      src(auth("auth.controller.ts"), "app", { imports: [{ from: auth("auth.service.ts") }, { from: users("users.repo.ts") }] }),
+      src(auth("auth.service.ts"), "app", { imports: [{ from: auth("auth.repo.ts") }] }),
+      src(auth("auth.repo.ts"), "app"),
+      src(users("users.repo.ts"), "app"),
+    ]);
+    const authSystem = result.systems.find((system) => system.groups?.some((group) => group.files.includes(auth("auth.controller.ts"))))!;
+    expect(authSystem.groups?.map((g) => [g.role, g.files])).toEqual([
+      ["entry", [auth("auth.controller.ts")]],
+      ["service", [auth("auth.service.ts")]],
+      ["data", [auth("auth.repo.ts")]],
+    ]);
+    expect(authSystem.groupLinks).toEqual([
+      { source: "entry", target: "service", weight: 1 },
+      { source: "service", target: "data", weight: 1 },
+    ]);
+    expect(result.links.find((link) => link.source === authSystem.id)?.groups).toEqual([
+      { sourceGroup: "entry", targetGroup: "data", weight: 1 },
+    ]);
+  });
   it("clusters collection-dir subtrees into logical systems", () => {
     const overview = buildSystemOverview(formsgLikeSources());
     const names = overview.systems.map((s) => s.name);
