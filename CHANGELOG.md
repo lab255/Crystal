@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.41.0 (2026-08-26)
+
+### Features
+
+- intent-index progress, interrupted-drain resume, facet polish ([`cba4fa7`](https://github.com/lab255/Crystal/commit/cba4fa7))
+- calibrate messiness scoring + hysteresis + debug chip ([`02433a6`](https://github.com/lab255/Crystal/commit/02433a6))
+- named-instance compose adoption, overlay save flush, external row overflow ([`23a1e1d`](https://github.com/lab255/Crystal/commit/23a1e1d))
+- read-only run-context panel for workflow threads ([`f5f93b8`](https://github.com/lab255/Crystal/commit/f5f93b8))
+- facet creation from any screen with automatic intent indexing ([`6153b95`](https://github.com/lab255/Crystal/commit/6153b95))
+- layout messiness metrics + tangled-layout re-layout offer ([`6128f27`](https://github.com/lab255/Crystal/commit/6128f27))
+
 ## v0.40.0 (2026-08-23)
 
 ### Features
