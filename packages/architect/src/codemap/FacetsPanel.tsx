@@ -5,8 +5,8 @@ import {
   type CodeIndex,
   type IndexFacetSuggestion,
 } from "@crystal/core";
-import { useCrystal, useLens, useNavUpdate } from "@crystal/client";
-import { Badge, Button, Spinner, Tooltip, cn } from "@crystal/ui";
+import { canResumeIntentIndex, useCrystal, useLens, useNavUpdate } from "@crystal/client";
+import { Badge, Button, ProgressBar, Spinner, Tooltip, cn } from "@crystal/ui";
 
 /**
  * Facet lenses over the code map. Suggestions come straight from the code
@@ -40,6 +40,8 @@ export function FacetsPanel({
   const { lensStore } = useCrystal();
   const [indexError, setIndexError] = useState<string | null>(null);
   const indexing = useLens((s) => s.indexingByWs[ws] === true);
+  const progress = useLens((s) => s.indexProgressByWs[ws]);
+  const resume = !indexing && canResumeIntentIndex(progress);
 
   const suggestions = useMemo(() => (index ? suggestIndexFacets(index) : []), [index]);
   const activeKey = activeTags.join(",");
@@ -116,12 +118,24 @@ export function FacetsPanel({
       <div className="border-t border-edge px-3 py-2.5">
         <div className={cn("mb-1.5 text-[10px]", indexError ? "text-danger" : "text-ink-faint")}>
           {indexError ?? (indexing
-            ? "Indexing intents…"
+            ? `Indexing intents…${progress ? ` ${progress.indexed} of ${progress.total} files` : ""}`
+            : progress?.status === "auth"
+            ? "Indexing interrupted · agent login needs attention"
+            : resume
+            ? `Indexing interrupted · ${progress!.remaining} files remain`
             : staleFiles.length > 0
             ? `${staleFiles.length} file${staleFiles.length !== 1 ? "s" : ""} not yet agent-indexed — symbolic tags (names, paths, call graph) only.`
             : "Every file carries a fresh agent enrichment.")}
         </div>
-        {staleFiles.length > 0 && !indexing ? (
+        {indexing && progress ? (
+          <ProgressBar className="mb-2 h-1" value={progress.indexed} max={progress.total} label="Intent indexing progress" />
+        ) : null}
+        {resume ? (
+          <Button variant="secondary" size="xs" onClick={() => {
+            setIndexError(null);
+            void lensStore.getState().requestIntentIndex(ws, { full: true }).catch((error: Error) => setIndexError(error.message));
+          }}>Resume</Button>
+        ) : staleFiles.length > 0 && !indexing && progress?.status !== "auth" ? (
           <Button variant="secondary" size="xs" onClick={() => {
             setIndexError(null);
             void lensStore.getState().requestIntentIndex(ws, { full: true }).catch((error: Error) => {

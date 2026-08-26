@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { BridgeEvents, BridgeMethods, CodeIndex, SystemOverview } from "@crystal/core";
 import { createWorkspaceFacet, Emitter } from "@crystal/core";
-import { createLensStore } from "./lens-store.js";
+import { canResumeIntentIndex, createLensStore, reduceIntentIndexState } from "./lens-store.js";
 import type { BridgeClient } from "./bridge-client.js";
 
 interface Deferred<T> {
@@ -62,6 +62,29 @@ const overview = {
 } as unknown as SystemOverview;
 
 describe("lens store", () => {
+  it("folds workspace progress and gates auth-interrupted resume", () => {
+    const live = reduceIntentIndexState({}, {
+      type: "progress",
+      progress: { ws: "a", indexed: 120, total: 340, batch: 3, run: "r3" },
+    });
+    expect(live.a).toMatchObject({ status: "live", remaining: 220 });
+
+    const interrupted = reduceIntentIndexState(live, {
+      type: "run",
+      ws: "a",
+      run: { id: "r3", purpose: "index", status: "failed", failure: null },
+    });
+    expect(canResumeIntentIndex(interrupted.a)).toBe(true);
+
+    const auth = reduceIntentIndexState(live, {
+      type: "run",
+      ws: "a",
+      run: { id: "r3", purpose: "index", status: "failed", failure: { kind: "auth", detail: null, resetsAt: null } },
+    });
+    expect(auth.a!.status).toBe("auth");
+    expect(canResumeIntentIndex(auth.a)).toBe(false);
+    expect(auth.b).toBeUndefined();
+  });
   it("resolves a tags lens from the code index and sys: parts", async () => {
     const store = createLensStore(
       stubClient({

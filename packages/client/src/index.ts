@@ -118,6 +118,12 @@ export {
   type HubStore,
 } from "./hub-store.js";
 export { InteractiveRunBanner } from "./interactive-banner.js";
+export {
+  canResumeIntentIndex,
+  isAuthIndexFailure,
+  reduceIntentIndexState,
+  type IntentIndexState,
+} from "./lens-store.js";
 export { InteractiveRunTerminal } from "./run-terminal.js";
 export { XtermView } from "./xterm-view.js";
 export {

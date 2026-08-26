@@ -70,6 +70,8 @@ export function LensBar({ onOpenTerminal }: LensBarProps) {
   const lensError = useLens((s) => s.error);
   const facets = useLens((s) => s.facets);
   const facetsWs = useLens((s) => s.facetsWs);
+  const indexing = useLens((s) => (activeWsId ? s.indexingByWs[activeWsId] === true : false));
+  const indexProgress = useLens((s) => (activeWsId ? s.indexProgressByWs[activeWsId] : undefined));
 
   const [menuOpen, setMenuOpen] = useState(false);
   const [suggested, setSuggested] = useState<IndexFacetSuggestion[] | null>(null);
@@ -342,6 +344,12 @@ export function LensBar({ onOpenTerminal }: LensBarProps) {
 
       <DropdownMenuSeparator />
       <DropdownMenuLabel>Suggested facets</DropdownMenuLabel>
+      {indexing ? (
+        <div className="flex items-center justify-end gap-1.5 px-2 pb-1 text-[10px] text-ink-faint">
+          <Spinner className="h-3 w-3" />
+          {indexProgress ? `${indexProgress.indexed}/${indexProgress.total}` : "indexing"}
+        </div>
+      ) : null}
       {suggested === null ? (
         <div className="flex items-center gap-2 px-2 py-1 text-[11px] text-ink-faint">
           <Spinner className="h-3 w-3" /> loading…
@@ -461,6 +469,7 @@ export function LensBar({ onOpenTerminal }: LensBarProps) {
             else if (e.key === "Escape") {
               setSaveOpen(false);
               setNewFacetOpen(false);
+              setSaveName("");
             }
           }}
           placeholder="Facet name…"

@@ -116,3 +116,11 @@
   --split-pane-focus-color: var(--color-crystal-500);
   --split-pane-focus-bg: color-mix(in srgb, var(--color-crystal-500) 15%, transparent);
 }
+
+@keyframes crystal-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@utility fade-in-soft {
+  animation: crystal-fade-in 0.3s ease-out;
+}
