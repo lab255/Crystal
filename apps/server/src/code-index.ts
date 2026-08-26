@@ -24,6 +24,13 @@ export interface EnrichmentBatch {
   remaining: number;
 }
 
+export interface CodeIndexBatchProgress {
+  indexed: number;
+  total: number;
+  batch: number;
+  run: string;
+}
+
 /**
  * The semantic code index of one workspace: heuristic tags rebuilt live from
  * the code map, merged with agent enrichments read from `.crystal/index/`.
@@ -34,6 +41,7 @@ export class CodeIndexService {
   private building: Promise<{ index: CodeIndex; staleFiles: string[] }> | null = null;
   /** True while drainBacklog() is chaining batches (one full index at a time). */
   private draining = false;
+  private progressListeners = new Set<(progress: CodeIndexBatchProgress) => void>();
 
   constructor(
     private readonly root: string,
@@ -41,6 +49,15 @@ export class CodeIndexService {
     // plugs in as well as the real analyzer.
     private readonly codemap: Pick<CodeMapAnalyzer, "indexSourceFiles">,
   ) {}
+
+  onProgress(listener: (progress: CodeIndexBatchProgress) => void): () => void {
+    this.progressListeners.add(listener);
+    return () => this.progressListeners.delete(listener);
+  }
+
+  private emitProgress(progress: CodeIndexBatchProgress): void {
+    for (const listener of this.progressListeners) listener(progress);
+  }
 
   /** Call when code or `.crystal/index/` changes; the next get() rebuilds. */
   invalidate(): void {
@@ -131,6 +148,7 @@ export class CodeIndexService {
       this.draining = false;
       throw err;
     }
+    this.emitProgress({ indexed: 0, total: first.files.length + first.remaining, batch: 1, run: first.run.id });
     void this.drainRest(first, startBatch, settled);
     return first;
   }
@@ -143,6 +161,8 @@ export class CodeIndexService {
     try {
       let batch = first;
       let backlog = batch.files.length + batch.remaining;
+      const total = backlog;
+      let batchNumber = 1;
       for (;;) {
         const run = await settled(batch.run.id);
         if (run.status !== "completed") {
@@ -152,6 +172,7 @@ export class CodeIndexService {
         // The enrichment file just landed; don't wait for the watcher debounce.
         this.invalidate();
         const stale = (await this.dispatchCandidates()).length;
+        this.emitProgress({ indexed: Math.max(0, total - stale), total, batch: batchNumber, run: batch.run.id });
         if (stale === 0) return;
         if (stale >= backlog) {
           console.warn(
@@ -161,6 +182,8 @@ export class CodeIndexService {
         }
         backlog = stale;
         batch = await startBatch();
+        batchNumber += 1;
+        this.emitProgress({ indexed: Math.max(0, total - stale), total, batch: batchNumber, run: batch.run.id });
       }
     } catch (err) {
       console.warn("[crystal] full index stopped:", (err as Error).message);

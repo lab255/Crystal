@@ -7,6 +7,8 @@ import {
   type LensMembership,
   type LensSpec,
   type WorkspaceFacet,
+  type AgentRun,
+  type CodeIndexProgress,
 } from "@crystal/core";
 import type { BridgeClient } from "./bridge-client.js";
 
@@ -35,6 +37,8 @@ export interface LensState {
   facetsWs: string | null;
   /** Workspaces with a live intent-index agent run. */
   indexingByWs: Record<string, boolean>;
+  /** Workspace-keyed live or interrupted chained-index details. */
+  indexProgressByWs: Record<string, IntentIndexState>;
   /** Resolve the raw lens param for a workspace; cheap no-op when unchanged. */
   ensure(ws: string | null, raw: string | null | undefined, force?: boolean): Promise<void>;
   /** Re-resolve the current lens (diff lenses go stale as files change). */
@@ -45,6 +49,52 @@ export interface LensState {
   removeFacet(ws: string, id: string): Promise<void>;
   /** Start intent indexing unless that workspace already has a live index run. */
   requestIntentIndex(ws: string, options?: { files?: string[]; full?: boolean }): Promise<boolean>;
+}
+
+export interface IntentIndexState extends CodeIndexProgress {
+  status: "live" | "interrupted" | "auth";
+  remaining: number;
+}
+
+export type IntentIndexAction =
+  | { type: "progress"; progress: CodeIndexProgress }
+  | { type: "run"; ws: string; run: Pick<AgentRun, "id" | "purpose" | "status" | "failure"> };
+
+/** Pure workspace-keyed fold shared by event wiring and resume-gating tests. */
+export function reduceIntentIndexState(
+  state: Record<string, IntentIndexState>,
+  action: IntentIndexAction,
+): Record<string, IntentIndexState> {
+  if (action.type === "progress") {
+    const p = action.progress;
+    return {
+      ...state,
+      [p.ws]: { ...p, status: "live", remaining: Math.max(0, p.total - p.indexed) },
+    };
+  }
+  const { ws, run } = action;
+  if (run.purpose !== "index") return state;
+  const current = state[ws];
+  if (!current || current.run !== run.id) return state;
+  if (run.status === "failed" || run.status === "cancelled") {
+    return {
+      ...state,
+      [ws]: {
+        ...current,
+        status: isAuthIndexFailure(run) ? "auth" : "interrupted",
+      },
+    };
+  }
+  return state;
+}
+
+/** The one auth-gating rule: an auth-classified index failure must never offer resume. */
+export function isAuthIndexFailure(run: { failure?: { kind?: string } | null }): boolean {
+  return run.failure?.kind === "auth";
+}
+
+export function canResumeIntentIndex(progress: IntentIndexState | undefined): boolean {
+  return progress?.status === "interrupted" && progress.remaining > 0;
 }
 
 export type LensStore = StoreApi<LensState>;
@@ -103,6 +153,7 @@ export function createLensStore(client: BridgeClient): LensStore {
       facets: [],
       facetsWs: null,
       indexingByWs: {},
+      indexProgressByWs: {},
 
       async ensure(ws, raw, force = false) {
         const spec = raw ? parseLensParam(raw) : null;
@@ -193,7 +244,16 @@ export function createLensStore(client: BridgeClient): LensStore {
     if (run.purpose !== "index") return;
     const live = run.status === "queued" || run.status === "running";
     if (!live && intentIndexRequests.has(ws)) return;
-    store.setState((state) => ({ indexingByWs: { ...state.indexingByWs, [ws]: live } }));
+    store.setState((state) => ({
+      indexingByWs: { ...state.indexingByWs, [ws]: live },
+      indexProgressByWs: reduceIntentIndexState(state.indexProgressByWs, { type: "run", ws, run }),
+    }));
+  });
+  client.events?.on("codeindex.progress", (progress) => {
+    store.setState((state) => ({
+      indexingByWs: { ...state.indexingByWs, [progress.ws]: progress.indexed < progress.total },
+      indexProgressByWs: reduceIntentIndexState(state.indexProgressByWs, { type: "progress", progress }),
+    }));
   });
   client.events?.on("codeindex.changed", ({ ws }) => {
     // A full drain may start another batch after each index write; reconcile

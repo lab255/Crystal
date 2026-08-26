@@ -11,9 +11,9 @@ import {
   type AgentRun,
 } from "@crystal/core";
 import { autoLayout, buildSurveyPrompt, type SurveyKind } from "@crystal/architect";
-import { useAgents, useCrystal, useNavUpdate } from "@crystal/client";
+import { isAuthIndexFailure, useAgents, useCrystal, useLens, useNavUpdate, useWorkspaces } from "@crystal/client";
 import { RunList } from "@crystal/client";
-import { Spinner, StatusDot, cn } from "@crystal/ui";
+import { ProgressBar, Spinner, StatusDot, cn } from "@crystal/ui";
 import { ScopedActionButton, type JobScope } from "./ScopedActionButton.js";
 import { ServicesSection } from "./ServicesSection.js";
 import { StandingTasksSection } from "./StandingTasksSection.js";
@@ -128,6 +128,8 @@ function IndexSection({
   const { client } = useCrystal();
   const [scope, setScope] = useState<JobScope>("worktree");
   const [notice, setNotice] = useState<string | null>(null);
+  const activeWs = useWorkspaces((s) => s.activeId);
+  const progress = useLens((s) => (activeWs ? s.indexProgressByWs[activeWs] : undefined));
 
   const busy = runs.some(
     (r) => r.purpose === "index" && (r.status === "running" || r.status === "queued"),
@@ -201,11 +203,18 @@ function IndexSection({
           onRun={run}
         />
       </div>
+      {busy && progress && progress.indexed < progress.total ? (
+        <div className="mt-2 space-y-1 text-[10px] text-ink-faint">
+          <span>Indexing intents… {progress.indexed} of {progress.total} files</span>
+          <ProgressBar value={progress.indexed} max={progress.total} label="Intent indexing progress" className="h-1" />
+        </div>
+      ) : null}
       {notice ? <p className="mt-2 text-[11px] text-warn">{notice}</p> : null}
       {!notice && interrupted ? (
         <p className="mt-2 text-[11px] text-warn">
-          The last index run {interrupted.status === "cancelled" ? "was cancelled" : "failed"} —
-          indexing picks up where it left off when you run it again.
+          {isAuthIndexFailure(interrupted)
+            ? "Indexing interrupted — agent login needs attention. Re-authenticate in a terminal before retrying."
+            : `The last index run ${interrupted.status === "cancelled" ? "was cancelled" : "failed"} — indexing picks up where it left off when you run it again.`}
         </p>
       ) : null}
     </Section>

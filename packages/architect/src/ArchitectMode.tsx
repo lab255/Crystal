@@ -75,6 +75,7 @@ import {
   toggleIdInList,
   useAgents,
   useConnectionState,
+  canResumeIntentIndex,
   useCrystal,
   useLens,
   useNav,
@@ -2280,7 +2281,12 @@ function FacetsSection({
   const [staleCount, setStaleCount] = useState(0);
   const [dismissed, setDismissed] = useState<string[]>([]);
   const [populated, setPopulated] = useState<{ id: string; count: number } | null>(null);
+  // Only facets created this session may show the awaiting-members skeleton — a
+  // pre-existing empty facet legitimately means "all".
+  const sessionCreatedFacets = useRef<Set<string>>(new Set());
   const indexing = useLens((s) => (activeWs ? s.indexingByWs[activeWs] === true : false));
+  const progress = useLens((s) => (activeWs ? s.indexProgressByWs[activeWs] : undefined));
+  const renameCancelled = useRef<string | null>(null);
 
   const fetchIndex = useCallback(async () => {
     try {
@@ -2354,6 +2360,7 @@ function FacetsSection({
 
   const create = () => {
     const facet = createArchFacet(`Facet ${graph.facets.length + 1}`);
+    sessionCreatedFacets.current.add(facet.id);
     onGraphChange({ ...graph, facets: [...graph.facets, facet] });
     onActivate(facet.id);
     setRenaming({ id: facet.id, value: facet.name });
@@ -2411,10 +2418,19 @@ function FacetsSection({
               autoFocus
               value={renaming.value}
               onChange={(e) => setRenaming({ id: f.id, value: e.target.value })}
-              onBlur={() => rename(f.id, renaming.value)}
+              onBlur={() => {
+                if (renameCancelled.current === f.id) {
+                  renameCancelled.current = null;
+                  return;
+                }
+                rename(f.id, renaming.value);
+              }}
               onKeyDown={(e) => {
                 if (e.key === "Enter") rename(f.id, renaming.value);
-                if (e.key === "Escape") setRenaming(null);
+                if (e.key === "Escape") {
+                  renameCancelled.current = f.id;
+                  setRenaming(null);
+                }
               }}
               onClick={(e) => e.stopPropagation()}
               className="h-6 min-w-0 flex-1 px-1.5 text-[13px]"
@@ -2423,8 +2439,15 @@ function FacetsSection({
           ) : (
             <span className="min-w-0 flex-1 truncate">{f.name}</span>
           )}
-          <span className="text-[10px] text-ink-faint">
-            {populated?.id === f.id ? `populated · ${populated.count}` : f.nodeIds.length > 0 ? f.nodeIds.length : "all"}
+          <span className="relative min-w-12 text-right text-[10px] text-ink-faint">
+            {f.nodeIds.length > 0 ? f.nodeIds.length : indexing && sessionCreatedFacets.current.has(f.id) ? (
+              <span className="ml-auto block h-2 w-8 animate-pulse rounded bg-surface-3" aria-label="Waiting for indexed members" />
+            ) : "all"}
+            {populated?.id === f.id ? (
+              <span aria-live="polite" className="absolute right-0 top-0 whitespace-nowrap bg-surface-1 pl-1 text-crystal-400 fade-in-soft">
+                populated · {populated.count}
+              </span>
+            ) : null}
           </span>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -2493,11 +2516,19 @@ function FacetsSection({
         <div className="flex items-center justify-between px-2 py-1 text-[11px] text-ink-faint">
           <span>
             {indexing
-              ? "Indexing intents…"
+              ? `Indexing intents…${progress ? ` ${progress.indexed} of ${progress.total} files` : ""}`
+              : progress?.status === "auth"
+              ? "Indexing interrupted · agent login needs attention"
+              : canResumeIntentIndex(progress)
+              ? `Indexing interrupted · ${progress!.remaining} files remain`
               : staleCount > 0
               ? `${staleCount} file${staleCount === 1 ? "" : "s"} without intent tags`
               : "intent index fresh"}
           </span>
+          {indexing && progress ? <ProgressBar className="mx-2 h-1 max-w-24" value={progress.indexed} max={progress.total} label="Intent indexing progress" /> : null}
+          {!indexing && canResumeIntentIndex(progress) && activeWs ? (
+            <button type="button" className="text-crystal-400 hover:text-ink" onClick={() => void lensStore.getState().requestIntentIndex(activeWs, { full: true }).catch(() => undefined)}>Resume</button>
+          ) : null}
           {indexing || staleCount > 0 ? (
             <Tooltip content="Open the indexing run in Jobs">
               <button

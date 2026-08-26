@@ -399,6 +399,9 @@ export class WorkspaceRuntime {
         broadcast("codemap.progress", progress);
         if (progress.phase === "done") broadcast("codemap.changed", { ws: this.id });
       }),
+      this.codeindex.onProgress((progress) => {
+        broadcast("codeindex.progress", { ws: this.id, ...progress });
+      }),
       this.agents.events.on("event", (payload) => {
         broadcast("agent.event", payload);
         // File CRYSTAL_QUESTION lines on the run's task server-side — a

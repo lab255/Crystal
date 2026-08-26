@@ -103,6 +103,33 @@ describe("CodeIndexService.drainBacklog", () => {
     expect(batches).toBe(2);
   });
 
+  it("emits progress at dispatch and landing batch boundaries", async () => {
+    const { svc, root } = await makeService(60);
+    const progress: { indexed: number; total: number; batch: number; run: string }[] = [];
+    svc.onProgress((update) => progress.push(update));
+    let batches = 0;
+    let lastBatch: { path: string; hash: string }[] = [];
+    const startBatch = async (): Promise<EnrichmentBatch> => {
+      const dispatch = await svc.enrichmentDispatch();
+      batches += 1;
+      const { index } = await svc.get();
+      const hashes = new Map(index.files.map((file) => [file.path, file.hash]));
+      lastBatch = dispatch.files.map((file) => ({ path: file, hash: hashes.get(file)! }));
+      return { run: fakeRun(`run-${batches}`), files: dispatch.files, remaining: dispatch.remaining };
+    };
+    await svc.drainBacklog(startBatch, async (runId) => {
+      await writeCoverage(root, `${runId}.json`, lastBatch);
+      return fakeRun(runId, "completed");
+    });
+    await until(() => progress.at(-1)?.indexed === 60);
+    expect(progress).toEqual([
+      { indexed: 0, total: 60, batch: 1, run: "run-1" },
+      { indexed: 50, total: 60, batch: 1, run: "run-1" },
+      { indexed: 50, total: 60, batch: 2, run: "run-2" },
+      { indexed: 60, total: 60, batch: 2, run: "run-2" },
+    ]);
+  });
+
   it("stops when a completed batch made no progress", async () => {
     const { svc } = await makeService(60);
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});

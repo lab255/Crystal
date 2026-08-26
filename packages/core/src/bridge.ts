@@ -116,6 +116,19 @@ export interface CodeMapProgress {
   total?: number;
 }
 
+/** Batch-boundary progress for one workspace's chained intent-index run. */
+export interface CodeIndexProgress {
+  ws: string;
+  /** Files made fresh since this drain began. */
+  indexed: number;
+  /** Dispatchable stale files present when this drain began. */
+  total: number;
+  /** One-based batch number. */
+  batch: number;
+  /** Agent run processing the current (or just-settled) batch. */
+  run: string;
+}
+
 /** One open workspace on the bridge server. */
 export interface WorkspaceDescriptor {
   /** Stable id derived from the canonical root path. */
@@ -1478,6 +1491,8 @@ export interface BridgeEvents {
   "codemap.progress": CodeMapProgress;
   /** The code index changed (code re-analyzed or an enrichment file landed). */
   "codeindex.changed": { ws: string };
+  /** A chained intent-index drain crossed a batch boundary. */
+  "codeindex.progress": CodeIndexProgress;
   /** A dev server started, stopped, or learned its URL from process output. */
   "devservers.changed": { ws: string };
   /** The API-client state was saved (another client, or this one). */
