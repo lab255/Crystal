@@ -7,6 +7,7 @@ import {
   useCrystal,
   type ComposerSendResult,
 } from "@crystal/client";
+import { steerReceiptText } from "./steer-receipt.js";
 
 /**
  * The thread's composer: routes through {@link messageRun} (workflow/program
@@ -42,12 +43,9 @@ export function ThreadComposer({
       if (!client) throw new Error(`Connection ${sid} is no longer available.`);
       const result = sid ? await messageRunAt({ client, ws }, run, text) : await messageRun(client, run, text);
       if (result.status !== "recorded") onDelivered?.(result.runId ?? null);
-      if (result.queued && typeof result.wakeExpected === "boolean") {
-        setReceipt(
-          result.wakeExpected
-            ? "Queued — the manager wakes on the next settlement."
-            : "Queued — no wake expected; it reads this when next resumed.",
-        );
+      const receiptText = steerReceiptText(result);
+      if (receiptText) {
+        setReceipt(receiptText);
         // The receipt above replaces the shared composer's generic queue note.
         return { ...result, queued: false };
       }

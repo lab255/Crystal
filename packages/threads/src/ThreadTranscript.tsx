@@ -63,6 +63,7 @@ export function ThreadTranscript({
   const [highlightedTurnId, setHighlightedTurnId] = useState<string | null>(null);
   const [keyboardTurn, setKeyboardTurn] = useState(-1);
   const turns = useMemo(() => groupItemsByTurn(items), [items]);
+  const active = keyboardTurn < turns.length ? keyboardTurn : -1;
 
   useEffect(() => {
     focusedRef.current = focusTurnId;
@@ -77,6 +78,7 @@ export function ThreadTranscript({
 
   useEffect(() => {
     stickToBottom.current = true;
+    setKeyboardTurn(-1);
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [threadId]);
@@ -126,25 +128,29 @@ export function ThreadTranscript({
   return (
     <div
       ref={scrollRef}
-      tabIndex={keyboardTurn < 0 ? 0 : -1}
+      tabIndex={active < 0 ? 0 : -1}
       onFocus={(event) => {
         if (event.target === event.currentTarget) setKeyboardTurn(-1);
       }}
       onKeyDown={(event) => {
+        const target = event.target as HTMLElement;
+        if (target !== event.currentTarget && !target.hasAttribute("data-turn-id")) return;
         if (event.key === "ArrowDown" || event.key === "ArrowUp") {
           event.preventDefault();
-          moveKeyboardFocus(keyboardTurn + (event.key === "ArrowDown" ? 1 : -1));
+          event.stopPropagation();
+          moveKeyboardFocus(active + (event.key === "ArrowDown" ? 1 : -1));
           return;
         }
-        if ((event.key === "Enter" || event.key === " ") && keyboardTurn >= 0) {
+        if ((event.key === "Enter" || event.key === " ") && active >= 0) {
           const row = event.currentTarget.querySelectorAll<HTMLElement>("[data-turn-id]")[
-            keyboardTurn
+            active
           ];
           const toggle = row?.querySelector<HTMLButtonElement>(
             'button[aria-expanded], button[data-row-toggle="true"]',
           );
           if (toggle && event.target === row) {
             event.preventDefault();
+            event.stopPropagation();
             toggle.click();
           }
         }
@@ -160,7 +166,9 @@ export function ThreadTranscript({
         <div
           key={turn.runId}
           data-turn-id={turn.runId}
-          tabIndex={keyboardTurn === index ? 0 : -1}
+          role="group"
+          aria-label={`Turn ${index + 1}`}
+          tabIndex={active === index ? 0 : -1}
           className={cn(
             "group/turn relative space-y-2 rounded-lg border-l-2 border-transparent pr-7",
             "transition-colors duration-500",
@@ -345,7 +353,10 @@ function ExpandableNotice({ label, text }: { label: string; text: string }) {
         className="max-w-[90%] rounded-lg border border-edge bg-surface-2 px-3 py-2 text-left"
       >
         {expanded ? (
-          <span className="block whitespace-pre-wrap text-xs text-ink">{text}</span>
+          <span className="block">
+            <span className="block text-[10px] font-semibold text-ink-muted">{label}</span>
+            <span className="mt-1 block whitespace-pre-wrap text-xs text-ink">{text}</span>
+          </span>
         ) : (
           <span className="flex min-w-0 items-baseline gap-2">
             <span className="shrink-0 text-[10px] font-semibold text-ink-muted">{label}</span>
@@ -364,7 +375,11 @@ function UserRow({ text }: { text: string }) {
   useLayoutEffect(() => {
     const element = textRef.current;
     if (!element || expanded) return;
-    setOverflowing(element.scrollHeight > element.clientHeight);
+    const measure = () => setOverflowing(element.scrollHeight > element.clientHeight);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
   }, [expanded, text]);
   return (
     <div className="flex justify-end">
@@ -430,6 +445,8 @@ function WorkRow({ item }: { item: Extract<TranscriptItem, { kind: "work" }> }) 
     >
       <button
         type="button"
+        tabIndex={-1}
+        aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
         className="flex w-full items-center gap-1.5 px-2.5 py-1.5 text-left text-[11px] text-ink-muted"
       >
@@ -461,6 +478,8 @@ function WorkEntryRow({ entry }: { entry: WorkEntry }) {
     <div>
       <button
         type="button"
+        tabIndex={-1}
+        aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
         className={cn(
           "flex w-full items-center gap-1.5 rounded px-1 py-0.5 text-left text-[11px]",
@@ -543,6 +562,8 @@ function DelegationRow({
     <div className="rounded-lg border border-crystal-500/25 bg-crystal-500/5">
       <button
         type="button"
+        tabIndex={-1}
+        aria-expanded={open}
         onClick={canExpand ? () => setOpen((o) => !o) : undefined}
         className={cn(
           "flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[11px] text-ink",
@@ -592,6 +613,8 @@ function CollapsedTurnRow({
   return (
     <button
       type="button"
+      tabIndex={-1}
+      data-row-toggle="true"
       disabled={!onExpandTurn || loading}
       onClick={async () => {
         if (!onExpandTurn) return;

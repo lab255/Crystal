@@ -34,6 +34,7 @@ export {
 } from "./thread-model.js";
 export {
   buildTranscriptItems,
+  joinTranscriptRecords,
   workEntryTitle,
   workTitle,
   type TranscriptFoldInput,

@@ -111,6 +111,33 @@ describe("buildTranscriptItems", () => {
       durationMs: 1_500,
     });
   });
+
+  it.each([
+    { ok: false, status: "failed" as const },
+    { ok: true, status: "completed" as const },
+  ])("dedupes streamed result + $status status into one ending row", ({ ok, status }) => {
+    const turn = run({ id: "r1", prompt: "x", status });
+    const items = buildTranscriptItems({
+      turns: [turn],
+      eventsByRun: {
+        r1: events("r1", [
+          {
+            type: "result",
+            ok,
+            resultText: "boom",
+            costUsd: 0.1,
+            turns: 1,
+            durationMs: 100,
+            sessionId: null,
+          },
+          { type: "status", status, message: "boom" },
+        ]),
+      },
+    });
+    expect(items.filter((item) => item.kind === "turn-end" || item.kind === "system"))
+      .toHaveLength(1);
+  });
+
   it("renders each turn as user row + folded events, oldest first", () => {
     const turn = run({ id: "r1", prompt: "Fix it", status: "completed" });
     const items = buildTranscriptItems({

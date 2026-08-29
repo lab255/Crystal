@@ -439,7 +439,8 @@ export default function OverviewThreads() {
     const result: Record<string, typeof EMPTY_EVENTS> = {};
     const walk = (node: typeof selected.summary.node) => {
       for (const turn of node.turns) {
-        result[turn.id] = eventsByRunKey[runKey(ref.sid, ref.ws, turn.id)] ?? EMPTY_EVENTS;
+        const turnEvents = eventsByRunKey[runKey(ref.sid, ref.ws, turn.id)];
+        if (turnEvents !== undefined) result[turn.id] = turnEvents;
       }
       node.workers.forEach(walk);
     };

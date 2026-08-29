@@ -6,6 +6,7 @@ import {
   type AgentRun,
   type RunEvent,
   type RunNode,
+  type WorkflowTurn,
 } from "@crystal/core";
 import {
   InteractiveRunBanner,
@@ -30,7 +31,11 @@ import { CreateProgram, ProgramSession } from "../ProgramThread.js";
 import { PAUSED_BY_LABEL, STATUS_LABEL, SpendLine } from "../spend-line.js";
 import { ThreadComposer } from "../ThreadComposer.js";
 import { ThreadTranscript } from "../ThreadTranscript.js";
-import { buildTranscriptItems, type TranscriptItem } from "../transcript-items.js";
+import {
+  buildTranscriptItems,
+  joinTranscriptRecords,
+  type TranscriptItem,
+} from "../transcript-items.js";
 import { INDICATOR_LABEL } from "../ThreadRow.js";
 import type { OverviewThread, OverviewThreadRef } from "./overview-thread-model.js";
 
@@ -56,44 +61,6 @@ interface PaneProps {
   missingRef?: OverviewThreadRef | null;
   missingProjectClosed?: boolean;
   clearSelection: () => void;
-}
-
-function joinTranscriptRecords(
-  items: readonly TranscriptItem[],
-  node: RunNode,
-  questions: readonly FleetQuestion["question"][],
-): TranscriptItem[] {
-  const questionPool = [...questions];
-  const workerPool = [...node.workers];
-  return items.map((item) => {
-    if (item.kind === "question") {
-      let index = questionPool.findIndex(
-        (question) => question.runId === item.runId && question.text === item.text,
-      );
-      if (index === -1) {
-        index = questionPool.findIndex((question) => question.text === item.text);
-      }
-      return {
-        ...item,
-        record: index === -1 ? null : questionPool.splice(index, 1)[0] ?? null,
-      };
-    }
-    if (item.kind !== "delegation") return item;
-    const parentRunId = item.id.slice(0, item.id.lastIndexOf(":"));
-    let index = workerPool.findIndex(
-      (worker) => worker.turns.some((turn) => turn.parentRunId === parentRunId)
-        && worker.turns[0]?.prompt.split("\n")[0] === item.headline,
-    );
-    if (index === -1) {
-      index = workerPool.findIndex(
-        (worker) => worker.turns.some((turn) => turn.parentRunId === parentRunId),
-      );
-    }
-    return {
-      ...item,
-      worker: index === -1 ? null : workerPool.splice(index, 1)[0] ?? null,
-    };
-  });
 }
 
 function NodeTranscript({
@@ -167,7 +134,7 @@ function NodeTranscript({
       foldCacheRef.current.set(turn.id, { events: turnEvents, items: folded });
       return folded;
     });
-    return joinTranscriptRecords(base, node, transcriptQuestions);
+    return joinTranscriptRecords(base, transcriptQuestions, node.workers);
   }, [node.turns, node.workers, eventsByRun, transcriptQuestions]);
   const renderWorker = useCallback(
     (item: Extract<TranscriptItem, { kind: "delegation" }>) => item.worker ? (
@@ -346,38 +313,7 @@ export function OverviewThreadPane({
                 budgetUsd={thread.workflow.budgetUsd}
               /></span>
             ) : null}
-            {recentTurnLog.length ? (
-              <span className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap">
-                <span className="text-ink-faint">Last 5 turns</span>
-                {recentTurnLog.map((turn, index) => {
-                  const cost = formatRunCost(turn.costUsd);
-                  return (
-                    <Tooltip
-                      key={`${turn.runId}:${turn.at}`}
-                      content={
-                        `Turn ${recentTurnOffset + index + 1} · ${cost} · `
-                        + (turn.progressed ? "progressed" : "no progress")
-                      }
-                    >
-                      <span
-                        aria-label={turn.progressed
-                          ? `${cost}, progressed`
-                          : `${cost}, stalled`}
-                        className={cn(
-                          "rounded px-1 py-0.5",
-                          turn.progressed
-                            ? "bg-surface-2"
-                            : "bg-danger/15 font-semibold text-danger",
-                        )}
-                      >
-                        {cost}
-                      </span>
-                    </Tooltip>
-                  );
-                })}
-                <span>{recentTurnLog.filter((turn) => !turn.progressed).length} stalled</span>
-              </span>
-            ) : null}
+            <RecentTurnStrip turns={recentTurnLog} offset={recentTurnOffset} />
           </div>
         </div>
         <Button
@@ -465,6 +401,38 @@ export function OverviewThreadPane({
         </>
       )}
     </main>
+  );
+}
+
+function RecentTurnStrip({ turns, offset }: { turns: readonly WorkflowTurn[]; offset: number }) {
+  if (!turns.length) return null;
+  return (
+    <span className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap">
+      <span className="text-ink-faint">Last 5 turns</span>
+      {turns.map((turn, index) => {
+        const cost = formatRunCost(turn.costUsd);
+        return (
+          <Tooltip
+            key={`${turn.runId}:${turn.at}`}
+            content={
+              `Turn ${offset + index + 1} · ${cost} · `
+              + (turn.progressed ? "progressed" : "no progress")
+            }
+          >
+            <span
+              aria-label={turn.progressed ? `${cost}, progressed` : `${cost}, stalled`}
+              className={cn(
+                "rounded px-1 py-0.5",
+                turn.progressed ? "bg-surface-2" : "bg-danger/15 font-semibold text-danger",
+              )}
+            >
+              {cost}
+            </span>
+          </Tooltip>
+        );
+      })}
+      <span>{turns.filter((turn) => !turn.progressed).length} stalled</span>
+    </span>
   );
 }
 

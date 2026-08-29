@@ -19,7 +19,7 @@ export const STATUS_TONES: Record<
   cancelled: "slate",
 };
 
-export const STATUS_LABEL: Record<DeliveryStatus, string> = {
+export const STATUS_LABEL: Record<ProgramStatus | DeliveryStatus, string> = {
   pending: "Pending",
   running: "Running",
   paused: "Paused",

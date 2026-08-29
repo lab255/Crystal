@@ -19,6 +19,7 @@ import { Button, EmptyState, Input, Textarea, Tooltip } from "@crystal/ui";
 import { SpendLine, StatusBadge, parseBudget } from "./spend-line.js";
 import { ThreadTranscript } from "./ThreadTranscript.js";
 import { buildTranscriptItems } from "./transcript-items.js";
+import { steerReceiptText } from "./steer-receipt.js";
 import { programChain } from "./overview/overview-thread-model.js";
 
 const EMPTY_HUB_RUNS: AgentRun[] = [];
@@ -156,12 +157,9 @@ export function ProgramSession({
     setReceipt(null);
     if (!client || !face) throw new Error("The manager connection is unavailable.");
     const result = await messageRun(client, face, text);
-    if (result.queued && typeof result.wakeExpected === "boolean") {
-      setReceipt(
-        result.wakeExpected
-          ? "Queued — the manager wakes on the next settlement."
-          : "Queued — no wake expected; it reads this when next resumed.",
-      );
+    const receiptText = steerReceiptText(result);
+    if (receiptText) {
+      setReceipt(receiptText);
       return { ...result, queued: false };
     }
     return result;

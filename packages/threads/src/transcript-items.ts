@@ -77,12 +77,19 @@ export type TranscriptItem =
       kind: "turn-end";
       id: string;
       runId: string;
+      status: Extract<AgentRun["status"], "completed" | "failed" | "cancelled">;
       ok: boolean;
       resultText: string;
       costUsd: number | null;
       durationMs: number | null;
     }
-  | { kind: "system"; id: string; text: string; tone: "muted" | "warn" }
+  | {
+      kind: "system";
+      id: string;
+      status: Extract<AgentRun["status"], "failed" | "cancelled">;
+      text: string;
+      tone: "muted" | "warn";
+    }
   | { kind: "kickoff"; id: string; runId: string; text: string }
   | { kind: "notice"; id: string; runId: string; text: string }
   | {
@@ -216,28 +223,6 @@ export const RUN_STATUS_LABEL: Record<AgentRun["status"], string> = {
  */
 export function buildTranscriptItems(input: TranscriptFoldInput): TranscriptItem[] {
   const items: TranscriptItem[] = [];
-  const questionPool = [...(input.questions ?? [])];
-  const workerPool = [...(input.workers ?? [])];
-
-  const takeQuestion = (runId: string, text: string): TaskQuestion | null => {
-    let idx = questionPool.findIndex((q) => q.runId === runId && q.text === text);
-    if (idx === -1) idx = questionPool.findIndex((q) => q.text === text);
-    if (idx === -1) return null;
-    return questionPool.splice(idx, 1)[0] ?? null;
-  };
-
-  const takeWorker = (parentRunId: string, promptHead: string): RunNode | null => {
-    let idx = workerPool.findIndex(
-      (w) =>
-        w.turns.some((t) => t.parentRunId === parentRunId) &&
-        (w.turns[0]!.prompt.split("\n")[0] ?? "") === promptHead,
-    );
-    if (idx === -1) {
-      idx = workerPool.findIndex((w) => w.turns.some((t) => t.parentRunId === parentRunId));
-    }
-    if (idx === -1) return null;
-    return workerPool.splice(idx, 1)[0] ?? null;
-  };
 
   for (const turn of input.turns) {
     if (turn.prompt.trim()) {
@@ -282,16 +267,14 @@ export function buildTranscriptItems(input: TranscriptFoldInput): TranscriptItem
       }
       continue;
     }
-    items.push(...foldTurnEvents(turn, events, takeQuestion, takeWorker));
+    items.push(...foldTurnEvents(turn, events));
   }
-  return items;
+  return joinTranscriptRecords(items, input.questions, input.workers);
 }
 
-export function foldTurnEvents(
+function foldTurnEvents(
   turn: AgentRun,
   events: readonly RunEvent[],
-  takeQuestion: (runId: string, text: string) => TaskQuestion | null,
-  takeWorker: (parentRunId: string, promptHead: string) => RunNode | null,
 ): TranscriptItem[] {
   const items: TranscriptItem[] = [];
   let work: Extract<TranscriptItem, { kind: "work" }> | null = null;
@@ -391,7 +374,7 @@ export function foldTurnEvents(
           text: event.text,
           options: event.options ?? [],
           recommended: event.recommended ?? null,
-          record: takeQuestion(turn.id, event.text),
+          record: null,
         });
         break;
       }
@@ -402,7 +385,7 @@ export function foldTurnEvents(
           kind: "delegation",
           id,
           headline: event.spec.prompt.split("\n")[0] ?? "",
-          worker: takeWorker(turn.id, event.spec.prompt.split("\n")[0] ?? ""),
+          worker: null,
         });
         break;
       }
@@ -442,6 +425,7 @@ export function foldTurnEvents(
           kind: "turn-end",
           id,
           runId: turn.id,
+          status: event.ok ? "completed" : "failed",
           ok: event.ok,
           resultText: event.ok ? event.resultText : humanRunFailure(event.resultText),
           costUsd: event.costUsd,
@@ -458,6 +442,7 @@ export function foldTurnEvents(
           items.push({
             kind: "system",
             id,
+            status: event.status,
             text: event.message && event.message !== event.status
               ? `${RUN_STATUS_LABEL[event.status]} — ${humanRunFailure(event.message)}`
               : RUN_STATUS_LABEL[event.status],
@@ -476,14 +461,19 @@ export function foldTurnEvents(
 
   for (const e of events) push(e.event, e.seq);
   closeWork();
-  const settled = ["completed", "failed", "cancelled"].includes(turn.status);
+  const terminalStatus = turn.status === "completed"
+    || turn.status === "failed"
+    || turn.status === "cancelled"
+    ? turn.status
+    : null;
   const hasEnding = items.some((item) => item.kind === "turn-end" || item.kind === "system");
-  if (settled && !hasEnding) {
+  if (terminalStatus && !hasEnding) {
     const ok = turn.status === "completed";
     items.push({
       kind: "turn-end",
       id: `${turn.id}:settled`,
       runId: turn.id,
+      status: terminalStatus,
       ok,
       resultText: ok ? turn.resultText ?? "" : humanRunFailure(turn.resultText ?? ""),
       costUsd: turn.costUsd ?? null,
@@ -502,6 +492,43 @@ function dedupeTurnEnd(items: TranscriptItem[]): TranscriptItem[] {
   return items.filter((item, i) => {
     if (item.kind !== "system") return true;
     const prev = items[i - 1];
-    return !(prev?.kind === "turn-end" && item.text.includes(prev.ok ? "completed" : "failed"));
+    return !(prev?.kind === "turn-end" && prev.status === item.status);
+  });
+}
+
+/** Join folded question/delegation rows to their durable records exactly once. */
+export function joinTranscriptRecords(
+  items: readonly TranscriptItem[],
+  questions: readonly TaskQuestion[] = [],
+  workers: readonly RunNode[] = [],
+): TranscriptItem[] {
+  const questionPool = [...questions];
+  const workerPool = [...workers];
+  return items.map((item) => {
+    if (item.kind === "question") {
+      let index = questionPool.findIndex(
+        (question) => question.runId === item.runId && question.text === item.text,
+      );
+      if (index === -1) index = questionPool.findIndex((question) => question.text === item.text);
+      return {
+        ...item,
+        record: index === -1 ? null : questionPool.splice(index, 1)[0] ?? null,
+      };
+    }
+    if (item.kind !== "delegation") return item;
+    const parentRunId = item.id.slice(0, item.id.lastIndexOf(":"));
+    let index = workerPool.findIndex(
+      (worker) => worker.turns.some((turn) => turn.parentRunId === parentRunId)
+        && worker.turns[0]?.prompt.split("\n")[0] === item.headline,
+    );
+    if (index === -1) {
+      index = workerPool.findIndex(
+        (worker) => worker.turns.some((turn) => turn.parentRunId === parentRunId),
+      );
+    }
+    return {
+      ...item,
+      worker: index === -1 ? null : workerPool.splice(index, 1)[0] ?? null,
+    };
   });
 }
