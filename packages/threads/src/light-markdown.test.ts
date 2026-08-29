@@ -76,18 +76,22 @@ describe("renderLightMarkdown", () => {
     ["opening then closing brackets", `${"[".repeat(25_000)}${"]".repeat(25_000)}`, `${"[".repeat(2_500)}${"]".repeat(2_500)}`],
     ["an incomplete link", `[${"a".repeat(49_988)}](https://x`, `[${"a".repeat(4_988)}](https://x`],
   ])("parses 50 KB of %s with linear scaling", (_label, input, baselineInput) => {
-    const measure = (value: string) => {
+    const measure = (value: string, iterations = 1) => {
       const started = performance.now();
-      renderLightMarkdown(value);
+      for (let i = 0; i < iterations; i++) renderLightMarkdown(value);
       return performance.now() - started;
     };
-    // A batch keeps this wall-clock baseline exposed to the same full-suite
-    // scheduling pressure as the longer single call. One tiny sample can run
-    // between scheduler slices and make an otherwise relative check flaky.
-    const baselineStarted = performance.now();
-    for (let i = 0; i < 20; i++) renderLightMarkdown(baselineInput);
-    const baseline = performance.now() - baselineStarted;
-    expect(measure(input)).toBeLessThan(2 * baseline + 20);
+    // Four identical 5 KB parses make the baseline measurable while preserving
+    // the guard: quadratic work is (50 / 5)^2 / 4 = 25x the batched baseline.
+    const baselineSamples = [measure(baselineInput, 4)];
+    const bigSamples = [measure(input)];
+    baselineSamples.push(measure(baselineInput, 4));
+    bigSamples.push(measure(input));
+    baselineSamples.push(measure(baselineInput, 4));
+
+    const minBaseline = Math.min(...baselineSamples);
+    const minBig = Math.min(...bigSamples);
+    expect(minBig).toBeLessThan(3 * minBaseline + 30);
   });
 
   it("flattens nested list markers", () => {
