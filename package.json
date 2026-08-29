@@ -1,7 +1,7 @@
 {
   "name": "crystal-monorepo",
   "private": true,
-  "version": "0.43.0",
+  "version": "0.44.0",
   "description": "Crystal — a multi-facet IDE for building systems and their software",
   "repository": {
     "type": "git",

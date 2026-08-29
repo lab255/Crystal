@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.44.0 (2026-08-29)
+
+### Features
+
+- saved sample values for parameterised screen routes ([`cf2f33a`](https://github.com/lab255/Crystal/commit/cf2f33a))
+- multi-stage derivation progress with details accordion ([`97bf0b5`](https://github.com/lab255/Crystal/commit/97bf0b5))
+
+### Bug Fixes
+
+- preview base URL is the dev server origin; URL bar commits on Enter ([`f83efc9`](https://github.com/lab255/Crystal/commit/f83efc9))
+
 ## v0.43.0 (2026-08-29)
 
 ### Features
