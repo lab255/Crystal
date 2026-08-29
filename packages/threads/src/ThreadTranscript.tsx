@@ -21,6 +21,10 @@ import { searchTranscript, workEntryText, type SearchHit } from "./transcript-se
 type IndexedHit = SearchHit & { index: number };
 const NO_HITS: readonly IndexedHit[] = [];
 
+function hitKey(hit: SearchHit): string {
+  return `${hit.itemId}:${hit.field}:${hit.entryIndex ?? ""}:${hit.start}`;
+}
+
 export interface QuestionAnswerResult {
   notice?: string;
 }
@@ -45,6 +49,7 @@ export function ThreadTranscript({
   onFocusedTurn,
   /** Live thread: show the working shimmer under the last item. */
   working = false,
+  findDisabled = false,
   className,
 }: {
   items: readonly TranscriptItem[];
@@ -59,6 +64,8 @@ export function ThreadTranscript({
   onCopyTurnLink?: (runId: string) => void | Promise<void>;
   onFocusedTurn?: (runId: string) => void;
   working?: boolean;
+  /** Nested transcripts defer find shortcuts and UI to their top-level transcript. */
+  findDisabled?: boolean;
   className?: string;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -74,12 +81,15 @@ export function ThreadTranscript({
   const [findOpen, setFindOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [activeHit, setActiveHit] = useState(0);
+  const [loadingAll, setLoadingAll] = useState(false);
+  const activeKeyRef = useRef<string | null>(null);
   const hits = useMemo(
     () => searchTranscript(items, query, { excludeQuestions: renderQuestion != null }),
     [items, query, renderQuestion],
   );
   const hitsByItem = useMemo(() => {
     const grouped = new Map<string, IndexedHit[]>();
+    if (!findOpen || !query.trim()) return grouped;
     hits.forEach((hit, index) => {
       const itemHits = grouped.get(hit.itemId) ?? [];
       if (!grouped.has(hit.itemId)) grouped.set(hit.itemId, itemHits);
@@ -87,9 +97,7 @@ export function ThreadTranscript({
     });
     return grouped;
   }, [hits]);
-  const activeKey = hits[activeHit]
-    ? `${hits[activeHit]!.itemId}:${hits[activeHit]!.field}:${hits[activeHit]!.entryIndex ?? ""}:${hits[activeHit]!.start}`
-    : null;
+  const activeKey = hits[activeHit] ? hitKey(hits[activeHit]!) : null;
   const unloadedTurns = useMemo(
     () => items.filter((item): item is Extract<TranscriptItem, { kind: "collapsed-turn" }> => item.kind === "collapsed-turn"),
     [items],
@@ -107,14 +115,25 @@ export function ThreadTranscript({
   };
   const cycleHit = (delta: number) => {
     if (!hits.length) return;
-    setActiveHit((current) => (current + delta + hits.length) % hits.length);
+    setActiveHit((current) => {
+      const next = (current + delta + hits.length) % hits.length;
+      activeKeyRef.current = hitKey(hits[next]!);
+      return next;
+    });
   };
 
-  useEffect(() => { setActiveHit(0); }, [query]);
+  useEffect(() => {
+    setActiveHit(0);
+    activeKeyRef.current = hits[0] ? hitKey(hits[0]) : null;
+  }, [query]);
 
   useEffect(() => {
-    setActiveHit((current) => hits.length ? Math.min(current, hits.length - 1) : 0);
-  }, [hits.length]);
+    const preserved = activeKeyRef.current;
+    const preservedIndex = preserved == null ? -1 : hits.findIndex((hit) => hitKey(hit) === preserved);
+    const next = hits.length ? (preservedIndex >= 0 ? preservedIndex : Math.min(activeHit, hits.length - 1)) : 0;
+    setActiveHit(next);
+    activeKeyRef.current = hits[next] ? hitKey(hits[next]!) : null;
+  }, [hits]);
 
   useEffect(() => {
     if (!findOpen) return;
@@ -199,14 +218,14 @@ export function ThreadTranscript({
       className={cn("relative flex min-h-0 flex-1 flex-col", className)}
       onKeyDownCapture={(event) => {
         const target = event.target as HTMLElement;
-        if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "f") return;
+        if (findDisabled || !(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "f") return;
         if (target.closest(".xterm")) return;
         event.preventDefault();
         event.stopPropagation();
         setFindOpen(true);
       }}
     >
-      {findOpen ? (
+      {!findDisabled && findOpen ? (
         <TranscriptFindBar
           query={query}
           onQueryChange={setQuery}
@@ -216,10 +235,18 @@ export function ThreadTranscript({
           onPrevious={() => cycleHit(-1)}
           onNext={() => cycleHit(1)}
           onClose={closeFind}
-          onLoadAll={onExpandTurn ? () => { void Promise.all(unloadedTurns.map((item) => onExpandTurn(item.runId))); } : undefined}
+          loadingAll={loadingAll}
+          onLoadAll={onExpandTurn ? async () => {
+            setLoadingAll(true);
+            try {
+              await Promise.all(unloadedTurns.map((item) => onExpandTurn(item.runId)));
+            } finally {
+              setLoadingAll(false);
+            }
+          } : undefined}
           inputRef={findInputRef}
         />
-      ) : (
+      ) : !findDisabled ? (
         <button
           type="button"
           aria-label="Find in thread"
@@ -229,7 +256,7 @@ export function ThreadTranscript({
         >
           <Search className="h-3.5 w-3.5" />
         </button>
-      )}
+      ) : null}
       <div
       ref={scrollRef}
       data-transcript="true"
@@ -373,6 +400,8 @@ function TranscriptItemRow({
           item={item}
           focusTurnId={focusTurnId}
           renderWorker={renderWorker}
+          hits={itemHits}
+          activeHit={activeHit}
         />
       );
     case "permission":
@@ -531,6 +560,11 @@ function UserRow({ text, hits, activeHit }: { text: string; hits: readonly Index
 
 const AssistantRow = memo(function AssistantRow({ text, thinking, hits, activeHit }: { text: string; thinking: string | null; hits: readonly IndexedHit[]; activeHit: number }) {
   const [showThinking, setShowThinking] = useState(false);
+  const thinkingHits = hits.filter((hit) => hit.field === "thinking");
+  const textHits = hits.filter((hit) => hit.field === "text");
+  useEffect(() => {
+    if (thinkingHits.some((hit) => hit.index === activeHit)) setShowThinking(true);
+  }, [activeHit, thinkingHits]);
   return (
     <div className="max-w-[92%]">
       {thinking ? (
@@ -544,10 +578,10 @@ const AssistantRow = memo(function AssistantRow({ text, thinking, hits, activeHi
       ) : null}
       {showThinking && thinking ? (
         <div className="mb-1.5 whitespace-pre-wrap rounded-lg border border-edge/70 bg-surface-1 px-3 py-2 text-[11px] italic leading-relaxed text-ink-faint">
-          {thinking}
+          {highlightText(thinking, thinkingHits, activeHit)}
         </div>
       ) : null}
-      <LightMarkdown text={text} hits={hits} activeHit={activeHit} />
+      <LightMarkdown text={text} hits={textHits} activeHit={activeHit} />
     </div>
   );
 });
@@ -784,10 +818,14 @@ function DelegationRow({
   item,
   focusTurnId,
   renderWorker,
+  hits,
+  activeHit,
 }: {
   item: Extract<TranscriptItem, { kind: "delegation" }>;
   focusTurnId?: string;
   renderWorker?: (item: Extract<TranscriptItem, { kind: "delegation" }>) => ReactNode;
+  hits: readonly IndexedHit[];
+  activeHit: number;
 }) {
   const [open, setOpen] = useState(false);
   const worker = item.worker;
@@ -822,7 +860,7 @@ function DelegationRow({
         {worker ? <StatusDot status={worker.run.status} /> : null}
         <span className="min-w-0 flex-1 truncate">
           <span className="text-ink-faint">Worker · </span>
-          {item.headline}
+          {highlightText(item.headline, hits.filter((hit) => hit.field === "title"), activeHit)}
         </span>
         {worker?.run.costUsd != null ? (
           <span className="shrink-0 text-[10px] text-ink-faint">{formatRunCost(worker.run.costUsd)}</span>

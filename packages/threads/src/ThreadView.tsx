@@ -316,6 +316,7 @@ function WorkerThread({
     <ThreadTranscript
       items={items}
       threadId={worker.turns[0]!.id}
+      findDisabled
       working={sessionIsWorking(worker)}
       renderQuestion={renderQuestion}
       renderWorker={(item) =>

@@ -62,6 +62,8 @@ export function threadFailureTitle(node: RunNode): string | null {
 
 /** Rail section: one project's threads (null id = runs outside any board). */
 export interface ThreadGroup {
+  /** Stable render identity; unlike projectId this distinguishes workflow groups. */
+  key: string;
   projectId: string | null;
   name: string;
   threads: ThreadSummary[];
@@ -147,6 +149,7 @@ export function buildThreadGroups(input: ThreadModelInput): ThreadGroup[] {
     let group = groups.get(key);
     if (!group) {
       group = {
+        key,
         projectId: summary.projectId,
         name: summary.projectId
           ? (input.projectNameOf?.(summary.projectId) ?? summary.projectId)

@@ -42,6 +42,15 @@ describe("searchTranscript", () => {
     expect(searchTranscript(assistant, "https")).toEqual([]);
   });
 
+  it("searches assistant thinking and worker delegation purpose", () => {
+    const extra: TranscriptItem[] = [
+      { kind: "assistant", id: "r1:a", text: "Visible", thinking: "Consider the hidden edge" },
+      { kind: "delegation", id: "r1:d", headline: "Audit the payment worker", worker: null },
+    ];
+    expect(searchTranscript(extra, "hidden")).toMatchObject([{ field: "thinking", start: 13 }]);
+    expect(searchTranscript(extra, "payment")).toMatchObject([{ field: "title", start: 10 }]);
+  });
+
   it("uses the displayed work-entry body", () => {
     expect(workEntryText(items[1]!.kind === "work" ? items[1]!.entries[0]! : (() => { throw new Error(); })()))
       .toBe('{"term":"ALPHA"}\n\n— result —\nalpha result');

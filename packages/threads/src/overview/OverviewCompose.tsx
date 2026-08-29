@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Send } from "lucide-react";
 import {
   AUTO_MODEL,
@@ -19,6 +19,7 @@ import {
 import { Button, Select, Switch, Textarea } from "@crystal/ui";
 
 const STORAGE_KEY = "crystal.overview.compose";
+const DRAFT_KEY = "crystal.overview.compose.draft";
 const EMPTY_AGENTS: AgentProfile[] = [];
 
 type ComposeKind = "thread" | "workflow";
@@ -38,6 +39,14 @@ function readSaved(): SavedCompose {
 
 function promptName(prompt: string): string {
   return prompt.trim().split(/\r?\n/, 1)[0]?.trim().slice(0, 120) ?? "";
+}
+
+function readDraft(): string {
+  try {
+    return sessionStorage.getItem(DRAFT_KEY) ?? "";
+  } catch {
+    return "";
+  }
 }
 
 function chooseInitialTarget(
@@ -68,7 +77,7 @@ export function OverviewCompose({
   const initialTarget = chooseInitialTarget(target, saved.target, choices);
   const [projectKey, setProjectKey] = useState(initialTarget);
   const [kind, setKind] = useState<ComposeKind>(saved.kind === "workflow" ? "workflow" : "thread");
-  const [prompt, setPrompt] = useState("");
+  const [prompt, setPrompt] = useState(readDraft);
   const [name, setName] = useState("");
   const [nameEdited, setNameEdited] = useState(false);
   const [templateId, setTemplateId] = useState("standard");
@@ -76,17 +85,41 @@ export function OverviewCompose({
   const [agentId, setAgentId] = useState("");
   const [model, setModel] = useState("");
   const [worktree, setWorktree] = useState(false);
-  const [interactive, setInteractive] = useState(true);
+  const [interactivePreference, setInteractivePreference] = useState(false);
   const [rosters, setRosters] = useState<Record<string, AgentRoster>>({});
   const [templates, setTemplates] = useState<Record<string, WorkflowTemplate[]>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const promptRef = useRef<HTMLTextAreaElement>(null);
   const enterToSend = useSettings((state) => state.enterToSend);
   const selected = choices.find((choice) => choice.key === projectKey);
   const active = selected?.connection.sid === activeSid
     && selected.connection.activeWs === selected.workspace.id;
   const online = selected?.connection.state === "open";
+  const hasOpenProjects = choices.some((choice) => choice.connection.state === "open");
+  const interactive = Boolean(active && !worktree && interactivePreference);
+  const parsedBudget = budget.trim() ? Number(budget) : null;
+  const budgetValid = parsedBudget == null || (Number.isFinite(parsedBudget) && parsedBudget > 0);
+
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => promptRef.current?.focus());
+    return () => cancelAnimationFrame(frame);
+  }, []);
+
+  useEffect(() => {
+    if (projectKey) return;
+    const next = chooseInitialTarget(target, saved.target, choices);
+    if (next) setProjectKey(next);
+  }, [choices, projectKey, saved.target, target]);
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(DRAFT_KEY, prompt);
+    } catch {
+      // Persistence is optional.
+    }
+  }, [prompt]);
 
   useEffect(() => {
     if (!projectKey || !online) return;
@@ -139,13 +172,8 @@ export function OverviewCompose({
     return () => disposers.forEach((dispose) => dispose());
   }, [connections, fleet]);
 
-  useEffect(() => {
-    if (!active) setInteractive(false);
-  }, [active]);
-
   const roster = rosters[projectKey];
   const agents = roster?.agents ?? EMPTY_AGENTS;
-  const profile = agents.find((agent) => agent.id === (agentId || roster?.defaultAgentId));
 
   async function dispatch(): Promise<void> {
     const text = prompt.trim();
@@ -160,8 +188,7 @@ export function OverviewCompose({
       const chosenModel = model.trim() || null;
       let run: AgentRun;
       if (kind === "workflow") {
-        const parsedBudget = budget.trim() ? Number(budget) : null;
-        if (parsedBudget != null && (!Number.isFinite(parsedBudget) || parsedBudget <= 0)) {
+        if (!budgetValid) {
           throw new Error("Budget must be a positive number.");
         }
         const result = await client.request("workflow.start", {
@@ -192,6 +219,11 @@ export function OverviewCompose({
       } catch {
         // Persistence is optional.
       }
+      try {
+        sessionStorage.removeItem(DRAFT_KEY);
+      } catch {
+        // Persistence is optional.
+      }
       onStarted({ sid, ws, run, kind });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -212,6 +244,7 @@ export function OverviewCompose({
   const multiServer = connections.length > 1;
   const onPaneKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
     if (event.defaultPrevented || event.key !== "Escape") return;
+    if ((event.target as HTMLElement).tagName === "SELECT") return;
     event.preventDefault();
     onCancel();
   };
@@ -259,7 +292,7 @@ export function OverviewCompose({
               </label>
               <label className="grid gap-1 text-xs text-ink-muted">
                 Budget USD
-                <input className="h-8 rounded-md border border-edge bg-surface-1 px-2 text-xs text-ink" type="number" min="0" step="0.01" placeholder="Optional" value={budget} onChange={(event) => setBudget(event.target.value)} />
+                <input className="h-8 rounded-md border border-edge bg-surface-1 px-2 text-xs text-ink" type="number" min="0.01" step="0.01" placeholder="Optional" value={budget} onChange={(event) => setBudget(event.target.value)} />
               </label>
               <label className="col-span-2 grid gap-1 text-xs text-ink-muted">
                 Name
@@ -268,6 +301,7 @@ export function OverviewCompose({
             </div>
           ) : null}
           <Textarea
+            ref={promptRef}
             autoFocus
             rows={6}
             aria-label="New thread prompt"
@@ -286,20 +320,21 @@ export function OverviewCompose({
             </label>
             <label className="flex items-center gap-1.5 text-xs text-ink-muted">
               Model
-              <input aria-label="Model override" className="h-7 w-28 rounded-md border border-edge bg-surface-1 px-2 text-xs text-ink" value={model} placeholder={profile?.model && profile.model !== AUTO_MODEL ? profile.model : "default"} onChange={(event) => setModel(event.target.value)} />
+              <input aria-label="Model override" className="h-7 w-72 rounded-md border border-edge bg-surface-1 px-2 text-xs text-ink" value={model} placeholder="e.g. claude-sonnet-5 — leave blank for the profile default" onChange={(event) => setModel(event.target.value)} />
             </label>
           </div>
           {kind === "thread" ? (
             <div className="flex flex-wrap items-center gap-4 text-xs text-ink-muted">
-              <label className="flex items-center gap-1.5"><Switch aria-label="Isolate in a git worktree" checked={worktree} onChange={(value) => { setWorktree(value); if (value) setInteractive(false); }} /> Isolate in a git worktree</label>
-              {active ? <label className="flex items-center gap-1.5"><Switch aria-label="Interactive terminal" checked={interactive && !worktree} onChange={(value) => { setInteractive(value); if (value) setWorktree(false); }} /> Interactive terminal</label> : <span>Open the project to start an interactive session.</span>}
+              <label className="flex items-center gap-1.5"><Switch aria-label="Isolate in a git worktree" checked={worktree} onChange={setWorktree} /> Isolate in a git worktree</label>
+              {active ? <label className="flex items-center gap-1.5"><Switch aria-label="Interactive terminal" checked={interactive} onChange={(value) => { setInteractivePreference(value); if (value) setWorktree(false); }} /> Interactive terminal</label> : <span>Open the project to start an interactive session.</span>}
             </div>
           ) : null}
           {error ? <p role="alert" className="text-xs text-danger">{error}</p> : null}
           {loadError ? <p role="alert" className="text-xs text-danger">{loadError}</p> : null}
           <div className="flex justify-end gap-2">
+            {!hasOpenProjects ? <span className="self-center text-xs text-ink-muted">No open projects</span> : null}
             <Button variant="ghost" size="sm" onClick={onCancel}>Cancel</Button>
-            <Button variant="primary" size="sm" disabled={busy || !prompt.trim() || !selected || !online} onClick={() => void dispatch()}>
+            <Button variant="primary" size="sm" title={!hasOpenProjects ? "No open projects" : !budgetValid ? "Budget must be a positive number or empty" : undefined} disabled={busy || !prompt.trim() || !selected || !online || !budgetValid} onClick={() => void dispatch()}>
               <Send className="h-3.5 w-3.5" /> {busy ? "Starting…" : "Start"}
             </Button>
           </div>

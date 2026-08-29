@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { GitBranchPlus, MessageSquarePlus, MoreHorizontal, Plus, Unplug } from "lucide-react";
 import {
   Button,
@@ -104,6 +104,7 @@ export function OverviewThreadRail({
 }: OverviewThreadRailProps) {
   const rows = sections.flatMap((section) => section.threads);
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const navigatedToCompose = useRef(false);
   const empty = emptyStateFor(filter, find, hiddenCount, hasUnfilteredThreads, {
     showAll: () => onFilter("all"),
     clear: () => onFind(""),
@@ -147,9 +148,17 @@ export function OverviewThreadRail({
                 <Button variant="ghost" size="icon-sm" aria-label="New"><Plus className="h-3.5 w-3.5" /></Button>
               </DropdownMenuTrigger>
             </Tooltip>
-            <DropdownMenuContent align="end" className="min-w-52">
-              <DropdownMenuItem onSelect={onNewThread}><MessageSquarePlus className="h-3.5 w-3.5" />New thread in project…</DropdownMenuItem>
-              <DropdownMenuItem onSelect={onNewProgram}><GitBranchPlus className="h-3.5 w-3.5" />New program</DropdownMenuItem>
+            <DropdownMenuContent
+              align="end"
+              className="min-w-52"
+              onCloseAutoFocus={(event) => {
+                if (!navigatedToCompose.current) return;
+                event.preventDefault();
+                navigatedToCompose.current = false;
+              }}
+            >
+              <DropdownMenuItem onSelect={() => { navigatedToCompose.current = true; onNewThread(); }}><MessageSquarePlus className="h-3.5 w-3.5" />New thread in project…</DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => { navigatedToCompose.current = true; onNewProgram(); }}><GitBranchPlus className="h-3.5 w-3.5" />New program</DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         </div>

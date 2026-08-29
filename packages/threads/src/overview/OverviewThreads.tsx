@@ -210,6 +210,9 @@ export default function OverviewThreads() {
       target: null,
     },
   }), [update]);
+  const cancelCompose = useCallback(() => update({
+    projects: { compose: null },
+  }), [update]);
   const handleFocusedTurn = useCallback(() => {
     update({ projects: { view: "threads", turn: null } });
   }, [update]);
@@ -553,6 +556,15 @@ export default function OverviewThreads() {
       }}
       onThreadStarted={({ sid, ws, run, kind }) => {
         fleetStore.getState().upsertRun(sid, ws, run);
+        if (run.terminalId) {
+          selectWorkspace(sid, ws);
+          update({
+            ws: formatWsRef(sid, ws),
+            mode: "threads",
+            threads: { thread: run.id, compose: null },
+          });
+          return;
+        }
         if (kind === "thread" && filter === "managers") {
           setFilter("all");
           setNotice({ text: "Showing all threads", tone: "neutral" });
@@ -589,6 +601,7 @@ export default function OverviewThreads() {
       missingRef={requested && !selected && requestedLoaded ? requestedRef : null}
       missingProjectClosed={requestedProjectClosed}
       clearSelection={clearSelection}
+      cancelCompose={cancelCompose}
       resumeWorkflow={() => {
         if (selected?.ref.kind !== "workspace" || !selected.workflow) return;
         const ref = selected.ref;

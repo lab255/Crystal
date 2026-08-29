@@ -68,6 +68,7 @@ interface PaneProps {
   missingRef?: OverviewThreadRef | null;
   missingProjectClosed?: boolean;
   clearSelection: () => void;
+  cancelCompose: () => void;
 }
 
 function NodeTranscript({
@@ -78,6 +79,7 @@ function NodeTranscript({
   focusTurnId,
   onCopyTurnLink,
   onFocusedTurn,
+  nested = false,
 }: {
   node: RunNode;
   eventsByRun: Record<string, RunEvent[]>;
@@ -86,6 +88,7 @@ function NodeTranscript({
   focusTurnId?: string;
   onCopyTurnLink?: (runId: string) => void | Promise<void>;
   onFocusedTurn?: (runId: string) => void;
+  nested?: boolean;
 }) {
   const loadEventsRef = useRef(loadEvents);
   const foldCacheRef = useRef(new Map<
@@ -153,6 +156,7 @@ function NodeTranscript({
         focusTurnId={focusTurnId}
         onCopyTurnLink={onCopyTurnLink}
         onFocusedTurn={onFocusedTurn}
+        nested
       />
     ) : null,
     [eventsByRun, focusTurnId, loadNodeEvents, onCopyTurnLink, onFocusedTurn, questions],
@@ -162,6 +166,7 @@ function NodeTranscript({
       items={items}
       threadId={node.turns[0]!.id}
       working={sessionIsWorking(node)}
+      findDisabled={nested}
       renderWorker={renderWorker}
       onExpandTurn={loadNodeEvents}
       focusTurnId={ownsFocusTurn ? loadedFocusTurnId : focusTurnId}
@@ -196,6 +201,7 @@ export function OverviewThreadPane({
   missingRef,
   missingProjectClosed,
   clearSelection,
+  cancelCompose,
 }: PaneProps) {
   const { fleet, activeSid } = useCrystal();
   const activeWs = useWorkspaces((state) => state.activeId);
@@ -208,7 +214,7 @@ export function OverviewThreadPane({
   }, [questions, thread?.summary]);
 
   if (composing === "thread") {
-    return <OverviewCompose target={composeTarget} onCancel={clearSelection} onStarted={onThreadStarted} />;
+    return <OverviewCompose target={composeTarget} onCancel={cancelCompose} onStarted={onThreadStarted} />;
   }
   if (composing === "program") {
     return (
@@ -216,7 +222,7 @@ export function OverviewThreadPane({
         {notice ? <Notice text={notice} tone={noticeTone} dismiss={dismissNotice} /> : null}
         <CreateProgram
           onCreated={(program) => onCreated(program.id)}
-          onCancel={clearSelection}
+          onCancel={cancelCompose}
         />
       </main>
     );

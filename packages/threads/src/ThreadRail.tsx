@@ -87,7 +87,7 @@ export function ThreadRail({
           </p>
         ) : (
           groups.map((group) => (
-            <section key={group.projectId ?? "~adhoc"} className="mb-2">
+            <section key={group.key} className="mb-2">
               <h3 className="px-2 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-faint">
                 {group.name}
               </h3>

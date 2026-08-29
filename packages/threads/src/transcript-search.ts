@@ -5,7 +5,7 @@ import { plainTextOf, renderLightMarkdown } from "./light-markdown.js";
 export interface SearchHit {
   itemId: string;
   turnId: string;
-  field: "text" | "title" | "entry";
+  field: "text" | "thinking" | "title" | "entry";
   entryIndex?: number;
   start: number;
   end: number;
@@ -69,6 +69,10 @@ export function searchTranscript(
         break;
       case "assistant":
         appendHits(hits, item, needle, "text", plainTextOf(renderLightMarkdown(item.text)));
+        if (item.thinking) appendHits(hits, item, needle, "thinking", item.thinking);
+        break;
+      case "delegation":
+        appendHits(hits, item, needle, "title", item.headline);
         break;
       case "question":
         if (!options.excludeQuestions) appendHits(hits, item, needle, "text", item.text);

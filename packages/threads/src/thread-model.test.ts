@@ -60,7 +60,17 @@ describe("buildThreadGroups", () => {
       namingContext: { workflowNameOf: (id) => id === "wf1" ? "Release train" : null },
     });
     expect(groups).toHaveLength(1);
-    expect(groups[0]).toMatchObject({ projectId: null, name: "Release train" });
+    expect(groups[0]).toMatchObject({ key: "workflow:wf1", projectId: null, name: "Release train" });
+  });
+
+  it("gives workflow and ad-hoc sections distinct stable render keys", () => {
+    const workflowRun = run({ id: "r1", prompt: "Release", tags: ["workflow:wf1"], status: "completed" });
+    const looseRun = run({ id: "r2", prompt: "Explore", status: "completed" });
+    const groups = buildThreadGroups({
+      runs: [workflowRun, looseRun], attention: new Set(), lastSeen: {}, pins: new Set(),
+    });
+    expect(groups.map((group) => group.key)).toEqual(["workflow:wf1", "ad-hoc"]);
+    expect(new Set(groups.map((group) => group.key)).size).toBe(groups.length);
   });
 
   it("orders by pin, then indicator precedence, then recency", () => {
