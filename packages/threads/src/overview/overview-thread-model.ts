@@ -62,7 +62,7 @@ export interface OverviewModelInput {
   programQuestions: Record<string, HubQuestion[]>;
   lastSeen: Record<string, string>;
   pins: Set<string>;
-  filter: "managers" | "all";
+  filter?: "managers" | "all";
   find?: string;
 }
 
@@ -125,7 +125,6 @@ function sortThreads(threads: OverviewThread[]): void {
 
 export function buildOverviewSections(input: OverviewModelInput): OverviewSection[] {
   const multiServer = input.connections.length > 1;
-  const needle = input.find?.trim().toLowerCase();
   const coordinator: OverviewSection = {
     kind: "coordinator",
     sid: input.hubSid,
@@ -137,10 +136,12 @@ export function buildOverviewSections(input: OverviewModelInput): OverviewSectio
 
   for (const program of input.programs) {
     const chain = programChain(program, input.hubRuns);
-    const readKey = threadReadKey(formatOverviewThreadId({ kind: "program", programId: program.id }));
-    if (needle && !program.name.toLowerCase().includes(needle)) continue;
+    const readKey = threadReadKey(
+      formatOverviewThreadId({ kind: "program", programId: program.id }),
+      { sid: input.hubSid, ws: "hub" },
+    );
     const node = chain.length ? groupRunsByManager(chain)[0] ?? null : null;
-    const lastActivity = node ? sessionLatestActivity(node) : program.updatedAt ?? program.createdAt;
+    const lastActivity = node ? sessionLatestActivity(node) : null;
     coordinator.threads.push({
       id: formatOverviewThreadId({ kind: "program", programId: program.id }),
       ref: { kind: "program", programId: program.id },
@@ -164,6 +165,12 @@ export function buildOverviewSections(input: OverviewModelInput): OverviewSectio
       const key = wsKey(connection.sid, workspace.id);
       const runs = input.runsByWs[key] ?? [];
       const workflows = input.workflowsByWs[key] ?? [];
+      const workflowByManagerId = new Map(
+        workflows.flatMap((workflow) => workflow.managerRunId
+          ? [[workflow.managerRunId, workflow] as const]
+          : []),
+      );
+      const workflowById = new Map(workflows.map((workflow) => [workflow.id, workflow]));
       const scopedSeen: Record<string, string> = {};
       const scopedPins = new Set<string>();
       for (const run of runs) {
@@ -179,24 +186,26 @@ export function buildOverviewSections(input: OverviewModelInput): OverviewSectio
         scope: { sid: connection.sid, ws: workspace.id },
         namingContext: {
           stripPrefixes: [MANAGER_PREAMBLE],
-          workflowNameOf: (id) => workflows.find((workflow) => workflow.id === id)?.name,
+          workflowNameOf: (id) => workflowById.get(id)?.name,
         },
       }).flatMap((group) => group.threads);
-      const workflowManagerIds = new Set(workflows.map((workflow) => workflow.managerRunId).filter(Boolean));
+      const managerOwnedWorkflowIds = new Set(
+        summaries.flatMap((summary) => summary.node.turns.flatMap((run) => {
+          const workflow = workflowByManagerId.get(run.id);
+          return workflow ? [workflow.id] : [];
+        })),
+      );
       const threads = summaries
-        .filter((summary) => {
-          if (input.filter === "all") return true;
-          const root = summary.node.turns[0]!;
-          return summary.node.turns.some((run) => workflowManagerIds.has(run.id)) ||
-            root.role === "manager" ||
-            (!root.parentRunId && root.tags?.some((tag) => tag.startsWith("workflow:")));
-        })
-        .filter((summary) => !needle || summary.title.toLowerCase().includes(needle) || workspace.name.toLowerCase().includes(needle))
         .map((summary): OverviewThread => {
           const ref: OverviewThreadRef = { kind: "workspace", sid: connection.sid, ws: workspace.id, threadId: summary.id };
-          const workflow = workflows.find((candidate) =>
-            summary.node.turns.some((run) => run.id === candidate.managerRunId || run.tags?.includes(`workflow:${candidate.id}`)),
-          ) ?? null;
+          const root = summary.node.turns[0]!;
+          const workflow = summary.node.turns
+            .map((run) => workflowByManagerId.get(run.id))
+            .find(Boolean) ?? (!root.parentRunId
+              ? root.tags
+                ?.map((tag) => tag.startsWith("workflow:") ? workflowById.get(tag.slice(9)) : undefined)
+                .find((candidate) => candidate != null && !managerOwnedWorkflowIds.has(candidate.id))
+              : undefined) ?? null;
           return {
             id: formatOverviewThreadId(ref),
             ref,
@@ -214,8 +223,7 @@ export function buildOverviewSections(input: OverviewModelInput): OverviewSectio
           };
         });
       sortThreads(threads);
-      if (!needle || threads.length) {
-        sections.push({
+      sections.push({
           kind: "workspace",
           sid: connection.sid,
           ws: workspace.id,
@@ -224,11 +232,71 @@ export function buildOverviewSections(input: OverviewModelInput): OverviewSectio
           serverLabel: multiServer ? connection.label : null,
           offline: connection.state !== "open",
           threads,
-        });
-      }
+      });
     }
   }
-  return needle && coordinator.threads.length === 0
-    ? sections.filter((section) => section.kind !== "coordinator")
-    : sections;
+  return sections;
+}
+
+/** Apply rail-only manager and text filters to an already-built fleet model. */
+export function filterOverviewSections(
+  sections: readonly OverviewSection[],
+  options: { filter: "managers" | "all"; find?: string | null },
+): OverviewSection[] {
+  const needle = options.find?.trim().toLowerCase();
+  const filtered = sections.flatMap((section): OverviewSection[] => {
+    const threads = section.threads.filter((thread) => {
+      if (thread.ref.kind === "workspace" && options.filter === "managers") {
+        const root = thread.summary!.node.turns[0]!;
+        if (!thread.workflow && root.role !== "manager" &&
+          (root.parentRunId || !root.tags?.some((tag) => tag.startsWith("workflow:")))) return false;
+      }
+      return !needle || thread.title.toLowerCase().includes(needle) ||
+        (section.kind === "workspace" && section.name.toLowerCase().includes(needle));
+    });
+    return threads.length || !needle ? [{ ...section, threads } as OverviewSection] : [];
+  });
+  return needle
+    ? filtered.filter((section) => section.kind !== "coordinator" || section.threads.length > 0)
+    : filtered;
+}
+
+/** Resolve canonical program ids and any run id within a workspace thread subtree. */
+export function resolveOverviewThread(
+  sections: readonly OverviewSection[],
+  id: string | null | undefined,
+): OverviewThread | null {
+  if (!id) return null;
+  const ref = parseOverviewThreadId(id);
+  if (!ref) return null;
+  for (const section of sections) {
+    for (const thread of section.threads) {
+      if (ref.kind === "program") {
+        if (thread.ref.kind === "program" && thread.ref.programId === ref.programId) return thread;
+        continue;
+      }
+      if (thread.ref.kind !== "workspace" || thread.ref.sid !== ref.sid || thread.ref.ws !== ref.ws) {
+        continue;
+      }
+      const contains = (node: ThreadSummary["node"]): boolean =>
+        node.turns.some((turn) => turn.id === ref.threadId) || node.workers.some(contains);
+      if (contains(thread.summary!.node)) return thread;
+    }
+  }
+  return null;
+}
+
+/** Hub questions outside the hub bridge's open fleet are not already in fleet attention. */
+export function countExternalProgramQuestions(
+  questions: Readonly<Record<string, readonly HubQuestion[]>>,
+  connections: OverviewModelInput["connections"],
+  hubSid: string,
+): number {
+  const openWorkspaceIds = new Set(
+    connections.find((connection) => connection.sid === hubSid)?.workspaces.map((ws) => ws.id) ?? [],
+  );
+  return Object.values(questions).reduce(
+    (count, rows) => count + rows.filter((question) => !openWorkspaceIds.has(question.ws)).length,
+    0,
+  );
 }

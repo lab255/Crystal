@@ -137,6 +137,7 @@ export function WorkspaceCard({
       projects: {
         view: "threads",
         thread: programId ? formatOverviewThreadId({ kind: "program", programId }) : null,
+        program: null,
       },
     });
   };

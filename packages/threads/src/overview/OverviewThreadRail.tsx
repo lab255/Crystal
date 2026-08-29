@@ -9,6 +9,7 @@ interface OverviewThreadRailProps {
   selectedId: string | null;
   filter: "managers" | "all";
   hiddenCount: number;
+  hasUnfilteredThreads: boolean;
   onFilter: (value: "managers" | "all") => void;
   find: string;
   onFind: (value: string) => void;
@@ -22,7 +23,7 @@ interface OverviewThreadRailProps {
 
 /** The fleet rail makes filtered-out work explicit and keeps selection visible. */
 export function OverviewThreadRail({
-  sections, selectedId, filter, hiddenCount, onFilter, find, onFind, onSelect,
+  sections, selectedId, filter, hiddenCount, hasUnfilteredThreads, onFilter, find, onFind, onSelect,
   onPin, onNewProgram, entriesFor, headingEntriesFor, openMenu,
 }: OverviewThreadRailProps) {
   const rows = sections.flatMap((section) => section.threads);
@@ -43,22 +44,6 @@ export function OverviewThreadRail({
   return (
     <aside
       ref={rail}
-      role="listbox"
-      aria-label="Overview threads"
-      tabIndex={0}
-      onKeyDown={(event) => {
-        if (!["ArrowDown", "ArrowUp", "Enter"].includes(event.key)) return;
-        event.preventDefault();
-        const index = rows.findIndex((row) => row.id === selectedId);
-        if (event.key === "Enter") {
-          if (index >= 0) onSelect(rows[index]!.id);
-          return;
-        }
-        const next = event.key === "ArrowDown"
-          ? Math.min(rows.length - 1, index + 1)
-          : Math.max(0, index < 0 ? 0 : index - 1);
-        if (rows[next]) onSelect(rows[next]!.id);
-      }}
       className="flex w-72 shrink-0 flex-col border-r border-edge bg-surface-1 outline-none"
     >
       <div className="space-y-2 border-b border-edge p-2">
@@ -93,7 +78,28 @@ export function OverviewThreadRail({
           ))}
         </div>
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto p-2">
+      <div
+        role="listbox"
+        aria-label="Overview threads"
+        tabIndex={0}
+        onKeyDown={(event) => {
+          if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) {
+            return;
+          }
+          if (!["ArrowDown", "ArrowUp", "Enter"].includes(event.key)) return;
+          event.preventDefault();
+          const index = rows.findIndex((row) => row.id === selectedId);
+          if (event.key === "Enter") {
+            if (index >= 0) onSelect(rows[index]!.id);
+            return;
+          }
+          const next = event.key === "ArrowDown"
+            ? Math.min(rows.length - 1, index + 1)
+            : Math.max(0, index < 0 ? 0 : index - 1);
+          if (rows[next]) onSelect(rows[next]!.id);
+        }}
+        className="min-h-0 flex-1 overflow-y-auto p-2 outline-none"
+      >
         {sections.map((section) => (
           <section key={section.kind === "coordinator" ? "coordinator" : section.key}>
             <button
@@ -137,15 +143,23 @@ export function OverviewThreadRail({
         {!rows.length ? (
           <div className="px-3 py-8 text-center">
             <p className="text-xs font-medium text-ink">
-              {filter === "managers" && hiddenCount > 0 ? "No manager threads" : "No manager threads yet"}
+              {filter === "managers" && hiddenCount > 0
+                ? "No manager threads"
+                : find.trim() && hasUnfilteredThreads
+                  ? `No threads match '${find.trim()}'`
+                  : filter === "managers" ? "No manager threads yet" : "No threads yet"}
             </p>
             <p className="mt-1 text-[11px] text-ink-muted">
               {filter === "managers" && hiddenCount > 0
                 ? `${hiddenCount} other threads hidden by the Managers filter.`
+                : find.trim() && hasUnfilteredThreads
+                  ? "Try another search or clear the current one."
                 : "Starting a workflow in a project creates one."}
             </p>
             {filter === "managers" && hiddenCount > 0 ? (
               <Button className="mt-3" size="sm" onClick={() => onFilter("all")}>Show all threads</Button>
+            ) : find.trim() && hasUnfilteredThreads ? (
+              <Button className="mt-3" size="sm" onClick={() => onFind("")}>Clear</Button>
             ) : (
               <Button className="mt-3" size="sm" onClick={onNewProgram}>New program</Button>
             )}

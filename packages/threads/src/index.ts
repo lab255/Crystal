@@ -7,9 +7,12 @@ export { ProgramSession, CreateProgram } from "./ProgramThread.js";
 export { default as OverviewThreads } from "./overview/OverviewThreads.js";
 export {
   buildOverviewSections,
+  countExternalProgramQuestions,
+  filterOverviewSections,
   formatOverviewThreadId,
   parseOverviewThreadId,
   programChain,
+  resolveOverviewThread,
   type OverviewModelInput,
   type OverviewSection,
   type OverviewThread,

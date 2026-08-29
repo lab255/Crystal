@@ -1,15 +1,22 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Copy, ExternalLink, Pause, Play, Square, Terminal, Trash2 } from "lucide-react";
-import { formatDeepLink, formatWsRef, isProgramTerminal, unrecoveredFailures } from "@crystal/core";
+import { formatDeepLink, formatWsRef, isProgramTerminal } from "@crystal/core";
 import {
   EMPTY_EVENTS, EMPTY_QUESTIONS, EMPTY_RUNS, runKey, wsKey,
-  useCrystal, useFleet, useFleetConnections, useHub, useNav, useNavUpdate,
+  useCrystal, useFleet, useFleetConnections, useFleetNeedsYou, useHub, useNav, useNavUpdate,
 } from "@crystal/client";
 import { useContextMenu, type MenuEntry } from "@crystal/ui";
 import { useThreadReadState } from "../thread-unread.js";
 import { OverviewThreadPane } from "./OverviewThreadPane.js";
 import { OverviewThreadRail } from "./OverviewThreadRail.js";
-import { buildOverviewSections, formatOverviewThreadId, type OverviewSection, type OverviewThread } from "./overview-thread-model.js";
+import {
+  buildOverviewSections,
+  filterOverviewSections,
+  formatOverviewThreadId,
+  resolveOverviewThread,
+  type OverviewSection,
+  type OverviewThread,
+} from "./overview-thread-model.js";
 
 const FILTER_KEY = "crystal.overview.threads.filter";
 
@@ -31,6 +38,7 @@ export default function OverviewThreads() {
   const cancelProgram = useHub((s) => s.cancel);
   const removeProgram = useHub((s) => s.remove);
   const retryDelivery = useHub((s) => s.retryDelivery);
+  const fleetNeedsYou = useFleetNeedsYou();
   const nav = useNav((link) => link.projects ?? null);
   const update = useNavUpdate();
   const { fleet, selectWorkspace, activeSid } = useCrystal();
@@ -54,20 +62,17 @@ export default function OverviewThreads() {
 
   const attentionByWs = useMemo(() => {
     const result: Record<string, Set<string>> = {};
-    for (const connection of connections) {
-      for (const workspace of connection.workspaces) {
-        const key = wsKey(connection.sid, workspace.id);
+    for (const row of fleetNeedsYou.rows) {
         const ids = new Set<string>();
-        for (const row of questionsByWs[key] ?? EMPTY_QUESTIONS) {
-          if (row.question.runId) ids.add(row.question.runId);
+        for (const question of row.actionableQuestions) {
+          if (question.question.runId) ids.add(question.question.runId);
         }
-        for (const run of unrecoveredFailures(runsByWs[key] ?? EMPTY_RUNS)) ids.add(run.id);
-        for (const permission of permissionsByWs[key] ?? []) ids.add(permission.runId);
-        result[key] = ids;
-      }
+        for (const run of row.failures) ids.add(run.id);
+        for (const permission of permissionsByWs[row.key] ?? []) ids.add(permission.runId);
+        result[row.key] = ids;
     }
     return result;
-  }, [connections, questionsByWs, runsByWs, permissionsByWs]);
+  }, [fleetNeedsYou.rows, permissionsByWs]);
 
   const modelInput = useMemo(() => ({
     connections,
@@ -80,23 +85,33 @@ export default function OverviewThreads() {
     programQuestions,
     lastSeen: read.seen,
     pins: read.pins as Set<string>,
-    find: nav?.find,
   }), [
     connections, runsByWs, workflowsByWs, attentionByWs, programs, hubRuns,
-    activeSid, programQuestions, read.seen, read.pins, nav?.find,
+    activeSid, programQuestions, read.seen, read.pins,
   ]);
+  const allSections = useMemo(
+    () => buildOverviewSections(modelInput),
+    [modelInput],
+  );
   const sections = useMemo(
-    () => buildOverviewSections({ ...modelInput, filter }),
-    [modelInput, filter],
+    () => filterOverviewSections(allSections, { filter, find: nav?.find }),
+    [allSections, filter, nav?.find],
   );
   const visibleCount = sections.reduce((count, section) => count + section.threads.length, 0);
   const hiddenCount = useMemo(() => {
     if (filter !== "managers" || visibleCount !== 0) return 0;
-    return buildOverviewSections({ ...modelInput, filter: "all" })
+    return filterOverviewSections(allSections, { filter: "all", find: nav?.find })
       .reduce((count, section) => count + section.threads.length, 0);
-  }, [filter, visibleCount, modelInput]);
+  }, [filter, visibleCount, allSections, nav?.find]);
   const requested = nav?.thread ?? (nav?.program ? formatOverviewThreadId({ kind: "program", programId: nav.program }) : null);
-  const selected = sections.flatMap((section) => section.threads).find((thread) => thread.id === requested) ?? null;
+  const selected = resolveOverviewThread(allSections, requested);
+  const selectedSid = selected?.ref.kind === "workspace" ? selected.ref.sid : undefined;
+  const selectedWs = selected?.ref.kind === "workspace" ? selected.ref.ws : undefined;
+  const loadSelectedEvents = useCallback(async (id: string) => {
+    if (selectedSid && selectedWs) {
+      await loadRunEvents(selectedSid, selectedWs, id);
+    }
+  }, [selectedSid, selectedWs, loadRunEvents]);
 
   useEffect(() => {
     if (selected?.lastActivity) read.markSeen(selected.readKey, selected.lastActivity);
@@ -318,6 +333,7 @@ export default function OverviewThreads() {
       selectedId={selected?.id ?? null}
       filter={filter}
       hiddenCount={hiddenCount}
+      hasUnfilteredThreads={allSections.some((section) => section.threads.length > 0)}
       onFilter={setFilter}
       find={nav?.find ?? ""}
       onFind={(find) => update({ projects: { view: "threads", find: find || null } })}
@@ -354,11 +370,7 @@ export default function OverviewThreads() {
       runs={selected?.ref.kind === "workspace"
         ? runsByWs[wsKey(selected.ref.sid, selected.ref.ws)] ?? EMPTY_RUNS
         : EMPTY_RUNS}
-      loadEvents={async (id) => {
-        if (selected?.ref.kind === "workspace") {
-          await loadRunEvents(selected.ref.sid, selected.ref.ws, id);
-        }
-      }}
+      loadEvents={loadSelectedEvents}
       entries={selected ? entriesFor(selected) : []}
       openMenu={menu.open}
       openProject={() => selected && openProject(selected)}

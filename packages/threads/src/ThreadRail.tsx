@@ -60,7 +60,11 @@ export function ThreadRail({
           <Plus className="h-3.5 w-3.5" />
         </Button>
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto p-1.5">
+      <div
+        role="listbox"
+        aria-label="Project threads"
+        className="min-h-0 flex-1 overflow-y-auto p-1.5"
+      >
         {empty ? (
           <p className="px-2 py-3 text-[11px] leading-relaxed text-ink-faint">
             No threads yet. Start one with the + button — each conversation with an agent lives

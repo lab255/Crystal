@@ -17,7 +17,11 @@ import {
   useNavUpdate,
 } from "@crystal/client";
 import { Button, EmptyState, Input, Tooltip, cn } from "@crystal/ui";
-import { OverviewThreads, QuestionInbox } from "@crystal/threads";
+import {
+  OverviewThreads,
+  QuestionInbox,
+  countExternalProgramQuestions,
+} from "@crystal/threads";
 import { OpenWorkspaceDialog } from "../OpenWorkspaceDialog.js";
 import { FleetPulse } from "./FleetPulse.js";
 import { LiveRunsPanel } from "./LiveRunsPanel.js";
@@ -41,6 +45,14 @@ export function OverviewMode() {
     Object.values(s.questions).reduce((n, qs) => n + qs.length, 0),
   );
   const fleetNeedsYou = useFleetNeedsYou();
+  const connections = useFleetConnections();
+  const activeSid = useCrystal().activeSid;
+  const programQuestions = useHub((s) => s.questions);
+  const externalProgramQuestions = countExternalProgramQuestions(
+    programQuestions,
+    connections,
+    activeSid,
+  );
 
   // The hub store used to be primed by the hub mode; the Overview owns it now.
   useEffect(() => {
@@ -76,7 +88,7 @@ export function OverviewMode() {
             "threads",
             "Threads",
             <MessagesSquare className="h-3.5 w-3.5" />,
-            fleetNeedsYou.count + waiting,
+            fleetNeedsYou.count + externalProgramQuestions,
           )}
           {tab("inbox", "Inbox", <Inbox className="h-3.5 w-3.5" />, waiting)}
         </div>

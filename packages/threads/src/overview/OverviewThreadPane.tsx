@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MoreHorizontal, X } from "lucide-react";
 import {
   sessionIsWorking,
@@ -53,28 +53,37 @@ function NodeTranscript({
   loadEvents: (id: string) => Promise<void>;
   questions: FleetQuestion[];
 }) {
+  const loadEventsRef = useRef(loadEvents);
   useEffect(() => {
-    for (const turn of node.turns.slice(-2)) void loadEvents(turn.id);
-  }, [node.turns, loadEvents]);
+    loadEventsRef.current = loadEvents;
+  }, [loadEvents]);
+  const loadNodeEvents = useCallback((id: string) => loadEventsRef.current(id), []);
+  useEffect(() => {
+    for (const turn of node.turns.slice(-2)) void loadEventsRef.current(turn.id);
+  }, [node.turns]);
+  const transcriptQuestions = useMemo(
+    () => questions.map((row) => row.question),
+    [questions],
+  );
   const items = useMemo(
     () => buildTranscriptItems({
       turns: node.turns,
       eventsByRun,
       workers: node.workers,
-      questions: questions.map((row) => row.question),
+      questions: transcriptQuestions,
     }),
-    [node, eventsByRun, questions],
+    [node, eventsByRun, transcriptQuestions],
   );
   const renderWorker = useCallback(
     (item: Extract<TranscriptItem, { kind: "delegation" }>) => item.worker ? (
       <NodeTranscript
         node={item.worker}
         eventsByRun={eventsByRun}
-        loadEvents={loadEvents}
+        loadEvents={loadNodeEvents}
         questions={questions}
       />
     ) : null,
-    [eventsByRun, loadEvents, questions],
+    [eventsByRun, loadNodeEvents, questions],
   );
   return (
     <ThreadTranscript
@@ -82,7 +91,7 @@ function NodeTranscript({
       threadId={node.turns[0]!.id}
       working={sessionIsWorking(node)}
       renderWorker={renderWorker}
-      onExpandTurn={loadEvents}
+      onExpandTurn={loadNodeEvents}
     />
   );
 }
@@ -97,6 +106,11 @@ export function OverviewThreadPane({
   const [nowMs, setNowMs] = useState(() => Date.now());
   const face = thread?.summary?.node.run;
   const working = face ? sessionIsWorking(thread!.summary!.node) : false;
+  const activeQuestionRows = useMemo(() => {
+    if (!thread?.summary) return [];
+    const chainIds = new Set(thread.summary.node.turns.map((turn) => turn.id));
+    return questions.filter((row) => row.question.runId && chainIds.has(row.question.runId));
+  }, [questions, thread?.summary]);
 
   useEffect(() => {
     if (!working) return;
@@ -133,10 +147,6 @@ export function OverviewThreadPane({
   const summary = thread.summary!;
   const run = summary.node.run;
   const client = thread.ref.kind === "workspace" ? fleet.clientOf(thread.ref.sid) : null;
-  const chainIds = new Set(summary.node.turns.map((turn) => turn.id));
-  const activeQuestionRows = questions.filter(
-    (row) => row.question.runId && chainIds.has(row.question.runId),
-  );
   const spend = thread.workflow ? workflowSpend(thread.workflow.id, runs) : null;
   const interactive = run.terminalId != null;
   const activeProject = thread.ref.kind === "workspace"
