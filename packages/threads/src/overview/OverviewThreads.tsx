@@ -81,7 +81,7 @@ export default function OverviewThreads() {
   const fleetNeedsYou = useFleetNeedsYou();
   const nav = useNav((link) => link.projects ?? null);
   const update = useNavUpdate();
-  const { fleet, selectWorkspace, activeSid } = useCrystal();
+  const { fleet, fleetStore, selectWorkspace, activeSid } = useCrystal();
   const read = useThreadReadState();
   const menu = useContextMenu();
   const composing = nav?.compose;
@@ -551,7 +551,8 @@ export default function OverviewThreads() {
           },
         });
       }}
-      onThreadStarted={({ sid, ws, runId, kind }) => {
+      onThreadStarted={({ sid, ws, run, kind }) => {
+        fleetStore.getState().upsertRun(sid, ws, run);
         if (kind === "thread" && filter === "managers") {
           setFilter("all");
           setNotice({ text: "Showing all threads", tone: "neutral" });
@@ -559,7 +560,7 @@ export default function OverviewThreads() {
         update({
           projects: {
             view: "threads",
-            thread: formatOverviewThreadId({ kind: "workspace", sid, ws, threadId: runId }),
+            thread: formatOverviewThreadId({ kind: "workspace", sid, ws, threadId: run.id }),
             program: null,
             turn: null,
             compose: null,

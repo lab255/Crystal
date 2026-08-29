@@ -53,7 +53,7 @@ interface PaneProps {
   dismissNotice: () => void;
   onError: (message: string) => void;
   onCreated: (id: string) => void;
-  onThreadStarted: (result: { sid: string; ws: string; runId: string; kind: "thread" | "workflow" }) => void;
+  onThreadStarted: (result: { sid: string; ws: string; run: AgentRun; kind: "thread" | "workflow" }) => void;
   questions: FleetQuestion[];
   eventsByRun: Record<string, RunEvent[]>;
   runs: AgentRun[];

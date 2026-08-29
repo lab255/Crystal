@@ -800,7 +800,7 @@ export function deepLinkNavIdentity(link: DeepLink): string {
   if (mode === "projects") {
     const p = link.projects ?? {};
     const view = p.view === "chat" ? "threads" : (p.view ?? "dashboard");
-    return `projects/${view}/${view === "threads" ? (p.thread ?? p.program ?? "") : ""}`;
+    return `projects/${view}/${view === "threads" ? (p.thread ?? p.program ?? (p.compose ? `compose:${p.compose}` : "")) : ""}`;
   }
   return mode;
 }

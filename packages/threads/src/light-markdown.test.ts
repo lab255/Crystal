@@ -72,10 +72,10 @@ describe("renderLightMarkdown", () => {
   });
 
   it.each([
-    ["opening brackets", "[".repeat(50_000)],
-    ["opening then closing brackets", `${"[".repeat(25_000)}${"]".repeat(25_000)}`],
-    ["an incomplete link", `[${"a".repeat(49_988)}](https://x`],
-  ])("parses 50 KB of %s with linear scaling", (_label, input) => {
+    ["opening brackets", "[".repeat(50_000), "[".repeat(5_000)],
+    ["opening then closing brackets", `${"[".repeat(25_000)}${"]".repeat(25_000)}`, `${"[".repeat(2_500)}${"]".repeat(2_500)}`],
+    ["an incomplete link", `[${"a".repeat(49_988)}](https://x`, `[${"a".repeat(4_988)}](https://x`],
+  ])("parses 50 KB of %s with linear scaling", (_label, input, baselineInput) => {
     const measure = (value: string) => {
       const started = performance.now();
       renderLightMarkdown(value);
@@ -84,11 +84,10 @@ describe("renderLightMarkdown", () => {
     // A batch keeps this wall-clock baseline exposed to the same full-suite
     // scheduling pressure as the longer single call. One tiny sample can run
     // between scheduler slices and make an otherwise relative check flaky.
-    const baselineInput = input.slice(0, 5_000);
     const baselineStarted = performance.now();
     for (let i = 0; i < 20; i++) renderLightMarkdown(baselineInput);
     const baseline = performance.now() - baselineStarted;
-    expect(measure(input)).toBeLessThan(8 * baseline + 20);
+    expect(measure(input)).toBeLessThan(2 * baseline + 20);
   });
 
   it("flattens nested list markers", () => {

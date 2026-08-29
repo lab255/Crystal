@@ -116,6 +116,8 @@ export interface FleetState {
    * drops the connection's slice (used when a server is removed).
    */
   attach(sid: string, client: BridgeClient): () => void;
+  /** Insert a newly started run before its debounced server event arrives. */
+  upsertRun(sid: string, ws: string, run: AgentRun): void;
   /**
    * Reload runs + todos for one server's workspaces. Only this server's keys
    * are replaced (its closed workspaces drop out); other servers' slices are
@@ -283,36 +285,41 @@ export function createFleetStore(): FleetStore {
     seenAtByWs: typeof localStorage === "undefined" ? {} : loadSeen(),
     pendingTodoSaves: {},
 
+    upsertRun(sid, ws, run) {
+      const key = wsKey(sid, ws);
+      set((s) => {
+        const runs = s.runsByWs[key] ?? EMPTY_RUNS;
+        const idx = runs.findIndex((item) => item.id === run.id);
+        const next = idx === -1
+          ? [run, ...runs]
+          : runs.map((item, i) => i === idx ? run : item);
+        let index = runWsBySid.get(sid);
+        if (!index) runWsBySid.set(sid, (index = new Map()));
+        index.set(run.id, key);
+        const previousQuestions = s.questionsByWs[key];
+        const questions = previousQuestions
+          ? annotateFleetQuestions(
+              previousQuestions,
+              s.runsLoadedByWs[key] ? next : undefined,
+              previousQuestions,
+            )
+          : undefined;
+        return {
+          runsByWs: { ...s.runsByWs, [key]: next },
+          questionsByWs:
+            questions && questions !== previousQuestions
+              ? { ...s.questionsByWs, [key]: questions }
+              : s.questionsByWs,
+        };
+      });
+    },
+
     attach(sid, client) {
       clients.set(sid, client);
       const disposers = [
         // Every workspace's run changes flow in — deliberately unscoped.
         client.events.on("agent.runChanged", ({ ws, run }) => {
-          const key = wsKey(sid, ws);
-          store.setState((s) => {
-            const runs = s.runsByWs[key] ?? [];
-            const idx = runs.findIndex((r) => r.id === run.id);
-            const next =
-              idx === -1 ? [run, ...runs] : runs.map((r, i) => (i === idx ? run : r));
-            let index = runWsBySid.get(sid);
-            if (!index) runWsBySid.set(sid, (index = new Map()));
-            index.set(run.id, key);
-            const previousQuestions = s.questionsByWs[key];
-            const questions = previousQuestions
-              ? annotateFleetQuestions(
-                  previousQuestions,
-                  s.runsLoadedByWs[key] ? next : undefined,
-                  previousQuestions,
-                )
-              : undefined;
-            return {
-              runsByWs: { ...s.runsByWs, [key]: next },
-              questionsByWs:
-                questions && questions !== previousQuestions
-                  ? { ...s.questionsByWs, [key]: questions }
-                  : s.questionsByWs,
-            };
-          });
+          store.getState().upsertRun(sid, ws, run);
         }),
         client.events.on("workflow.changed", ({ ws, workflow }) => {
           const key = wsKey(sid, ws);

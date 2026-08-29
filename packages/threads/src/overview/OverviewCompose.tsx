@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Send } from "lucide-react";
 import {
   AUTO_MODEL,
+  type AgentRun,
   type AgentProfile,
   type AgentRoster,
   type WorkflowTemplate,
@@ -39,6 +40,16 @@ function promptName(prompt: string): string {
   return prompt.trim().split(/\r?\n/, 1)[0]?.trim().slice(0, 120) ?? "";
 }
 
+function chooseInitialTarget(
+  target: string | undefined,
+  savedTarget: string | undefined,
+  choices: { key: string; connection: { state: string } }[],
+): string {
+  if (target && choices.some((choice) => choice.key === target)) return target;
+  if (savedTarget && choices.some((choice) => choice.key === savedTarget)) return savedTarget;
+  return choices.find((choice) => choice.connection.state === "open")?.key ?? "";
+}
+
 export function OverviewCompose({
   target,
   onCancel,
@@ -46,7 +57,7 @@ export function OverviewCompose({
 }: {
   target?: string;
   onCancel: () => void;
-  onStarted: (result: { sid: string; ws: string; runId: string; kind: ComposeKind }) => void;
+  onStarted: (result: { sid: string; ws: string; run: AgentRun; kind: ComposeKind }) => void;
 }) {
   const connections = useFleetConnections();
   const { fleet, activeSid } = useCrystal();
@@ -54,11 +65,7 @@ export function OverviewCompose({
   const choices = useMemo(() => connections.flatMap((connection) =>
     connection.workspaces.map((workspace) => ({ connection, workspace, key: wsKey(connection.sid, workspace.id) }))),
   [connections]);
-  const initialTarget = target && choices.some((choice) => choice.key === target)
-    ? target
-    : saved.target && choices.some((choice) => choice.key === saved.target)
-      ? saved.target
-      : choices.find((choice) => choice.connection.state === "open")?.key ?? "";
+  const initialTarget = chooseInitialTarget(target, saved.target, choices);
   const [projectKey, setProjectKey] = useState(initialTarget);
   const [kind, setKind] = useState<ComposeKind>(saved.kind === "workflow" ? "workflow" : "thread");
   const [prompt, setPrompt] = useState("");
@@ -74,6 +81,7 @@ export function OverviewCompose({
   const [templates, setTemplates] = useState<Record<string, WorkflowTemplate[]>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const enterToSend = useSettings((state) => state.enterToSend);
   const selected = choices.find((choice) => choice.key === projectKey);
   const active = selected?.connection.sid === activeSid
@@ -87,31 +95,53 @@ export function OverviewCompose({
     if (!client) return;
     if (!rosters[projectKey]) {
       void client.request("agents.get", { ws }).then(
-        ({ roster }) => setRosters((current) => ({ ...current, [projectKey]: roster })),
-        (reason) => setError(reason instanceof Error ? reason.message : String(reason)),
+        ({ roster }) => {
+          setRosters((current) => ({ ...current, [projectKey]: roster }));
+          setLoadError(null);
+        },
+        (reason) => setLoadError(reason instanceof Error ? reason.message : String(reason)),
       );
     }
     if (kind === "workflow" && !templates[projectKey]) {
       void client.request("workflow.templates", { ws }).then(
-        (result) => setTemplates((current) => ({ ...current, [projectKey]: result.templates })),
-        (reason) => setError(reason instanceof Error ? reason.message : String(reason)),
+        (result) => {
+          setTemplates((current) => ({ ...current, [projectKey]: result.templates }));
+          setLoadError(null);
+        },
+        (reason) => setLoadError(reason instanceof Error ? reason.message : String(reason)),
       );
     }
   }, [fleet, kind, online, projectKey, rosters, templates]);
 
   useEffect(() => {
-    if (!active) setInteractive(false);
-  }, [active]);
+    const disposers = connections.flatMap(({ sid }) => {
+      const client = fleet.clientOf(sid);
+      if (!client) return [];
+      return [
+        client.events.on("workspace.changed", ({ ws }) => {
+          const key = wsKey(sid, ws);
+          setRosters((current) => {
+            if (!current[key]) return current;
+            const { [key]: _stale, ...rest } = current;
+            return rest;
+          });
+        }),
+        client.events.on("workflow.templatesChanged", ({ ws }) => {
+          const key = wsKey(sid, ws);
+          setTemplates((current) => {
+            if (!current[key]) return current;
+            const { [key]: _stale, ...rest } = current;
+            return rest;
+          });
+        }),
+      ];
+    });
+    return () => disposers.forEach((dispose) => dispose());
+  }, [connections, fleet]);
 
   useEffect(() => {
-    const cancel = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      onCancel();
-    };
-    window.addEventListener("keydown", cancel);
-    return () => window.removeEventListener("keydown", cancel);
-  }, [onCancel]);
+    if (!active) setInteractive(false);
+  }, [active]);
 
   const roster = rosters[projectKey];
   const agents = roster?.agents ?? EMPTY_AGENTS;
@@ -128,7 +158,7 @@ export function OverviewCompose({
       if (!client) throw new Error("This bridge is disconnected.");
       const chosenAgent = agentId || null;
       const chosenModel = model.trim() || null;
-      let runId: string;
+      let run: AgentRun;
       if (kind === "workflow") {
         const parsedBudget = budget.trim() ? Number(budget) : null;
         if (parsedBudget != null && (!Number.isFinite(parsedBudget) || parsedBudget <= 0)) {
@@ -143,10 +173,10 @@ export function OverviewCompose({
           managerModel: chosenModel,
           budgetUsd: parsedBudget,
         });
-        runId = result.run.id;
+        run = result.run;
       } else if (interactive && active && !worktree) {
         const result = await spawnSession({ client, ws, prompt: text, agentId: chosenAgent, model: chosenModel });
-        runId = result.run.id;
+        run = result.run;
       } else {
         const result = await client.request("agent.start", {
           ws,
@@ -155,14 +185,14 @@ export function OverviewCompose({
           agentId: chosenAgent,
           model: chosenModel,
         });
-        runId = result.run.id;
+        run = result.run;
       }
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify({ target: projectKey, kind }));
       } catch {
         // Persistence is optional.
       }
-      onStarted({ sid, ws, runId, kind });
+      onStarted({ sid, ws, run, kind });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -180,9 +210,14 @@ export function OverviewCompose({
     composerKeydown(event);
   };
   const multiServer = connections.length > 1;
+  const onPaneKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
+    if (event.defaultPrevented || event.key !== "Escape") return;
+    event.preventDefault();
+    onCancel();
+  };
 
   return (
-    <main className="min-w-0 flex-1 overflow-y-auto p-6">
+    <main className="min-w-0 flex-1 overflow-y-auto p-6" onKeyDown={onPaneKeyDown}>
       <div className="mx-auto w-full max-w-xl">
         <h2 className="text-sm font-semibold text-ink">New thread in project</h2>
         <p className="mt-1 text-xs text-ink-muted">Start a conversation or managed workflow in any open project.</p>
@@ -192,7 +227,7 @@ export function OverviewCompose({
             <Select value={projectKey} onChange={(event) => { setProjectKey(event.target.value); setAgentId(""); }}>
               {!choices.length ? <option value="">No open projects</option> : null}
               {multiServer ? connections.map((connection) => (
-                <optgroup key={connection.sid} label={multiServer ? connection.label : "Projects"}>
+                <optgroup key={connection.sid} label={connection.label}>
                   {connection.workspaces.map((workspace) => (
                     <option key={workspace.id} value={wsKey(connection.sid, workspace.id)} disabled={connection.state !== "open"}>
                       {workspace.name}{connection.state !== "open" ? " (offline)" : ""}
@@ -223,7 +258,7 @@ export function OverviewCompose({
                 </Select>
               </label>
               <label className="grid gap-1 text-xs text-ink-muted">
-                Budget USD <span className="sr-only">optional</span>
+                Budget USD
                 <input className="h-8 rounded-md border border-edge bg-surface-1 px-2 text-xs text-ink" type="number" min="0" step="0.01" placeholder="Optional" value={budget} onChange={(event) => setBudget(event.target.value)} />
               </label>
               <label className="col-span-2 grid gap-1 text-xs text-ink-muted">
@@ -256,11 +291,12 @@ export function OverviewCompose({
           </div>
           {kind === "thread" ? (
             <div className="flex flex-wrap items-center gap-4 text-xs text-ink-muted">
-              <label className="flex items-center gap-1.5"><Switch checked={worktree} onChange={(value) => { setWorktree(value); if (value) setInteractive(false); }} /> Isolate in a git worktree</label>
-              {active ? <label className="flex items-center gap-1.5"><Switch checked={interactive && !worktree} onChange={(value) => { setInteractive(value); if (value) setWorktree(false); }} /> Interactive terminal</label> : <span>Open the project to start an interactive session.</span>}
+              <label className="flex items-center gap-1.5"><Switch aria-label="Isolate in a git worktree" checked={worktree} onChange={(value) => { setWorktree(value); if (value) setInteractive(false); }} /> Isolate in a git worktree</label>
+              {active ? <label className="flex items-center gap-1.5"><Switch aria-label="Interactive terminal" checked={interactive && !worktree} onChange={(value) => { setInteractive(value); if (value) setWorktree(false); }} /> Interactive terminal</label> : <span>Open the project to start an interactive session.</span>}
             </div>
           ) : null}
           {error ? <p role="alert" className="text-xs text-danger">{error}</p> : null}
+          {loadError ? <p role="alert" className="text-xs text-danger">{loadError}</p> : null}
           <div className="flex justify-end gap-2">
             <Button variant="ghost" size="sm" onClick={onCancel}>Cancel</Button>
             <Button variant="primary" size="sm" disabled={busy || !prompt.trim() || !selected || !online} onClick={() => void dispatch()}>

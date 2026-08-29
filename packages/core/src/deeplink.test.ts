@@ -918,6 +918,10 @@ describe("deepLinkNavIdentity", () => {
     expect(deepLinkNavIdentity(selectedTurn)).toBe(deepLinkNavIdentity(opened));
     expect(deepLinkNavIdentity({ mode: "projects", projects: { view: "threads", thread: "r1", program: "prog_1" } }))
       .toBe("projects/threads/r1");
+    expect(deepLinkNavIdentity({ mode: "projects", projects: { view: "threads", compose: "thread" } }))
+      .toBe("projects/threads/compose:thread");
+    expect(deepLinkNavIdentity({ mode: "projects", projects: { view: "threads", compose: "program" } }))
+      .toBe("projects/threads/compose:program");
   });
 });
 

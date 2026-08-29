@@ -167,6 +167,27 @@ describe("fleet-store compound keys", () => {
     expect(store.getState().runsByWs["default/w1"]).toBeUndefined();
   });
 
+  it("upserts a newly started run and keeps its workspace index in sync", async () => {
+    const store = createFleetStore();
+    const client = fakeClient({ eventsByRun: { fresh: [] } });
+    store.getState().attach("s2", client);
+
+    store.getState().upsertRun("s2", "w1", run("fresh", { status: "running" }));
+    store.getState().upsertRun("s2", "w1", run("fresh", { status: "completed" }));
+    expect(store.getState().runsByWs["s2/w1"]).toEqual([
+      expect.objectContaining({ id: "fresh", status: "completed" }),
+    ]);
+
+    await store.getState().loadRunEvents("s2", "w1", "fresh");
+    client.events.emit("agent.event", {
+      runId: "fresh",
+      seq: 1,
+      ts: "2026-08-09T00:00:01.000Z",
+      event: { type: "result", ok: true, resultText: "done", costUsd: null, turns: null },
+    } as never);
+    expect(store.getState().eventsByRunKey[runKey("s2", "w1", "fresh")]).toHaveLength(1);
+  });
+
   it("drops a removed connection's slice (and only it) on detach", async () => {
     const store = createFleetStore();
     const a = fakeClient({ runsByWs: { w1: [run("a1")] } });
