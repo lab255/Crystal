@@ -7,6 +7,7 @@ import {
   type AgentRun,
   type HubQuestion,
   type Program,
+  type ProgramSpend,
   type Workflow,
 } from "@crystal/core";
 import { chainOf, wsKey } from "@crystal/client";
@@ -60,6 +61,7 @@ export interface OverviewModelInput {
   hubRuns: readonly AgentRun[];
   hubSid: string;
   programQuestions: Record<string, HubQuestion[]>;
+  spend: Record<string, ProgramSpend>;
   lastSeen: Record<string, string>;
   pins: Set<string>;
   filter?: "managers" | "all";
@@ -151,10 +153,11 @@ export function buildOverviewSections(input: OverviewModelInput): OverviewSectio
         ? "needs-input"
         : node ? threadIndicator(node, new Set(), input.lastSeen[readKey]) : "idle",
       lastActivity,
-      costUsd: null,
+      costUsd: input.spend[program.id]?.costUsd ?? null,
       pinned: input.pins.has(readKey),
       program,
       live: node ? sessionIsWorking(node) : false,
+      serverLabel: coordinator.serverLabel,
     });
   }
   sortThreads(coordinator.threads);
@@ -166,9 +169,9 @@ export function buildOverviewSections(input: OverviewModelInput): OverviewSectio
       const runs = input.runsByWs[key] ?? [];
       const workflows = input.workflowsByWs[key] ?? [];
       const workflowByManagerId = new Map(
-        workflows.flatMap((workflow) => workflow.managerRunId
-          ? [[workflow.managerRunId, workflow] as const]
-          : []),
+        workflows.flatMap((workflow) =>
+          workflow.managerRunId ? [[workflow.managerRunId, workflow] as const] : [],
+        ),
       );
       const workflowById = new Map(workflows.map((workflow) => [workflow.id, workflow]));
       const scopedSeen: Record<string, string> = {};
@@ -197,15 +200,18 @@ export function buildOverviewSections(input: OverviewModelInput): OverviewSectio
       );
       const threads = summaries
         .map((summary): OverviewThread => {
-          const ref: OverviewThreadRef = { kind: "workspace", sid: connection.sid, ws: workspace.id, threadId: summary.id };
+          const ref: OverviewThreadRef = {
+            kind: "workspace",
+            sid: connection.sid,
+            ws: workspace.id,
+            threadId: summary.id,
+          };
           const root = summary.node.turns[0]!;
-          const workflow = summary.node.turns
-            .map((run) => workflowByManagerId.get(run.id))
-            .find(Boolean) ?? (!root.parentRunId
-              ? root.tags
-                ?.map((tag) => tag.startsWith("workflow:") ? workflowById.get(tag.slice(9)) : undefined)
-                .find((candidate) => candidate != null && !managerOwnedWorkflowIds.has(candidate.id))
-              : undefined) ?? null;
+          const workflow = resolveWorkflowFor(root, summary.node.turns, {
+            workflowByManagerId,
+            workflowById,
+            managerOwnedWorkflowIds,
+          });
           return {
             id: formatOverviewThreadId(ref),
             ref,
@@ -224,18 +230,37 @@ export function buildOverviewSections(input: OverviewModelInput): OverviewSectio
         });
       sortThreads(threads);
       sections.push({
-          kind: "workspace",
-          sid: connection.sid,
-          ws: workspace.id,
-          key,
-          name: workspace.name,
-          serverLabel: multiServer ? connection.label : null,
-          offline: connection.state !== "open",
-          threads,
+        kind: "workspace",
+        sid: connection.sid,
+        ws: workspace.id,
+        key,
+        name: workspace.name,
+        serverLabel: multiServer ? connection.label : null,
+        offline: connection.state !== "open",
+        threads,
       });
     }
   }
   return sections;
+}
+
+function resolveWorkflowFor(
+  root: AgentRun,
+  turns: readonly AgentRun[],
+  maps: {
+    workflowByManagerId: Map<string, Workflow>;
+    workflowById: Map<string, Workflow>;
+    managerOwnedWorkflowIds: Set<string>;
+  },
+): Workflow | null {
+  const owned = turns.map((run) => maps.workflowByManagerId.get(run.id)).find(Boolean);
+  if (owned || root.parentRunId) return owned ?? null;
+  for (const tag of root.tags ?? []) {
+    if (!tag.startsWith("workflow:")) continue;
+    const candidate = maps.workflowById.get(tag.slice(9));
+    if (candidate && !maps.managerOwnedWorkflowIds.has(candidate.id)) return candidate;
+  }
+  return null;
 }
 
 /** Apply rail-only manager and text filters to an already-built fleet model. */
@@ -244,21 +269,22 @@ export function filterOverviewSections(
   options: { filter: "managers" | "all"; find?: string | null },
 ): OverviewSection[] {
   const needle = options.find?.trim().toLowerCase();
-  const filtered = sections.flatMap((section): OverviewSection[] => {
+  return sections.flatMap((section): OverviewSection[] => {
     const threads = section.threads.filter((thread) => {
       if (thread.ref.kind === "workspace" && options.filter === "managers") {
         const root = thread.summary!.node.turns[0]!;
-        if (!thread.workflow && root.role !== "manager" &&
-          (root.parentRunId || !root.tags?.some((tag) => tag.startsWith("workflow:")))) return false;
+        const taggedRoot = !root.parentRunId
+          && root.tags?.some((tag) => tag.startsWith("workflow:"));
+        if (!thread.workflow && root.role !== "manager" && !taggedRoot) return false;
       }
-      return !needle || thread.title.toLowerCase().includes(needle) ||
-        (section.kind === "workspace" && section.name.toLowerCase().includes(needle));
+      if (!needle) return true;
+      return thread.title.toLowerCase().includes(needle)
+        || (section.kind === "workspace" && section.name.toLowerCase().includes(needle));
     });
-    return threads.length || !needle ? [{ ...section, threads } as OverviewSection] : [];
+    if (section.kind === "workspace" && threads.length === 0) return [];
+    if (section.kind === "coordinator" && needle && threads.length === 0) return [];
+    return [{ ...section, threads } as OverviewSection];
   });
-  return needle
-    ? filtered.filter((section) => section.kind !== "coordinator" || section.threads.length > 0)
-    : filtered;
 }
 
 /** Resolve canonical program ids and any run id within a workspace thread subtree. */
@@ -275,7 +301,11 @@ export function resolveOverviewThread(
         if (thread.ref.kind === "program" && thread.ref.programId === ref.programId) return thread;
         continue;
       }
-      if (thread.ref.kind !== "workspace" || thread.ref.sid !== ref.sid || thread.ref.ws !== ref.ws) {
+      if (
+        thread.ref.kind !== "workspace"
+        || thread.ref.sid !== ref.sid
+        || thread.ref.ws !== ref.ws
+      ) {
         continue;
       }
       const contains = (node: ThreadSummary["node"]): boolean =>
@@ -293,7 +323,9 @@ export function countExternalProgramQuestions(
   hubSid: string,
 ): number {
   const openWorkspaceIds = new Set(
-    connections.find((connection) => connection.sid === hubSid)?.workspaces.map((ws) => ws.id) ?? [],
+    connections
+      .find((connection) => connection.sid === hubSid)
+      ?.workspaces.map((ws) => ws.id) ?? [],
   );
   return Object.values(questions).reduce(
     (count, rows) => count + rows.filter((question) => !openWorkspaceIds.has(question.ws)).length,

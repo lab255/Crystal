@@ -32,9 +32,9 @@ const ATTENTION_LEGEND = attentionLegendText();
 
 /**
  * The Overview — mission control. Three faces on one cross-project level:
- * the dashboard (every workspace's traffic light, agents and todos), the
- * coordinator chat (the program-manager session the hub mode used to hold),
- * and the inbox (every unanswered agent question across the portfolio).
+ * the dashboard (every workspace's traffic light, agents and todos), Threads
+ * (workspace managers and cross-project coordinators), and the inbox (every
+ * unanswered agent question across the portfolio).
  */
 export function OverviewMode() {
   const view = useNav((l) => l.projects?.view) ?? "dashboard";

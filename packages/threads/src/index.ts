@@ -2,7 +2,6 @@ export { ThreadsMode } from "./ThreadsMode.js";
 export { ThreadView } from "./ThreadView.js";
 export { ThreadRail } from "./ThreadRail.js";
 export { ThreadTranscript } from "./ThreadTranscript.js";
-export { ProgramThread } from "./ProgramThread.js";
 export { ProgramSession, CreateProgram } from "./ProgramThread.js";
 export { default as OverviewThreads } from "./overview/OverviewThreads.js";
 export {

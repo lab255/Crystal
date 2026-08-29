@@ -222,12 +222,12 @@ export interface QualityLink {
   find?: string;
 }
 
-/** Overview subviews: the dashboard, the coordinator chat, the questions inbox. */
+/** Overview subviews; `chat` remains a parse-only alias for `threads`. */
 export type OverviewViewId = "dashboard" | "threads" | "chat" | "inbox";
 
 /**
- * The Overview — cross-workspace dashboard plus the absorbed hub surfaces
- * (coordinator chat, questions inbox). Unlike every other section this one is
+ * The Overview — cross-workspace dashboard, unified threads, and questions
+ * inbox. Unlike every other section this one is
  * *not* scoped to `ws`: programs span workspaces, so its links stay valid
  * whichever workspace is active (`ws` still rides along, marking where to
  * return when the user leaves the Overview).

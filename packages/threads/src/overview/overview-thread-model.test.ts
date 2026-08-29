@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { createAgentRun, createProgram, createWorkflow, type AgentRun, type Program, type Workflow } from "@crystal/core";
+import {
+  createAgentRun,
+  createProgram,
+  createWorkflow,
+  type AgentRun,
+  type Program,
+  type Workflow,
+} from "@crystal/core";
 import {
   buildOverviewSections,
   countExternalProgramQuestions,
@@ -13,21 +20,43 @@ import {
 function run(id: string, overrides: Partial<AgentRun> = {}): AgentRun {
   return { ...createAgentRun({ prompt: overrides.prompt ?? id }), ...overrides, id };
 }
-function program(id: string, name = id): Program { return { ...createProgram({ name, goal: "goal" }), id }; }
-function workflow(id: string, managerRunId: string | null): Workflow { return { ...createWorkflow({ name: id, goal: "goal" }), id, managerRunId }; }
+function program(id: string, name = id): Program {
+  return { ...createProgram({ name, goal: "goal" }), id };
+}
+function workflow(id: string, managerRunId: string | null): Workflow {
+  return { ...createWorkflow({ name: id, goal: "goal" }), id, managerRunId };
+}
 function input(runs: AgentRun[] = [], workflows: Workflow[] = []): OverviewModelInput {
   return {
-    connections: [{ sid: "s1", label: "Local", state: "open", workspaces: [{ id: "w1", name: "Alpha" }] }],
-    runsByWs: { "s1/w1": runs }, workflowsByWs: { "s1/w1": workflows }, attentionByWs: {},
-    programs: [] as Program[], hubRuns: [] as AgentRun[], hubSid: "s1", programQuestions: {},
-    lastSeen: {}, pins: new Set<string>(), filter: "managers" as const,
+    connections: [{
+      sid: "s1",
+      label: "Local",
+      state: "open",
+      workspaces: [{ id: "w1", name: "Alpha" }],
+    }],
+    runsByWs: { "s1/w1": runs },
+    workflowsByWs: { "s1/w1": workflows },
+    attentionByWs: {},
+    programs: [] as Program[],
+    hubRuns: [] as AgentRun[],
+    hubSid: "s1",
+    programQuestions: {},
+    spend: {},
+    lastSeen: {},
+    pins: new Set<string>(),
+    filter: "managers" as const,
   };
 }
 
 describe("overview thread ids", () => {
   it("round trips program and slash-containing workspace refs", () => {
-    const refs = [{ kind: "program", programId: "p1" }, { kind: "workspace", sid: "sabc", ws: "folder/uuid", threadId: "r1" }] as const;
-    for (const ref of refs) expect(parseOverviewThreadId(formatOverviewThreadId(ref))).toEqual(ref);
+    const refs = [
+      { kind: "program", programId: "p1" },
+      { kind: "workspace", sid: "sabc", ws: "folder/uuid", threadId: "r1" },
+    ] as const;
+    for (const ref of refs) {
+      expect(parseOverviewThreadId(formatOverviewThreadId(ref))).toEqual(ref);
+    }
     expect(parseOverviewThreadId("ws:broken")).toBeNull();
   });
 
@@ -58,16 +87,27 @@ describe("buildOverviewSections", () => {
       buildOverviewSections(input(runs, [workflow("w1", "workflow-manager")])),
       { filter: "managers" },
     );
-    expect(sections[1]!.threads.map((thread) => thread.ref.kind === "workspace" && thread.ref.threadId)).toEqual(expect.arrayContaining(["workflow-manager", "role-manager", "tag-manager"]));
-    expect(sections[1]!.threads.some((thread) => thread.ref.kind === "workspace" && thread.ref.threadId === "ordinary")).toBe(false);
+    const ids = sections[1]!.threads.map((thread) =>
+      thread.ref.kind === "workspace" && thread.ref.threadId,
+    );
+    expect(ids).toEqual(
+      expect.arrayContaining(["workflow-manager", "role-manager", "tag-manager"]),
+    );
+    expect(ids).not.toContain("ordinary");
   });
 
   it("shows programs with and without runs and gives open questions precedence", () => {
-    const a = program("p1", "Fresh"); const b = { ...program("p2", "Active"), managerRunId: "hub1" };
-    const data = input(); data.programs = [a, b]; data.hubRuns = [run("hub1", { tags: ["program:p2"], status: "running" })];
+    const a = program("p1", "Fresh");
+    const b = { ...program("p2", "Active"), managerRunId: "hub1" };
+    const data = input();
+    data.programs = [a, b];
+    data.hubRuns = [run("hub1", { tags: ["program:p2"], status: "running" })];
     data.programQuestions = { p1: [{ questionId: "q1" }] as never };
     const coordinator = buildOverviewSections(data)[0]!;
-    expect(coordinator.threads.map((thread) => [thread.title, thread.indicator])).toEqual([["Fresh", "needs-input"], ["Active", "running"]]);
+    expect(coordinator.threads.map((thread) => [thread.title, thread.indicator])).toEqual([
+      ["Fresh", "needs-input"],
+      ["Active", "running"],
+    ]);
   });
 
   it("marks program questions as needs-input and newer settled faces as unread", () => {
@@ -96,12 +136,20 @@ describe("buildOverviewSections", () => {
   });
 
   it("sorts pinned before attention and filters by workspace or program name", () => {
-    const data = input([run("a", { role: "manager", status: "running" }), run("b", { role: "manager", status: "completed" })]);
+    const data = input([
+      run("a", { role: "manager", status: "running" }),
+      run("b", { role: "manager", status: "completed" }),
+    ]);
     data.attentionByWs = { "s1/w1": new Set(["a"]) };
     data.pins.add("s1/w1/b");
-    expect(buildOverviewSections(data)[1]!.threads.map((thread) => thread.ref.kind === "workspace" && thread.ref.threadId)).toEqual(["b", "a"]);
-    expect(filterOverviewSections(buildOverviewSections(data), { filter: "managers", find: "alpha" })).toHaveLength(1);
-    expect(filterOverviewSections(buildOverviewSections(data), { filter: "managers", find: "missing" })).toHaveLength(0);
+    const sections = buildOverviewSections(data);
+    expect(sections[1]!.threads.map((thread) => thread.summary?.id)).toEqual(["b", "a"]);
+    expect(
+      filterOverviewSections(sections, { filter: "managers", find: "alpha" }),
+    ).toHaveLength(1);
+    expect(
+      filterOverviewSections(sections, { filter: "managers", find: "missing" }),
+    ).toHaveLength(0);
   });
 
   it("finds title, workspace name, or program name and carries workspace labels", () => {
@@ -113,9 +161,15 @@ describe("buildOverviewSections", () => {
       workspaceName: "Alpha",
       serverLabel: null,
     });
-    expect(filterOverviewSections(all, { filter: "managers", find: "deploy" })[0]!.threads).toHaveLength(1);
-    expect(filterOverviewSections(all, { filter: "managers", find: "alpha" })[0]!.threads).toHaveLength(1);
-    expect(filterOverviewSections(all, { filter: "managers", find: "portfolio" })[0]!.threads).toHaveLength(1);
+    expect(
+      filterOverviewSections(all, { filter: "managers", find: "deploy" })[0]!.threads,
+    ).toHaveLength(1);
+    expect(
+      filterOverviewSections(all, { filter: "managers", find: "alpha" })[0]!.threads,
+    ).toHaveLength(1);
+    expect(
+      filterOverviewSections(all, { filter: "managers", find: "portfolio" })[0]!.threads,
+    ).toHaveLength(1);
   });
 
   it("resolves filtered-out roots and resumed or worker run ids to the canonical thread", () => {
@@ -156,6 +210,21 @@ describe("buildOverviewSections", () => {
       lastActivity: null,
       readKey: "s1/hub/program:p1",
     });
+  });
+
+  it("uses hub spend for coordinator row cost when available", () => {
+    const data = input();
+    data.programs = [program("p1")];
+    data.spend = { p1: { costUsd: 12.5 } as never };
+    expect(buildOverviewSections(data)[0]!.threads[0]!.costUsd).toBe(12.5);
+  });
+
+  it("drops empty workspace sections while retaining an empty coordinator section", () => {
+    const sections = filterOverviewSections(buildOverviewSections(input()), {
+      filter: "managers",
+    });
+    expect(sections).toHaveLength(1);
+    expect(sections[0]).toMatchObject({ kind: "coordinator", threads: [] });
   });
 
   it("counts only hub questions outside open workspaces on the hub connection", () => {

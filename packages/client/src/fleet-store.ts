@@ -174,6 +174,7 @@ export function createFleetStore(): FleetStore {
   const clients = new Map<string, BridgeClient>();
   const runWsBySid = new Map<string, Map<string, string>>();
   const fetchedRuns = new Set<string>();
+  const loadingRuns = new Set<string>();
   const clientOf = (sid: string): BridgeClient | null => clients.get(sid) ?? null;
 
   // Debounced save timers keyed by compound workspace key — the key (server +
@@ -331,7 +332,7 @@ export function createFleetStore(): FleetStore {
           const key = runKey(sid, ws, event.runId);
           // Live tails are retained only after a full fetch, so a present log
           // is always complete-up-to-now rather than an accidentally partial log.
-          if (!fetchedRuns.has(key)) return;
+          if (!fetchedRuns.has(key) && !loadingRuns.has(key)) return;
           store.setState((s) => {
             const existing = s.eventsByRunKey[key] ?? EMPTY_EVENTS;
             const tail = existing[existing.length - 1];
@@ -422,8 +423,11 @@ export function createFleetStore(): FleetStore {
         const eventsByRunKey: Record<string, RunEvent[]> = Object.fromEntries(
           Object.entries(s.eventsByRunKey).filter(([k]) => !k.startsWith(prefix)),
         );
+        const previouslyFetched = new Set<string>();
         for (const eventKey of fetchedRuns) {
-          if (eventKey.startsWith(prefix)) fetchedRuns.delete(eventKey);
+          if (!eventKey.startsWith(prefix)) continue;
+          previouslyFetched.add(eventKey);
+          fetchedRuns.delete(eventKey);
         }
         const questionsByWs: Record<string, FleetQuestion[]> = Object.fromEntries(
           Object.entries(s.questionsByWs).filter(([k]) => !k.startsWith(prefix)),
@@ -462,7 +466,7 @@ export function createFleetStore(): FleetStore {
             const runId = eventKey.slice(key.length + 1);
             if (runIds.has(runId)) {
               eventsByRunKey[eventKey] = events;
-              fetchedRuns.add(eventKey);
+              if (previouslyFetched.has(eventKey)) fetchedRuns.add(eventKey);
             }
           }
         }
@@ -486,15 +490,18 @@ export function createFleetStore(): FleetStore {
 
     async loadRunEvents(sid, ws, runId) {
       const key = runKey(sid, ws, runId);
-      if (fetchedRuns.has(key)) return;
+      if (fetchedRuns.has(key) || loadingRuns.has(key)) return;
       const client = clientOf(sid);
       if (!client) return;
-      fetchedRuns.add(key);
+      loadingRuns.add(key);
       try {
         const { events } = await client.request("agent.events", { ws, runId });
         set((s) => {
+          const workspaceKey = wsKey(sid, ws);
+          if (s.runsByWs[workspaceKey] === undefined) return s;
           const bySeq = new Map(events.map((event) => [event.seq, event]));
           for (const event of s.eventsByRunKey[key] ?? EMPTY_EVENTS) bySeq.set(event.seq, event);
+          fetchedRuns.add(key);
           return {
             eventsByRunKey: {
               ...s.eventsByRunKey,
@@ -503,8 +510,9 @@ export function createFleetStore(): FleetStore {
           };
         });
       } catch (error) {
-        fetchedRuns.delete(key);
         throw error;
+      } finally {
+        loadingRuns.delete(key);
       }
     },
 

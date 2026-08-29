@@ -1,12 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
-import { MessageSquarePlus, Play, RotateCcw, Square } from "lucide-react";
+import { Play, RotateCcw, Square } from "lucide-react";
 import {
   MessageComposer,
   QuestionCard,
   questionDeliveryNotice,
   useHub,
-  useNav,
-  useNavUpdate,
   type ComposerSendResult,
 } from "@crystal/client";
 import {
@@ -15,85 +13,13 @@ import {
   type Program,
   type ProgramSpend,
 } from "@crystal/core";
-import { Button, EmptyState, Input, Select, Spinner, Textarea, Tooltip, cn } from "@crystal/ui";
+import { Button, EmptyState, Input, Textarea, Tooltip } from "@crystal/ui";
 import { SpendLine, StatusBadge, parseBudget } from "./spend-line.js";
 import { ThreadTranscript } from "./ThreadTranscript.js";
 import { buildTranscriptItems } from "./transcript-items.js";
 import { programChain } from "./overview/overview-thread-model.js";
 
-const EMPTY_PROGRAMS: Program[] = [];
 const EMPTY_HUB_RUNS: AgentRun[] = [];
-
-/**
- * The program-manager chat (the retired hub's CoordinatorChat, thread-shaped):
- * pick or create a cross-project program, watch its deliveries and spend
- * (server truth — deliveries bill in workspaces this client may not have
- * open), and converse with the program manager through the same transcript
- * the workspace threads use.
- */
-export function ProgramThread({ className }: { className?: string }) {
-  const programs = useHub((s) => (s.loaded ? s.programs : EMPTY_PROGRAMS));
-  const loaded = useHub((s) => s.loaded);
-  const error = useHub((s) => s.error);
-  const nav = useNav((l) => l.projects?.program ?? null);
-  const update = useNavUpdate();
-
-  const selected = useMemo(
-    () => programs.find((p) => p.id === nav) ?? programs[0] ?? null,
-    [programs, nav],
-  );
-  const [creating, setCreating] = useState(false);
-
-  if (!loaded) {
-    return (
-      <div className="flex h-full items-center justify-center text-xs text-ink-muted">
-        <Spinner className="mr-2 h-4 w-4" /> Loading programs…
-      </div>
-    );
-  }
-  if (error) {
-    return (
-      <div className="flex h-full items-center justify-center p-6 text-xs text-danger">{error}</div>
-    );
-  }
-
-  return (
-    <div className={cn("flex h-full min-h-0 flex-col", className)}>
-      <div className="flex items-center gap-2 border-b border-edge px-4 py-2">
-        <Select
-          size="sm"
-          className="w-64"
-          aria-label="Program"
-          value={selected?.id ?? ""}
-          onChange={(e) => {
-            setCreating(false);
-            update({ projects: { view: "threads", program: e.target.value || null } });
-          }}
-        >
-          {programs.length === 0 ? <option value="">No programs yet</option> : null}
-          {programs.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name}
-            </option>
-          ))}
-        </Select>
-        <Button variant={creating ? "primary" : "ghost"} size="sm" onClick={() => setCreating((v) => !v)}>
-          <MessageSquarePlus className="h-3.5 w-3.5" /> New program
-        </Button>
-      </div>
-      {creating || !selected ? (
-        <CreateProgram
-          onCreated={(program) => {
-            setCreating(false);
-            update({ projects: { view: "threads", program: program.id } });
-          }}
-        />
-      ) : (
-        <ProgramSession key={selected.id} program={selected} />
-      )}
-    </div>
-  );
-}
 
 export function CreateProgram({ onCreated }: { onCreated: (program: Program) => void }) {
   const createProgram = useHub((s) => s.createProgram);

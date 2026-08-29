@@ -50,6 +50,7 @@ export function ThreadRow({
   onSelect,
   onTogglePin,
   onContextMenu,
+  dataId,
 }: {
   thread: ThreadRowData;
   selected: boolean;
@@ -57,10 +58,14 @@ export function ThreadRow({
   onSelect: () => void;
   onTogglePin: () => void;
   onContextMenu?: React.MouseEventHandler;
+  dataId?: string;
 }) {
   const workers = thread.workerCount ?? 0;
   return (
     <div
+      role="option"
+      aria-selected={selected}
+      data-thread-id={dataId}
       className={cn(
         "group relative rounded-lg",
         selected ? "bg-surface-3" : "hover:bg-surface-2",
@@ -70,8 +75,6 @@ export function ThreadRow({
         type="button"
         onClick={onSelect}
         onContextMenu={onContextMenu}
-        aria-selected={selected}
-        role="option"
         title={INDICATOR_LABEL[thread.indicator]}
         className={cn(
           "flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left",

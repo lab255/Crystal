@@ -325,6 +325,41 @@ describe("fleet workflows and run events", () => {
     await store.getState().loadRunEvents("s1", "w1", "r2");
     expect(store.getState().eventsByRunKey["s1/w1/r2"]?.map((item) => item.seq)).toEqual([1]);
   });
+
+  it("keeps an in-flight event load valid across a concurrent refresh", async () => {
+    const store = createFleetStore();
+    const client = fakeClient({ runsByWs: { w1: [run("r1")] } });
+    let resolveEvents!: (value: { events: RunEvent[] }) => void;
+    const pending = new Promise<{ events: RunEvent[] }>((resolve) => {
+      resolveEvents = resolve;
+    });
+    client.request.mockImplementation((method: string) => {
+      if (method === "agent.events") return pending;
+      if (method === "agent.list") return Promise.resolve({ runs: [run("r1")] });
+      if (method === "todos.get") return Promise.resolve({ todos: { items: [] } });
+      if (method === "permissions.pending") return Promise.resolve({ pending: [] });
+      if (method === "workspace.get") return Promise.resolve({ projects: [] });
+      if (method === "workflow.list") return Promise.resolve({ workflows: [] });
+      return Promise.reject(new Error(`unexpected ${method}`));
+    });
+    store.getState().attach("s1", client);
+    await store.getState().refresh("s1", ["w1"]);
+
+    const load = store.getState().loadRunEvents("s1", "w1", "r1");
+    await store.getState().refresh("s1", ["w1"]);
+    client.events.emit("agent.event", event("r1", 2));
+    resolveEvents({ events: [event("r1", 1)] });
+    await load;
+    client.events.emit("agent.event", event("r1", 3));
+
+    expect(store.getState().eventsByRunKey["s1/w1/r1"]?.map((item) => item.seq)).toEqual([
+      1,
+      2,
+      3,
+    ]);
+    await store.getState().loadRunEvents("s1", "w1", "r1");
+    expect(client.request.mock.calls.filter(([method]) => method === "agent.events")).toHaveLength(1);
+  });
 });
 
 describe("question details per workspace", () => {

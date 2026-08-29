@@ -139,6 +139,24 @@ export function OverviewThreadPane({
     return (
       <main className="flex min-w-0 flex-1 flex-col">
         {notice ? <Notice text={notice} dismiss={dismissNotice} /> : null}
+        <header className="flex items-center gap-2.5 border-b border-edge px-4 py-2.5">
+          <span className="rounded bg-surface-2 px-2 py-1 text-[10px] text-ink-muted">
+            Coordinator
+            {thread.serverLabel ? ` · ${thread.serverLabel}` : ""}
+          </span>
+          <StatusDot status={thread.program.status === "paused" ? "idle" : thread.program.status} />
+          <div className="min-w-0 flex-1 truncate text-sm font-medium text-ink">
+            {thread.program.name}
+          </div>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Thread actions"
+            onClick={(event) => openMenu(event, entries)}
+          >
+            <MoreHorizontal className="h-4 w-4" />
+          </Button>
+        </header>
         <ProgramSession program={thread.program} onError={onError} />
       </main>
     );
@@ -208,7 +226,12 @@ export function OverviewThreadPane({
       </header>
       {interactive && activeProject ? <InteractiveRunBanner run={run} /> : null}
       {interactive && !activeProject ? (
-        <div className="flex items-center gap-3 border-b border-edge px-4 py-2 text-xs text-ink-muted">
+        <div
+          className={cn(
+            "flex items-center gap-3 border-b border-edge px-4 py-2",
+            "text-xs text-ink-muted",
+          )}
+        >
           <span>Interactive session — open in project to attach the terminal</span>
           <Button size="sm" variant="ghost" onClick={openProject}>Open in project</Button>
         </div>
@@ -253,7 +276,12 @@ export function OverviewThreadPane({
       ) : (
         <>
           {thread.workflow?.status === "paused" ? (
-            <div className="flex items-center gap-2 border-t border-edge px-4 py-2 text-xs text-ink-muted">
+            <div
+              className={cn(
+                "flex items-center gap-2 border-t border-edge px-4 py-2",
+                "text-xs text-ink-muted",
+              )}
+            >
               <span>Paused by {thread.workflow.pausedBy ?? "user"}</span>
               <Button variant="ghost" size="sm" onClick={resumeWorkflow}>Resume</Button>
             </div>
@@ -276,7 +304,10 @@ function Notice({ text, dismiss }: { text: string; dismiss: () => void }) {
   return (
     <div
       role="alert"
-      className="flex items-center gap-2 border-b border-danger/40 bg-surface-2 px-4 py-2 text-xs text-danger"
+      className={cn(
+        "flex items-center gap-2 border-b border-danger/40 bg-surface-2",
+        "px-4 py-2 text-xs text-danger",
+      )}
     >
       <span className="flex-1">{text}</span>
       <button type="button" aria-label="Dismiss error" onClick={dismiss}>

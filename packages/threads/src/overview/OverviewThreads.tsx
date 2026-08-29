@@ -2,8 +2,18 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Copy, ExternalLink, Pause, Play, Square, Terminal, Trash2 } from "lucide-react";
 import { formatDeepLink, formatWsRef, isProgramTerminal } from "@crystal/core";
 import {
-  EMPTY_EVENTS, EMPTY_QUESTIONS, EMPTY_RUNS, runKey, wsKey,
-  useCrystal, useFleet, useFleetConnections, useFleetNeedsYou, useHub, useNav, useNavUpdate,
+  EMPTY_EVENTS,
+  EMPTY_QUESTIONS,
+  EMPTY_RUNS,
+  runKey,
+  wsKey,
+  useCrystal,
+  useFleet,
+  useFleetConnections,
+  useFleetNeedsYou,
+  useHub,
+  useNav,
+  useNavUpdate,
 } from "@crystal/client";
 import { useContextMenu, type MenuEntry } from "@crystal/ui";
 import { useThreadReadState } from "../thread-unread.js";
@@ -32,6 +42,7 @@ export default function OverviewThreads() {
   const programs = useHub((s) => s.programs);
   const hubRuns = useHub((s) => s.runs);
   const programQuestions = useHub((s) => s.questions);
+  const spend = useHub((s) => s.spend);
   const startManager = useHub((s) => s.startManager);
   const closeManager = useHub((s) => s.closeManager);
   const setProgramPaused = useHub((s) => s.setPaused);
@@ -83,11 +94,12 @@ export default function OverviewThreads() {
     hubRuns,
     hubSid: activeSid,
     programQuestions,
+    spend,
     lastSeen: read.seen,
     pins: read.pins as Set<string>,
   }), [
     connections, runsByWs, workflowsByWs, attentionByWs, programs, hubRuns,
-    activeSid, programQuestions, read.seen, read.pins,
+    activeSid, programQuestions, spend, read.seen, read.pins,
   ]);
   const allSections = useMemo(
     () => buildOverviewSections(modelInput),
@@ -103,7 +115,9 @@ export default function OverviewThreads() {
     return filterOverviewSections(allSections, { filter: "all", find: nav?.find })
       .reduce((count, section) => count + section.threads.length, 0);
   }, [filter, visibleCount, allSections, nav?.find]);
-  const requested = nav?.thread ?? (nav?.program ? formatOverviewThreadId({ kind: "program", programId: nav.program }) : null);
+  const requested = nav?.thread ?? (nav?.program
+    ? formatOverviewThreadId({ kind: "program", programId: nav.program })
+    : null);
   const selected = resolveOverviewThread(allSections, requested);
   const selectedSid = selected?.ref.kind === "workspace" ? selected.ref.sid : undefined;
   const selectedWs = selected?.ref.kind === "workspace" ? selected.ref.ws : undefined;
@@ -114,8 +128,19 @@ export default function OverviewThreads() {
   }, [selectedSid, selectedWs, loadRunEvents]);
 
   useEffect(() => {
-    if (selected?.lastActivity) read.markSeen(selected.readKey, selected.lastActivity);
-  }, [selected?.readKey, selected?.lastActivity, read.markSeen]);
+    if (!selected?.lastActivity) return;
+    if (!selected.live) {
+      read.markSeen(selected.readKey, selected.lastActivity);
+      return;
+    }
+    // A streaming face updates activity frequently. Trail those updates so
+    // seen-state changes do not rebuild the fleet model for every event.
+    const timer = setTimeout(
+      () => read.markSeen(selected.readKey, selected.lastActivity!),
+      500,
+    );
+    return () => clearTimeout(timer);
+  }, [selected?.readKey, selected?.lastActivity, selected?.live, read.markSeen]);
   const act = useCallback((fn: () => unknown | Promise<unknown>) => {
     void Promise.resolve().then(fn).catch((error) =>
       setNotice(error instanceof Error ? error.message : String(error)),
@@ -140,14 +165,22 @@ export default function OverviewThreads() {
 
   const entriesFor = (thread: OverviewThread): MenuEntry[] => {
     const common: MenuEntry[] = [
-      { type: "item", label: thread.pinned ? "Unpin" : "Pin", onSelect: () => read.togglePin(thread.readKey) },
+      {
+        type: "item",
+        label: thread.pinned ? "Unpin" : "Pin",
+        onSelect: () => read.togglePin(thread.readKey),
+      },
       {
         type: "item",
         label: thread.indicator === "unread" ? "Mark as read" : "Mark as unread",
         disabled: thread.indicator !== "unread" && !read.seen[thread.readKey],
-        onSelect: () => thread.indicator === "unread"
-          ? thread.lastActivity && read.markSeen(thread.readKey, thread.lastActivity)
-          : read.clearSeen(thread.readKey),
+        onSelect: () => {
+          if (thread.indicator === "unread" && thread.lastActivity) {
+            read.markSeen(thread.readKey, thread.lastActivity);
+          } else {
+            read.clearSeen(thread.readKey);
+          }
+        },
       },
       { type: "item", label: "Copy link", icon: Copy, onSelect: () => copyLink(thread) },
     ];
@@ -327,8 +360,9 @@ export default function OverviewThreads() {
     return result;
   }, [selected, eventsByRunKey]);
 
-  return <div className="flex h-full min-h-0">
-    <OverviewThreadRail
+  return (
+    <div className="flex h-full min-h-0">
+      <OverviewThreadRail
       sections={sections}
       selectedId={selected?.id ?? null}
       filter={filter}
@@ -346,8 +380,8 @@ export default function OverviewThreads() {
       entriesFor={entriesFor}
       headingEntriesFor={headingEntriesFor}
       openMenu={menu.open}
-    />
-    <OverviewThreadPane
+      />
+      <OverviewThreadPane
       thread={selected}
       creating={creating}
       notice={notice}
@@ -363,13 +397,17 @@ export default function OverviewThreads() {
           },
         });
       }}
-      questions={selected?.ref.kind === "workspace"
-        ? questionsByWs[wsKey(selected.ref.sid, selected.ref.ws)] ?? EMPTY_QUESTIONS
-        : EMPTY_QUESTIONS}
+      questions={
+        selected?.ref.kind === "workspace"
+          ? questionsByWs[wsKey(selected.ref.sid, selected.ref.ws)] ?? EMPTY_QUESTIONS
+          : EMPTY_QUESTIONS
+      }
       eventsByRun={selectedEvents}
-      runs={selected?.ref.kind === "workspace"
-        ? runsByWs[wsKey(selected.ref.sid, selected.ref.ws)] ?? EMPTY_RUNS
-        : EMPTY_RUNS}
+      runs={
+        selected?.ref.kind === "workspace"
+          ? runsByWs[wsKey(selected.ref.sid, selected.ref.ws)] ?? EMPTY_RUNS
+          : EMPTY_RUNS
+      }
       loadEvents={loadSelectedEvents}
       entries={selected ? entriesFor(selected) : []}
       openMenu={menu.open}
@@ -385,7 +423,8 @@ export default function OverviewThreads() {
           paused: false,
         }));
       }}
-    />
-    {menu.element}
-  </div>;
+      />
+      {menu.element}
+    </div>
+  );
 }
