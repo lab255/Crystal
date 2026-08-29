@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Brain,
   ChevronDown,
@@ -415,7 +415,7 @@ function UserRow({ text }: { text: string }) {
   );
 }
 
-function AssistantRow({ text, thinking }: { text: string; thinking: string | null }) {
+const AssistantRow = memo(function AssistantRow({ text, thinking }: { text: string; thinking: string | null }) {
   const [showThinking, setShowThinking] = useState(false);
   return (
     <div className="max-w-[92%]">
@@ -436,10 +436,10 @@ function AssistantRow({ text, thinking }: { text: string; thinking: string | nul
       <LightMarkdown text={text} />
     </div>
   );
-}
+});
 
 function LightMarkdown({ text }: { text: string }) {
-  const blocks = renderLightMarkdown(text);
+  const blocks = useMemo(() => renderLightMarkdown(text), [text]);
   return (
     <div className="space-y-2 px-1 text-xs leading-relaxed text-ink">
       {blocks.map((block, index) => {
@@ -456,7 +456,7 @@ function LightMarkdown({ text }: { text: string }) {
           case "list": {
             const List = block.ordered ? "ol" : "ul";
             return (
-              <List key={key} className={cn("pl-4", block.ordered ? "list-decimal" : "list-disc")}>
+              <List key={key} start={block.start} className={cn("pl-4", block.ordered ? "list-decimal" : "list-disc")}>
                 {block.items.map((item, itemIndex) => <li key={itemIndex}>{renderInline(item)}</li>)}
               </List>
             );
@@ -464,7 +464,7 @@ function LightMarkdown({ text }: { text: string }) {
           case "code":
             return (
               <pre key={key} className="overflow-x-auto whitespace-pre-wrap rounded bg-surface-2 px-2.5 py-2 font-mono text-[12px] text-ink">
-                <code data-language={block.language || undefined}>{block.text}</code>
+                <code data-language={block.language.slice(0, 32) || undefined}>{block.text}</code>
               </pre>
             );
         }
@@ -480,7 +480,7 @@ function renderInline(spans: readonly InlineSpan[]): ReactNode[] {
       case "bold": return <strong key={index}>{span.text}</strong>;
       case "italic": return <em key={index}>{span.text}</em>;
       case "code": return <code key={index} className="rounded bg-surface-2 px-1 font-mono text-[12px]">{span.text}</code>;
-      case "link": return <a key={index} href={span.href} target="_blank" rel="noreferrer" className="underline">{span.text}</a>;
+      case "link": return <a key={index} href={span.href} target="_blank" rel="noreferrer noopener" className="underline">{span.text}</a>;
     }
   });
 }

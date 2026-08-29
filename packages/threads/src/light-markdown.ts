@@ -6,12 +6,14 @@ export type InlineSpan =
 export type Block =
   | { type: "paragraph"; spans: InlineSpan[] }
   | { type: "heading"; level: 1 | 2 | 3; spans: InlineSpan[] }
-  | { type: "list"; ordered: boolean; items: InlineSpan[][] }
+  | { type: "list"; ordered: boolean; start?: number; items: InlineSpan[][] }
   | { type: "code"; language: string; text: string };
 
 const headingPattern = /^(#{1,3})[ \t]+(.+)$/;
 const listPattern = /^\s*(?:(\d+)\.|([-*]))[ \t]+(.+)$/;
 const fencePattern = /^```([^`]*)$/;
+const closingFencePattern = /^```\s*$/;
+const linkPattern = /\[([^\]\n]{1,400})\]\((https?:\/\/[^\s)]{1,2000})\)/y;
 
 /** Parse the deliberately small Markdown subset used in assistant prose. */
 export function renderLightMarkdown(text: string): Block[] {
@@ -28,8 +30,11 @@ export function renderLightMarkdown(text: string): Block[] {
 
       const fence = lines[index]?.match(fencePattern);
       if (fence) {
-        const close = lines.indexOf("```", index + 1);
-        if (close !== -1) {
+        let close = index + 1;
+        while (close < lines.length && !closingFencePattern.test(lines[close]!)) close += 1;
+        if (close === lines.length) {
+          // Deliberately fall through while streaming; this flips to <pre> once the closing fence arrives.
+        } else {
           blocks.push({
             type: "code",
             language: fence[1]?.trim() ?? "",
@@ -54,14 +59,24 @@ export function renderLightMarkdown(text: string): Block[] {
       const firstItem = lines[index]?.match(listPattern);
       if (firstItem) {
         const ordered = firstItem[1] !== undefined;
+        const start = ordered ? Number(firstItem[1]) : undefined;
         const items: InlineSpan[][] = [];
         while (index < lines.length) {
           const item = lines[index]?.match(listPattern);
-          if (!item) break;
+          if (!item || (item[1] !== undefined) !== ordered) {
+            if (lines[index] === "" && index + 1 < lines.length) {
+              const nextItem = lines[index + 1]?.match(listPattern);
+              if (nextItem && (nextItem[1] !== undefined) === ordered) {
+                index += 1;
+                continue;
+              }
+            }
+            break;
+          }
           items.push(parseInline(item[3]!));
           index += 1;
         }
-        blocks.push({ type: "list", ordered, items });
+        blocks.push({ type: "list", ordered, ...(start === undefined ? {} : { start }), items });
         continue;
       }
 
@@ -92,20 +107,23 @@ function parseInline(text: string): InlineSpan[] {
   };
 
   for (let index = 0; index < text.length;) {
-    const rest = text.slice(index);
-    const link = rest.match(/^\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/);
-    if (link) {
-      flush();
-      spans.push({ type: "link", text: link[1]!, href: link[2]! });
-      index += link[0].length;
-      continue;
+    if (text[index] === "[") {
+      linkPattern.lastIndex = index;
+      const link = linkPattern.exec(text);
+      if (link) {
+        flush();
+        spans.push({ type: "link", text: link[1]!, href: link[2]! });
+        index = linkPattern.lastIndex;
+        continue;
+      }
     }
 
-    const marker = rest.startsWith("**") ? "**" : rest[0] === "`" ? "`" : rest[0] === "*" ? "*" : null;
+    const marker = text.startsWith("**", index) ? "**" : text[index] === "`" ? "`" : text[index] === "*" ? "*" : null;
     if (marker) {
       const end = text.indexOf(marker, index + marker.length);
       const content = end === -1 ? "" : text.slice(index + marker.length, end);
-      if (end !== -1 && content && !content.includes("\n")) {
+      const flanked = marker === "`" || (content.length > 0 && !/^\s|\s$/.test(content));
+      if (end !== -1 && content && !content.includes("\n") && flanked) {
         flush();
         spans.push({
           type: marker === "**" ? "bold" : marker === "*" ? "italic" : "code",
