@@ -96,7 +96,7 @@ export function ThreadTranscript({
       itemHits.push({ ...hit, index });
     });
     return grouped;
-  }, [hits]);
+  }, [hits, findOpen, query]);
   const activeKey = hits[activeHit] ? hitKey(hits[activeHit]!) : null;
   const unloadedTurns = useMemo(
     () => items.filter((item): item is Extract<TranscriptItem, { kind: "collapsed-turn" }> => item.kind === "collapsed-turn"),
@@ -125,7 +125,7 @@ export function ThreadTranscript({
   useEffect(() => {
     setActiveHit(0);
     activeKeyRef.current = hits[0] ? hitKey(hits[0]) : null;
-  }, [query]);
+  }, [hits, query]);
 
   useEffect(() => {
     const preserved = activeKeyRef.current;
@@ -133,7 +133,7 @@ export function ThreadTranscript({
     const next = hits.length ? (preservedIndex >= 0 ? preservedIndex : Math.min(activeHit, hits.length - 1)) : 0;
     setActiveHit(next);
     activeKeyRef.current = hits[next] ? hitKey(hits[next]!) : null;
-  }, [hits]);
+  }, [activeHit, hits]);
 
   useEffect(() => {
     if (!findOpen) return;
@@ -148,7 +148,7 @@ export function ThreadTranscript({
         ?.scrollIntoView({ block: "center", behavior: "auto" });
     });
     return () => cancelAnimationFrame(frame);
-  }, [activeKey, activeHit, findOpen]);
+  }, [activeKey, activeHit, findOpen, hits]);
 
   useEffect(() => {
     focusedRef.current = focusTurnId;
