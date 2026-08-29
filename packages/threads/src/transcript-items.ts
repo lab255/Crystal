@@ -201,6 +201,14 @@ export function humanRunFailure(text: string): string {
   return failure ? runFailureHint(failure) : text;
 }
 
+export const RUN_STATUS_LABEL: Record<AgentRun["status"], string> = {
+  queued: "Queued",
+  running: "Running",
+  completed: "Completed",
+  failed: "Failed",
+  cancelled: "Cancelled",
+};
+
 /**
  * Fold a thread — every turn of the chain, oldest first — into transcript
  * items. Each turn contributes its user row (the prompt; steering notices and
@@ -268,7 +276,7 @@ export function buildTranscriptItems(input: TranscriptFoldInput): TranscriptItem
           kind: "collapsed-turn",
           id: `${turn.id}:collapsed`,
           runId: turn.id,
-          headline: `Turn — ${turn.status}`,
+          headline: `Turn — ${RUN_STATUS_LABEL[turn.status]} — show what happened`,
           ts: turn.createdAt,
         });
       }
@@ -279,7 +287,7 @@ export function buildTranscriptItems(input: TranscriptFoldInput): TranscriptItem
   return items;
 }
 
-function foldTurnEvents(
+export function foldTurnEvents(
   turn: AgentRun,
   events: readonly RunEvent[],
   takeQuestion: (runId: string, text: string) => TaskQuestion | null,
@@ -451,8 +459,8 @@ function foldTurnEvents(
             kind: "system",
             id,
             text: event.message && event.message !== event.status
-              ? `${event.status} — ${humanRunFailure(event.message)}`
-              : event.status,
+              ? `${RUN_STATUS_LABEL[event.status]} — ${humanRunFailure(event.message)}`
+              : RUN_STATUS_LABEL[event.status],
             tone: "warn",
           });
         }
@@ -468,6 +476,20 @@ function foldTurnEvents(
 
   for (const e of events) push(e.event, e.seq);
   closeWork();
+  const settled = ["completed", "failed", "cancelled"].includes(turn.status);
+  const hasEnding = items.some((item) => item.kind === "turn-end" || item.kind === "system");
+  if (settled && !hasEnding) {
+    const ok = turn.status === "completed";
+    items.push({
+      kind: "turn-end",
+      id: `${turn.id}:settled`,
+      runId: turn.id,
+      ok,
+      resultText: ok ? turn.resultText ?? "" : humanRunFailure(turn.resultText ?? ""),
+      costUsd: turn.costUsd ?? null,
+      durationMs: turn.durationMs ?? null,
+    });
+  }
   return dedupeTurnEnd(items);
 }
 

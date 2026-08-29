@@ -27,7 +27,7 @@ import {
   type MenuEntry,
 } from "@crystal/ui";
 import { CreateProgram, ProgramSession } from "../ProgramThread.js";
-import { SpendLine } from "../spend-line.js";
+import { PAUSED_BY_LABEL, STATUS_LABEL, SpendLine } from "../spend-line.js";
 import { ThreadComposer } from "../ThreadComposer.js";
 import { ThreadTranscript } from "../ThreadTranscript.js";
 import { buildTranscriptItems, type TranscriptItem } from "../transcript-items.js";
@@ -58,6 +58,44 @@ interface PaneProps {
   clearSelection: () => void;
 }
 
+function joinTranscriptRecords(
+  items: readonly TranscriptItem[],
+  node: RunNode,
+  questions: readonly FleetQuestion["question"][],
+): TranscriptItem[] {
+  const questionPool = [...questions];
+  const workerPool = [...node.workers];
+  return items.map((item) => {
+    if (item.kind === "question") {
+      let index = questionPool.findIndex(
+        (question) => question.runId === item.runId && question.text === item.text,
+      );
+      if (index === -1) {
+        index = questionPool.findIndex((question) => question.text === item.text);
+      }
+      return {
+        ...item,
+        record: index === -1 ? null : questionPool.splice(index, 1)[0] ?? null,
+      };
+    }
+    if (item.kind !== "delegation") return item;
+    const parentRunId = item.id.slice(0, item.id.lastIndexOf(":"));
+    let index = workerPool.findIndex(
+      (worker) => worker.turns.some((turn) => turn.parentRunId === parentRunId)
+        && worker.turns[0]?.prompt.split("\n")[0] === item.headline,
+    );
+    if (index === -1) {
+      index = workerPool.findIndex(
+        (worker) => worker.turns.some((turn) => turn.parentRunId === parentRunId),
+      );
+    }
+    return {
+      ...item,
+      worker: index === -1 ? null : workerPool.splice(index, 1)[0] ?? null,
+    };
+  });
+}
+
 function NodeTranscript({
   node,
   eventsByRun,
@@ -76,6 +114,10 @@ function NodeTranscript({
   onFocusedTurn?: (runId: string) => void;
 }) {
   const loadEventsRef = useRef(loadEvents);
+  const foldCacheRef = useRef(new Map<
+    string,
+    { events: readonly RunEvent[] | undefined; items: TranscriptItem[] }
+  >());
   const [loadedFocusTurnId, setLoadedFocusTurnId] = useState<string | undefined>();
   const ownsFocusTurn = focusTurnId != null
     && node.turns.some((turn) => turn.id === focusTurnId);
@@ -109,15 +151,24 @@ function NodeTranscript({
     () => questions.map((row) => row.question),
     [questions],
   );
-  const items = useMemo(
-    () => buildTranscriptItems({
-      turns: node.turns,
-      eventsByRun,
-      workers: node.workers,
-      questions: transcriptQuestions,
-    }),
-    [node, eventsByRun, transcriptQuestions],
-  );
+  const items = useMemo(() => {
+    const liveIds = new Set(node.turns.map((turn) => turn.id));
+    for (const id of foldCacheRef.current.keys()) {
+      if (!liveIds.has(id)) foldCacheRef.current.delete(id);
+    }
+    const base = node.turns.flatMap((turn) => {
+      const turnEvents = eventsByRun[turn.id];
+      const cached = foldCacheRef.current.get(turn.id);
+      if (cached && cached.events === turnEvents) return cached.items;
+      const folded = buildTranscriptItems({
+        turns: [turn],
+        eventsByRun: turnEvents ? { [turn.id]: turnEvents } : {},
+      });
+      foldCacheRef.current.set(turn.id, { events: turnEvents, items: folded });
+      return folded;
+    });
+    return joinTranscriptRecords(base, node, transcriptQuestions);
+  }, [node.turns, node.workers, eventsByRun, transcriptQuestions]);
   const renderWorker = useCallback(
     (item: Extract<TranscriptItem, { kind: "delegation" }>) => item.worker ? (
       <NodeTranscript
@@ -172,7 +223,6 @@ export function OverviewThreadPane({
 }: PaneProps) {
   const { fleet, activeSid } = useCrystal();
   const activeWs = useWorkspaces((state) => state.activeId);
-  const [nowMs, setNowMs] = useState(() => Date.now());
   const face = thread?.summary?.node.run;
   const working = face ? sessionIsWorking(thread!.summary!.node) : false;
   const activeQuestionRows = useMemo(() => {
@@ -180,12 +230,6 @@ export function OverviewThreadPane({
     const chainIds = new Set(thread.summary.node.turns.map((turn) => turn.id));
     return questions.filter((row) => row.question.runId && chainIds.has(row.question.runId));
   }, [questions, thread?.summary]);
-
-  useEffect(() => {
-    if (!working) return;
-    const timer = setInterval(() => setNowMs(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [working]);
 
   if (creating) {
     return (
@@ -236,7 +280,6 @@ export function OverviewThreadPane({
           <div className="min-w-0 flex-1 truncate text-sm font-medium text-ink">
             {thread.program.name}
           </div>
-          <Badge>{thread.program.status}</Badge>
           <Button
             variant="ghost"
             size="icon-sm"
@@ -263,9 +306,9 @@ export function OverviewThreadPane({
   const recentTurnOffset = (thread.workflow?.turnLog.length ?? 0) - recentTurnLog.length;
   const workflowLabel = thread.workflow
     ? `${thread.workflow.name === thread.title ? "" : `${thread.workflow.name} · `}`
-      + thread.workflow.status
+      + STATUS_LABEL[thread.workflow.status]
       + (thread.workflow.status === "paused"
-        ? ` · ${thread.workflow.pausedBy ?? "user"}`
+        ? ` · ${PAUSED_BY_LABEL[thread.workflow.pausedBy ?? "user"]}`
         : "")
     : null;
 
@@ -289,46 +332,51 @@ export function OverviewThreadPane({
         <div className="min-w-0 flex-1">
           <div className="truncate text-sm font-medium text-ink">{thread.title}</div>
           <div className="mt-0.5 flex flex-wrap items-center gap-2 text-[10px] text-ink-faint">
-            {run.purpose ? <Badge tone="violet">{run.purpose}</Badge> : null}
-            <span>thread {formatRunCost(thread.costUsd ?? 0)}</span>
-            {working && run.startedAt ? <span>{formatElapsed(run.startedAt, nowMs)}</span> : null}
+            {run.purpose ? (
+              <Tooltip content={run.model ? `Model ${run.model}` : run.purpose}>
+                <span><Badge tone="violet">{run.purpose}</Badge></span>
+              </Tooltip>
+            ) : null}
+            <span>Thread {formatRunCost(thread.costUsd ?? 0)}</span>
+            {working && run.startedAt ? <Elapsed startedAt={run.startedAt} /> : null}
             {workflowLabel ? <Badge>{workflowLabel}</Badge> : null}
             {thread.workflow && spend ? (
-              <span>workflow <SpendLine
+              <span>Workflow <SpendLine
                 costUsd={spend.costUsd}
                 budgetUsd={thread.workflow.budgetUsd}
               /></span>
             ) : null}
-            {recentTurnLog.length ? <span className="text-ink-faint">last 5 turns ·</span> : null}
-            {recentTurnLog.map((turn, index) => {
-              const cost = formatRunCost(turn.costUsd);
-              return (
-                <Tooltip
-                  key={`${turn.runId}:${turn.at}`}
-                  content={
-                    `Turn ${recentTurnOffset + index + 1} · ${cost} · `
-                    + (turn.progressed ? "progressed" : "no progress")
-                  }
-                >
-                  <span
-                    aria-label={turn.progressed ? `${cost}, progressed` : `${cost}, stalled`}
-                    className={cn(
-                      "rounded px-1 py-0.5",
-                      turn.progressed
-                        ? "bg-surface-2"
-                        : "bg-danger/15 font-semibold text-danger",
-                    )}
-                  >
-                    {cost}
-                  </span>
-                </Tooltip>
-              );
-            })}
             {recentTurnLog.length ? (
-              <span>· {recentTurnLog.filter((turn) => !turn.progressed).length} stalled</span>
-            ) : null}
-            {run.model ? (
-              <span className="basis-full text-ink-faint">model {run.model}</span>
+              <span className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap">
+                <span className="text-ink-faint">Last 5 turns</span>
+                {recentTurnLog.map((turn, index) => {
+                  const cost = formatRunCost(turn.costUsd);
+                  return (
+                    <Tooltip
+                      key={`${turn.runId}:${turn.at}`}
+                      content={
+                        `Turn ${recentTurnOffset + index + 1} · ${cost} · `
+                        + (turn.progressed ? "progressed" : "no progress")
+                      }
+                    >
+                      <span
+                        aria-label={turn.progressed
+                          ? `${cost}, progressed`
+                          : `${cost}, stalled`}
+                        className={cn(
+                          "rounded px-1 py-0.5",
+                          turn.progressed
+                            ? "bg-surface-2"
+                            : "bg-danger/15 font-semibold text-danger",
+                        )}
+                      >
+                        {cost}
+                      </span>
+                    </Tooltip>
+                  );
+                })}
+                <span>{recentTurnLog.filter((turn) => !turn.progressed).length} stalled</span>
+              </span>
             ) : null}
           </div>
         </div>
@@ -402,7 +450,7 @@ export function OverviewThreadPane({
                 "text-xs text-ink-muted",
               )}
             >
-              <span>Paused by {thread.workflow.pausedBy ?? "user"}</span>
+              <span>Paused by {PAUSED_BY_LABEL[thread.workflow.pausedBy ?? "user"]}</span>
               <Button variant="ghost" size="sm" onClick={resumeWorkflow}>Resume</Button>
             </div>
           ) : null}
@@ -443,4 +491,13 @@ function Notice({
       </button>
     </div>
   );
+}
+
+function Elapsed({ startedAt }: { startedAt: string }) {
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowMs(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, []);
+  return <span>{formatElapsed(startedAt, nowMs)}</span>;
 }

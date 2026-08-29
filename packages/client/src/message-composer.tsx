@@ -83,7 +83,7 @@ export function MessageComposer({
           onKeyDown={onComposerKey}
           rows={2}
           disabled={disabled}
-          placeholder={placeholder ?? `Message this run… (${sendHint})`}
+          placeholder={`${placeholder ?? "Message this run…"} (${sendHint})`}
           aria-label={ariaLabel}
           className="min-h-0 flex-1"
         />

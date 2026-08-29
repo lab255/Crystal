@@ -3,7 +3,9 @@ import { Play, PowerOff, RotateCcw } from "lucide-react";
 import {
   MessageComposer,
   QuestionCard,
+  messageRun,
   questionDeliveryNotice,
+  useCrystal,
   useHub,
   type ComposerSendResult,
 } from "@crystal/client";
@@ -118,10 +120,11 @@ export function ProgramSession({
   const loadRunEvents = useHub((s) => s.loadRunEvents);
   const startManager = useHub((s) => s.startManager);
   const closeManager = useHub((s) => s.closeManager);
-  const message = useHub((s) => s.message);
   const retryDelivery = useHub((s) => s.retryDelivery);
   const answerQuestion = useHub((s) => s.answerQuestion);
+  const { client } = useCrystal();
   const [busy, setBusy] = useState(false);
+  const [receipt, setReceipt] = useState<string | null>(null);
 
   // Whether a manager SESSION exists is the program record's call
   // (managerRunId), never "any program-tagged runs exist": closeManager nulls
@@ -150,8 +153,18 @@ export function ProgramSession({
   );
 
   async function send(text: string): Promise<ComposerSendResult> {
-    const result = await message(program.id, text);
-    return { queued: result.queued };
+    setReceipt(null);
+    if (!client || !face) throw new Error("The manager connection is unavailable.");
+    const result = await messageRun(client, face, text);
+    if (result.queued && typeof result.wakeExpected === "boolean") {
+      setReceipt(
+        result.wakeExpected
+          ? "Queued — the manager wakes on the next settlement."
+          : "Queued — no wake expected; it reads this when next resumed.",
+      );
+      return { ...result, queued: false };
+    }
+    return result;
   }
 
   return (
@@ -191,7 +204,7 @@ export function ProgramSession({
       </div>
 
       {program.deliveries.length ? (
-        <div className="flex gap-2 overflow-x-auto border-b border-edge px-4 py-2">
+        <div className="flex flex-wrap gap-2 border-b border-edge px-4 py-2">
           {program.deliveries.map((delivery) => {
             const dSpend = spend?.byDelivery[delivery.id];
             const terminal =
@@ -286,7 +299,7 @@ export function ProgramSession({
       {managerNotLive ? (
         <div className="flex items-center gap-3 border-t border-warn/30 bg-warn/10 px-4 py-2">
           <span className="flex-1 text-[11px] text-warn">
-            Manager session is not live — messages will only be recorded
+            Manager session is not live — start one to send messages
           </span>
           <StartManagerButton
             busy={busy}
@@ -301,12 +314,14 @@ export function ProgramSession({
           />
         </div>
       ) : hasManager ? (
-        <MessageComposer
-          onSend={send}
-          placeholder="Message the program manager…"
-          ariaLabel="Message the program manager"
-          className="border-t border-edge"
-        />
+        <div className="border-t border-edge">
+          {receipt ? <p className="px-2 pt-1 text-[10px] text-ink-faint">{receipt}</p> : null}
+          <MessageComposer
+            onSend={send}
+            placeholder="Message the program manager…"
+            ariaLabel="Message the program manager"
+          />
+        </div>
       ) : face ? (
         // Closed session: the transcript above is read-only history — the
         // way back is starting a fresh manager, never messaging a detached

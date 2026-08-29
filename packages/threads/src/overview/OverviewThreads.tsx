@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Copy, ExternalLink, Pause, Play, Square, Terminal, Trash2 } from "lucide-react";
 import { formatDeepLink, formatWsRef, isProgramTerminal } from "@crystal/core";
 import {
@@ -40,6 +40,7 @@ const FILTER_KEY = "crystal.overview.threads.filter";
 
 /** Mission control joins every project manager and coordinator into one surface. */
 export default function OverviewThreads() {
+  const surfaceRef = useRef<HTMLDivElement>(null);
   const connections = useFleetConnections();
   const runsByWs = useFleet((s) => s.runsByWs);
   const runsLoadedByWs = useFleet((s) => s.runsLoadedByWs);
@@ -74,6 +75,7 @@ export default function OverviewThreads() {
   } | null>(null);
   const [confirmation, setConfirmation] = useState<{
     title: string;
+    consequence: string;
     run: () => void;
   } | null>(null);
   const [filter, setFilterState] = useState<"managers" | "all">(() =>
@@ -309,6 +311,7 @@ export default function OverviewThreads() {
             onSelect: () => {
               setConfirmation({
                 title: "Cancel this workflow?",
+                consequence: "Live runs are stopped; the transcript stays.",
                 run: () => act(() => client!.request("workflow.cancel", {
                   ws: ref.ws,
                   workflowId: thread.workflow!.id,
@@ -369,6 +372,7 @@ export default function OverviewThreads() {
         onSelect: () => {
           setConfirmation({
             title: "Cancel this program?",
+            consequence: "Live manager and delivery runs are stopped; history stays.",
             run: () => act(() => cancelProgram(program.id)),
           });
         },
@@ -382,6 +386,7 @@ export default function OverviewThreads() {
         onSelect: () => {
           setConfirmation({
             title: "Remove this program?",
+            consequence: "The program and its saved transcript are permanently removed.",
             run: () => act(() => removeProgram(program.id)),
           });
         },
@@ -443,7 +448,7 @@ export default function OverviewThreads() {
   }, [selected, eventsByRunKey]);
 
   return (
-    <div className="flex h-full min-h-0">
+    <div ref={surfaceRef} className="flex h-full min-h-0">
       <OverviewThreadRail
       sections={sections}
       selectedId={selected?.id ?? null}
@@ -472,6 +477,11 @@ export default function OverviewThreads() {
       }}
       onPin={read.togglePin}
       onNewProgram={() => update({ projects: { view: "threads", compose: true } })}
+      onFocusComposer={() => {
+        surfaceRef.current?.querySelector<HTMLTextAreaElement>(
+          'main textarea[aria-label^="Message"]',
+        )?.focus();
+      }}
       entriesFor={entriesFor}
       headingEntriesFor={headingEntriesFor}
       openMenu={menu.open}
@@ -529,14 +539,14 @@ export default function OverviewThreads() {
       {menu.element}
       <Dialog open={confirmation != null} onOpenChange={(open) => !open && setConfirmation(null)}>
         <DialogContent title={confirmation?.title ?? "Confirm action"}>
+          <p className="text-xs text-ink-muted">{confirmation?.consequence}</p>
           <div className="flex justify-end gap-2">
             <DialogClose asChild>
-              <Button variant="ghost" size="sm">Cancel</Button>
+              <Button variant="ghost" size="sm" autoFocus>Cancel</Button>
             </DialogClose>
             <Button
               variant="danger"
               size="sm"
-              autoFocus
               onClick={() => {
                 confirmation?.run();
                 setConfirmation(null);

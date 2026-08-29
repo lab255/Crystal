@@ -22,6 +22,7 @@ interface OverviewThreadRailProps {
   onSelect: (id: string) => void;
   onPin: (key: string) => void;
   onNewProgram: () => void;
+  onFocusComposer: () => void;
   entriesFor: (thread: OverviewThread) => MenuEntry[];
   headingEntriesFor: (section: OverviewSection) => MenuEntry[];
   openMenu: (event: React.MouseEvent, entries: MenuEntry[]) => void;
@@ -80,6 +81,7 @@ export function OverviewThreadRail({
   onSelect,
   onPin,
   onNewProgram,
+  onFocusComposer,
   entriesFor,
   headingEntriesFor,
   openMenu,
@@ -160,6 +162,11 @@ export function OverviewThreadRail({
             event.preventDefault();
             if (find) onFind("");
             else onClearSelection();
+            return;
+          }
+          if (event.key === "Enter" && event.target === event.currentTarget) {
+            event.preventDefault();
+            onFocusComposer();
             return;
           }
           if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;

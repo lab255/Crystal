@@ -19,8 +19,23 @@ export const STATUS_TONES: Record<
   cancelled: "slate",
 };
 
+export const STATUS_LABEL: Record<DeliveryStatus, string> = {
+  pending: "Pending",
+  running: "Running",
+  paused: "Paused",
+  completed: "Completed",
+  failed: "Failed",
+  cancelled: "Cancelled",
+};
+
+export const PAUSED_BY_LABEL = {
+  user: "User",
+  stall: "No progress",
+  budget: "Budget limit",
+} as const;
+
 export function StatusBadge({ status }: { status: ProgramStatus | DeliveryStatus }) {
-  return <Badge tone={STATUS_TONES[status]}>{status}</Badge>;
+  return <Badge tone={STATUS_TONES[status]}>{STATUS_LABEL[status]}</Badge>;
 }
 
 /**
@@ -56,7 +71,7 @@ export function SpendLine({
     >
       {stale ? `≥${formatRunCost(costUsd)}` : formatRunCost(costUsd)}
       {budgetUsd != null ? (
-        <span className={cn(exhausted && "text-danger")}> / ${budgetUsd.toFixed(2)}</span>
+        <span className={cn(exhausted && "text-danger")}> of ${budgetUsd.toFixed(2)}</span>
       ) : showUnbudgeted ? (
         <span className="text-ink-faint"> (no budget — unbounded)</span>
       ) : null}

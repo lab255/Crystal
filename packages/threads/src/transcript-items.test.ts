@@ -89,6 +89,28 @@ describe("buildTranscriptItems", () => {
       state: "expired",
     });
   });
+
+  it("synthesizes a terminal result from a settled run when events omit one", () => {
+    const turn = run({
+      id: "r1",
+      prompt: "Manage it",
+      status: "failed",
+      resultText: "Server stopped while run was active",
+      costUsd: 0.25,
+      durationMs: 1_500,
+    });
+    const items = buildTranscriptItems({
+      turns: [turn],
+      eventsByRun: { r1: events("r1", [{ type: "text", text: "Starting." }]) },
+    });
+    expect(items.find((item) => item.kind === "turn-end")).toMatchObject({
+      kind: "turn-end",
+      ok: false,
+      resultText: "Server stopped while run was active",
+      costUsd: 0.25,
+      durationMs: 1_500,
+    });
+  });
   it("renders each turn as user row + folded events, oldest first", () => {
     const turn = run({ id: "r1", prompt: "Fix it", status: "completed" });
     const items = buildTranscriptItems({
@@ -131,7 +153,13 @@ describe("buildTranscriptItems", () => {
         ]),
       },
     });
-    expect(items.map((i) => i.kind)).toEqual(["user", "work", "assistant", "work"]);
+    expect(items.map((i) => i.kind)).toEqual([
+      "user",
+      "work",
+      "assistant",
+      "work",
+      "turn-end",
+    ]);
   });
 
   it("marks a work group loud when a tool result errors", () => {
@@ -304,7 +332,7 @@ describe("buildTranscriptItems", () => {
       },
     });
     const system = items.find((i) => i.kind === "system");
-    expect(system && system.kind === "system" ? system.text : null).toBe("failed — spawn ENOENT");
+    expect(system && system.kind === "system" ? system.text : null).toBe("Failed — spawn ENOENT");
   });
 });
 

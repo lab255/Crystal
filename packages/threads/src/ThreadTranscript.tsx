@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Brain,
   ChevronDown,
@@ -61,12 +61,19 @@ export function ThreadTranscript({
   const lastFocusedOffset = useRef<number | null>(null);
   const focusScrollUntil = useRef(0);
   const [highlightedTurnId, setHighlightedTurnId] = useState<string | null>(null);
+  const [keyboardTurn, setKeyboardTurn] = useState(-1);
   const turns = useMemo(() => groupItemsByTurn(items), [items]);
-  if (focusTurnId) focusedRef.current = focusTurnId;
 
   useEffect(() => {
+    focusedRef.current = focusTurnId;
     if (focusTurnId === undefined) lastFocused.current = null;
   }, [focusTurnId]);
+
+  const moveKeyboardFocus = (index: number) => {
+    const next = Math.max(0, Math.min(turns.length - 1, index));
+    setKeyboardTurn(next);
+    scrollRef.current?.querySelectorAll<HTMLElement>("[data-turn-id]")[next]?.focus();
+  };
 
   useEffect(() => {
     stickToBottom.current = true;
@@ -119,6 +126,29 @@ export function ThreadTranscript({
   return (
     <div
       ref={scrollRef}
+      tabIndex={keyboardTurn < 0 ? 0 : -1}
+      onFocus={(event) => {
+        if (event.target === event.currentTarget) setKeyboardTurn(-1);
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+          event.preventDefault();
+          moveKeyboardFocus(keyboardTurn + (event.key === "ArrowDown" ? 1 : -1));
+          return;
+        }
+        if ((event.key === "Enter" || event.key === " ") && keyboardTurn >= 0) {
+          const row = event.currentTarget.querySelectorAll<HTMLElement>("[data-turn-id]")[
+            keyboardTurn
+          ];
+          const toggle = row?.querySelector<HTMLButtonElement>(
+            'button[aria-expanded], button[data-row-toggle="true"]',
+          );
+          if (toggle && event.target === row) {
+            event.preventDefault();
+            toggle.click();
+          }
+        }
+      }}
       onScroll={(e) => {
         if (Date.now() < focusScrollUntil.current) return;
         const el = e.currentTarget;
@@ -130,6 +160,7 @@ export function ThreadTranscript({
         <div
           key={turn.runId}
           data-turn-id={turn.runId}
+          tabIndex={keyboardTurn === index ? 0 : -1}
           className={cn(
             "group/turn relative space-y-2 rounded-lg border-l-2 border-transparent pr-7",
             "transition-colors duration-500",
@@ -140,6 +171,7 @@ export function ThreadTranscript({
           {onCopyTurnLink ? (
             <button
               type="button"
+              tabIndex={-1}
               aria-label="Copy link to turn"
               title={`Copy link to turn ${index + 1}`}
               onClick={() => void onCopyTurnLink(turn.runId)}
@@ -258,15 +290,23 @@ function TranscriptItemRow({
         </div>
       );
     case "turn-end":
+      const bareFailureCode = !item.ok && /^[a-z0-9]+(?:_[a-z0-9]+)+$/.test(item.resultText);
       return (
-        <div className="flex items-center gap-2 px-1 text-[10px] text-ink-faint">
+        <div
+          className="flex items-center gap-2 px-1 text-[10px] text-ink-faint"
+          title={bareFailureCode ? item.resultText : undefined}
+        >
           {item.ok ? (
             <CircleCheck className="h-3 w-3 text-ok" />
           ) : (
             <CircleX className="h-3 w-3 text-danger" />
           )}
           <span className={cn(!item.ok && "text-danger")}>
-            {item.ok ? "Turn settled" : item.resultText || "Turn failed"}
+            {item.ok
+              ? "Turn settled"
+              : bareFailureCode || !item.resultText
+                ? "Turn failed"
+                : `Turn failed — ${item.resultText}`}
           </span>
           <span>·</span>
           <span>{formatRunCost(item.costUsd)}</span>
@@ -294,22 +334,24 @@ function TranscriptItemRow({
 
 function ExpandableNotice({ label, text }: { label: string; text: string }) {
   const [expanded, setExpanded] = useState(false);
-  const [firstLine, ...rest] = text.split("\n");
+  const [firstLine] = text.split("\n");
   return (
     <div className="flex justify-start">
       <button
         type="button"
         onClick={() => setExpanded((value) => !value)}
         aria-expanded={expanded}
+        title={expanded ? undefined : firstLine}
         className="max-w-[90%] rounded-lg border border-edge bg-surface-2 px-3 py-2 text-left"
       >
-        <span className="flex min-w-0 items-baseline gap-2">
-          <span className="shrink-0 text-[10px] font-semibold text-ink-muted">{label}</span>
-          <span className="truncate text-xs text-ink">{firstLine}</span>
-        </span>
-        {expanded && rest.length ? (
-          <span className="mt-1 block whitespace-pre-wrap text-xs text-ink">{rest.join("\n")}</span>
-        ) : null}
+        {expanded ? (
+          <span className="block whitespace-pre-wrap text-xs text-ink">{text}</span>
+        ) : (
+          <span className="flex min-w-0 items-baseline gap-2">
+            <span className="shrink-0 text-[10px] font-semibold text-ink-muted">{label}</span>
+            <span className="truncate text-xs text-ink">{firstLine}</span>
+          </span>
+        )}
       </button>
     </div>
   );
@@ -317,18 +359,37 @@ function ExpandableNotice({ label, text }: { label: string; text: string }) {
 
 function UserRow({ text }: { text: string }) {
   const [expanded, setExpanded] = useState(false);
-  const long = text.length > 600 || text.split("\n").length > 8;
+  const [overflowing, setOverflowing] = useState(false);
+  const textRef = useRef<HTMLSpanElement>(null);
+  useLayoutEffect(() => {
+    const element = textRef.current;
+    if (!element || expanded) return;
+    setOverflowing(element.scrollHeight > element.clientHeight);
+  }, [expanded, text]);
   return (
     <div className="flex justify-end">
-      <div
-        className={cn(
-          "max-w-[85%] whitespace-pre-wrap rounded-xl rounded-br-sm bg-crystal-500/12 px-3.5 py-2 text-xs leading-relaxed text-ink",
-          long && !expanded && "line-clamp-6 cursor-pointer",
-        )}
-        onClick={long && !expanded ? () => setExpanded(true) : undefined}
-        title={long && !expanded ? "Show the full message" : undefined}
-      >
-        {text}
+      <div className="max-w-[85%]">
+        <div
+          className={cn(
+            "whitespace-pre-wrap rounded-xl rounded-br-sm bg-crystal-500/12",
+            "px-3.5 py-2 text-xs leading-relaxed text-ink",
+          )}
+        >
+          <span ref={textRef} className={cn("block", !expanded && "line-clamp-6")}>
+            {text}
+          </span>
+        </div>
+        {overflowing ? (
+          <button
+            type="button"
+            data-row-toggle="true"
+            aria-expanded={expanded}
+            onClick={() => setExpanded((value) => !value)}
+            className="mt-0.5 px-1 text-[10px] text-ink-muted hover:text-ink"
+          >
+            {expanded ? "Show less" : "Show more"}
+          </button>
+        ) : null}
       </div>
     </div>
   );
