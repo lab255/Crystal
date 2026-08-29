@@ -1,5 +1,38 @@
 # Changelog
 
+## v0.42.0 (2026-08-29)
+
+### Features
+
+- New thread from mission control — cross-workspace compose (thread or workflow), New menu, palette action ([`05c1b20`](https://github.com/lab255/Crystal/commit/05c1b20))
+- find in transcript (pure search model, find bar, inline highlights) ([`075a4d3`](https://github.com/lab255/Crystal/commit/075a4d3))
+- dependency-free light markdown for assistant prose ([`86c9208`](https://github.com/lab255/Crystal/commit/86c9208))
+- threads UX audit fixes — notices/kickoff items, status parity, compose nav state, offline/hub states, header labels, turn focus ([`bd7f36d`](https://github.com/lab255/Crystal/commit/bd7f36d))
+- threads palette actions, turn deep links, header/rail polish ([`d58cc93`](https://github.com/lab255/Crystal/commit/d58cc93))
+- bb-style Threads surface — manager + coordinator threads with context menus ([`9185cc5`](https://github.com/lab255/Crystal/commit/9185cc5))
+- cross-workspace seams for the Overview threads surface ([`e96c11d`](https://github.com/lab255/Crystal/commit/e96c11d))
+
+### Bug Fixes
+
+- active-hit preservation via pure resolver, compose cleanup on interactive routing, per-target drafts ([`b0006f6`](https://github.com/lab255/Crystal/commit/b0006f6))
+- find highlight map recomputes on bar close ([`0d535e3`](https://github.com/lab255/Crystal/commit/0d535e3))
+- compose focus/escape/draft/interactive routing, find close clears marks, nested find deferral, stable rail group keys ([`80b7aef`](https://github.com/lab255/Crystal/commit/80b7aef))
+- compose selection upsert, perf-test baseline, cache invalidation, scoped Escape, composer as a nav place ([`cbb7c9a`](https://github.com/lab255/Crystal/commit/cbb7c9a))
+- find highlights share the rendered-text projection, per-item hit maps, stable active-hit scroll, entry text parity ([`e588371`](https://github.com/lab255/Crystal/commit/e588371))
+- in-project turn links, menu Escape scoping, icon gutter, terminal-workflow gating, dialog focus restore, answered-question fallback, workflow grouping ([`83e2a2f`](https://github.com/lab255/Crystal/commit/83e2a2f))
+- linear inline markdown scan, memoized rows, flanking rule, fence/list edge cases ([`bc7857b`](https://github.com/lab255/Crystal/commit/bc7857b))
+- in-project pane width, shared roving rail listbox, collapsed-turn headline, cancelled synth ending ([`e2ae52f`](https://github.com/lab255/Crystal/commit/e2ae52f))
+- workflow badge drops the name when it matches the normalized thread title ([`8e6614e`](https://github.com/lab255/Crystal/commit/8e6614e))
+- structural turn-end dedupe, transcript keyboard scoping, unloaded-turn placeholders, shared join/receipt helpers ([`add463d`](https://github.com/lab255/Crystal/commit/add463d))
+- synthesized turn-ends, keyboard path to composer, notice/bubble readability, header grouping, per-turn fold memo ([`f470b9b`](https://github.com/lab255/Crystal/commit/f470b9b))
+- closed-project thread links resolve to the missing state immediately ([`50ef25b`](https://github.com/lab255/Crystal/commit/50ef25b))
+- manager-live rule, deferred turn-focus clear, owner-message unwrap, anchored notice prefixes ([`3c58f20`](https://github.com/lab255/Crystal/commit/3c58f20))
+- focus-turn scroll survives the tail-follow race ([`38aeddf`](https://github.com/lab255/Crystal/commit/38aeddf))
+- turn highlight timer, focus DOM walk guard, relative-time suffix ([`7eae15a`](https://github.com/lab255/Crystal/commit/7eae15a))
+- threads rail a11y/keyboard, program pane header, in-flight event loads, reflow ([`5a09c8e`](https://github.com/lab255/Crystal/commit/5a09c8e))
+- resolve threads unfiltered/by any chain run, workflow ownership, attention parity, a11y ([`f93e39e`](https://github.com/lab255/Crystal/commit/f93e39e))
+- fleet event-cache invariants + threads surface polish ([`2a0265a`](https://github.com/lab255/Crystal/commit/2a0265a))
+
 ## v0.41.0 (2026-08-26)
 
 ### Features
