@@ -16,6 +16,8 @@ export {
   EMPTY_WORKSPACES,
   FleetClient,
   parseWsKey,
+  parseRunKey,
+  runKey,
   sidForEndpoint,
   wsKey,
   type FleetClientOptions,
@@ -72,6 +74,8 @@ export {
   EMPTY_QUESTIONS,
   EMPTY_RUNS,
   EMPTY_TODOS,
+  EMPTY_EVENTS,
+  EMPTY_WORKFLOWS,
   annotateFleetQuestions,
   createFleetStore,
   type FleetQuestion,
@@ -157,7 +161,12 @@ export {
   type RunSurfaceDiff,
   type RunSurfaceProps,
 } from "./run-surface.js";
-export { messageRun } from "./message-run.js";
+export {
+  messageRun,
+  messageRunAt,
+  type MessageRunResult,
+  type MessageTarget,
+} from "./message-run.js";
 export {
   spawnSession,
   type SpawnSessionInput,

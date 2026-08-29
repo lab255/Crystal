@@ -44,6 +44,22 @@ export function wsKey(sid: string, ws: string): string {
   return `${sid}/${ws}`;
 }
 
+/** Compound key for a run in cross-project state: `"<sid>/<wsId>/<runId>"`. */
+export function runKey(sid: string, ws: string, runId: string): string {
+  return `${sid}/${ws}/${runId}`;
+}
+
+/** Split a compound run key. Workspace and run ids are opaque but slash-free. */
+export function parseRunKey(key: string): { sid: string; ws: string; runId: string } {
+  const first = key.indexOf("/");
+  const second = key.indexOf("/", first + 1);
+  return {
+    sid: key.slice(0, first),
+    ws: key.slice(first + 1, second),
+    runId: key.slice(second + 1),
+  };
+}
+
 /** Split a compound key; legacy bare keys resolve to the default server. */
 export function parseWsKey(key: string): { sid: string; ws: string } {
   const idx = key.indexOf("/");

@@ -68,7 +68,7 @@ export function ProgramThread({ className }: { className?: string }) {
           value={selected?.id ?? ""}
           onChange={(e) => {
             setCreating(false);
-            update({ projects: { view: "chat", program: e.target.value || null } });
+            update({ projects: { view: "threads", program: e.target.value || null } });
           }}
         >
           {programs.length === 0 ? <option value="">No programs yet</option> : null}
@@ -86,7 +86,7 @@ export function ProgramThread({ className }: { className?: string }) {
         <CreateProgram
           onCreated={(program) => {
             setCreating(false);
-            update({ projects: { view: "chat", program: program.id } });
+            update({ projects: { view: "threads", program: program.id } });
           }}
         />
       ) : (

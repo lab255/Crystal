@@ -81,6 +81,16 @@ describe("buildThreadGroups", () => {
     });
     expect(groups.flatMap((g) => g.threads.map((t) => t.id))).toEqual(["r1"]);
   });
+
+  it("copies cross-workspace scope onto groups and summaries", () => {
+    const groups = buildThreadGroups({
+      runs: [run({ id: "r1", prompt: "Scoped", status: "completed" })],
+      attention: new Set(), lastSeen: {}, pins: new Set(),
+      scope: { sid: "s1", ws: "w1" },
+    });
+    expect(groups[0]).toMatchObject({ sid: "s1", ws: "w1" });
+    expect(groups[0]!.threads[0]).toMatchObject({ sid: "s1", ws: "w1" });
+  });
 });
 
 describe("threadIndicator", () => {

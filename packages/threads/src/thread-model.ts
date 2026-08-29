@@ -38,6 +38,8 @@ export interface ThreadSummary {
   lastActivity: string;
   projectId: string | null;
   pinned: boolean;
+  sid?: string;
+  ws?: string;
 }
 
 /** Rail section: one project's threads (null id = runs outside any board). */
@@ -45,9 +47,12 @@ export interface ThreadGroup {
   projectId: string | null;
   name: string;
   threads: ThreadSummary[];
+  sid?: string;
+  ws?: string;
 }
 
 export interface ThreadModelInput {
+  scope?: { sid: string; ws: string };
   /** The workspace's run list (agent store order — newest first). */
   runs: readonly AgentRun[];
   /** Run ids waiting on the operator (attention policy + parked permissions). */
@@ -105,6 +110,7 @@ export function buildThreadGroups(input: ThreadModelInput): ThreadGroup[] {
       lastActivity: sessionLatestActivity(node),
       projectId: threadProjectId(node),
       pinned: input.pins.has(id),
+      ...input.scope,
     });
   }
 
@@ -124,6 +130,7 @@ export function buildThreadGroups(input: ThreadModelInput): ThreadGroup[] {
         projectId: key,
         name: (key ? input.projectNameOf?.(key) : null) ?? (key ? key : "Ad hoc"),
         threads: [],
+        ...input.scope,
       };
       groups.set(key, group);
     }

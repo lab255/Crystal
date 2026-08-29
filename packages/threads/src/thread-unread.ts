@@ -13,6 +13,13 @@ const PINS_KEY = "crystal.threads.pins";
 /** Bound the seen map — old threads age out of the run list anyway. */
 const MAX_SEEN = 500;
 
+export function threadReadKey(
+  threadId: string,
+  scope?: { sid: string; ws: string },
+): string {
+  return scope ? `${scope.sid}/${scope.ws}/${threadId}` : threadId;
+}
+
 function loadSeen(): Record<string, string> {
   if (typeof localStorage === "undefined") return {};
   try {

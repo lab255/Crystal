@@ -433,14 +433,14 @@ describe("round trips", () => {
     expect(roundTrip(link)).toEqual(link);
   });
 
-  it("the coordinator chat carries the selected program and manager turn", () => {
+  it("overview threads carry thread, program, manager turn, and filter", () => {
     const link: DeepLink = {
       ws: "abc",
       mode: "projects",
-      projects: { view: "chat", program: "prog_1", turn: "run_2", find: "sso" },
+      projects: { view: "threads", thread: "s1/w1/r1", program: "prog_1", turn: "run_2", find: "sso" },
     };
     expect(formatDeepLink(link)).toBe(
-      "#/projects/chat?ws=abc&program=prog_1&turn=run_2&find=sso",
+      "#/projects/threads?ws=abc&thread=s1/w1/r1&program=prog_1&turn=run_2&find=sso",
     );
     expect(roundTrip(link)).toEqual(link);
   });
@@ -465,16 +465,25 @@ describe("round trips", () => {
     expect(parseDeepLink("#/projects").mode).toBe("projects");
     expect(parseDeepLink("#/projects/bogus").projects).toBeUndefined();
     // The hub merged into the Overview: its old links are permanent aliases.
-    expect(parseDeepLink("#/hub")).toEqual({ mode: "projects", projects: { view: "chat" } });
+    expect(parseDeepLink("#/hub")).toEqual({ mode: "projects", projects: { view: "threads" } });
     expect(parseDeepLink("#/hub/programs?program=prog_1")).toEqual({
       mode: "projects",
-      projects: { view: "chat", program: "prog_1" },
+      projects: { view: "threads", program: "prog_1" },
     });
     expect(parseDeepLink("#/hub/questions")).toEqual({
       mode: "projects",
       projects: { view: "inbox" },
     });
     expect(parseDeepLink("#/hub/projects").projects).toBeUndefined();
+  });
+
+  it("keeps projects/chat as a permanent parse alias and never formats it", () => {
+    expect(parseDeepLink("#/projects/chat?program=p1&turn=r2")).toEqual({
+      mode: "projects",
+      projects: { view: "threads", program: "p1", turn: "r2" },
+    });
+    expect(formatDeepLink({ mode: "projects", projects: { view: "chat", program: "p1" } }))
+      .toBe("#/projects/threads?program=p1");
   });
 
   it("surfaces subviews round-trip their selections", () => {
@@ -766,7 +775,7 @@ describe("applyDeepLink (overview)", () => {
   it("keeps the program selection out of the inbox and back on return", () => {
     const current: DeepLink = {
       mode: "projects",
-      projects: { view: "chat", program: "prog_1", turn: "run_1" },
+      projects: { view: "threads", program: "prog_1", turn: "run_1" },
     };
     const onInbox = applyDeepLink(current, { mode: "projects", projects: { view: "inbox" } });
     // The inbox URL owns only view+find, so the program selection survives
@@ -775,10 +784,10 @@ describe("applyDeepLink (overview)", () => {
 
     const back = applyDeepLink(onInbox, {
       mode: "projects",
-      projects: { view: "chat", program: "prog_2" },
+      projects: { view: "threads", program: "prog_2" },
     });
     // …and a chat URL's program replaces the stored one.
-    expect(back.projects).toEqual({ view: "chat", program: "prog_2" });
+    expect(back.projects).toEqual({ view: "threads", program: "prog_2" });
   });
 });
 
@@ -866,17 +875,19 @@ describe("deepLinkNavIdentity", () => {
     expect(deepLinkNavIdentity(a)).toBe(deepLinkNavIdentity(parseDeepLink(formatDeepLink(a))));
   });
 
-  it("treats opening a program's chat as its own place", () => {
+  it("treats opening an overview thread or program as its own place", () => {
     const dashboard: DeepLink = { mode: "projects" };
-    const chat: DeepLink = { mode: "projects", projects: { view: "chat" } };
-    const opened: DeepLink = { mode: "projects", projects: { view: "chat", program: "prog_1" } };
+    const chat: DeepLink = { mode: "projects", projects: { view: "threads" } };
+    const opened: DeepLink = { mode: "projects", projects: { view: "threads", program: "prog_1" } };
     const selectedTurn: DeepLink = {
       mode: "projects",
-      projects: { view: "chat", program: "prog_1", turn: "run_2" },
+      projects: { view: "threads", program: "prog_1", turn: "run_2" },
     };
     expect(deepLinkNavIdentity(dashboard)).not.toBe(deepLinkNavIdentity(chat));
     expect(deepLinkNavIdentity(chat)).not.toBe(deepLinkNavIdentity(opened));
     expect(deepLinkNavIdentity(selectedTurn)).toBe(deepLinkNavIdentity(opened));
+    expect(deepLinkNavIdentity({ mode: "projects", projects: { view: "threads", thread: "r1", program: "prog_1" } }))
+      .toBe("projects/threads/r1");
   });
 });
 
@@ -893,10 +904,10 @@ describe("mode aliases", () => {
     expect(apis.surfaces?.view).toBe("apis");
   });
 
-  it("maps program vocabulary onto the overview's chat and inbox", () => {
+  it("maps program vocabulary onto the overview's threads and inbox", () => {
     expect(parseDeepLink("#/programs").mode).toBe("projects");
-    expect(parseDeepLink("#/programs").projects?.view).toBe("chat");
-    expect(parseDeepLink("#/portfolio").projects?.view).toBe("chat");
+    expect(parseDeepLink("#/programs").projects?.view).toBe("threads");
+    expect(parseDeepLink("#/portfolio").projects?.view).toBe("threads");
     expect(parseDeepLink("#/inbox").projects?.view).toBe("inbox");
     expect(parseDeepLink("#/questions").projects?.view).toBe("inbox");
   });

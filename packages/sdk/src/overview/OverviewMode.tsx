@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Bot, FolderPlus, Globe2, Inbox, LayoutGrid, Unplug } from "lucide-react";
+import { FolderPlus, Globe2, Inbox, LayoutGrid, MessagesSquare, Unplug } from "lucide-react";
 import { formatWsRef, type OverviewViewId } from "@crystal/core";
 import { useCrystal, useFleetConnections, useHub, useNav, useNavUpdate } from "@crystal/client";
 import { Button, EmptyState, Input, Tooltip, cn } from "@crystal/ui";
@@ -58,7 +58,7 @@ export function OverviewMode() {
       <div className="flex shrink-0 items-center gap-2 border-b border-edge px-4 py-2">
         <div className="flex items-center gap-0.5 rounded-lg bg-surface-2 p-0.5">
           {tab("dashboard", "Dashboard", <LayoutGrid className="h-3.5 w-3.5" />)}
-          {tab("chat", "Coordinator", <Bot className="h-3.5 w-3.5" />, livePrograms)}
+          {tab("threads", "Threads", <MessagesSquare className="h-3.5 w-3.5" />, livePrograms)}
           {tab("inbox", "Inbox", <Inbox className="h-3.5 w-3.5" />, waiting)}
         </div>
         {view === "inbox" ? (
@@ -72,7 +72,7 @@ export function OverviewMode() {
         ) : null}
       </div>
 
-      {view === "chat" ? (
+      {view === "threads" ? (
         <ProgramThread />
       ) : view === "inbox" ? (
         <QuestionInbox find={find} />

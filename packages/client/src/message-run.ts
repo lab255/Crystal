@@ -6,6 +6,17 @@ import {
 } from "@crystal/core";
 import type { BridgeClient } from "./bridge-client.js";
 
+export interface MessageTarget { client: BridgeClient; ws?: string }
+
+export interface MessageRunResult {
+  queued: boolean;
+  /** Generic route only: the delivery truth — `recorded` = NOT delivered. */
+  status?: "resumed" | "queued" | "recorded";
+  runId?: string | null;
+  mode?: SteerReceipt["mode"];
+  wakeExpected?: boolean;
+}
+
 /**
  * THE message router: deliver `text` into a run's session by whichever bridge
  * method owns that run's conversation. Routing is by attribution tag —
@@ -23,19 +34,22 @@ export async function messageRun(
   client: BridgeClient,
   run: AgentRun,
   text: string,
-): Promise<{
-  queued: boolean;
-  /** Generic route only: the delivery truth — `recorded` = NOT delivered. */
-  status?: "resumed" | "queued" | "recorded";
-  runId?: string | null;
-  mode?: SteerReceipt["mode"];
-  wakeExpected?: boolean;
-}> {
+): Promise<MessageRunResult> {
+  return messageRunAt({ client }, run, text);
+}
+
+export async function messageRunAt(
+  target: MessageTarget,
+  run: AgentRun,
+  text: string,
+): Promise<MessageRunResult> {
+  const { client, ws } = target;
   const workflowId = workflowIdOfRun(run);
   if (workflowId) {
     const { queued, mode, wakeExpected } = await client.request("workflow.message", {
       workflowId,
       text,
+      ...(ws ? { ws } : {}),
     });
     return { queued, mode, wakeExpected };
   }
@@ -47,6 +61,10 @@ export async function messageRun(
     });
     return { queued, mode, wakeExpected };
   }
-  const { status, runId } = await client.request("agent.message", { runId: run.id, text });
+  const { status, runId } = await client.request("agent.message", {
+    runId: run.id,
+    text,
+    ...(ws ? { ws } : {}),
+  });
   return { queued: status === "queued", status, runId };
 }

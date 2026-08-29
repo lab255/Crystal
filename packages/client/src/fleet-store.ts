@@ -6,6 +6,8 @@ import {
   nowIso,
   questionDeliverability,
   type AgentRun,
+  type RunEvent,
+  type Workflow,
   type NeedsYouQuestion,
   type PendingPermission,
   type ProjectEntry,
@@ -13,7 +15,7 @@ import {
   type TodoItem,
 } from "@crystal/core";
 import type { BridgeClient } from "./bridge-client.js";
-import { wsKey } from "./fleet-client.js";
+import { runKey, wsKey } from "./fleet-client.js";
 
 /** Board writes arrive in bursts (a manager updating five tasks) — one recount each. */
 const QUESTION_RECOUNT_DEBOUNCE_MS = 400;
@@ -25,6 +27,8 @@ const SEEN_STORAGE_KEY = "crystal.seenRuns";
 export const EMPTY_RUNS: AgentRun[] = [];
 export const EMPTY_TODOS: TodoItem[] = [];
 export const EMPTY_PROJECT_ENTRIES: ProjectEntry[] = [];
+export const EMPTY_WORKFLOWS: Workflow[] = [];
+export const EMPTY_EVENTS: RunEvent[] = [];
 
 /** An open fleet question with liveness resolved from that workspace's run snapshot. */
 export type FleetQuestion = NeedsYouQuestion & { deliverability: QuestionDeliverability };
@@ -82,6 +86,8 @@ export interface FleetState {
   runsByWs: Record<string, AgentRun[]>;
   /** A run event can arrive before the complete `agent.list` snapshot. */
   runsLoadedByWs: Record<string, true>;
+  workflowsByWs: Record<string, Workflow[]>;
+  eventsByRunKey: Record<string, RunEvent[]>;
   todosByWs: Record<string, TodoItem[]>;
   /**
    * Open board questions per workspace — agents waiting on the human, with
@@ -116,6 +122,7 @@ export interface FleetState {
    * untouched.
    */
   refresh(sid: string, wsIds: string[]): Promise<void>;
+  loadRunEvents(sid: string, ws: string, runId: string): Promise<void>;
   /** Optimistically set a workspace's todos and debounce-save them. */
   setTodos(key: string, items: TodoItem[]): void;
   /** Acknowledge a workspace's run results (clears its yellow/red run light). */
@@ -165,12 +172,24 @@ function persistSeen(seen: Record<string, string>): void {
 export function createFleetStore(): FleetStore {
   /** Live clients by sid — how workspace-key writes find their server. */
   const clients = new Map<string, BridgeClient>();
+  const runWsBySid = new Map<string, Map<string, string>>();
+  const fetchedRuns = new Set<string>();
   const clientOf = (sid: string): BridgeClient | null => clients.get(sid) ?? null;
 
   // Debounced save timers keyed by compound workspace key — the key (server +
   // workspace) is captured at schedule time, so a flush after the user
   // switches workspaces or servers still lands in the right place.
   const saveTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  function rebuildRunIndex(sid: string, runsByWs: Record<string, AgentRun[]>): void {
+    const prefix = `${sid}/`;
+    const index = new Map<string, string>();
+    for (const [key, runs] of Object.entries(runsByWs)) {
+      if (!key.startsWith(prefix)) continue;
+      for (const run of runs) index.set(run.id, key);
+    }
+    runWsBySid.set(sid, index);
+  }
 
   async function saveNow(key: string, store: FleetStore): Promise<void> {
     saveTimers.delete(key);
@@ -254,6 +273,8 @@ export function createFleetStore(): FleetStore {
   const store = createStore<FleetState>((set, get) => ({
     runsByWs: {},
     runsLoadedByWs: {},
+    workflowsByWs: {},
+    eventsByRunKey: {},
     todosByWs: {},
     questionsByWs: {},
     permissionsByWs: {},
@@ -272,6 +293,9 @@ export function createFleetStore(): FleetStore {
             const idx = runs.findIndex((r) => r.id === run.id);
             const next =
               idx === -1 ? [run, ...runs] : runs.map((r, i) => (i === idx ? run : r));
+            let index = runWsBySid.get(sid);
+            if (!index) runWsBySid.set(sid, (index = new Map()));
+            index.set(run.id, key);
             const previousQuestions = s.questionsByWs[key];
             const questions = previousQuestions
               ? annotateFleetQuestions(
@@ -289,6 +313,31 @@ export function createFleetStore(): FleetStore {
             };
           });
         }),
+        client.events.on("workflow.changed", ({ ws, workflow }) => {
+          const key = wsKey(sid, ws);
+          store.setState((s) => {
+            const workflows = s.workflowsByWs[key] ?? EMPTY_WORKFLOWS;
+            const idx = workflows.findIndex((item) => item.id === workflow.id);
+            const next = idx === -1
+              ? [workflow, ...workflows]
+              : workflows.map((item, i) => i === idx ? workflow : item);
+            return { workflowsByWs: { ...s.workflowsByWs, [key]: next } };
+          });
+        }),
+        client.events.on("agent.event", (event) => {
+          const workspaceKey = runWsBySid.get(sid)?.get(event.runId);
+          if (!workspaceKey) return;
+          const ws = workspaceKey.slice(workspaceKey.indexOf("/") + 1);
+          const key = runKey(sid, ws, event.runId);
+          // Live tails are retained only after a full fetch, so a present log
+          // is always complete-up-to-now rather than an accidentally partial log.
+          if (!fetchedRuns.has(key)) return;
+          store.setState((s) => {
+            const existing = s.eventsByRunKey[key] ?? EMPTY_EVENTS;
+            if (existing.some((item) => item.seq === event.seq)) return s;
+            return { eventsByRunKey: { ...s.eventsByRunKey, [key]: [...existing, event] } };
+          });
+        }),
         client.events.on("todos.changed", ({ ws, todos }) => {
           const key = wsKey(sid, ws);
           // Skip the echo of our own in-flight save; local state is newer.
@@ -301,6 +350,7 @@ export function createFleetStore(): FleetStore {
       return () => {
         for (const dispose of disposers) dispose();
         clients.delete(sid);
+        runWsBySid.delete(sid);
         for (const key of permissionReadSeq.keys()) {
           if (key.startsWith(`${sid}/`)) permissionReadSeq.delete(key);
         }
@@ -312,11 +362,14 @@ export function createFleetStore(): FleetStore {
         set((s) => ({
           runsByWs: strip(s.runsByWs),
           runsLoadedByWs: strip(s.runsLoadedByWs),
+          workflowsByWs: strip(s.workflowsByWs),
+          eventsByRunKey: strip(s.eventsByRunKey),
           todosByWs: strip(s.todosByWs),
           questionsByWs: strip(s.questionsByWs),
           permissionsByWs: strip(s.permissionsByWs),
           projectsByWs: strip(s.projectsByWs),
         }));
+        for (const key of fetchedRuns) if (key.startsWith(prefix)) fetchedRuns.delete(key);
       };
     },
 
@@ -327,17 +380,23 @@ export function createFleetStore(): FleetStore {
         wsIds.map(async (ws) => {
           const key = wsKey(sid, ws);
           const permissionSeq = nextPermissionRead(key);
+          const workflowRequest = client.request("workflow.list", { ws }).then(
+            (value) => ({ ok: true as const, workflows: value.workflows }),
+            () => ({ ok: false as const }),
+          );
           const [runs, todos, permissions] = await Promise.all([
             client.request("agent.list", { ws }),
             client.request("todos.get", { ws }),
             client.request("permissions.pending", { ws }),
           ]);
+          const workflowResult = await workflowRequest;
           return {
             key,
             runs: runs.runs,
             todos: todos.todos.items,
             permissions: permissions.pending,
             permissionSeq,
+            workflowResult,
           };
         }),
       );
@@ -353,6 +412,12 @@ export function createFleetStore(): FleetStore {
         const todosByWs: Record<string, TodoItem[]> = Object.fromEntries(
           Object.entries(s.todosByWs).filter(([k]) => !k.startsWith(prefix)),
         );
+        const workflowsByWs: Record<string, Workflow[]> = Object.fromEntries(
+          Object.entries(s.workflowsByWs).filter(([k]) => !k.startsWith(prefix)),
+        );
+        const eventsByRunKey: Record<string, RunEvent[]> = Object.fromEntries(
+          Object.entries(s.eventsByRunKey).filter(([k]) => !k.startsWith(prefix)),
+        );
         const questionsByWs: Record<string, FleetQuestion[]> = Object.fromEntries(
           Object.entries(s.questionsByWs).filter(([k]) => !k.startsWith(prefix)),
         );
@@ -362,7 +427,7 @@ export function createFleetStore(): FleetStore {
         const projectsByWs: Record<string, ProjectEntry[]> = Object.fromEntries(
           Object.entries(s.projectsByWs).filter(([k]) => !k.startsWith(prefix)),
         );
-        for (const { key, runs, todos, permissions, permissionSeq } of results) {
+        for (const { key, runs, todos, permissions, permissionSeq, workflowResult } of results) {
           runsByWs[key] = runs;
           runsLoadedByWs[key] = true;
           // Carry the recount path's values; closed workspaces drop out. An
@@ -382,6 +447,15 @@ export function createFleetStore(): FleetStore {
           }
           // A pending local edit is newer than what the server just returned.
           todosByWs[key] = s.pendingTodoSaves[key] ? (s.todosByWs[key] ?? todos) : todos;
+          if (workflowResult.ok) workflowsByWs[key] = workflowResult.workflows;
+          else if (s.workflowsByWs[key] !== undefined) workflowsByWs[key] = s.workflowsByWs[key];
+          const runIds = new Set(runs.map((run) => run.id));
+          for (const [eventKey, events] of Object.entries(s.eventsByRunKey)) {
+            if (!eventKey.startsWith(`${key}/`)) continue;
+            const runId = eventKey.slice(key.length + 1);
+            if (runIds.has(runId)) eventsByRunKey[eventKey] = events;
+            else fetchedRuns.delete(eventKey);
+          }
         }
         return {
           runsByWs,
@@ -390,12 +464,40 @@ export function createFleetStore(): FleetStore {
           questionsByWs,
           permissionsByWs,
           projectsByWs,
+          workflowsByWs,
+          eventsByRunKey,
         };
       });
+      rebuildRunIndex(sid, store.getState().runsByWs);
       // Question counts have exactly ONE writer — the recount below — so a
       // slow refresh can never overwrite a fresher event-driven count with
       // data it read before the event.
       for (const ws of wsIds) scheduleRecount(sid, ws);
+    },
+
+    async loadRunEvents(sid, ws, runId) {
+      const key = runKey(sid, ws, runId);
+      if (fetchedRuns.has(key)) return;
+      const client = clientOf(sid);
+      if (!client) return;
+      try {
+        const { events } = await client.request("agent.events", { ws, runId });
+        // Mark loaded only once the full snapshot has arrived. Live events
+        // before this point are dropped, keeping absent histories non-partial.
+        fetchedRuns.add(key);
+        set((s) => {
+          const bySeq = new Map(events.map((event) => [event.seq, event]));
+          for (const event of s.eventsByRunKey[key] ?? EMPTY_EVENTS) bySeq.set(event.seq, event);
+          return {
+            eventsByRunKey: {
+              ...s.eventsByRunKey,
+              [key]: [...bySeq.values()].sort((a, b) => a.seq - b.seq),
+            },
+          };
+        });
+      } catch (error) {
+        throw error;
+      }
     },
 
     setTodos(key, items) {

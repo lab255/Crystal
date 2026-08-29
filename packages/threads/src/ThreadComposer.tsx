@@ -3,6 +3,7 @@ import type { AgentRun } from "@crystal/core";
 import {
   MessageComposer,
   messageRun,
+  messageRunAt,
   useCrystal,
   type ComposerSendResult,
 } from "@crystal/client";
@@ -19,6 +20,8 @@ export function ThreadComposer({
   disabled = false,
   onDelivered,
   className,
+  sid,
+  ws,
 }: {
   /** The chain's face turn — the conversation being steered. */
   run: AgentRun;
@@ -26,14 +29,18 @@ export function ThreadComposer({
   /** The resumed turn's id, when the send minted one — follow it. */
   onDelivered?: (runId: string | null) => void;
   className?: string;
+  sid?: string;
+  ws?: string;
 }) {
-  const { client } = useCrystal();
+  const crystal = useCrystal();
   const [receipt, setReceipt] = useState<string | null>(null);
 
   const send = useCallback(
     async (text: string): Promise<ComposerSendResult> => {
       setReceipt(null);
-      const result = await messageRun(client, run, text);
+      const client = sid ? crystal.fleet.clientOf(sid) : crystal.client;
+      if (!client) throw new Error(`Connection ${sid} is no longer available.`);
+      const result = sid ? await messageRunAt({ client, ws }, run, text) : await messageRun(client, run, text);
       if (result.status !== "recorded") onDelivered?.(result.runId ?? null);
       if (result.queued && typeof result.wakeExpected === "boolean") {
         setReceipt(
@@ -46,7 +53,7 @@ export function ThreadComposer({
       }
       return result;
     },
-    [client, run, onDelivered],
+    [crystal, sid, ws, run, onDelivered],
   );
 
   return (

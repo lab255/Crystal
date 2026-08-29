@@ -133,7 +133,7 @@ export function WorkspaceCard({
   const goToChat = () => {
     updateNav({
       mode: "projects",
-      projects: { view: "chat", program: programId },
+      projects: { view: "threads", program: programId },
     });
   };
 

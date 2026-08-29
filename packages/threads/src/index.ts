@@ -4,6 +4,10 @@ export { ThreadRail } from "./ThreadRail.js";
 export { ThreadTranscript } from "./ThreadTranscript.js";
 export { ProgramThread } from "./ProgramThread.js";
 export { QuestionInbox } from "./QuestionInbox.js";
+export { ThreadRow, relativeTime } from "./ThreadRow.js";
+export { ThreadComposer } from "./ThreadComposer.js";
+export { RunContextDetails } from "./RunContextDetails.js";
+export { useThreadReadState, threadReadKey } from "./thread-unread.js";
 export {
   buildThreadGroups,
   threadForRunId,

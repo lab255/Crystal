@@ -2,13 +2,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   Emitter,
   countActionableQuestionRows,
+  createWorkflow,
   type AgentRun,
   type BridgeEvents,
   type PendingPermission,
+  type RunEvent,
+  type Workflow,
 } from "@crystal/core";
 import type { BridgeClient } from "./bridge-client.js";
 import { createFleetStore } from "./fleet-store.js";
-import { parseWsKey, sidForEndpoint, wsKey } from "./fleet-client.js";
+import { parseRunKey, parseWsKey, runKey, sidForEndpoint, wsKey } from "./fleet-client.js";
 
 /**
  * The fleet store is the one cross-server aggregate: maps keyed by the
@@ -82,6 +85,8 @@ function fakeClient(
     runsByWs?: Record<string, AgentRun[]>;
     projectsByWs?: Record<string, { path: string; project: unknown }[]>;
     permissionsByWs?: Record<string, PendingPermission[]>;
+    workflowsByWs?: Record<string, Workflow[]>;
+    eventsByRun?: Record<string, RunEvent[]>;
   } = {},
 ) {
   const events = new Emitter<BridgeEvents & { connection: { state: string } }>();
@@ -98,6 +103,13 @@ function fakeClient(
       }
       if (method === "permissions.pending") {
         return Promise.resolve({ pending: data.permissionsByWs?.[params.ws ?? ""] ?? [] });
+      }
+      if (method === "workflow.list") {
+        return Promise.resolve({ workflows: data.workflowsByWs?.[params.ws ?? ""] ?? [] });
+      }
+      if (method === "agent.events") {
+        const runId = (params as { runId?: string }).runId ?? "";
+        return Promise.resolve({ events: data.eventsByRun?.[runId] ?? [] });
       }
       return Promise.reject(new Error(`unexpected method ${method}`));
     }),
@@ -192,6 +204,72 @@ describe("fleet-store compound keys", () => {
     expect(store.getState().seenAtByWs["s2/w1"]).toBeTruthy();
     const persisted = JSON.parse(storage.getItem("crystal.seenRuns")!) as Record<string, string>;
     expect(persisted["s2/w1"]).toBeTruthy();
+  });
+});
+
+describe("fleet workflows and run events", () => {
+  const event = (runId: string, seq: number): RunEvent => ({
+    runId,
+    seq,
+    ts: `2026-08-09T00:00:0${seq}.000Z`,
+    event: {
+      type: "result",
+      ok: true,
+      resultText: `event ${seq}`,
+      costUsd: null,
+      turns: null,
+      durationMs: null,
+      sessionId: null,
+    },
+  });
+
+  it("loads workflows, tolerates old servers, and upserts live changes", async () => {
+    const first = createWorkflow({ name: "First", goal: "ship" });
+    const store = createFleetStore();
+    const client = fakeClient({ workflowsByWs: { w1: [first] } });
+    store.getState().attach("s1", client);
+    await store.getState().refresh("s1", ["w1"]);
+    expect(store.getState().workflowsByWs["s1/w1"]).toEqual([first]);
+
+    const changed = { ...first, name: "Changed" };
+    client.events.emit("workflow.changed", { ws: "w1", workflow: changed });
+    expect(store.getState().workflowsByWs["s1/w1"]![0]!.name).toBe("Changed");
+
+    client.request.mockImplementation((method: string) =>
+      method === "workflow.list" ? Promise.reject(new Error("old server")) :
+      method === "agent.list" ? Promise.resolve({ runs: [] }) :
+      method === "todos.get" ? Promise.resolve({ todos: { items: [] } }) :
+      method === "permissions.pending" ? Promise.resolve({ pending: [] }) :
+      method === "workspace.get" ? Promise.resolve({ projects: [] }) :
+      Promise.reject(new Error(`unexpected ${method}`)),
+    );
+    await store.getState().refresh("s1", ["w1"]);
+    expect(store.getState().workflowsByWs["s1/w1"]![0]!.name).toBe("Changed");
+  });
+
+  it("loads complete events, unions by seq, attributes live events, and strips on remove", async () => {
+    const store = createFleetStore();
+    const client = fakeClient({
+      runsByWs: { w1: [run("r1")] },
+      eventsByRun: { r1: [event("r1", 1), event("r1", 2)] },
+    });
+    const detach = store.getState().attach("s1", client);
+    await store.getState().refresh("s1", ["w1"]);
+
+    // Unknown and not-yet-loaded runs do not create partial histories.
+    client.events.emit("agent.event", event("unknown", 1));
+    client.events.emit("agent.event", event("r1", 3));
+    expect(store.getState().eventsByRunKey).toEqual({});
+
+    await store.getState().loadRunEvents("s1", "w1", "r1");
+    client.events.emit("agent.event", event("r1", 2));
+    client.events.emit("agent.event", event("r1", 3));
+    expect(store.getState().eventsByRunKey["s1/w1/r1"]!.map((item) => item.seq)).toEqual([1, 2, 3]);
+    await store.getState().loadRunEvents("s1", "w1", "r1");
+    expect(client.request.mock.calls.filter(([method]) => method === "agent.events")).toHaveLength(1);
+
+    detach();
+    expect(store.getState().eventsByRunKey).toEqual({});
   });
 });
 
@@ -338,6 +416,7 @@ describe("fleet key + sid helpers", () => {
   it("round-trips compound keys", () => {
     expect(parseWsKey(wsKey("s1a2b3c4", "abc"))).toEqual({ sid: "s1a2b3c4", ws: "abc" });
     expect(parseWsKey("bare")).toEqual({ sid: "default", ws: "bare" });
+    expect(parseRunKey(runKey("s1", "w1", "r1"))).toEqual({ sid: "s1", ws: "w1", runId: "r1" });
   });
 
   it("derives a stable, separator-free sid from an endpoint", () => {
