@@ -138,9 +138,22 @@ function NodeTranscript({
 
 /** The pane preserves project context and action truth while crossing workspaces. */
 export function OverviewThreadPane({
-  thread, creating, notice, dismissNotice, onError, onCreated, questions,
-  eventsByRun, runs, loadEvents, entries, openMenu, openProject, resumeWorkflow,
-  focusTurnId, onCopyTurnLink,
+  thread,
+  creating,
+  notice,
+  dismissNotice,
+  onError,
+  onCreated,
+  questions,
+  eventsByRun,
+  runs,
+  loadEvents,
+  entries,
+  openMenu,
+  openProject,
+  resumeWorkflow,
+  focusTurnId,
+  onCopyTurnLink,
 }: PaneProps) {
   const { fleet, activeSid } = useCrystal();
   const activeWs = useWorkspaces((state) => state.activeId);
@@ -213,6 +226,13 @@ export function OverviewThreadPane({
     && activeWs === thread.ref.ws;
   const recentTurnLog = thread.workflow?.turnLog.slice(-5) ?? [];
   const recentTurnOffset = (thread.workflow?.turnLog.length ?? 0) - recentTurnLog.length;
+  const workflowLabel = thread.workflow
+    ? `${thread.workflow.name === thread.title ? "" : `${thread.workflow.name} · `}`
+      + thread.workflow.status
+      + (thread.workflow.status === "paused"
+        ? ` · ${thread.workflow.pausedBy ?? "user"}`
+        : "")
+    : null;
 
   return (
     <main className="flex min-w-0 flex-1 flex-col">
@@ -238,15 +258,7 @@ export function OverviewThreadPane({
             {run.model ? <span>{run.model}</span> : null}
             <span>{formatRunCost(thread.costUsd ?? 0)}</span>
             {working && run.startedAt ? <span>{formatElapsed(run.startedAt, nowMs)}</span> : null}
-            {thread.workflow ? (
-              <Badge>
-                {thread.workflow.name === thread.title ? "" : `${thread.workflow.name} · `}
-                {thread.workflow.status}
-                {thread.workflow.status === "paused"
-                  ? ` · ${thread.workflow.pausedBy ?? "user"}`
-                  : ""}
-              </Badge>
-            ) : null}
+            {workflowLabel ? <Badge>{workflowLabel}</Badge> : null}
             {thread.workflow && spend ? (
               <SpendLine costUsd={spend.costUsd} budgetUsd={thread.workflow.budgetUsd} />
             ) : null}

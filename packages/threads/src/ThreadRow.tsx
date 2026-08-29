@@ -62,7 +62,7 @@ export function ThreadRow({
 }) {
   const workers = thread.workerCount ?? 0;
   const activity = thread.lastActivity ? relativeTime(thread.lastActivity, nowMs) : null;
-  const activityLabel = thread.indicator === "running" && activity && activity !== "now"
+  const activityLabel = thread.indicator === "running" && activity && /^\d+[mhd]$/.test(activity)
     ? `${activity} ago`
     : activity;
   return (

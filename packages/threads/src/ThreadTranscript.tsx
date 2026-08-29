@@ -74,6 +74,7 @@ export function ThreadTranscript({
 
   useEffect(() => {
     if (!focusTurnId || lastFocused.current === `${threadId}:${focusTurnId}`) return;
+    if (!turns.some((turn) => turn.runId === focusTurnId)) return;
     const target = Array.from(
       scrollRef.current?.querySelectorAll<HTMLElement>("[data-turn-id]") ?? [],
     ).find((element) => element.dataset.turnId === focusTurnId);
@@ -82,9 +83,13 @@ export function ThreadTranscript({
     stickToBottom.current = false;
     target.scrollIntoView({ block: "center", behavior: "smooth" });
     setHighlightedTurnId(focusTurnId);
+  }, [focusTurnId, items, threadId, turns]);
+
+  useEffect(() => {
+    if (!highlightedTurnId) return;
     const timer = window.setTimeout(() => setHighlightedTurnId(null), 1_500);
     return () => window.clearTimeout(timer);
-  }, [focusTurnId, items, threadId]);
+  }, [highlightedTurnId]);
 
   return (
     <div
@@ -143,6 +148,7 @@ export function ThreadTranscript({
 
 function itemTurnId(item: TranscriptItem): string {
   if ("runId" in item) return item.runId;
+  // Transcript item ids follow the `${turnId}:${seq}` contract from transcript-items.ts.
   return item.id.slice(0, item.id.lastIndexOf(":"));
 }
 
@@ -444,9 +450,9 @@ function DelegationRow({
   );
 }
 
-function nodeContainsTurn(node: NonNullable<Extract<TranscriptItem, {
-  kind: "delegation";
-}>["worker"]>, runId: string): boolean {
+type WorkerNode = NonNullable<Extract<TranscriptItem, { kind: "delegation" }>["worker"]>;
+
+function nodeContainsTurn(node: WorkerNode, runId: string): boolean {
   return node.turns.some((turn) => turn.id === runId)
     || node.workers.some((worker) => nodeContainsTurn(worker, runId));
 }
