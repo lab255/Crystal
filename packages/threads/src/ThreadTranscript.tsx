@@ -10,6 +10,7 @@ import {
   History,
   Link,
 } from "lucide-react";
+import { classifyRunFailure, runFailureHint } from "@crystal/core";
 import { formatRunCost, formatRunDuration } from "@crystal/client";
 import { Badge, Spinner, StatusDot, cn } from "@crystal/ui";
 import type { TranscriptItem, WorkEntry } from "./transcript-items.js";
@@ -35,6 +36,7 @@ export function ThreadTranscript({
   onExpandTurn,
   focusTurnId,
   onCopyTurnLink,
+  onFocusedTurn,
   /** Live thread: show the working shimmer under the last item. */
   working = false,
   className,
@@ -49,6 +51,7 @@ export function ThreadTranscript({
   focusTurnId?: string;
   /** When supplied, exposes a per-turn copy-link action. */
   onCopyTurnLink?: (runId: string) => void | Promise<void>;
+  onFocusedTurn?: (runId: string) => void;
   working?: boolean;
   className?: string;
 }) {
@@ -79,7 +82,7 @@ export function ThreadTranscript({
     ).find((element) => element.dataset.turnId === focusTurnId);
     if (!target || target.offsetTop === lastFocusedOffset.current) return;
     lastFocusedOffset.current = target.offsetTop;
-    target.scrollIntoView({ block: "center", behavior: "auto" });
+    target.scrollIntoView({ block: "start", behavior: "auto" });
   }, [focusTurnId, items, threadId, working]);
 
   useEffect(() => {
@@ -94,13 +97,14 @@ export function ThreadTranscript({
     focusScrollUntil.current = Date.now() + 1_000;
     stickToBottom.current = false;
     // Ignore scroll events while the focused turn grows, or tail-follow can win the race.
-    target.scrollIntoView({ block: "center", behavior: "auto" });
+    target.scrollIntoView({ block: "start", behavior: "auto" });
     setHighlightedTurnId(focusTurnId);
-  }, [focusTurnId, items, threadId, turns]);
+    onFocusedTurn?.(focusTurnId);
+  }, [focusTurnId, items, onFocusedTurn, threadId, turns]);
 
   useEffect(() => {
     if (!highlightedTurnId) return;
-    const timer = window.setTimeout(() => setHighlightedTurnId(null), 1_500);
+    const timer = window.setTimeout(() => setHighlightedTurnId(null), 2_500);
     return () => window.clearTimeout(timer);
   }, [highlightedTurnId]);
 
@@ -119,9 +123,10 @@ export function ThreadTranscript({
           key={turn.runId}
           data-turn-id={turn.runId}
           className={cn(
-            "group/turn relative space-y-2 rounded-lg transition-colors duration-500",
+            "group/turn relative space-y-2 rounded-lg border-l-2 border-transparent pr-7",
+            "transition-colors duration-500",
             highlightedTurnId === turn.runId
-              && "bg-accent-blue/10 ring-2 ring-accent-blue/40",
+              && "border-l-accent-blue bg-accent-blue/10 ring-2 ring-accent-blue/40",
           )}
         >
           {onCopyTurnLink ? (
@@ -193,6 +198,10 @@ function TranscriptItemRow({
   switch (item.kind) {
     case "user":
       return <UserRow text={item.text} />;
+    case "kickoff":
+      return <ExpandableNotice label="Kickoff brief" text={item.text} />;
+    case "notice":
+      return <ExpandableNotice label="Crystal" text={item.text} />;
     case "assistant":
       return <AssistantRow text={item.text} thinking={item.thinking} />;
     case "work":
@@ -216,19 +225,27 @@ function TranscriptItemRow({
               ? "border-warn/30 bg-warn/10"
               : item.state === "allowed"
                 ? "border-ok/25 bg-ok/8"
-                : "border-danger/25 bg-danger/8",
+                : item.state === "expired"
+                  ? "border-edge bg-surface-2"
+                  : "border-danger/25 bg-danger/8",
           )}
         >
           <CircleHelp
             className={cn(
               "mt-0.5 h-3.5 w-3.5 shrink-0",
-              item.state === "pending" ? "text-warn" : item.state === "allowed" ? "text-ok" : "text-danger",
+              item.state === "pending"
+                ? "text-warn"
+                : item.state === "allowed"
+                  ? "text-ok"
+                  : item.state === "expired" ? "text-ink-faint" : "text-danger",
             )}
           />
           <span className="whitespace-pre-wrap">
             {item.state === "pending"
               ? `Waiting for permission: ${item.detail ?? item.tool}`
-              : `Permission ${item.state}: ${item.detail ?? item.tool}`}
+              : item.state === "expired"
+                ? `Permission expired: ${item.detail ?? item.tool}`
+                : `Permission ${item.state}: ${item.detail ?? item.tool}`}
           </span>
         </div>
       );
@@ -241,10 +258,11 @@ function TranscriptItemRow({
             <CircleX className="h-3 w-3 text-danger" />
           )}
           <span className={cn(!item.ok && "text-danger")}>
-            {item.ok ? "Turn settled" : item.resultText || "Turn failed"}
+            {item.ok ? "Turn settled" : failureLabel(item.resultText)}
           </span>
           <span>·</span>
           <span>{formatRunCost(item.costUsd)}</span>
+          <span>·</span>
           <span>{formatRunDuration(item.durationMs)}</span>
         </div>
       );
@@ -264,6 +282,30 @@ function TranscriptItemRow({
     default:
       return null;
   }
+}
+
+function failureLabel(text: string): string {
+  const failure = classifyRunFailure(text);
+  return failure ? runFailureHint(failure) : text || "Turn failed";
+}
+
+function ExpandableNotice({ label, text }: { label: string; text: string }) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div className="flex justify-start">
+      <button
+        type="button"
+        onClick={() => setExpanded((value) => !value)}
+        aria-expanded={expanded}
+        className="max-w-[90%] rounded-lg border border-edge bg-surface-2 px-3 py-2 text-left"
+      >
+        <span className="block text-[10px] font-semibold text-ink-muted">{label}</span>
+        {expanded ? (
+          <span className="mt-1 block whitespace-pre-wrap text-xs text-ink">{text}</span>
+        ) : null}
+      </button>
+    </div>
+  );
 }
 
 function UserRow({ text }: { text: string }) {

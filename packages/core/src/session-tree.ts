@@ -133,7 +133,8 @@ export interface SessionNamingContext {
 }
 
 /** Core authors these prompts (workflow.ts / hub.ts), so core recognizes them. */
-const MANAGER_OPENING = /^You are the (?:MANAGER of workflow|PROGRAM MANAGER of) "([^"]+)"/;
+export const MANAGER_OPENING =
+  /^You are the (?:MANAGER of workflow|PROGRAM MANAGER of) "([^"]+)"/;
 
 function promptHeadline(prompt: string, strip: readonly string[] = []): string {
   let text = prompt;

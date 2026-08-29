@@ -10,6 +10,12 @@ interface OverviewThreadRailProps {
   filter: "managers" | "all";
   hiddenCount: number;
   hasUnfilteredThreads: boolean;
+  managerCount: number;
+  allCount: number;
+  hubLoaded: boolean;
+  hubError: string | null;
+  onRetryHub: () => void;
+  onClearSelection: () => void;
   onFilter: (value: "managers" | "all") => void;
   find: string;
   onFind: (value: string) => void;
@@ -62,6 +68,12 @@ export function OverviewThreadRail({
   filter,
   hiddenCount,
   hasUnfilteredThreads,
+  managerCount,
+  allCount,
+  hubLoaded,
+  hubError,
+  onRetryHub,
+  onClearSelection,
   onFilter,
   find,
   onFind,
@@ -102,7 +114,11 @@ export function OverviewThreadRail({
           <Input
             value={find}
             onChange={(event) => onFind(event.target.value)}
-            onKeyDown={(event) => event.key === "Escape" && onFind("")}
+            onKeyDown={(event) => {
+              if (event.key !== "Escape") return;
+              if (find) onFind("");
+              else onClearSelection();
+            }}
             placeholder="Find threads…"
             aria-label="Find threads"
             className="h-7 min-w-0 flex-1 text-xs"
@@ -124,7 +140,7 @@ export function OverviewThreadRail({
                 filter === value ? "bg-surface-3 font-medium text-ink" : "text-ink-muted",
               )}
             >
-              {value}
+              {value === "managers" ? `Managers ${managerCount}` : `All ${allCount}`}
             </button>
           ))}
         </div>
@@ -140,12 +156,22 @@ export function OverviewThreadRail({
           ) {
             return;
           }
-          if (!["ArrowDown", "ArrowUp"].includes(event.key)) return;
+          if (event.key === "Escape") {
+            event.preventDefault();
+            if (find) onFind("");
+            else onClearSelection();
+            return;
+          }
+          if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
           event.preventDefault();
           const index = rows.findIndex((row) => row.id === selectedId);
-          const next = event.key === "ArrowDown"
-            ? Math.min(rows.length - 1, index + 1)
-            : Math.max(0, index < 0 ? 0 : index - 1);
+          const next = event.key === "Home"
+            ? 0
+            : event.key === "End"
+              ? rows.length - 1
+              : event.key === "ArrowDown"
+                ? Math.min(rows.length - 1, index + 1)
+                : Math.max(0, index < 0 ? 0 : index - 1);
           if (rows[next]) onSelect(rows[next]!.id);
         }}
         className="min-h-0 flex-1 overflow-y-auto p-2 outline-none"
@@ -155,6 +181,7 @@ export function OverviewThreadRail({
             key={section.kind === "coordinator" ? "coordinator" : section.key}
             role="group"
             aria-label={section.kind === "coordinator" ? "Coordinator" : section.name}
+            className={cn(section.kind === "workspace" && section.offline && "opacity-60")}
           >
             <div
               onContextMenu={(event) => openMenu(event, headingEntriesFor(section))}
@@ -170,8 +197,9 @@ export function OverviewThreadRail({
               ) : null}
               <span>{section.kind === "coordinator" ? "Coordinator" : section.name}</span>
               <span className="font-normal text-ink-faint">· {section.threads.length}</span>
+              <span className="ml-auto flex items-center gap-1 normal-case tracking-normal">
               {section.serverLabel ? (
-                <span className="ml-auto normal-case tracking-normal">
+                <span>
                   {section.serverLabel}
                 </span>
               ) : null}
@@ -183,10 +211,20 @@ export function OverviewThreadRail({
               >
                 <MoreHorizontal className="h-3.5 w-3.5" />
               </button>
+              </span>
             </div>
             {section.kind === "coordinator" && section.serverLabel ? (
               <div className="px-2 pb-1 text-[10px] text-ink-faint">
                 Programs on {section.serverLabel}
+              </div>
+            ) : null}
+            {section.kind === "coordinator" && !hubLoaded ? (
+              <div className="mx-2 mb-1 h-8 animate-pulse rounded bg-surface-2" />
+            ) : null}
+            {section.kind === "coordinator" && hubError ? (
+              <div className="px-2 pb-2 text-[10px] text-danger">
+                Programs unavailable: {hubError} ·{" "}
+                <button type="button" className="underline" onClick={onRetryHub}>Retry</button>
               </div>
             ) : null}
             {section.threads.map((thread) => (
@@ -200,6 +238,7 @@ export function OverviewThreadRail({
                   lastActivity: thread.lastActivity,
                   costUsd: thread.costUsd,
                   workerCount: thread.summary?.node.workers.length,
+                  subtitle: thread.program ? programSubtitle(thread.program) : undefined,
                 }}
                 selected={selectedId === thread.id}
                 nowMs={nowMs}
@@ -210,7 +249,7 @@ export function OverviewThreadRail({
             ))}
           </section>
         ))}
-        {!rows.length ? (
+        {!rows.length && !hubError ? (
           <div className="px-3 py-8 text-center">
             <p className="text-xs font-medium text-ink">{empty.title}</p>
             <p className="mt-1 text-[11px] text-ink-muted">{empty.body}</p>
@@ -222,4 +261,14 @@ export function OverviewThreadRail({
       </div>
     </aside>
   );
+}
+
+function programSubtitle(program: OverviewThread["program"]): string | undefined {
+  if (!program) return undefined;
+  const names = [...new Set(program.deliveries.map((delivery) => delivery.projectName))];
+  const shown = names.slice(0, 3);
+  const rest = names.length - shown.length;
+  const projects = shown.length ? ` · ${shown.join(", ")}` : "";
+  return `${program.deliveries.length} deliveries${projects}`
+    + (rest > 0 ? ` +${rest}` : "");
 }

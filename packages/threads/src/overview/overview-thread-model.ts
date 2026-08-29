@@ -216,7 +216,7 @@ export function buildOverviewSections(input: OverviewModelInput): OverviewSectio
             id: formatOverviewThreadId(ref),
             ref,
             readKey: threadReadKey(summary.id, { sid: connection.sid, ws: workspace.id }),
-            title: summary.title,
+            title: stripWorkspaceSuffix(summary.title, workspace.name),
             indicator: summary.indicator,
             lastActivity: summary.lastActivity,
             costUsd: summary.costUsd,
@@ -242,6 +242,11 @@ export function buildOverviewSections(input: OverviewModelInput): OverviewSectio
     }
   }
   return sections;
+}
+
+export function stripWorkspaceSuffix(title: string, workspaceName: string): string {
+  const suffix = ` — ${workspaceName}`;
+  return title.endsWith(suffix) ? title.slice(0, -suffix.length) : title;
 }
 
 function resolveWorkflowFor(

@@ -120,6 +120,15 @@ describe("formatDeepLink", () => {
     });
     expect(formatDeepLink({ mode: "threads" })).toBe("#/threads");
   });
+
+  it("round-trips the overview new-program composer", () => {
+    const link: DeepLink = {
+      mode: "projects",
+      projects: { view: "threads", compose: true },
+    };
+    expect(formatDeepLink(link)).toBe("#/projects/threads?compose=1");
+    expect(parseDeepLink(formatDeepLink(link))).toEqual(link);
+  });
 });
 
 describe("parseDeepLink", () => {

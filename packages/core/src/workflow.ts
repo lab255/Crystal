@@ -1572,6 +1572,28 @@ export function formatUserMessage(text: string): string {
   return `USER MESSAGE:\n${text.trim()}\n\nThis is steering from the workflow's owner. Acknowledge it, adjust the plan/dispatches accordingly, and keep driving the workflow.`;
 }
 
+export type EngineNoticeKind = "worker" | "answer" | "owner" | "budget" | "hub";
+
+/** Recognize prompts authored by orchestration engines, never by the owner. */
+export function engineNoticeKind(text: string): EngineNoticeKind | null {
+  if (text.startsWith("Worker run_")) return "worker";
+  if (text.startsWith("Answer to your question")) return "answer";
+  if (text.startsWith("USER MESSAGE:")) return "owner";
+  if (text.startsWith("BUDGET WARNING:") || text.startsWith("Budget exhausted")) {
+    return "budget";
+  }
+  if (
+    text.startsWith("Delivery ")
+    || text.startsWith("A project is waiting on an answer:")
+    || /^\d+ projects are waiting on answers:/.test(text)
+    || /^Every delivery of program .* has settled/.test(text)
+    || /^\d+ updates arrived while you were working\./.test(text)
+  ) {
+    return "hub";
+  }
+  return null;
+}
+
 /**
  * The typed receipt a steering message gets back — the difference between a
  * paid dice-roll and knowing what happened. `interactive`: typed into the

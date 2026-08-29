@@ -14,8 +14,14 @@ import {
   formatOverviewThreadId,
   parseOverviewThreadId,
   resolveOverviewThread,
+  stripWorkspaceSuffix,
   type OverviewModelInput,
 } from "./overview-thread-model.js";
+
+it("strips only a matching trailing workspace identity", () => {
+  expect(stripWorkspaceSuffix("Deploy — Alpha", "Alpha")).toBe("Deploy");
+  expect(stripWorkspaceSuffix("Deploy — Beta", "Alpha")).toBe("Deploy — Beta");
+});
 
 function run(id: string, overrides: Partial<AgentRun> = {}): AgentRun {
   return { ...createAgentRun({ prompt: overrides.prompt ?? id }), ...overrides, id };

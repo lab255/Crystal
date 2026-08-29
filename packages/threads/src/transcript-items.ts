@@ -1,4 +1,9 @@
 import {
+  MANAGER_OPENING,
+  MANAGER_PREAMBLE,
+  classifyRunFailure,
+  engineNoticeKind,
+  runFailureHint,
   touchedFileFromToolUse,
   type AgentEvent,
   type AgentRun,
@@ -60,7 +65,13 @@ export type TranscriptItem =
       /** The dispatched worker's session, when it is present in the run list. */
       worker: RunNode | null;
     }
-  | { kind: "permission"; id: string; tool: string; state: "pending" | "allowed" | "denied"; detail: string | null }
+  | {
+      kind: "permission";
+      id: string;
+      tool: string;
+      state: "pending" | "allowed" | "denied" | "expired";
+      detail: string | null;
+    }
   | {
       kind: "turn-end";
       id: string;
@@ -71,6 +82,8 @@ export type TranscriptItem =
       durationMs: number | null;
     }
   | { kind: "system"; id: string; text: string; tone: "muted" | "warn" }
+  | { kind: "kickoff"; id: string; runId: string; text: string }
+  | { kind: "notice"; id: string; runId: string; text: string }
   | {
       /** A turn whose events are not loaded yet — expand to fetch. */
       kind: "collapsed-turn";
@@ -182,6 +195,11 @@ export interface TranscriptFoldInput {
   collapsedTurnIds?: ReadonlySet<string>;
 }
 
+export function humanRunFailure(text: string): string {
+  const failure = classifyRunFailure(text);
+  return failure ? runFailureHint(failure) : text;
+}
+
 /**
  * Fold a thread — every turn of the chain, oldest first — into transcript
  * items. Each turn contributes its user row (the prompt; steering notices and
@@ -214,13 +232,21 @@ export function buildTranscriptItems(input: TranscriptFoldInput): TranscriptItem
 
   for (const turn of input.turns) {
     if (turn.prompt.trim()) {
-      items.push({
-        kind: "user",
-        id: `${turn.id}:prompt`,
-        runId: turn.id,
-        text: turn.prompt,
-        ts: turn.createdAt,
-      });
+      const kickoff = turn.prompt.startsWith(MANAGER_PREAMBLE)
+        || MANAGER_OPENING.test(turn.prompt);
+      const notice = engineNoticeKind(turn.prompt);
+      const promptItem = kickoff
+        ? { kind: "kickoff" as const, id: `${turn.id}:prompt`, runId: turn.id, text: turn.prompt }
+        : notice
+          ? { kind: "notice" as const, id: `${turn.id}:prompt`, runId: turn.id, text: turn.prompt }
+          : {
+              kind: "user" as const,
+              id: `${turn.id}:prompt`,
+              runId: turn.id,
+              text: turn.prompt,
+              ts: turn.createdAt,
+            };
+      items.push(promptItem);
     }
 
     const events = input.eventsByRun[turn.id];
@@ -382,7 +408,10 @@ function foldTurnEvents(
           kind: "permission",
           id,
           tool: event.tool,
-          state: event.state,
+          state: event.state === "pending"
+            && !["queued", "running"].includes(turn.status)
+            ? "expired"
+            : event.state,
           detail: event.detail ?? null,
         };
         items.push(item);
@@ -397,7 +426,7 @@ function foldTurnEvents(
           id,
           runId: turn.id,
           ok: event.ok,
-          resultText: event.resultText,
+          resultText: event.ok ? event.resultText : humanRunFailure(event.resultText),
           costUsd: event.costUsd,
           durationMs: event.durationMs,
         });
@@ -412,7 +441,9 @@ function foldTurnEvents(
           items.push({
             kind: "system",
             id,
-            text: event.message && event.message !== event.status ? `${event.status} — ${event.message}` : event.status,
+            text: event.message && event.message !== event.status
+              ? `${event.status} — ${humanRunFailure(event.message)}`
+              : event.status,
             tone: "warn",
           });
         }

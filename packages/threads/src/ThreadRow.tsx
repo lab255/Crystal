@@ -10,6 +10,7 @@ export interface ThreadRowData {
   lastActivity: string | null;
   costUsd: number | null;
   workerCount?: number;
+  subtitle?: string;
 }
 
 const INDICATOR_STATUS: Record<ThreadIndicator, StatusKind> = {
@@ -20,7 +21,7 @@ const INDICATOR_STATUS: Record<ThreadIndicator, StatusKind> = {
   idle: "idle",
 };
 
-const INDICATOR_LABEL: Record<ThreadIndicator, string> = {
+export const INDICATOR_LABEL: Record<ThreadIndicator, string> = {
   "needs-input": "Waiting on you",
   running: "Working",
   failed: "Failed",
@@ -77,6 +78,7 @@ export function ThreadRow({
     >
       <button
         type="button"
+        tabIndex={-1}
         onClick={onSelect}
         onContextMenu={onContextMenu}
         title={INDICATOR_LABEL[thread.indicator]}
@@ -98,6 +100,9 @@ export function ThreadRow({
           >
             {thread.title}
           </div>
+          {thread.subtitle ? (
+            <div className="truncate text-[10px] text-ink-faint">{thread.subtitle}</div>
+          ) : null}
           <div className="mt-0.5 flex items-center gap-1.5 text-[10px] text-ink-faint">
             {activityLabel ? <span>{activityLabel}</span> : null}
             {thread.costUsd != null ? (
@@ -114,7 +119,6 @@ export function ThreadRow({
                 </span>
               </>
             ) : null}
-            {thread.pinned ? <Pin className="h-2.5 w-2.5" /> : null}
           </div>
         </div>
       </button>

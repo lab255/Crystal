@@ -15,7 +15,14 @@ import {
   useNav,
   useNavUpdate,
 } from "@crystal/client";
-import { useContextMenu, type MenuEntry } from "@crystal/ui";
+import {
+  Button,
+  Dialog,
+  DialogClose,
+  DialogContent,
+  useContextMenu,
+  type MenuEntry,
+} from "@crystal/ui";
 import { useThreadReadState } from "../thread-unread.js";
 import { OverviewThreadPane } from "./OverviewThreadPane.js";
 import { OverviewThreadRail } from "./OverviewThreadRail.js";
@@ -23,6 +30,7 @@ import {
   buildOverviewSections,
   filterOverviewSections,
   formatOverviewThreadId,
+  parseOverviewThreadId,
   resolveOverviewThread,
   type OverviewSection,
   type OverviewThread,
@@ -49,14 +57,24 @@ export default function OverviewThreads() {
   const cancelProgram = useHub((s) => s.cancel);
   const removeProgram = useHub((s) => s.remove);
   const retryDelivery = useHub((s) => s.retryDelivery);
+  const hubLoaded = useHub((s) => s.loaded);
+  const hubError = useHub((s) => s.error);
+  const refreshHub = useHub((s) => s.refresh);
   const fleetNeedsYou = useFleetNeedsYou();
   const nav = useNav((link) => link.projects ?? null);
   const update = useNavUpdate();
   const { fleet, selectWorkspace, activeSid } = useCrystal();
   const read = useThreadReadState();
   const menu = useContextMenu();
-  const [creating, setCreating] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
+  const creating = nav?.compose === true;
+  const [notice, setNotice] = useState<{
+    text: string;
+    tone: "danger" | "neutral";
+  } | null>(null);
+  const [confirmation, setConfirmation] = useState<{
+    title: string;
+    run: () => void;
+  } | null>(null);
   const [filter, setFilterState] = useState<"managers" | "all">(() =>
     typeof localStorage !== "undefined" && localStorage.getItem(FILTER_KEY) === "all"
       ? "all"
@@ -70,6 +88,11 @@ export default function OverviewThreads() {
       // Persistence is optional; the in-memory filter still works.
     }
   };
+  useEffect(() => {
+    if (notice?.tone !== "neutral") return;
+    const timer = window.setTimeout(() => setNotice(null), 2_000);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
 
   const attentionByWs = useMemo(() => {
     const result: Record<string, Set<string>> = {};
@@ -115,6 +138,9 @@ export default function OverviewThreads() {
     return filterOverviewSections(allSections, { filter: "all", find: nav?.find })
       .reduce((count, section) => count + section.threads.length, 0);
   }, [filter, visibleCount, allSections, nav?.find]);
+  const managerCount = filterOverviewSections(allSections, { filter: "managers" })
+    .reduce((count, section) => count + section.threads.length, 0);
+  const allCount = allSections.reduce((count, section) => count + section.threads.length, 0);
   const requested = nav?.thread ?? (nav?.program
     ? formatOverviewThreadId({ kind: "program", programId: nav.program })
     : null);
@@ -143,7 +169,10 @@ export default function OverviewThreads() {
   }, [selected?.readKey, selected?.lastActivity, selected?.live, read.markSeen]);
   const act = useCallback((fn: () => unknown | Promise<unknown>) => {
     void Promise.resolve().then(fn).catch((error) =>
-      setNotice(error instanceof Error ? error.message : String(error)),
+      setNotice({
+        text: error instanceof Error ? error.message : String(error),
+        tone: "danger",
+      }),
     );
   }, []);
   const copyLink = (thread: OverviewThread) => act(async () => {
@@ -152,6 +181,7 @@ export default function OverviewThreads() {
       projects: { view: "threads", thread: thread.id },
     });
     await navigator.clipboard.writeText(`${location.origin}${location.pathname}${hash}`);
+    setNotice({ text: "Link copied", tone: "neutral" });
   });
   const copyTurnLink = (thread: OverviewThread, turn: string) => act(async () => {
     const hash = formatDeepLink({
@@ -159,6 +189,7 @@ export default function OverviewThreads() {
       projects: { view: "threads", thread: thread.id, turn },
     });
     await navigator.clipboard.writeText(`${location.origin}${location.pathname}${hash}`);
+    setNotice({ text: "Link copied", tone: "neutral" });
   });
   const openProject = (thread: OverviewThread) => {
     if (thread.ref.kind !== "workspace") return;
@@ -194,6 +225,7 @@ export default function OverviewThreads() {
     if (thread.ref.kind === "workspace") {
       const ref = thread.ref;
       const client = fleet.clientOf(ref.sid);
+      const disconnected = client == null;
       const face = thread.summary!.node.run;
       return [
         {
@@ -206,6 +238,8 @@ export default function OverviewThreads() {
           type: "item",
           label: "Open terminal",
           icon: Terminal,
+          disabled: disconnected,
+          hint: disconnected ? "server disconnected" : undefined,
           onSelect: () => window.dispatchEvent(new CustomEvent("crystal:open-terminal", {
             detail: { ws: ref.ws, sid: ref.sid, kind: "agent" },
           })),
@@ -223,6 +257,8 @@ export default function OverviewThreads() {
             type: "item" as const,
             label: thread.workflow.status === "paused" ? "Resume workflow" : "Pause workflow",
             icon: thread.workflow.status === "paused" ? Play : Pause,
+            disabled: disconnected,
+            hint: disconnected ? "server disconnected" : undefined,
             onSelect: () => act(() => client!.request("workflow.setPaused", {
               ws: ref.ws,
               workflowId: thread.workflow!.id,
@@ -232,8 +268,9 @@ export default function OverviewThreads() {
           {
             type: "item" as const,
             label: "Compact manager transcript",
-            disabled: thread.live,
-            hint: thread.live ? "refused while runs are live" : undefined,
+            disabled: disconnected || thread.live,
+            hint: disconnected ? "server disconnected"
+              : thread.live ? "refused while runs are live" : undefined,
             onSelect: () => act(() => client!.request("workflow.compact", {
               ws: ref.ws,
               workflowId: thread.workflow!.id,
@@ -243,13 +280,16 @@ export default function OverviewThreads() {
             type: "item" as const,
             label: "Cancel workflow",
             danger: true,
+            disabled: disconnected,
+            hint: disconnected ? "server disconnected" : undefined,
             onSelect: () => {
-              if (window.confirm("Cancel this workflow?")) {
-                act(() => client!.request("workflow.cancel", {
+              setConfirmation({
+                title: "Cancel this workflow?",
+                run: () => act(() => client!.request("workflow.cancel", {
                   ws: ref.ws,
                   workflowId: thread.workflow!.id,
-                }));
-              }
+                })),
+              });
             },
           },
         ] : []),
@@ -257,7 +297,8 @@ export default function OverviewThreads() {
           type: "item",
           label: "Cancel live turn",
           icon: Square,
-          disabled: !["running", "queued"].includes(face.status),
+          disabled: disconnected || !["running", "queued"].includes(face.status),
+          hint: disconnected ? "server disconnected" : undefined,
           onSelect: () => act(() => client!.request("agent.cancel", {
             ws: ref.ws,
             runId: face.id,
@@ -302,7 +343,10 @@ export default function OverviewThreads() {
         danger: true,
         disabled: isProgramTerminal(program.status),
         onSelect: () => {
-          if (window.confirm("Cancel this program?")) act(() => cancelProgram(program.id));
+          setConfirmation({
+            title: "Cancel this program?",
+            run: () => act(() => cancelProgram(program.id)),
+          });
         },
       },
       {
@@ -312,7 +356,10 @@ export default function OverviewThreads() {
         danger: true,
         disabled: !isProgramTerminal(program.status),
         onSelect: () => {
-          if (window.confirm("Remove this program?")) act(() => removeProgram(program.id));
+          setConfirmation({
+            title: "Remove this program?",
+            run: () => act(() => removeProgram(program.id)),
+          });
         },
       },
     ];
@@ -320,7 +367,11 @@ export default function OverviewThreads() {
 
   const headingEntriesFor = (section: OverviewSection): MenuEntry[] => {
     if (section.kind === "coordinator") {
-      return [{ type: "item", label: "New program", onSelect: () => setCreating(true) }];
+      return [{
+        type: "item",
+        label: "New program",
+        onSelect: () => update({ projects: { view: "threads", compose: true } }),
+      }];
     }
     return [
       {
@@ -373,19 +424,32 @@ export default function OverviewThreads() {
       sections={sections}
       selectedId={selected?.id ?? null}
       filter={filter}
+      managerCount={managerCount}
+      allCount={allCount}
+      hubLoaded={hubLoaded}
+      hubError={hubError}
+      onRetryHub={() => act(refreshHub)}
+      onClearSelection={() => update({
+        projects: { view: "threads", thread: null, program: null, turn: null },
+      })}
       hiddenCount={hiddenCount}
       hasUnfilteredThreads={allSections.some((section) => section.threads.length > 0)}
       onFilter={setFilter}
       find={nav?.find ?? ""}
       onFind={(find) => update({ projects: { view: "threads", find: find || null } })}
       onSelect={(id) => {
-        setCreating(false);
         update({
-          projects: { view: "threads", thread: id, program: null, turn: null },
+          projects: {
+            view: "threads",
+            thread: id,
+            program: null,
+            turn: null,
+            compose: null,
+          },
         });
       }}
       onPin={read.togglePin}
-      onNewProgram={() => setCreating(true)}
+      onNewProgram={() => update({ projects: { view: "threads", compose: true } })}
       entriesFor={entriesFor}
       headingEntriesFor={headingEntriesFor}
       openMenu={menu.open}
@@ -393,16 +457,17 @@ export default function OverviewThreads() {
       <OverviewThreadPane
       thread={selected}
       creating={creating}
-      notice={notice}
+      notice={notice?.text ?? null}
+      noticeTone={notice?.tone ?? "danger"}
       dismissNotice={() => setNotice(null)}
-      onError={setNotice}
+      onError={(text) => setNotice({ text, tone: "danger" })}
       onCreated={(programId) => {
-        setCreating(false);
         update({
           projects: {
             view: "threads",
             thread: formatOverviewThreadId({ kind: "program", programId }),
             program: null,
+            compose: null,
           },
         });
       }}
@@ -419,10 +484,28 @@ export default function OverviewThreads() {
       }
       loadEvents={loadSelectedEvents}
       focusTurnId={nav?.turn}
+      onFocusedTurn={() => update({ projects: { view: "threads", turn: null } })}
       onCopyTurnLink={selected ? (turn) => copyTurnLink(selected, turn) : undefined}
       entries={selected ? entriesFor(selected) : []}
       openMenu={menu.open}
       openProject={() => selected && openProject(selected)}
+      missingRef={requested && !selected ? parseOverviewThreadId(requested) : null}
+      missingProjectClosed={(() => {
+        const ref = requested ? parseOverviewThreadId(requested) : null;
+        if (ref?.kind !== "workspace") return false;
+        return !connections.some((connection) =>
+          connection.sid === ref.sid
+          && connection.workspaces.some((workspace) => workspace.id === ref.ws));
+      })()}
+      clearSelection={() => update({
+        projects: {
+          view: "threads",
+          thread: null,
+          program: null,
+          turn: null,
+          compose: null,
+        },
+      })}
       resumeWorkflow={() => {
         if (selected?.ref.kind !== "workspace" || !selected.workflow) return;
         const ref = selected.ref;
@@ -436,6 +519,25 @@ export default function OverviewThreads() {
       }}
       />
       {menu.element}
+      <Dialog open={confirmation != null} onOpenChange={(open) => !open && setConfirmation(null)}>
+        <DialogContent title={confirmation?.title ?? "Confirm action"}>
+          <div className="flex justify-end gap-2">
+            <DialogClose asChild>
+              <Button variant="ghost" size="sm">Cancel</Button>
+            </DialogClose>
+            <Button
+              variant="danger"
+              size="sm"
+              onClick={() => {
+                confirmation?.run();
+                setConfirmation(null);
+              }}
+            >
+              Confirm
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

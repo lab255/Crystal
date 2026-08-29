@@ -31,12 +31,14 @@ import { SpendLine } from "../spend-line.js";
 import { ThreadComposer } from "../ThreadComposer.js";
 import { ThreadTranscript } from "../ThreadTranscript.js";
 import { buildTranscriptItems, type TranscriptItem } from "../transcript-items.js";
-import type { OverviewThread } from "./overview-thread-model.js";
+import { INDICATOR_LABEL } from "../ThreadRow.js";
+import type { OverviewThread, OverviewThreadRef } from "./overview-thread-model.js";
 
 interface PaneProps {
   thread: OverviewThread | null;
   creating: boolean;
   notice: string | null;
+  noticeTone: "danger" | "neutral";
   dismissNotice: () => void;
   onError: (message: string) => void;
   onCreated: (id: string) => void;
@@ -50,6 +52,10 @@ interface PaneProps {
   resumeWorkflow: () => void;
   focusTurnId?: string;
   onCopyTurnLink?: (runId: string) => void | Promise<void>;
+  onFocusedTurn?: (runId: string) => void;
+  missingRef?: OverviewThreadRef | null;
+  missingProjectClosed?: boolean;
+  clearSelection: () => void;
 }
 
 function NodeTranscript({
@@ -59,6 +65,7 @@ function NodeTranscript({
   questions,
   focusTurnId,
   onCopyTurnLink,
+  onFocusedTurn,
 }: {
   node: RunNode;
   eventsByRun: Record<string, RunEvent[]>;
@@ -66,6 +73,7 @@ function NodeTranscript({
   questions: FleetQuestion[];
   focusTurnId?: string;
   onCopyTurnLink?: (runId: string) => void | Promise<void>;
+  onFocusedTurn?: (runId: string) => void;
 }) {
   const loadEventsRef = useRef(loadEvents);
   const [loadedFocusTurnId, setLoadedFocusTurnId] = useState<string | undefined>();
@@ -119,9 +127,10 @@ function NodeTranscript({
         questions={questions}
         focusTurnId={focusTurnId}
         onCopyTurnLink={onCopyTurnLink}
+        onFocusedTurn={onFocusedTurn}
       />
     ) : null,
-    [eventsByRun, focusTurnId, loadNodeEvents, onCopyTurnLink, questions],
+    [eventsByRun, focusTurnId, loadNodeEvents, onCopyTurnLink, onFocusedTurn, questions],
   );
   return (
     <ThreadTranscript
@@ -132,6 +141,7 @@ function NodeTranscript({
       onExpandTurn={loadNodeEvents}
       focusTurnId={ownsFocusTurn ? loadedFocusTurnId : focusTurnId}
       onCopyTurnLink={onCopyTurnLink}
+      onFocusedTurn={onFocusedTurn}
     />
   );
 }
@@ -141,6 +151,7 @@ export function OverviewThreadPane({
   thread,
   creating,
   notice,
+  noticeTone,
   dismissNotice,
   onError,
   onCreated,
@@ -154,6 +165,10 @@ export function OverviewThreadPane({
   resumeWorkflow,
   focusTurnId,
   onCopyTurnLink,
+  onFocusedTurn,
+  missingRef,
+  missingProjectClosed,
+  clearSelection,
 }: PaneProps) {
   const { fleet, activeSid } = useCrystal();
   const activeWs = useWorkspaces((state) => state.activeId);
@@ -175,12 +190,27 @@ export function OverviewThreadPane({
   if (creating) {
     return (
       <main className="flex min-w-0 flex-1 flex-col">
-        {notice ? <Notice text={notice} dismiss={dismissNotice} /> : null}
-        <CreateProgram onCreated={(program) => onCreated(program.id)} />
+        {notice ? <Notice text={notice} tone={noticeTone} dismiss={dismissNotice} /> : null}
+        <CreateProgram
+          onCreated={(program) => onCreated(program.id)}
+          onCancel={clearSelection}
+        />
       </main>
     );
   }
   if (!thread) {
+    if (missingRef) {
+      return (
+        <main className="flex flex-1 items-center justify-center">
+          <EmptyState title="This thread is no longer available">
+            {missingProjectClosed ? "The project is closed." : null}
+            <Button className="mt-3" size="sm" onClick={clearSelection}>
+              Clear selection
+            </Button>
+          </EmptyState>
+        </main>
+      );
+    }
     return (
       <main className="flex flex-1 items-center justify-center">
         <EmptyState title="Pick a thread">
@@ -192,16 +222,21 @@ export function OverviewThreadPane({
   if (thread.program) {
     return (
       <main className="flex min-w-0 flex-1 flex-col">
-        {notice ? <Notice text={notice} dismiss={dismissNotice} /> : null}
+        {notice ? <Notice text={notice} tone={noticeTone} dismiss={dismissNotice} /> : null}
         <header className="flex items-center gap-2.5 border-b border-edge px-4 py-2.5">
           <span className="rounded bg-surface-2 px-2 py-1 text-[10px] text-ink-muted">
             Coordinator
             {thread.serverLabel ? ` · ${thread.serverLabel}` : ""}
           </span>
-          <StatusDot status={thread.program.status === "paused" ? "idle" : thread.program.status} />
+          <Tooltip content={INDICATOR_LABEL[thread.indicator]}>
+            <span><StatusDot status={thread.indicator === "needs-input"
+              ? "needs-you"
+              : thread.indicator === "unread" ? "queued" : thread.indicator} /></span>
+          </Tooltip>
           <div className="min-w-0 flex-1 truncate text-sm font-medium text-ink">
             {thread.program.name}
           </div>
+          <Badge>{thread.program.status}</Badge>
           <Button
             variant="ghost"
             size="icon-sm"
@@ -236,7 +271,7 @@ export function OverviewThreadPane({
 
   return (
     <main className="flex min-w-0 flex-1 flex-col">
-      {notice ? <Notice text={notice} dismiss={dismissNotice} /> : null}
+      {notice ? <Notice text={notice} tone={noticeTone} dismiss={dismissNotice} /> : null}
       <header className="flex items-center gap-2.5 border-b border-edge px-4 py-2.5">
         <Tooltip content="Open in project">
           <button
@@ -255,14 +290,16 @@ export function OverviewThreadPane({
           <div className="truncate text-sm font-medium text-ink">{thread.title}</div>
           <div className="mt-0.5 flex flex-wrap items-center gap-2 text-[10px] text-ink-faint">
             {run.purpose ? <Badge tone="violet">{run.purpose}</Badge> : null}
-            {run.model ? <span>{run.model}</span> : null}
-            <span>{formatRunCost(thread.costUsd ?? 0)}</span>
+            <span>thread {formatRunCost(thread.costUsd ?? 0)}</span>
             {working && run.startedAt ? <span>{formatElapsed(run.startedAt, nowMs)}</span> : null}
             {workflowLabel ? <Badge>{workflowLabel}</Badge> : null}
             {thread.workflow && spend ? (
-              <SpendLine costUsd={spend.costUsd} budgetUsd={thread.workflow.budgetUsd} />
+              <span>workflow <SpendLine
+                costUsd={spend.costUsd}
+                budgetUsd={thread.workflow.budgetUsd}
+              /></span>
             ) : null}
-            {recentTurnLog.length ? <span className="text-ink-faint">last 5 turns</span> : null}
+            {recentTurnLog.length ? <span className="text-ink-faint">last 5 turns ·</span> : null}
             {recentTurnLog.map((turn, index) => {
               const cost = formatRunCost(turn.costUsd);
               return (
@@ -274,6 +311,7 @@ export function OverviewThreadPane({
                   }
                 >
                   <span
+                    aria-label={turn.progressed ? `${cost}, progressed` : `${cost}, stalled`}
                     className={cn(
                       "rounded px-1 py-0.5",
                       turn.progressed
@@ -286,6 +324,12 @@ export function OverviewThreadPane({
                 </Tooltip>
               );
             })}
+            {recentTurnLog.length ? (
+              <span>· {recentTurnLog.filter((turn) => !turn.progressed).length} stalled</span>
+            ) : null}
+            {run.model ? (
+              <span className="basis-full text-ink-faint">model {run.model}</span>
+            ) : null}
           </div>
         </div>
         <Button
@@ -316,6 +360,7 @@ export function OverviewThreadPane({
         questions={activeQuestionRows}
         focusTurnId={focusTurnId}
         onCopyTurnLink={onCopyTurnLink}
+        onFocusedTurn={onFocusedTurn}
       />
       {activeQuestionRows.length ? (
         <div className="space-y-2 border-t border-edge px-4 py-2">
@@ -375,13 +420,21 @@ export function OverviewThreadPane({
   );
 }
 
-function Notice({ text, dismiss }: { text: string; dismiss: () => void }) {
+function Notice({
+  text,
+  tone,
+  dismiss,
+}: {
+  text: string;
+  tone: "danger" | "neutral";
+  dismiss: () => void;
+}) {
   return (
     <div
       role="alert"
       className={cn(
-        "flex items-center gap-2 border-b border-danger/40 bg-surface-2",
-        "px-4 py-2 text-xs text-danger",
+        "flex items-center gap-2 border-b bg-surface-2 px-4 py-2 text-xs",
+        tone === "danger" ? "border-danger/40 text-danger" : "border-edge text-ink",
       )}
     >
       <span className="flex-1">{text}</span>

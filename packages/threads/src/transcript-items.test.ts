@@ -2,12 +2,18 @@ import { describe, expect, it } from "vitest";
 import {
   createAgentRun,
   groupRunsByManager,
+  MANAGER_PREAMBLE,
   type AgentEvent,
   type AgentRun,
   type RunEvent,
   type TaskQuestion,
 } from "@crystal/core";
-import { buildTranscriptItems, workTitle, type WorkEntry } from "./transcript-items.js";
+import {
+  buildTranscriptItems,
+  humanRunFailure,
+  workTitle,
+  type WorkEntry,
+} from "./transcript-items.js";
 
 function run(overrides: Partial<AgentRun> & { prompt: string }): AgentRun {
   const base = createAgentRun({ prompt: overrides.prompt });
@@ -24,6 +30,49 @@ const READ = (id: string, file: string): AgentEvent[] => [
 ];
 
 describe("buildTranscriptItems", () => {
+  it("classifies kickoff prompts, engine notices, and owner text", () => {
+    const prompts = [
+      MANAGER_PREAMBLE + "\nbrief",
+      'You are the PROGRAM MANAGER of "Launch"',
+      "Worker run_1 settled: completed",
+      "Answer to your question: yes",
+      "USER MESSAGE:\nship it",
+      "BUDGET WARNING: $8 of $10 spent",
+      "Delivery d1 (Alpha) settled: completed",
+      "A project is waiting on an answer:",
+      "2 projects are waiting on answers:",
+      'Every delivery of program "Launch" has settled (completed).',
+      "2 updates arrived while you were working.",
+      "ordinary owner text",
+    ];
+    const items = buildTranscriptItems({
+      turns: prompts.map((prompt, index) => run({ id: `r${index}`, prompt })),
+      eventsByRun: Object.fromEntries(prompts.map((_, index) => [`r${index}`, []])),
+    });
+    expect(items.map((item) => item.kind)).toEqual([
+      "kickoff", "kickoff", "notice", "notice", "notice", "notice",
+      "notice", "notice", "notice", "notice", "notice", "user",
+    ]);
+  });
+
+  it("expires pending permissions on terminal runs", () => {
+    const turn = run({ id: "r1", prompt: "x", status: "failed" });
+    const items = buildTranscriptItems({
+      turns: [turn],
+      eventsByRun: {
+        r1: events("r1", [{
+          type: "permission",
+          tool: "Bash",
+          state: "pending",
+          detail: "pnpm test",
+        }]),
+      },
+    });
+    expect(items.find((item) => item.kind === "permission")).toMatchObject({
+      kind: "permission",
+      state: "expired",
+    });
+  });
   it("renders each turn as user row + folded events, oldest first", () => {
     const turn = run({ id: "r1", prompt: "Fix it", status: "completed" });
     const items = buildTranscriptItems({
@@ -193,7 +242,7 @@ describe("buildTranscriptItems", () => {
     });
     const perms = items.filter((i) => i.kind === "permission");
     expect(perms.map((p) => (p.kind === "permission" ? [p.tool, p.state] : null))).toEqual([
-      ["Bash", "pending"],
+      ["Bash", "expired"],
       ["WebFetch", "denied"],
     ]);
   });
@@ -263,5 +312,13 @@ describe("workTitle", () => {
         entry("Edit", "Edited packages/core/src/agent.ts"),
       ]),
     ).toBe("Explored 2 files, 1 search, 1 command, edited agent.ts");
+  });
+});
+
+describe("humanRunFailure", () => {
+  it("turns provider failure codes into a recovery label", () => {
+    expect(humanRunFailure("rate_limit_error: usage limit reached"))
+      .toContain("Usage limit reached");
+    expect(humanRunFailure("spawn ENOENT")).toBe("spawn ENOENT");
   });
 });

@@ -242,6 +242,8 @@ export interface ProjectsLink {
   turn?: string;
   /** Find query (inbox). */
   find?: string;
+  /** New-program composer open. */
+  compose?: boolean;
 }
 
 export interface DeepLink {
@@ -398,6 +400,7 @@ export function formatDeepLink(link: DeepLink): string {
     if (view === "threads" && p.program) add("program", p.program);
     if (view === "threads" && p.turn) add("turn", p.turn);
     if (p.find) add("find", p.find);
+    if (view === "threads" && p.compose) add("compose", "1");
   }
   // "jobs" (agent job hub) is stateless — nothing to encode beyond ws.
 
@@ -639,6 +642,7 @@ export function parseDeepLink(hash: string): DeepLink {
     if (p.view === "threads" && turn) p.turn = turn;
     const find = params.get("find");
     if (find) p.find = find;
+    if (params.get("compose") === "1") p.compose = true;
     if (Object.keys(p).length) link.projects = p;
   } else if (mode === "jobs") {
     link.mode = "jobs";
@@ -674,8 +678,8 @@ const QUALITY_VIEW_FIELDS: Record<QualityViewId, readonly (keyof QualityLink)[]>
 
 const PROJECTS_VIEW_FIELDS: Record<OverviewViewId, readonly (keyof ProjectsLink)[]> = {
   dashboard: ["view", "find"],
-  threads: ["view", "thread", "program", "turn", "find"],
-  chat: ["view", "thread", "program", "turn", "find"],
+  threads: ["view", "thread", "program", "turn", "find", "compose"],
+  chat: ["view", "thread", "program", "turn", "find", "compose"],
   inbox: ["view", "find"],
 };
 

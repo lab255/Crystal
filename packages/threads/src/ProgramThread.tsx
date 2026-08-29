@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Play, RotateCcw, Square } from "lucide-react";
+import { Play, PowerOff, RotateCcw } from "lucide-react";
 import {
   MessageComposer,
   QuestionCard,
@@ -21,7 +21,13 @@ import { programChain } from "./overview/overview-thread-model.js";
 
 const EMPTY_HUB_RUNS: AgentRun[] = [];
 
-export function CreateProgram({ onCreated }: { onCreated: (program: Program) => void }) {
+export function CreateProgram({
+  onCreated,
+  onCancel,
+}: {
+  onCreated: (program: Program) => void;
+  onCancel: () => void;
+}) {
   const createProgram = useHub((s) => s.createProgram);
   const [name, setName] = useState("");
   const [goal, setGoal] = useState("");
@@ -30,7 +36,12 @@ export function CreateProgram({ onCreated }: { onCreated: (program: Program) => 
   const [error, setError] = useState<string | null>(null);
 
   return (
-    <div className="mx-auto w-full max-w-xl p-6">
+    <div
+      className="mx-auto w-full max-w-xl p-6"
+      onKeyDown={(event) => {
+        if (event.key === "Escape") onCancel();
+      }}
+    >
       <h2 className="text-sm font-semibold text-ink">New program</h2>
       <p className="mt-1 text-xs leading-relaxed text-ink-muted">
         One epic across projects. The program manager splits it into per-project deliveries and
@@ -60,6 +71,9 @@ export function CreateProgram({ onCreated }: { onCreated: (program: Program) => 
           className="w-44"
         />
         <div className="flex-1" />
+        <Button variant="ghost" size="sm" disabled={busy} onClick={onCancel}>
+          Cancel
+        </Button>
         <Button
           variant="primary"
           size="sm"
@@ -122,6 +136,7 @@ export function ProgramSession({
   const face = chain[chain.length - 1] ?? null;
   const working =
     hasManager && face != null && (face.status === "running" || face.status === "queued");
+  const managerNotLive = program.status === "running" && !working;
 
   useEffect(() => {
     for (const turn of chain.slice(-2)) void loadRunEvents(turn.id);
@@ -167,7 +182,7 @@ export function ProgramSession({
                 }
               }}
             >
-              <Square className="h-3 w-3" /> Close manager
+              <PowerOff className="h-3 w-3" /> Close manager
             </Button>
           </Tooltip>
         ) : null}
@@ -266,7 +281,22 @@ export function ProgramSession({
         </div>
       ) : null}
 
-      {hasManager ? (
+      {managerNotLive && face ? (
+        <div className="flex items-center gap-3 border-t border-warn/30 bg-warn/10 px-4 py-2">
+          <span className="flex-1 text-[11px] text-warn">
+            Manager session is not live — messages will only be recorded
+          </span>
+          <StartManagerButton
+            busy={busy}
+            setBusy={setBusy}
+            start={async () => {
+              if (hasManager) await closeManager(program.id);
+              return startManager(program.id);
+            }}
+            onError={onError}
+          />
+        </div>
+      ) : hasManager ? (
         <MessageComposer
           onSend={send}
           placeholder="Message the program manager…"
@@ -293,7 +323,7 @@ export function ProgramSession({
   );
 }
 
-function StartManagerButton({
+export function StartManagerButton({
   busy,
   setBusy,
   start,
