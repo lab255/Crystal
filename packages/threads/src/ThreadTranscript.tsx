@@ -9,11 +9,16 @@ import {
   GitBranch,
   History,
   Link,
+  Search,
 } from "lucide-react";
 import { formatRunCost, formatRunDuration } from "@crystal/client";
 import { Badge, Spinner, StatusDot, cn } from "@crystal/ui";
 import { renderLightMarkdown, type InlineSpan } from "./light-markdown.js";
 import type { TranscriptItem, WorkEntry } from "./transcript-items.js";
+import { TranscriptFindBar } from "./TranscriptFindBar.js";
+import { searchTranscript, type SearchHit } from "./transcript-search.js";
+
+type IndexedHit = SearchHit & { index: number };
 
 export interface QuestionAnswerResult {
   notice?: string;
@@ -55,7 +60,9 @@ export function ThreadTranscript({
   working?: boolean;
   className?: string;
 }) {
+  const containerRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const findInputRef = useRef<HTMLInputElement>(null);
   const stickToBottom = useRef(true);
   const lastFocused = useRef<string | null>(null);
   const focusedRef = useRef<string | undefined>(focusTurnId);
@@ -63,11 +70,47 @@ export function ThreadTranscript({
   const focusScrollUntil = useRef(0);
   const [highlightedTurnId, setHighlightedTurnId] = useState<string | null>(null);
   const [keyboardTurn, setKeyboardTurn] = useState(-1);
+  const [findOpen, setFindOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [activeHit, setActiveHit] = useState(0);
+  const hits = useMemo(() => searchTranscript(items, query), [items, query]);
+  const unloadedTurns = useMemo(
+    () => items.filter((item): item is Extract<TranscriptItem, { kind: "collapsed-turn" }> => item.kind === "collapsed-turn"),
+    [items],
+  );
   const turns = useMemo(() => groupItemsByTurn(items), [items]);
   const active = keyboardTurn < turns.length ? keyboardTurn : -1;
   const ownTurnRows = () => Array.from(
     scrollRef.current?.querySelectorAll<HTMLElement>("[data-turn-id]") ?? [],
   ).filter((element) => element.closest("[data-transcript]") === scrollRef.current);
+
+  const closeFind = () => {
+    setFindOpen(false);
+    requestAnimationFrame(() => scrollRef.current?.focus());
+  };
+  const cycleHit = (delta: number) => {
+    if (!hits.length) return;
+    setActiveHit((current) => (current + delta + hits.length) % hits.length);
+  };
+
+  useEffect(() => {
+    setActiveHit((current) => hits.length ? Math.min(current, hits.length - 1) : 0);
+  }, [hits.length, query]);
+
+  useEffect(() => {
+    if (!findOpen) return;
+    requestAnimationFrame(() => findInputRef.current?.focus());
+  }, [findOpen]);
+
+  useEffect(() => {
+    if (!findOpen || !hits[activeHit]) return;
+    stickToBottom.current = false;
+    const frame = requestAnimationFrame(() => {
+      containerRef.current?.querySelector<HTMLElement>(`[data-search-hit="${activeHit}"]`)
+        ?.scrollIntoView({ block: "center", behavior: "auto" });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [activeHit, findOpen, hits]);
 
   useEffect(() => {
     focusedRef.current = focusTurnId;
@@ -83,6 +126,8 @@ export function ThreadTranscript({
   useEffect(() => {
     stickToBottom.current = true;
     setKeyboardTurn(-1);
+    setFindOpen(false);
+    setQuery("");
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [threadId]);
@@ -131,6 +176,42 @@ export function ThreadTranscript({
 
   return (
     <div
+      ref={containerRef}
+      className={cn("relative flex min-h-0 flex-1 flex-col", className)}
+      onKeyDownCapture={(event) => {
+        const target = event.target as HTMLElement;
+        if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "f") return;
+        if (target.closest(".xterm")) return;
+        event.preventDefault();
+        event.stopPropagation();
+        setFindOpen(true);
+      }}
+    >
+      {findOpen ? (
+        <TranscriptFindBar
+          query={query}
+          onQueryChange={setQuery}
+          activeIndex={activeHit}
+          hitCount={hits.length}
+          unloadedCount={unloadedTurns.length}
+          onPrevious={() => cycleHit(-1)}
+          onNext={() => cycleHit(1)}
+          onClose={closeFind}
+          onLoadAll={onExpandTurn ? () => { void Promise.all(unloadedTurns.map((item) => onExpandTurn(item.runId))); } : undefined}
+          inputRef={findInputRef}
+        />
+      ) : (
+        <button
+          type="button"
+          aria-label="Find in thread"
+          title="Find in thread"
+          onClick={() => setFindOpen(true)}
+          className="absolute right-3 top-2 z-20 rounded bg-surface-1/90 p-1.5 text-ink-faint shadow-sm hover:bg-surface-2 hover:text-ink"
+        >
+          <Search className="h-3.5 w-3.5" />
+        </button>
+      )}
+      <div
       ref={scrollRef}
       data-transcript="true"
       tabIndex={active < 0 ? 0 : -1}
@@ -163,7 +244,7 @@ export function ThreadTranscript({
         const el = e.currentTarget;
         stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
       }}
-      className={cn("min-h-0 flex-1 space-y-2 overflow-y-auto px-4 py-3", className)}
+      className="min-h-0 flex-1 space-y-2 overflow-y-auto px-4 py-3"
     >
       {turns.map((turn, index) => (
         <div
@@ -203,6 +284,8 @@ export function ThreadTranscript({
               renderQuestion={renderQuestion}
               renderWorker={renderWorker}
               onExpandTurn={onExpandTurn}
+              hits={hits}
+              activeHit={activeHit}
             />
           ))}
         </div>
@@ -212,6 +295,7 @@ export function ThreadTranscript({
           <Spinner className="h-3.5 w-3.5" /> Working…
         </div>
       ) : null}
+      </div>
     </div>
   );
 }
@@ -239,26 +323,31 @@ function TranscriptItemRow({
   renderQuestion,
   renderWorker,
   onExpandTurn,
+  hits,
+  activeHit,
 }: {
   item: TranscriptItem;
   focusTurnId?: string;
   renderQuestion?: (item: Extract<TranscriptItem, { kind: "question" }>) => ReactNode;
   renderWorker?: (item: Extract<TranscriptItem, { kind: "delegation" }>) => ReactNode;
   onExpandTurn?: (runId: string) => void | Promise<void>;
+  hits: readonly SearchHit[];
+  activeHit: number;
 }) {
+  const itemHits = hits.flatMap((hit, index) => hit.itemId === item.id ? [{ ...hit, index }] : []);
   switch (item.kind) {
     case "user":
-      return <UserRow text={item.text} />;
+      return <UserRow text={item.text} hits={itemHits} activeHit={activeHit} />;
     case "kickoff":
-      return <ExpandableNotice label="Kickoff brief" text={item.text} />;
+      return <ExpandableNotice label="Kickoff brief" text={item.text} hits={itemHits} activeHit={activeHit} />;
     case "notice":
-      return <ExpandableNotice label="Crystal" text={item.text} />;
+      return <ExpandableNotice label="Crystal" text={item.text} hits={itemHits} activeHit={activeHit} />;
     case "assistant":
-      return <AssistantRow text={item.text} thinking={item.thinking} />;
+      return <AssistantRow text={item.text} thinking={item.thinking} hits={itemHits} activeHit={activeHit} />;
     case "work":
-      return <WorkRow item={item} />;
+      return <WorkRow item={item} hits={itemHits} activeHit={activeHit} />;
     case "question":
-      return <QuestionRow item={item} renderQuestion={renderQuestion} />;
+      return <QuestionRow item={item} renderQuestion={renderQuestion} hits={itemHits} activeHit={activeHit} />;
     case "delegation":
       return (
         <DelegationRow
@@ -315,10 +404,12 @@ function TranscriptItemRow({
           )}
           <span className={cn(!item.ok && "text-danger")}>
             {item.ok
-              ? "Turn settled"
+              ? item.resultText
+                ? <>Turn settled — {highlightText(item.resultText, itemHits, activeHit)}</>
+                : "Turn settled"
               : bareFailureCode || !item.resultText
                 ? outcome
-                : `${outcome} — ${item.resultText}`}
+                : <>{outcome} — {highlightText(item.resultText, itemHits, activeHit)}</>}
           </span>
           <span>·</span>
           <span>{formatRunCost(item.costUsd)}</span>
@@ -334,7 +425,7 @@ function TranscriptItemRow({
             item.tone === "warn" ? "text-warn" : "text-ink-faint",
           )}
         >
-          {item.text}
+          {highlightText(item.text, itemHits, activeHit)}
         </div>
       );
     case "collapsed-turn":
@@ -344,9 +435,11 @@ function TranscriptItemRow({
   }
 }
 
-function ExpandableNotice({ label, text }: { label: string; text: string }) {
+function ExpandableNotice({ label, text, hits, activeHit }: { label: string; text: string; hits: readonly IndexedHit[]; activeHit: number }) {
   const [expanded, setExpanded] = useState(false);
   const [firstLine] = text.split("\n");
+  const ownsActive = hits.some((hit) => hit.index === activeHit);
+  useEffect(() => { if (ownsActive) setExpanded(true); }, [ownsActive]);
   return (
     <div className="flex w-full min-w-0 justify-start">
       <button
@@ -360,7 +453,7 @@ function ExpandableNotice({ label, text }: { label: string; text: string }) {
         {expanded ? (
           <span className="block">
             <span className="block text-[10px] font-semibold text-ink-muted">{label}</span>
-            <span className="mt-1 block whitespace-pre-wrap text-xs text-ink">{text}</span>
+            <span className="mt-1 block whitespace-pre-wrap text-xs text-ink">{highlightText(text, hits, activeHit)}</span>
           </span>
         ) : (
           <span className="flex min-w-0 items-baseline gap-2">
@@ -373,7 +466,7 @@ function ExpandableNotice({ label, text }: { label: string; text: string }) {
   );
 }
 
-function UserRow({ text }: { text: string }) {
+function UserRow({ text, hits, activeHit }: { text: string; hits: readonly IndexedHit[]; activeHit: number }) {
   const [expanded, setExpanded] = useState(false);
   const [overflowing, setOverflowing] = useState(false);
   const textRef = useRef<HTMLSpanElement>(null);
@@ -396,7 +489,7 @@ function UserRow({ text }: { text: string }) {
           )}
         >
           <span ref={textRef} className={cn("block", !expanded && "line-clamp-6")}>
-            {text}
+            {highlightText(text, hits, activeHit)}
           </span>
         </div>
         {overflowing ? (
@@ -415,7 +508,7 @@ function UserRow({ text }: { text: string }) {
   );
 }
 
-const AssistantRow = memo(function AssistantRow({ text, thinking }: { text: string; thinking: string | null }) {
+const AssistantRow = memo(function AssistantRow({ text, thinking, hits, activeHit }: { text: string; thinking: string | null; hits: readonly IndexedHit[]; activeHit: number }) {
   const [showThinking, setShowThinking] = useState(false);
   return (
     <div className="max-w-[92%]">
@@ -433,38 +526,43 @@ const AssistantRow = memo(function AssistantRow({ text, thinking }: { text: stri
           {thinking}
         </div>
       ) : null}
-      <LightMarkdown text={text} />
+      <LightMarkdown text={text} highlight={{ query: hits.length ? text.slice(hits[0]!.start, hits[0]!.end) : "", activeIndex: activeHit }} hits={hits} />
     </div>
   );
 });
 
-function LightMarkdown({ text }: { text: string }) {
+function LightMarkdown({ text, highlight, hits = [] }: { text: string; highlight?: { query: string; activeIndex?: number }; hits?: readonly IndexedHit[] }) {
   const blocks = useMemo(() => renderLightMarkdown(text), [text]);
+  const matchCursor = { current: 0 };
   return (
     <div className="space-y-2 px-1 text-xs leading-relaxed text-ink">
       {blocks.map((block, index) => {
         const key = `${block.type}:${index}`;
         switch (block.type) {
           case "paragraph":
-            return <p key={key} className="whitespace-pre-wrap">{renderInline(block.spans)}</p>;
+            return <p key={key} className="whitespace-pre-wrap">{renderInline(block.spans, highlight, hits, matchCursor)}</p>;
           case "heading": {
             const className = "font-semibold text-ink";
-            if (block.level === 1) return <h1 key={key} className={className}>{renderInline(block.spans)}</h1>;
-            if (block.level === 2) return <h2 key={key} className={className}>{renderInline(block.spans)}</h2>;
-            return <h3 key={key} className={className}>{renderInline(block.spans)}</h3>;
+            if (block.level === 1) return <h1 key={key} className={className}>{renderInline(block.spans, highlight, hits, matchCursor)}</h1>;
+            if (block.level === 2) return <h2 key={key} className={className}>{renderInline(block.spans, highlight, hits, matchCursor)}</h2>;
+            return <h3 key={key} className={className}>{renderInline(block.spans, highlight, hits, matchCursor)}</h3>;
           }
           case "list": {
             const List = block.ordered ? "ol" : "ul";
             return (
               <List key={key} start={block.start} className={cn("pl-4", block.ordered ? "list-decimal" : "list-disc")}>
-                {block.items.map((item, itemIndex) => <li key={itemIndex}>{renderInline(item)}</li>)}
+                {block.items.map((item, itemIndex) => <li key={itemIndex}>{renderInline(item, highlight, hits, matchCursor)}</li>)}
               </List>
             );
           }
           case "code":
             return (
               <pre key={key} className="overflow-x-auto whitespace-pre-wrap rounded bg-surface-2 px-2.5 py-2 font-mono text-[12px] text-ink">
-                <code data-language={block.language.slice(0, 32) || undefined}>{block.text}</code>
+                <code data-language={block.language.slice(0, 32) || undefined}>
+                  {highlight?.query
+                    ? highlightInline(block.text, highlight.query, hits, highlight.activeIndex ?? -1, () => matchCursor.current++)
+                    : block.text}
+                </code>
               </pre>
             );
         }
@@ -473,21 +571,83 @@ function LightMarkdown({ text }: { text: string }) {
   );
 }
 
-function renderInline(spans: readonly InlineSpan[]): ReactNode[] {
+function renderInline(
+  spans: readonly InlineSpan[],
+  highlight?: { query: string; activeIndex?: number },
+  hits: readonly IndexedHit[] = [],
+  matchCursor = { current: 0 },
+): ReactNode[] {
   return spans.map((span, index) => {
+    const content = highlight?.query ? highlightInline(span.text, highlight.query, hits, highlight.activeIndex ?? -1, () => matchCursor.current++) : span.text;
     switch (span.type) {
-      case "text": return span.text;
-      case "bold": return <strong key={index}>{span.text}</strong>;
-      case "italic": return <em key={index}>{span.text}</em>;
-      case "code": return <code key={index} className="rounded bg-surface-2 px-1 font-mono text-[12px]">{span.text}</code>;
-      case "link": return <a key={index} href={span.href} target="_blank" rel="noreferrer noopener" className="underline">{span.text}</a>;
+      case "text": return <span key={index}>{content}</span>;
+      case "bold": return <strong key={index}>{content}</strong>;
+      case "italic": return <em key={index}>{content}</em>;
+      case "code": return <code key={index} className="rounded bg-surface-2 px-1 font-mono text-[12px]">{content}</code>;
+      case "link": return <a key={index} href={span.href} target="_blank" rel="noreferrer noopener" className="underline">{content}</a>;
     }
   });
 }
 
-function WorkRow({ item }: { item: Extract<TranscriptItem, { kind: "work" }> }) {
+function mark(content: string, hit: IndexedHit, activeHit: number) {
+  return (
+    <mark
+      key={`${hit.index}:${hit.start}`}
+      data-search-hit={hit.index}
+      className={cn(
+        "rounded-sm bg-accent-amber/30 text-ink",
+        hit.index === activeHit && "ring-2 ring-accent-amber",
+      )}
+    >
+      {content}
+    </mark>
+  );
+}
+
+function highlightText(text: string, hits: readonly IndexedHit[], activeHit: number): ReactNode {
+  if (!hits.length) return text;
+  const parts: ReactNode[] = [];
+  let offset = 0;
+  for (const hit of hits) {
+    if (hit.start < offset || hit.end > text.length) continue;
+    if (hit.start > offset) parts.push(text.slice(offset, hit.start));
+    parts.push(mark(text.slice(hit.start, hit.end), hit, activeHit));
+    offset = hit.end;
+  }
+  if (offset < text.length) parts.push(text.slice(offset));
+  return parts;
+}
+
+function highlightInline(
+  text: string,
+  query: string,
+  hits: readonly IndexedHit[],
+  activeHit: number,
+  nextMatch: () => number,
+): ReactNode {
+  const needle = query.toLocaleLowerCase();
+  const lower = text.toLocaleLowerCase();
+  const parts: ReactNode[] = [];
+  let offset = 0;
+  for (;;) {
+    const start = lower.indexOf(needle, offset);
+    if (start < 0) break;
+    if (start > offset) parts.push(text.slice(offset, start));
+    const ordinal = nextMatch();
+    const hit = hits[ordinal];
+    if (hit) parts.push(mark(text.slice(start, start + query.length), hit, activeHit));
+    else parts.push(text.slice(start, start + query.length));
+    offset = start + query.length;
+  }
+  if (offset < text.length) parts.push(text.slice(offset));
+  return parts;
+}
+
+function WorkRow({ item, hits, activeHit }: { item: Extract<TranscriptItem, { kind: "work" }>; hits: readonly IndexedHit[]; activeHit: number }) {
   // Errors open loud; routine exploration stays a one-line summary.
   const [open, setOpen] = useState(item.hasError);
+  const ownsActiveEntry = hits.some((hit) => hit.index === activeHit && hit.field === "entry");
+  useEffect(() => { if (ownsActiveEntry) setOpen(true); }, [ownsActiveEntry]);
   return (
     <div
       className={cn(
@@ -509,14 +669,14 @@ function WorkRow({ item }: { item: Extract<TranscriptItem, { kind: "work" }> }) 
         )}
         <span className="min-w-0 flex-1 truncate">
           {item.pending ? <Spinner className="mr-1.5 inline-block h-3 w-3 align-[-2px]" /> : null}
-          {item.title}
+          {highlightText(item.title, hits.filter((hit) => hit.field === "title"), activeHit)}
         </span>
         {item.hasError ? <Badge tone="rose">error</Badge> : null}
       </button>
       {open ? (
         <div className="space-y-1 border-t border-edge/70 px-2.5 py-1.5">
-          {item.entries.map((entry) => (
-            <WorkEntryRow key={entry.toolUseId} entry={entry} />
+          {item.entries.map((entry, entryIndex) => (
+            <WorkEntryRow key={entry.toolUseId} entry={entry} hits={hits.filter((hit) => hit.entryIndex === entryIndex)} activeHit={activeHit} />
           ))}
         </div>
       ) : null}
@@ -524,8 +684,12 @@ function WorkRow({ item }: { item: Extract<TranscriptItem, { kind: "work" }> }) 
   );
 }
 
-function WorkEntryRow({ entry }: { entry: WorkEntry }) {
+function WorkEntryRow({ entry, hits, activeHit }: { entry: WorkEntry; hits: readonly IndexedHit[]; activeHit: number }) {
   const [open, setOpen] = useState(entry.isError);
+  const ownsActive = hits.some((hit) => hit.index === activeHit);
+  useEffect(() => { if (ownsActive) setOpen(true); }, [ownsActive]);
+  const searchable = [entry.name, entry.title, entry.input, entry.result]
+    .filter((value): value is string => value != null).join("\n");
   return (
     <div>
       <button
@@ -548,8 +712,7 @@ function WorkEntryRow({ entry }: { entry: WorkEntry }) {
       </button>
       {open ? (
         <pre className="mt-0.5 max-h-56 overflow-auto whitespace-pre-wrap rounded border border-edge/60 bg-surface-2/60 px-2 py-1.5 font-mono text-[10px] leading-relaxed text-ink-muted">
-          {entry.input}
-          {entry.result != null ? `\n\n— result —\n${entry.result || "(empty)"}` : ""}
+          {highlightText(searchable, hits, activeHit)}
         </pre>
       ) : null}
     </div>
@@ -559,9 +722,13 @@ function WorkEntryRow({ entry }: { entry: WorkEntry }) {
 function QuestionRow({
   item,
   renderQuestion,
+  hits,
+  activeHit,
 }: {
   item: Extract<TranscriptItem, { kind: "question" }>;
   renderQuestion?: (item: Extract<TranscriptItem, { kind: "question" }>) => ReactNode;
+  hits: readonly IndexedHit[];
+  activeHit: number;
 }) {
   const answer = item.record?.answer ?? item.answeredByNotice ?? null;
   const answered = answer != null;
@@ -579,7 +746,7 @@ function QuestionRow({
       <div className="flex items-start gap-2">
         <CircleHelp className={cn("mt-0.5 h-3.5 w-3.5 shrink-0", answered ? "text-ink-faint" : "text-warn")} />
         <div className="min-w-0">
-          <span className="whitespace-pre-wrap">{item.text}</span>
+          <span className="whitespace-pre-wrap">{highlightText(item.text, hits, activeHit)}</span>
           {answered ? (
             <div className="mt-1 whitespace-pre-wrap text-[11px] text-ink">
               <span className="font-semibold">Answer:</span> {answer}
