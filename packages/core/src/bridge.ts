@@ -29,6 +29,7 @@ import type { Project, TaskItem } from "./project.js";
 import type { ClaimResult, TaskPatch } from "./orchestration.js";
 import type { CoverageReport, QualityRun, TestRunnerInfo } from "./quality.js";
 import type { DevServerInfo } from "./dev-server.js";
+import type { RouteSamples } from "./route-samples.js";
 import type { ApiClientState, ApiHeader, ApiHttpResponse } from "./api-client.js";
 import type { RefactorApplyResult, RefactorIntent, RefactorPlan } from "./refactor.js";
 import type {
@@ -442,6 +443,16 @@ export interface BridgeMethods {
    */
   "facets.get": { params: WsScope; result: { facets: WorkspaceFacet[] } };
   "facets.save": { params: WsScope & { facets: WorkspaceFacet[] }; result: { ok: true } };
+  /**
+   * Route samples (`.crystal/surfaces.json`) — user-entered values for
+   * parameterised screen routes so the live preview can open them. Absent
+   * file = no samples. `set` replaces one route's params (empty = forget).
+   */
+  "surfaces.samples.get": { params: WsScope; result: { routes: RouteSamples } };
+  "surfaces.samples.set": {
+    params: WsScope & { route: string; params: Record<string, string> };
+    result: { routes: RouteSamples };
+  };
   /**
    * The agent roster: the project's own profiles (`.crystal/agents.json`,
    * seeded defaults when absent) merged with the shared `~/.crystal/agents`
@@ -1457,6 +1468,7 @@ export interface BridgeEvents {
    */
   "agent.authChanged": { ws: string; broken: boolean; detail: string | null };
   "fs.changed": { ws: string; paths: string[] };
+  "surfaces.samplesChanged": { ws: string; routes: RouteSamples };
   "workspace.changed": { ws: string };
   /**
    * The architecture overlay was saved (any client, any window). Listeners

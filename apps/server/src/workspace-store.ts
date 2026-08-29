@@ -9,6 +9,8 @@ import {
   ArchOverlaySchema,
   CRYSTAL_DIR,
   PROJECTS_DIR,
+  ROUTE_SAMPLES_FILE,
+  RouteSamplesFileSchema,
   SERVICES_FILE,
   STANDING_TASKS_FILE,
   ServicesFileSchema,
@@ -30,6 +32,7 @@ import {
   serializeCrystalFile,
   slugify,
   type AgentRoster,
+  type RouteSamples,
   type ArchDraft,
   type ArchOverlay,
   type ArchitectureGraph,
@@ -259,6 +262,30 @@ export class WorkspaceStore {
     const file = resolveInRoot(this.root, ARCH_OVERLAY_FILE);
     await fs.mkdir(path.dirname(file), { recursive: true });
     await fs.writeFile(file, serializeCrystalFile("arch-overlay", parsed), "utf8");
+  }
+
+  /** Route samples for parameterised screens (empty when absent or corrupt). */
+  async loadRouteSamples(): Promise<RouteSamples> {
+    const file = resolveInRoot(this.root, ROUTE_SAMPLES_FILE);
+    if (!(await exists(file))) return {};
+    try {
+      return RouteSamplesFileSchema.parse(JSON.parse(await fs.readFile(file, "utf8"))).routes;
+    } catch {
+      return {};
+    }
+  }
+
+  /** Replace one route's samples (empty params drop the route). Returns the whole map. */
+  async setRouteSamples(route: string, params: Record<string, string>): Promise<RouteSamples> {
+    const routes = { ...(await this.loadRouteSamples()) };
+    const kept = Object.fromEntries(Object.entries(params).filter(([, v]) => v !== ""));
+    if (Object.keys(kept).length > 0) routes[route] = kept;
+    else delete routes[route];
+    const parsed = RouteSamplesFileSchema.parse({ routes });
+    const file = resolveInRoot(this.root, ROUTE_SAMPLES_FILE);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, `${JSON.stringify(parsed, null, 2)}\n`, "utf8");
+    return parsed.routes;
   }
 
   /** Managed-service definitions (`.crystal/services.json`; empty file when absent). */

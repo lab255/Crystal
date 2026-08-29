@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AppWindow,
   Component as ComponentIcon,
@@ -8,9 +8,9 @@ import {
   MonitorX,
   Boxes,
 } from "lucide-react";
-import { componentForFile, containerForFile } from "@crystal/core";
-import type { C4ComponentModel, C4Model, ScreenSource, ScreenSurface } from "@crystal/core";
-import { useNav, useNavUpdate, useSymbolMenu } from "@crystal/client";
+import { componentForFile, containerForFile, fillRouteParams, missingRouteParams, routeParamNames } from "@crystal/core";
+import type { C4ComponentModel, C4Model, RouteSamples, ScreenSource, ScreenSurface } from "@crystal/core";
+import { useCrystal, useNav, useNavUpdate, useSymbolMenu, useWorkspaces } from "@crystal/client";
 import {
   Badge,
   EmptyState,
@@ -65,6 +65,7 @@ export function ScreensView({ c4Model, c4Components }: { c4Model?: C4Model | nul
 
   const screens = report?.screens ?? [];
   const { app } = useLiveDevUrls();
+  const { samples, saveSamples } = useRouteSamples();
   const appUrl = app.target?.availability === "live" ? app.target.url : null;
 
   /** Lens members (null when no lens dims) — non-members render dimmed. */
@@ -257,6 +258,8 @@ export function ScreensView({ c4Model, c4Components }: { c4Model?: C4Model | nul
             app={app}
             demoOpen={demoOpen}
             onToggleDemo={(open) => nav({ surfaces: { demo: open } })}
+            samples={samples[selected.route]}
+            onSaveSamples={(params) => saveSamples(selected.route, params)}
           />
         ) : (
           <EmptyState icon={AppWindow} title="Pick a screen">
@@ -269,21 +272,114 @@ export function ScreensView({ c4Model, c4Components }: { c4Model?: C4Model | nul
   );
 }
 
+/**
+ * Saved samples for parameterised routes (`.crystal/surfaces.json`), kept in
+ * step with other windows via `surfaces.samplesChanged`.
+ */
+function useRouteSamples(): {
+  samples: RouteSamples;
+  saveSamples: (route: string, params: Record<string, string>) => Promise<void>;
+} {
+  const { client } = useCrystal();
+  const activeWs = useWorkspaces((s) => s.activeId);
+  const [samples, setSamples] = useState<RouteSamples>({});
+  useEffect(() => {
+    if (!activeWs) return;
+    let alive = true;
+    setSamples({});
+    client
+      .request("surfaces.samples.get", {})
+      .then(({ routes }) => {
+        if (alive) setSamples(routes);
+      })
+      .catch(() => {});
+    const off = client.events.on("surfaces.samplesChanged", ({ ws, routes }) => {
+      if (ws === activeWs) setSamples(routes);
+    });
+    return () => {
+      alive = false;
+      off();
+    };
+  }, [client, activeWs]);
+  const saveSamples = useCallback(
+    async (route: string, params: Record<string, string>) => {
+      const { routes } = await client.request("surfaces.samples.set", { route, params });
+      setSamples(routes);
+    },
+    [client],
+  );
+  return { samples, saveSamples };
+}
+
+/** One input per route param; a value is saved on Enter or blur. */
+function RouteParamsEditor({
+  route,
+  samples,
+  onSave,
+}: {
+  route: string;
+  samples: Record<string, string> | undefined;
+  onSave: (params: Record<string, string>) => void;
+}) {
+  const names = routeParamNames(route);
+  const [draft, setDraft] = useState<Record<string, string>>(() => ({ ...(samples ?? {}) }));
+  useEffect(() => setDraft({ ...(samples ?? {}) }), [samples]);
+  const commit = () => {
+    const next = Object.fromEntries(names.map((n) => [n, draft[n] ?? ""]));
+    const prev = Object.fromEntries(names.map((n) => [n, samples?.[n] ?? ""]));
+    if (JSON.stringify(next) !== JSON.stringify(prev)) onSave(next);
+  };
+  if (names.length === 0) return null;
+  const missing = missingRouteParams(route, samples);
+  return (
+    <div className="mb-2 rounded-lg border border-edge bg-surface-2/60 p-2">
+      <div className="mb-1 flex items-center justify-between text-[10px] text-ink-faint">
+        <span>Route parameters — sample values, saved to <code>.crystal/surfaces.json</code></span>
+        {missing.length > 0 ? <span className="text-warn">{missing.length} missing</span> : null}
+      </div>
+      <div className="grid grid-cols-[auto_1fr] items-center gap-x-2 gap-y-1">
+        {names.map((n) => (
+          <label key={n} className="contents">
+            <span className="font-mono text-[10.5px] text-ink-muted">{n === "*" ? "*" : `:${n}`}</span>
+            <input
+              value={draft[n] ?? ""}
+              onChange={(e) => setDraft((d) => ({ ...d, [n]: e.target.value }))}
+              onBlur={commit}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+              }}
+              placeholder={n === "*" ? "rest/of/path" : "value"}
+              spellCheck={false}
+              aria-label={`Sample value for ${n}`}
+              className="min-w-0 rounded-md border border-edge bg-surface-1 px-1.5 py-0.5 font-mono text-[10.5px] text-ink outline-none focus:border-crystal-500"
+            />
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ScreenDetail({
   screen,
   app,
   demoOpen,
   onToggleDemo,
+  samples,
+  onSaveSamples,
 }: {
   screen: ScreenSurface;
   app: DevServerControl;
   demoOpen: boolean;
   onToggleDemo: (open: boolean) => void;
+  samples: Record<string, string> | undefined;
+  onSaveSamples: (params: Record<string, string>) => void;
 }) {
   const nav = useNavUpdate();
-  const hasParams = /[:*]/.test(screen.route);
+  const hasParams = routeParamNames(screen.route).length > 0;
+  const unfilled = missingRouteParams(screen.route, samples);
   const live = app.target?.availability === "live";
-  const defaultUrl = app.target ? app.target.url + screen.route : null;
+  const defaultUrl = app.target ? app.target.url + fillRouteParams(screen.route, samples) : null;
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-y-auto bg-surface-0">
@@ -342,14 +438,18 @@ function ScreenDetail({
           ) : undefined
         }
       >
+        {hasParams ? (
+          <RouteParamsEditor route={screen.route} samples={samples} onSave={onSaveSamples} />
+        ) : null}
         <DevServerPreview
           control={app}
           url={defaultUrl}
           title={`Preview of ${screen.route}`}
           hint={
-            demoOpen && hasParams ? (
+            demoOpen && unfilled.length > 0 ? (
               <div className="text-[10px] text-warn">
-                This route has parameters — replace <code>:param</code> segments in the URL above.
+                Missing sample value{unfilled.length > 1 ? "s" : ""} for{" "}
+                {unfilled.map((n) => <code key={n}>:{n} </code>)}— fill them above to preview this route.
               </div>
             ) : (
               `Preview ${screen.route} live`

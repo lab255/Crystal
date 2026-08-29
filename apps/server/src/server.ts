@@ -682,6 +682,15 @@ export async function startCrystalServer(opts: {
       await registry.get(ws).store.saveFacets(facets);
       return { ok: true };
     },
+    "surfaces.samples.get": async ({ ws }) => ({
+      routes: await registry.get(ws).store.loadRouteSamples(),
+    }),
+    "surfaces.samples.set": async ({ ws, route, params }) => {
+      const rt = registry.get(ws);
+      const routes = await rt.store.setRouteSamples(route, params);
+      broadcast("surfaces.samplesChanged", { ws: rt.id, routes });
+      return { routes };
+    },
     "todos.get": async ({ ws }) => ({ todos: await registry.get(ws).store.loadTodos() }),
     "todos.save": async ({ ws, todos }) => {
       const rt = registry.get(ws);

@@ -53,6 +53,7 @@ export * from "./system-insights.js";
 export * from "./surfaces.js";
 export * from "./quality.js";
 export * from "./dev-server.js";
+export * from "./route-samples.js";
 export * from "./api-client.js";
 export * from "./systems-layout.js";
 export * from "./code-review.js";
