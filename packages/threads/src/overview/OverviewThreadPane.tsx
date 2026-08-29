@@ -37,7 +37,11 @@ import {
   type TranscriptItem,
 } from "../transcript-items.js";
 import { INDICATOR_LABEL } from "../ThreadRow.js";
-import type { OverviewThread, OverviewThreadRef } from "./overview-thread-model.js";
+import {
+  stripWorkspaceSuffix,
+  type OverviewThread,
+  type OverviewThreadRef,
+} from "./overview-thread-model.js";
 
 interface PaneProps {
   thread: OverviewThread | null;
@@ -271,8 +275,11 @@ export function OverviewThreadPane({
     && activeWs === thread.ref.ws;
   const recentTurnLog = thread.workflow?.turnLog.slice(-5) ?? [];
   const recentTurnOffset = (thread.workflow?.turnLog.length ?? 0) - recentTurnLog.length;
+  const workflowNameDuplicatesTitle = thread.workflow != null
+    && (stripWorkspaceSuffix(thread.workflow.name, thread.workspaceName ?? "") === thread.title
+      || thread.workflow.name === `${thread.title} — ${thread.workspaceName}`);
   const workflowLabel = thread.workflow
-    ? `${thread.workflow.name === thread.title ? "" : `${thread.workflow.name} · `}`
+    ? `${workflowNameDuplicatesTitle ? "" : `${thread.workflow.name} · `}`
       + STATUS_LABEL[thread.workflow.status]
       + (thread.workflow.status === "paused"
         ? ` · ${PAUSED_BY_LABEL[thread.workflow.pausedBy ?? "user"]}`
