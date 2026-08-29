@@ -64,6 +64,9 @@ export function ThreadTranscript({
   const [keyboardTurn, setKeyboardTurn] = useState(-1);
   const turns = useMemo(() => groupItemsByTurn(items), [items]);
   const active = keyboardTurn < turns.length ? keyboardTurn : -1;
+  const ownTurnRows = () => Array.from(
+    scrollRef.current?.querySelectorAll<HTMLElement>("[data-turn-id]") ?? [],
+  ).filter((element) => element.closest("[data-transcript]") === scrollRef.current);
 
   useEffect(() => {
     focusedRef.current = focusTurnId;
@@ -73,7 +76,7 @@ export function ThreadTranscript({
   const moveKeyboardFocus = (index: number) => {
     const next = Math.max(0, Math.min(turns.length - 1, index));
     setKeyboardTurn(next);
-    scrollRef.current?.querySelectorAll<HTMLElement>("[data-turn-id]")[next]?.focus();
+    ownTurnRows()[next]?.focus();
   };
 
   useEffect(() => {
@@ -93,7 +96,7 @@ export function ThreadTranscript({
     if (!focusedTurnId || lastFocused.current !== `${threadId}:${focusedTurnId}`) return;
     if (Date.now() >= focusScrollUntil.current) return;
     const target = Array.from(
-      el?.querySelectorAll<HTMLElement>("[data-turn-id]") ?? [],
+      ownTurnRows(),
     ).find((element) => element.dataset.turnId === focusedTurnId);
     if (!target || target.offsetTop === lastFocusedOffset.current) return;
     lastFocusedOffset.current = target.offsetTop;
@@ -104,7 +107,7 @@ export function ThreadTranscript({
     if (!focusTurnId || lastFocused.current === `${threadId}:${focusTurnId}`) return;
     if (!turns.some((turn) => turn.runId === focusTurnId)) return;
     const target = Array.from(
-      scrollRef.current?.querySelectorAll<HTMLElement>("[data-turn-id]") ?? [],
+      ownTurnRows(),
     ).find((element) => element.dataset.turnId === focusTurnId);
     if (!target) return;
     lastFocused.current = `${threadId}:${focusTurnId}`;
@@ -128,6 +131,7 @@ export function ThreadTranscript({
   return (
     <div
       ref={scrollRef}
+      data-transcript="true"
       tabIndex={active < 0 ? 0 : -1}
       onFocus={(event) => {
         if (event.target === event.currentTarget) setKeyboardTurn(-1);
@@ -142,9 +146,7 @@ export function ThreadTranscript({
           return;
         }
         if ((event.key === "Enter" || event.key === " ") && active >= 0) {
-          const row = event.currentTarget.querySelectorAll<HTMLElement>("[data-turn-id]")[
-            active
-          ];
+          const row = ownTurnRows()[active];
           const toggle = row?.querySelector<HTMLButtonElement>(
             'button[aria-expanded], button[data-row-toggle="true"]',
           );
@@ -299,10 +301,11 @@ function TranscriptItemRow({
       );
     case "turn-end":
       const bareFailureCode = !item.ok && /^[a-z0-9]+(?:_[a-z0-9]+)+$/.test(item.resultText);
+      const outcome = item.status === "cancelled" ? "Turn cancelled" : "Turn failed";
       return (
         <div
           className="flex items-center gap-2 px-1 text-[10px] text-ink-faint"
-          title={bareFailureCode ? item.resultText : undefined}
+          title={bareFailureCode ? `${outcome} — ${item.resultText}` : undefined}
         >
           {item.ok ? (
             <CircleCheck className="h-3 w-3 text-ok" />
@@ -313,8 +316,8 @@ function TranscriptItemRow({
             {item.ok
               ? "Turn settled"
               : bareFailureCode || !item.resultText
-                ? "Turn failed"
-                : `Turn failed — ${item.resultText}`}
+                ? outcome
+                : `${outcome} — ${item.resultText}`}
           </span>
           <span>·</span>
           <span>{formatRunCost(item.costUsd)}</span>
@@ -344,13 +347,14 @@ function ExpandableNotice({ label, text }: { label: string; text: string }) {
   const [expanded, setExpanded] = useState(false);
   const [firstLine] = text.split("\n");
   return (
-    <div className="flex justify-start">
+    <div className="flex w-full min-w-0 justify-start">
       <button
         type="button"
+        tabIndex={-1}
         onClick={() => setExpanded((value) => !value)}
         aria-expanded={expanded}
         title={expanded ? undefined : firstLine}
-        className="max-w-[90%] rounded-lg border border-edge bg-surface-2 px-3 py-2 text-left"
+        className="w-full min-w-0 max-w-[90%] rounded-lg border border-edge bg-surface-2 px-3 py-2 text-left"
       >
         {expanded ? (
           <span className="block">
@@ -360,7 +364,7 @@ function ExpandableNotice({ label, text }: { label: string; text: string }) {
         ) : (
           <span className="flex min-w-0 items-baseline gap-2">
             <span className="shrink-0 text-[10px] font-semibold text-ink-muted">{label}</span>
-            <span className="truncate text-xs text-ink">{firstLine}</span>
+            <span className="min-w-0 flex-1 truncate text-xs text-ink">{firstLine}</span>
           </span>
         )}
       </button>

@@ -112,6 +112,17 @@ describe("buildTranscriptItems", () => {
     });
   });
 
+  it("synthesizes a cancelled ending with cancelled status", () => {
+    const turn = run({ id: "r1", prompt: "Stop", status: "cancelled", resultText: "by user" });
+    const items = buildTranscriptItems({ turns: [turn], eventsByRun: { r1: [] } });
+    expect(items.find((item) => item.kind === "turn-end")).toMatchObject({
+      kind: "turn-end",
+      status: "cancelled",
+      ok: false,
+      resultText: "by user",
+    });
+  });
+
   it.each([
     { ok: false, status: "failed" as const },
     { ok: true, status: "completed" as const },
@@ -345,6 +356,9 @@ describe("buildTranscriptItems", () => {
     const turn = run({ id: "r1", prompt: "x", status: "completed" });
     const items = buildTranscriptItems({ turns: [turn], eventsByRun: {} });
     expect(items.map((i) => i.kind)).toEqual(["user", "collapsed-turn"]);
+    expect(items.find((i) => i.kind === "collapsed-turn")).toMatchObject({
+      headline: "Turn — Completed",
+    });
   });
 
   it("skips lifecycle noise but keeps terminal failures", () => {

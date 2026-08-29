@@ -11,6 +11,7 @@ export interface ThreadRowData {
   costUsd: number | null;
   workerCount?: number;
   subtitle?: string;
+  statusTitle?: string | null;
 }
 
 const INDICATOR_STATUS: Record<ThreadIndicator, StatusKind> = {
@@ -81,7 +82,7 @@ export function ThreadRow({
         tabIndex={-1}
         onClick={onSelect}
         onContextMenu={onContextMenu}
-        title={INDICATOR_LABEL[thread.indicator]}
+        title={thread.statusTitle ?? INDICATOR_LABEL[thread.indicator]}
         className={cn(
           "flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-crystal-400/60",

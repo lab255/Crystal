@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useRef } from "react";
 import { MessagesSquare } from "lucide-react";
 import {
   useAgents,
@@ -27,6 +27,7 @@ const EMPTY_WORKFLOWS: Workflow[] = [];
  * dispatched.
  */
 export function ThreadsMode() {
+  const surfaceRef = useRef<HTMLDivElement>(null);
   const runs = useAgents((s) => s.runs);
   const needsYou = useNeedsYou();
   const pendingPermissions = usePermissions((s) => s.pending);
@@ -84,7 +85,7 @@ export function ThreadsMode() {
   );
 
   return (
-    <div className="flex h-full min-h-0">
+    <div ref={surfaceRef} className="flex h-full min-h-0">
       <ThreadRail
         groups={groups}
         selectedThreadId={selected?.id ?? null}
@@ -102,6 +103,10 @@ export function ThreadsMode() {
           update({ threads: { find: link?.find, compose: !link?.compose || undefined } })
         }
         composing={composing}
+        onFocusComposer={() => {
+          surfaceRef.current?.querySelector<HTMLTextAreaElement>('textarea[aria-label^="Message"]')
+            ?.focus();
+        }}
       />
       {composing ? (
         <NewThread

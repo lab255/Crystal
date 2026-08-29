@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { Plus, Search } from "lucide-react";
 import { Button, Input, cn } from "@crystal/ui";
 import { ThreadRow } from "./ThreadRow.js";
-import type { ThreadGroup } from "./thread-model.js";
+import { threadFailureTitle, type ThreadGroup } from "./thread-model.js";
+import { useRovingListbox } from "./use-roving-listbox.js";
 
 /**
  * The thread rail: every conversation in this workspace, grouped by board,
@@ -18,6 +19,7 @@ export function ThreadRail({
   onTogglePin,
   onCompose,
   composing,
+  onFocusComposer,
   className,
 }: {
   groups: readonly ThreadGroup[];
@@ -28,8 +30,17 @@ export function ThreadRail({
   onTogglePin: (threadId: string) => void;
   onCompose: () => void;
   composing: boolean;
+  onFocusComposer: () => void;
   className?: string;
 }) {
+  const rows = groups.flatMap((group) => group.threads);
+  const listbox = useRovingListbox({
+    ids: rows.map((thread) => thread.id),
+    selectedId: selectedThreadId,
+    onSelect,
+    onEnter: onFocusComposer,
+    onEscape: () => onFind(""),
+  });
   // One clock for every row's recency label; a minute tick is plenty.
   const [nowMs, setNowMs] = useState(() => Date.now());
   useEffect(() => {
@@ -46,6 +57,9 @@ export function ThreadRail({
           <Input
             value={find}
             onChange={(e) => onFind(e.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") onFind("");
+            }}
             placeholder="Filter threads…"
             aria-label="Filter threads"
             className="h-7 pl-6 text-xs"
@@ -61,6 +75,7 @@ export function ThreadRail({
         </Button>
       </div>
       <div
+        {...listbox}
         role="listbox"
         aria-label="Project threads"
         className="min-h-0 flex-1 overflow-y-auto p-1.5"
@@ -80,7 +95,14 @@ export function ThreadRail({
                 {group.threads.map((thread) => (
                   <ThreadRow
                     key={thread.id}
-                    thread={{ ...thread, workerCount: thread.node.workers.length }}
+                    thread={{
+                      ...thread,
+                      workerCount: thread.node.workers.length,
+                      statusTitle: thread.indicator === "failed"
+                        ? threadFailureTitle(thread.node)
+                        : undefined,
+                    }}
+                    dataId={thread.id}
                     selected={thread.id === selectedThreadId}
                     nowMs={nowMs}
                     onSelect={() => onSelect(thread.id)}

@@ -261,7 +261,7 @@ export function buildTranscriptItems(input: TranscriptFoldInput): TranscriptItem
           kind: "collapsed-turn",
           id: `${turn.id}:collapsed`,
           runId: turn.id,
-          headline: `Turn — ${RUN_STATUS_LABEL[turn.status]} — show what happened`,
+          headline: `Turn — ${RUN_STATUS_LABEL[turn.status]}`,
           ts: turn.createdAt,
         });
       }

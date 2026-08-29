@@ -8,6 +8,7 @@ import {
   type RunNode,
   type SessionNamingContext,
 } from "@crystal/core";
+import { humanRunFailure } from "./transcript-items.js";
 
 /**
  * The ONE status dot a thread row shows, in precedence order. Derived from
@@ -40,6 +41,22 @@ export interface ThreadSummary {
   pinned: boolean;
   sid?: string;
   ws?: string;
+}
+
+/** The terminal outcome shown consistently by the transcript and rail tooltip. */
+export function threadFailureTitle(node: RunNode): string | null {
+  const failed: AgentRun[] = [];
+  const walk = (current: RunNode) => {
+    failed.push(...current.turns.filter((turn) =>
+      turn.status === "failed" || turn.status === "cancelled"));
+    current.workers.forEach(walk);
+  };
+  walk(node);
+  const turn = failed.sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+  if (!turn) return null;
+  const outcome = turn.status === "cancelled" ? "Turn cancelled" : "Turn failed";
+  const reason = humanRunFailure(turn.resultText ?? "");
+  return reason ? `${outcome} — ${reason}` : outcome;
 }
 
 /** Rail section: one project's threads (null id = runs outside any board). */

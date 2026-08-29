@@ -27,6 +27,7 @@ import {
 } from "@crystal/client";
 import { Badge, Button, StatusDot, Tooltip, cn } from "@crystal/ui";
 import { ThreadComposer } from "./ThreadComposer.js";
+import { SpendLine } from "./spend-line.js";
 import { RunContextDetails } from "./RunContextDetails.js";
 import { ThreadTranscript } from "./ThreadTranscript.js";
 import { buildTranscriptItems, type TranscriptItem } from "./transcript-items.js";
@@ -205,7 +206,7 @@ export function ThreadView({
   const tokens = usageTotalTokens(rollup.usage);
 
   return (
-    <div className={cn("flex h-full min-h-0 flex-col", className)}>
+    <div className={cn("flex h-full min-h-0 min-w-0 flex-col", className)}>
       <header className="flex items-center gap-2.5 border-b border-edge px-4 py-2.5">
         <StatusDot status={face.status} />
         <div className="min-w-0 flex-1">
@@ -217,9 +218,8 @@ export function ThreadView({
             {tokens > 0 ? <span>{formatRunTokens(tokens)} tok</span> : null}
             {working && face.startedAt ? <span>{formatElapsed(face.startedAt, nowMs)}</span> : null}
             {workflow && spend ? (
-              <span>
-                workflow {formatRunCost(spend.costUsd)}
-                {workflow.budgetUsd != null ? ` / $${workflow.budgetUsd.toFixed(2)}` : ""}
+              <span className="flex items-center gap-1">
+                workflow <SpendLine costUsd={spend.costUsd} budgetUsd={workflow.budgetUsd} />
               </span>
             ) : null}
           </div>

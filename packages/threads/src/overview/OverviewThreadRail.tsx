@@ -1,8 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { MessageSquarePlus, MoreHorizontal, Unplug } from "lucide-react";
 import { Button, Input, Tooltip, cn, type MenuEntry } from "@crystal/ui";
 import { ThreadRow } from "../ThreadRow.js";
 import type { OverviewSection, OverviewThread } from "./overview-thread-model.js";
+import { useRovingListbox } from "../use-roving-listbox.js";
+import { threadFailureTitle } from "../thread-model.js";
 
 interface OverviewThreadRailProps {
   sections: OverviewSection[];
@@ -87,12 +89,18 @@ export function OverviewThreadRail({
   openMenu,
 }: OverviewThreadRailProps) {
   const rows = sections.flatMap((section) => section.threads);
-  const rail = useRef<HTMLDivElement>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const empty = emptyStateFor(filter, find, hiddenCount, hasUnfilteredThreads, {
     showAll: () => onFilter("all"),
     clear: () => onFind(""),
     create: onNewProgram,
+  });
+  const listbox = useRovingListbox({
+    ids: rows.map((row) => row.id),
+    selectedId,
+    onSelect,
+    onEnter: onFocusComposer,
+    onEscape: () => find ? onFind("") : onClearSelection(),
   });
 
   useEffect(() => {
@@ -100,15 +108,8 @@ export function OverviewThreadRail({
     return () => clearInterval(timer);
   }, []);
 
-  useEffect(() => {
-    if (!selectedId) return;
-    rail.current?.querySelector<HTMLElement>(`[data-thread-id="${CSS.escape(selectedId)}"]`)
-      ?.scrollIntoView({ block: "nearest" });
-  }, [selectedId]);
-
   return (
     <aside
-      ref={rail}
       className="flex w-72 shrink-0 flex-col border-r border-edge bg-surface-1 outline-none"
     >
       <div className="space-y-2 border-b border-edge p-2">
@@ -148,39 +149,9 @@ export function OverviewThreadRail({
         </div>
       </div>
       <div
+        {...listbox}
         role="listbox"
         aria-label="Overview threads"
-        tabIndex={0}
-        onKeyDown={(event) => {
-          if (
-            event.target instanceof HTMLInputElement
-            || event.target instanceof HTMLTextAreaElement
-          ) {
-            return;
-          }
-          if (event.key === "Escape") {
-            event.preventDefault();
-            if (find) onFind("");
-            else onClearSelection();
-            return;
-          }
-          if (event.key === "Enter" && event.target === event.currentTarget) {
-            event.preventDefault();
-            onFocusComposer();
-            return;
-          }
-          if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
-          event.preventDefault();
-          const index = rows.findIndex((row) => row.id === selectedId);
-          const next = event.key === "Home"
-            ? 0
-            : event.key === "End"
-              ? rows.length - 1
-              : event.key === "ArrowDown"
-                ? Math.min(rows.length - 1, index + 1)
-                : Math.max(0, index < 0 ? 0 : index - 1);
-          if (rows[next]) onSelect(rows[next]!.id);
-        }}
         className="min-h-0 flex-1 overflow-y-auto p-2 outline-none"
       >
         {sections.map((section) => (
@@ -246,6 +217,9 @@ export function OverviewThreadRail({
                   costUsd: thread.costUsd,
                   workerCount: thread.summary?.node.workers.length,
                   subtitle: thread.program ? programSubtitle(thread.program) : undefined,
+                  statusTitle: thread.indicator === "failed" && thread.summary
+                    ? threadFailureTitle(thread.summary.node)
+                    : undefined,
                 }}
                 selected={selectedId === thread.id}
                 nowMs={nowMs}
