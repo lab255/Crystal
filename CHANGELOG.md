@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.43.0 (2026-08-29)
+
+### Features
+
+- attention notifications know the Overview threads + coordinator items ([`821b12b`](https://github.com/lab255/Crystal/commit/821b12b))
+
 ## v0.42.0 (2026-08-29)
 
 ### Features
