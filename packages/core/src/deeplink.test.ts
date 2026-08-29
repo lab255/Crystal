@@ -486,6 +486,12 @@ describe("round trips", () => {
     expect(parseDeepLink("#/hub/projects").projects).toBeUndefined();
   });
 
+  it("accepts overview compose only on the threads view", () => {
+    expect(parseDeepLink("#/projects/threads?compose=1").projects?.compose).toBe(true);
+    expect(parseDeepLink("#/projects/inbox?compose=1").projects?.compose).toBeUndefined();
+    expect(parseDeepLink("#/projects?compose=1").projects?.compose).toBeUndefined();
+  });
+
   it("keeps projects/chat as a permanent parse alias and never formats it", () => {
     expect(parseDeepLink("#/projects/chat?program=p1&turn=r2")).toEqual({
       mode: "projects",

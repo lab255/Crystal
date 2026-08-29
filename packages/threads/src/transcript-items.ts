@@ -3,6 +3,7 @@ import {
   MANAGER_PREAMBLE,
   classifyRunFailure,
   engineNoticeKind,
+  unwrapOwnerMessage,
   runFailureHint,
   touchedFileFromToolUse,
   type AgentEvent,
@@ -237,6 +238,14 @@ export function buildTranscriptItems(input: TranscriptFoldInput): TranscriptItem
       const notice = engineNoticeKind(turn.prompt);
       const promptItem = kickoff
         ? { kind: "kickoff" as const, id: `${turn.id}:prompt`, runId: turn.id, text: turn.prompt }
+        : notice === "owner"
+          ? {
+              kind: "user" as const,
+              id: `${turn.id}:prompt`,
+              runId: turn.id,
+              text: unwrapOwnerMessage(turn.prompt),
+              ts: turn.createdAt,
+            }
         : notice
           ? { kind: "notice" as const, id: `${turn.id}:prompt`, runId: turn.id, text: turn.prompt }
           : {

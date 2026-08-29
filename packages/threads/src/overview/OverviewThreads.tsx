@@ -42,6 +42,7 @@ const FILTER_KEY = "crystal.overview.threads.filter";
 export default function OverviewThreads() {
   const connections = useFleetConnections();
   const runsByWs = useFleet((s) => s.runsByWs);
+  const runsLoadedByWs = useFleet((s) => s.runsLoadedByWs);
   const workflowsByWs = useFleet((s) => s.workflowsByWs);
   const questionsByWs = useFleet((s) => s.questionsByWs);
   const permissionsByWs = useFleet((s) => s.permissionsByWs);
@@ -145,6 +146,7 @@ export default function OverviewThreads() {
     ? formatOverviewThreadId({ kind: "program", programId: nav.program })
     : null);
   const selected = resolveOverviewThread(allSections, requested);
+  const requestedRef = requested ? parseOverviewThreadId(requested) : null;
   const selectedSid = selected?.ref.kind === "workspace" ? selected.ref.sid : undefined;
   const selectedWs = selected?.ref.kind === "workspace" ? selected.ref.ws : undefined;
   const loadSelectedEvents = useCallback(async (id: string) => {
@@ -175,6 +177,23 @@ export default function OverviewThreads() {
       }),
     );
   }, []);
+  const clearSelection = useCallback(() => update({
+    projects: {
+      view: "threads",
+      thread: null,
+      program: null,
+      turn: null,
+      compose: null,
+    },
+  }), [update]);
+  const handleFocusedTurn = useCallback(() => {
+    update({ projects: { view: "threads", turn: null } });
+  }, [update]);
+  const requestedLoaded = requestedRef?.kind === "program"
+    ? hubLoaded
+    : requestedRef?.kind === "workspace"
+      ? runsLoadedByWs[wsKey(requestedRef.sid, requestedRef.ws)] === true
+      : true;
   const copyLink = (thread: OverviewThread) => act(async () => {
     const hash = formatDeepLink({
       mode: "projects",
@@ -429,9 +448,7 @@ export default function OverviewThreads() {
       hubLoaded={hubLoaded}
       hubError={hubError}
       onRetryHub={() => act(refreshHub)}
-      onClearSelection={() => update({
-        projects: { view: "threads", thread: null, program: null, turn: null },
-      })}
+      onClearSelection={clearSelection}
       hiddenCount={hiddenCount}
       hasUnfilteredThreads={allSections.some((section) => section.threads.length > 0)}
       onFilter={setFilter}
@@ -484,12 +501,12 @@ export default function OverviewThreads() {
       }
       loadEvents={loadSelectedEvents}
       focusTurnId={nav?.turn}
-      onFocusedTurn={() => update({ projects: { view: "threads", turn: null } })}
+      onFocusedTurn={handleFocusedTurn}
       onCopyTurnLink={selected ? (turn) => copyTurnLink(selected, turn) : undefined}
       entries={selected ? entriesFor(selected) : []}
       openMenu={menu.open}
       openProject={() => selected && openProject(selected)}
-      missingRef={requested && !selected ? parseOverviewThreadId(requested) : null}
+      missingRef={requested && !selected && requestedLoaded ? requestedRef : null}
       missingProjectClosed={(() => {
         const ref = requested ? parseOverviewThreadId(requested) : null;
         if (ref?.kind !== "workspace") return false;
@@ -497,15 +514,7 @@ export default function OverviewThreads() {
           connection.sid === ref.sid
           && connection.workspaces.some((workspace) => workspace.id === ref.ws));
       })()}
-      clearSelection={() => update({
-        projects: {
-          view: "threads",
-          thread: null,
-          program: null,
-          turn: null,
-          compose: null,
-        },
-      })}
+      clearSelection={clearSelection}
       resumeWorkflow={() => {
         if (selected?.ref.kind !== "workspace" || !selected.workflow) return;
         const ref = selected.ref;
@@ -528,6 +537,7 @@ export default function OverviewThreads() {
             <Button
               variant="danger"
               size="sm"
+              autoFocus
               onClick={() => {
                 confirmation?.run();
                 setConfirmation(null);

@@ -136,7 +136,9 @@ export function ProgramSession({
   const face = chain[chain.length - 1] ?? null;
   const working =
     hasManager && face != null && (face.status === "running" || face.status === "queued");
-  const managerNotLive = program.status === "running" && !working;
+  const managerNotLive = program.status === "running" && (
+    !hasManager || face?.status === "failed" || face?.status === "cancelled"
+  );
 
   useEffect(() => {
     for (const turn of chain.slice(-2)) void loadRunEvents(turn.id);
@@ -281,7 +283,7 @@ export function ProgramSession({
         </div>
       ) : null}
 
-      {managerNotLive && face ? (
+      {managerNotLive ? (
         <div className="flex items-center gap-3 border-t border-warn/30 bg-warn/10 px-4 py-2">
           <span className="flex-1 text-[11px] text-warn">
             Manager session is not live — messages will only be recorded
@@ -290,7 +292,9 @@ export function ProgramSession({
             busy={busy}
             setBusy={setBusy}
             start={async () => {
-              if (hasManager) await closeManager(program.id);
+              if (hasManager && (face?.status === "failed" || face?.status === "cancelled")) {
+                await closeManager(program.id);
+              }
               return startManager(program.id);
             }}
             onError={onError}

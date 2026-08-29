@@ -10,7 +10,6 @@ import {
   History,
   Link,
 } from "lucide-react";
-import { classifyRunFailure, runFailureHint } from "@crystal/core";
 import { formatRunCost, formatRunDuration } from "@crystal/client";
 import { Badge, Spinner, StatusDot, cn } from "@crystal/ui";
 import type { TranscriptItem, WorkEntry } from "./transcript-items.js";
@@ -58,10 +57,16 @@ export function ThreadTranscript({
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
   const lastFocused = useRef<string | null>(null);
+  const focusedRef = useRef<string | undefined>(focusTurnId);
   const lastFocusedOffset = useRef<number | null>(null);
   const focusScrollUntil = useRef(0);
   const [highlightedTurnId, setHighlightedTurnId] = useState<string | null>(null);
   const turns = useMemo(() => groupItemsByTurn(items), [items]);
+  if (focusTurnId) focusedRef.current = focusTurnId;
+
+  useEffect(() => {
+    if (focusTurnId === undefined) lastFocused.current = null;
+  }, [focusTurnId]);
 
   useEffect(() => {
     stickToBottom.current = true;
@@ -75,15 +80,16 @@ export function ThreadTranscript({
   useEffect(() => {
     const el = scrollRef.current;
     if (el && stickToBottom.current) el.scrollTop = el.scrollHeight;
-    if (!focusTurnId || lastFocused.current !== `${threadId}:${focusTurnId}`) return;
+    const focusedTurnId = focusedRef.current;
+    if (!focusedTurnId || lastFocused.current !== `${threadId}:${focusedTurnId}`) return;
     if (Date.now() >= focusScrollUntil.current) return;
     const target = Array.from(
       el?.querySelectorAll<HTMLElement>("[data-turn-id]") ?? [],
-    ).find((element) => element.dataset.turnId === focusTurnId);
+    ).find((element) => element.dataset.turnId === focusedTurnId);
     if (!target || target.offsetTop === lastFocusedOffset.current) return;
     lastFocusedOffset.current = target.offsetTop;
     target.scrollIntoView({ block: "start", behavior: "auto" });
-  }, [focusTurnId, items, threadId, working]);
+  }, [items, threadId, working]);
 
   useEffect(() => {
     if (!focusTurnId || lastFocused.current === `${threadId}:${focusTurnId}`) return;
@@ -99,14 +105,16 @@ export function ThreadTranscript({
     // Ignore scroll events while the focused turn grows, or tail-follow can win the race.
     target.scrollIntoView({ block: "start", behavior: "auto" });
     setHighlightedTurnId(focusTurnId);
-    onFocusedTurn?.(focusTurnId);
-  }, [focusTurnId, items, onFocusedTurn, threadId, turns]);
+  }, [focusTurnId, items, threadId, turns]);
 
   useEffect(() => {
     if (!highlightedTurnId) return;
-    const timer = window.setTimeout(() => setHighlightedTurnId(null), 2_500);
+    const timer = window.setTimeout(() => {
+      setHighlightedTurnId(null);
+      onFocusedTurn?.(highlightedTurnId);
+    }, 2_500);
     return () => window.clearTimeout(timer);
-  }, [highlightedTurnId]);
+  }, [highlightedTurnId, onFocusedTurn]);
 
   return (
     <div
@@ -258,7 +266,7 @@ function TranscriptItemRow({
             <CircleX className="h-3 w-3 text-danger" />
           )}
           <span className={cn(!item.ok && "text-danger")}>
-            {item.ok ? "Turn settled" : failureLabel(item.resultText)}
+            {item.ok ? "Turn settled" : item.resultText || "Turn failed"}
           </span>
           <span>·</span>
           <span>{formatRunCost(item.costUsd)}</span>
@@ -284,13 +292,9 @@ function TranscriptItemRow({
   }
 }
 
-function failureLabel(text: string): string {
-  const failure = classifyRunFailure(text);
-  return failure ? runFailureHint(failure) : text || "Turn failed";
-}
-
 function ExpandableNotice({ label, text }: { label: string; text: string }) {
   const [expanded, setExpanded] = useState(false);
+  const [firstLine, ...rest] = text.split("\n");
   return (
     <div className="flex justify-start">
       <button
@@ -299,9 +303,12 @@ function ExpandableNotice({ label, text }: { label: string; text: string }) {
         aria-expanded={expanded}
         className="max-w-[90%] rounded-lg border border-edge bg-surface-2 px-3 py-2 text-left"
       >
-        <span className="block text-[10px] font-semibold text-ink-muted">{label}</span>
-        {expanded ? (
-          <span className="mt-1 block whitespace-pre-wrap text-xs text-ink">{text}</span>
+        <span className="flex min-w-0 items-baseline gap-2">
+          <span className="shrink-0 text-[10px] font-semibold text-ink-muted">{label}</span>
+          <span className="truncate text-xs text-ink">{firstLine}</span>
+        </span>
+        {expanded && rest.length ? (
+          <span className="mt-1 block whitespace-pre-wrap text-xs text-ink">{rest.join("\n")}</span>
         ) : null}
       </button>
     </div>

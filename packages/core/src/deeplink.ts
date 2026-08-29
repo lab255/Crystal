@@ -642,7 +642,7 @@ export function parseDeepLink(hash: string): DeepLink {
     if (p.view === "threads" && turn) p.turn = turn;
     const find = params.get("find");
     if (find) p.find = find;
-    if (params.get("compose") === "1") p.compose = true;
+    if (p.view === "threads" && params.get("compose") === "1") p.compose = true;
     if (Object.keys(p).length) link.projects = p;
   } else if (mode === "jobs") {
     link.mode = "jobs";

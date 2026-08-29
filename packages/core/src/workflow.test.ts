@@ -23,6 +23,7 @@ import {
   deriveTemplate,
   duplicateTemplate,
   formatUserMessage,
+  engineNoticeKind,
   isCustomTemplateId,
   isEditableTemplate,
   makeTemplate,
@@ -33,6 +34,7 @@ import {
   tailStageId,
   templateOf,
   templateScope,
+  unwrapOwnerMessage,
   templateWarnings,
   validateWorkflowTemplate,
   workflowIdOfRun,
@@ -366,6 +368,23 @@ describe("manager prompting", () => {
     const text = formatUserMessage("Drop the release stage.");
     expect(text).toMatch(/^USER MESSAGE:/);
     expect(text).toContain("Drop the release stage.");
+  });
+
+  it("unwraps workflow and program owner-message envelopes", () => {
+    expect(unwrapOwnerMessage(formatUserMessage("Drop the release stage.")))
+      .toBe("Drop the release stage.");
+    expect(unwrapOwnerMessage(
+      "OWNER MESSAGE:\nShip today.\n\nThis is steering from the program's owner. Acknowledge it, adjust the deliveries/dispatches accordingly, and keep driving the program.",
+    )).toBe("Ship today.");
+  });
+
+  it("recognises only anchored engine-notice builder prefixes", () => {
+    expect(engineNoticeKind("Worker run_123 settled: completed")).toBe("worker");
+    expect(engineNoticeKind("Delivery d1 (Invoices) settled: completed")).toBe("hub");
+    expect(engineNoticeKind('Answer to your question "Ship?": yes')).toBe("answer");
+    expect(engineNoticeKind("Delivery of the invoices feature is late")).toBeNull();
+    expect(engineNoticeKind("Answer to your question is yes")).toBeNull();
+    expect(engineNoticeKind("Worker runs are slow")).toBeNull();
   });
 
   it("names each stage's handoff, and what its dependents receive", () => {

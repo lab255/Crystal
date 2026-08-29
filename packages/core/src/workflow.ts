@@ -1572,18 +1572,24 @@ export function formatUserMessage(text: string): string {
   return `USER MESSAGE:\n${text.trim()}\n\nThis is steering from the workflow's owner. Acknowledge it, adjust the plan/dispatches accordingly, and keep driving the workflow.`;
 }
 
+/** Recover the owner's words from workflow/program steering envelopes. */
+export function unwrapOwnerMessage(text: string): string {
+  const match = /^(?:USER|OWNER) MESSAGE:\s*\n?([\s\S]*?)(?:\n\nThis is steering from (?:the workflow's|the program's) owner\.[\s\S]*)?$/.exec(text);
+  return match ? match[1]!.trim() : text;
+}
+
 export type EngineNoticeKind = "worker" | "answer" | "owner" | "budget" | "hub";
 
 /** Recognize prompts authored by orchestration engines, never by the owner. */
 export function engineNoticeKind(text: string): EngineNoticeKind | null {
-  if (text.startsWith("Worker run_")) return "worker";
-  if (text.startsWith("Answer to your question")) return "answer";
-  if (text.startsWith("USER MESSAGE:")) return "owner";
+  if (/^Worker run_\S+ settled: /.test(text)) return "worker";
+  if (/^Answer to your question "/.test(text)) return "answer";
+  if (/^(?:USER|OWNER) MESSAGE:/.test(text)) return "owner";
   if (text.startsWith("BUDGET WARNING:") || text.startsWith("Budget exhausted")) {
     return "budget";
   }
   if (
-    text.startsWith("Delivery ")
+    /^Delivery \S+ \(.+\) settled: /.test(text)
     || text.startsWith("A project is waiting on an answer:")
     || /^\d+ projects are waiting on answers:/.test(text)
     || /^Every delivery of program .* has settled/.test(text)

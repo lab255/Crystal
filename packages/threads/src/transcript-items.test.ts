@@ -35,7 +35,7 @@ describe("buildTranscriptItems", () => {
       MANAGER_PREAMBLE + "\nbrief",
       'You are the PROGRAM MANAGER of "Launch"',
       "Worker run_1 settled: completed",
-      "Answer to your question: yes",
+      'Answer to your question "Ship?": yes',
       "USER MESSAGE:\nship it",
       "BUDGET WARNING: $8 of $10 spent",
       "Delivery d1 (Alpha) settled: completed",
@@ -50,8 +50,24 @@ describe("buildTranscriptItems", () => {
       eventsByRun: Object.fromEntries(prompts.map((_, index) => [`r${index}`, []])),
     });
     expect(items.map((item) => item.kind)).toEqual([
-      "kickoff", "kickoff", "notice", "notice", "notice", "notice",
+      "kickoff", "kickoff", "notice", "notice", "user", "notice",
       "notice", "notice", "notice", "notice", "notice", "user",
+    ]);
+    expect(items[4]).toMatchObject({ kind: "user", text: "ship it" });
+  });
+
+  it("renders both owner-message envelopes as stripped user bubbles", () => {
+    const prompts = [
+      "USER MESSAGE:\nworkflow words\n\nThis is steering from the workflow's owner. Acknowledge it, adjust the plan/dispatches accordingly, and keep driving the workflow.",
+      "OWNER MESSAGE:\nprogram words\n\nThis is steering from the program's owner. Acknowledge it, adjust the deliveries/dispatches accordingly, and keep driving the program.",
+    ];
+    const items = buildTranscriptItems({
+      turns: prompts.map((prompt, index) => run({ id: `owner${index}`, prompt })),
+      eventsByRun: { owner0: [], owner1: [] },
+    });
+    expect(items).toMatchObject([
+      { kind: "user", text: "workflow words" },
+      { kind: "user", text: "program words" },
     ]);
   });
 
