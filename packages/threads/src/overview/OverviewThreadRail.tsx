@@ -168,7 +168,8 @@ export function OverviewThreadRail({
               {section.kind === "workspace" && section.offline ? (
                 <Unplug className="h-3 w-3" />
               ) : null}
-              {section.kind === "coordinator" ? "Coordinator" : section.name}
+              <span>{section.kind === "coordinator" ? "Coordinator" : section.name}</span>
+              <span className="font-normal text-ink-faint">· {section.threads.length}</span>
               {section.serverLabel ? (
                 <span className="ml-auto normal-case tracking-normal">
                   {section.serverLabel}
@@ -183,6 +184,11 @@ export function OverviewThreadRail({
                 <MoreHorizontal className="h-3.5 w-3.5" />
               </button>
             </div>
+            {section.kind === "coordinator" && section.serverLabel ? (
+              <div className="px-2 pb-1 text-[10px] text-ink-faint">
+                Programs on {section.serverLabel}
+              </div>
+            ) : null}
             {section.threads.map((thread) => (
               <ThreadRow
                 key={thread.id}

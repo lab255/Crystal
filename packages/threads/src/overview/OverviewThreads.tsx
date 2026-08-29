@@ -153,6 +153,13 @@ export default function OverviewThreads() {
     });
     await navigator.clipboard.writeText(`${location.origin}${location.pathname}${hash}`);
   });
+  const copyTurnLink = (thread: OverviewThread, turn: string) => act(async () => {
+    const hash = formatDeepLink({
+      mode: "projects",
+      projects: { view: "threads", thread: thread.id, turn },
+    });
+    await navigator.clipboard.writeText(`${location.origin}${location.pathname}${hash}`);
+  });
   const openProject = (thread: OverviewThread) => {
     if (thread.ref.kind !== "workspace") return;
     selectWorkspace(thread.ref.sid, thread.ref.ws);
@@ -373,7 +380,9 @@ export default function OverviewThreads() {
       onFind={(find) => update({ projects: { view: "threads", find: find || null } })}
       onSelect={(id) => {
         setCreating(false);
-        update({ projects: { view: "threads", thread: id, program: null } });
+        update({
+          projects: { view: "threads", thread: id, program: null, turn: null },
+        });
       }}
       onPin={read.togglePin}
       onNewProgram={() => setCreating(true)}
@@ -409,6 +418,8 @@ export default function OverviewThreads() {
           : EMPTY_RUNS
       }
       loadEvents={loadSelectedEvents}
+      focusTurnId={nav?.turn}
+      onCopyTurnLink={selected ? (turn) => copyTurnLink(selected, turn) : undefined}
       entries={selected ? entriesFor(selected) : []}
       openMenu={menu.open}
       openProject={() => selected && openProject(selected)}

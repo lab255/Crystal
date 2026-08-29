@@ -25,7 +25,6 @@ import {
   Plus,
   Settings as SettingsIcon,
   SunMoon,
-  Target,
   Sparkles,
   Share2,
   TerminalSquare,
@@ -74,6 +73,7 @@ import { CommandList, Dialog, DialogContent, Kbd } from "@crystal/ui";
 import {
   CAPABILITY_EVENTS,
   NEW_THREAD_NAV,
+  OVERVIEW_NAV,
   paletteCapabilities,
   type PaletteCapabilityAction,
   type PaletteCapabilityIcon,
@@ -295,6 +295,15 @@ export function CommandPalette({
       } else if (action === "new-thread") {
         onSwitchMode("threads");
         nav(NEW_THREAD_NAV);
+      } else if (action === "overview-dashboard") {
+        onSwitchMode("projects");
+        nav(OVERVIEW_NAV.dashboard);
+      } else if (action === "overview-threads") {
+        onSwitchMode("projects");
+        nav(OVERVIEW_NAV.threads);
+      } else if (action === "overview-inbox") {
+        onSwitchMode("projects");
+        nav(OVERVIEW_NAV.inbox);
       } else {
         onOpenShortcuts?.();
       }
@@ -372,24 +381,6 @@ export function CommandPalette({
         hint: `Ctrl+${modeShortcutDigit(m)}`,
         run: () => onSwitchMode(m),
       })),
-      {
-        id: "view.overview.chat",
-        title: "Overview: Coordinator chat",
-        icon: Target,
-        run: () => {
-          onSwitchMode("projects");
-          nav({ projects: { view: "chat" } });
-        },
-      },
-      {
-        id: "view.overview.inbox",
-        title: "Overview: Questions inbox",
-        icon: Boxes,
-        run: () => {
-          onSwitchMode("projects");
-          nav({ projects: { view: "inbox" } });
-        },
-      },
       // Views inside a mode are jump targets too — a palette hit lands on the
       // exact screen, not just the mode.
       {

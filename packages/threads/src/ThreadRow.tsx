@@ -61,6 +61,10 @@ export function ThreadRow({
   dataId?: string;
 }) {
   const workers = thread.workerCount ?? 0;
+  const activity = thread.lastActivity ? relativeTime(thread.lastActivity, nowMs) : null;
+  const activityLabel = thread.indicator === "running" && activity && activity !== "now"
+    ? `${activity} ago`
+    : activity;
   return (
     <div
       role="option"
@@ -95,7 +99,7 @@ export function ThreadRow({
             {thread.title}
           </div>
           <div className="mt-0.5 flex items-center gap-1.5 text-[10px] text-ink-faint">
-            {thread.lastActivity ? <span>{relativeTime(thread.lastActivity, nowMs)}</span> : null}
+            {activityLabel ? <span>{activityLabel}</span> : null}
             {thread.costUsd != null ? (
               <>
                 <span>·</span>

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   BASE_BRANCH_LENS_PARAM,
   NEW_THREAD_NAV,
+  OVERVIEW_NAV,
   paletteCapabilities,
   REVIEW_REF_NAV,
 } from "./capabilities.js";
@@ -15,6 +16,9 @@ describe("paletteCapabilities", () => {
       ["Publish / sharing settings…", "publish-settings"],
       ["Open workspace…", "open-workspace"],
       ["New thread…", "new-thread"],
+      ["Overview: Dashboard", "overview-dashboard"],
+      ["Overview: Threads", "overview-threads"],
+      ["Overview: Inbox", "overview-inbox"],
       ["Keyboard shortcuts", "keyboard-shortcuts"],
     ]);
   });
@@ -31,6 +35,9 @@ describe("paletteCapabilities", () => {
       "settings.publish",
       "ws.open",
       "thread.new",
+      "overview.dashboard",
+      "overview.threads",
+      "overview.inbox",
       "shortcuts.open",
     ]);
     expect(paletteCapabilities(true).some((command) => command.action === "new-facet")).toBe(true);
@@ -43,6 +50,11 @@ describe("paletteCapabilities", () => {
     expect(NEW_THREAD_NAV).toEqual({
       mode: "threads",
       threads: { thread: null, compose: true },
+    });
+    expect(OVERVIEW_NAV).toEqual({
+      dashboard: { mode: "projects", projects: { view: "dashboard" } },
+      threads: { mode: "projects", projects: { view: "threads" } },
+      inbox: { mode: "projects", projects: { view: "inbox" } },
     });
   });
 });

@@ -17,7 +17,15 @@ import {
   useWorkspaces,
   type FleetQuestion,
 } from "@crystal/client";
-import { Badge, Button, EmptyState, StatusDot, cn, type MenuEntry } from "@crystal/ui";
+import {
+  Badge,
+  Button,
+  EmptyState,
+  StatusDot,
+  Tooltip,
+  cn,
+  type MenuEntry,
+} from "@crystal/ui";
 import { CreateProgram, ProgramSession } from "../ProgramThread.js";
 import { SpendLine } from "../spend-line.js";
 import { ThreadComposer } from "../ThreadComposer.js";
@@ -40,6 +48,8 @@ interface PaneProps {
   openMenu: (event: React.MouseEvent, entries: MenuEntry[]) => void;
   openProject: () => void;
   resumeWorkflow: () => void;
+  focusTurnId?: string;
+  onCopyTurnLink?: (runId: string) => void | Promise<void>;
 }
 
 function NodeTranscript({
@@ -47,13 +57,20 @@ function NodeTranscript({
   eventsByRun,
   loadEvents,
   questions,
+  focusTurnId,
+  onCopyTurnLink,
 }: {
   node: RunNode;
   eventsByRun: Record<string, RunEvent[]>;
   loadEvents: (id: string) => Promise<void>;
   questions: FleetQuestion[];
+  focusTurnId?: string;
+  onCopyTurnLink?: (runId: string) => void | Promise<void>;
 }) {
   const loadEventsRef = useRef(loadEvents);
+  const [loadedFocusTurnId, setLoadedFocusTurnId] = useState<string | undefined>();
+  const ownsFocusTurn = focusTurnId != null
+    && node.turns.some((turn) => turn.id === focusTurnId);
   useEffect(() => {
     loadEventsRef.current = loadEvents;
   }, [loadEvents]);
@@ -61,6 +78,25 @@ function NodeTranscript({
   useEffect(() => {
     for (const turn of node.turns.slice(-2)) void loadEventsRef.current(turn.id);
   }, [node.turns]);
+  useEffect(() => {
+    if (!focusTurnId || !ownsFocusTurn) {
+      setLoadedFocusTurnId(undefined);
+      return;
+    }
+    let current = true;
+    setLoadedFocusTurnId(undefined);
+    void loadEventsRef.current(focusTurnId).then(
+      () => {
+        if (current) setLoadedFocusTurnId(focusTurnId);
+      },
+      () => {
+        if (current) setLoadedFocusTurnId(focusTurnId);
+      },
+    );
+    return () => {
+      current = false;
+    };
+  }, [focusTurnId, ownsFocusTurn]);
   const transcriptQuestions = useMemo(
     () => questions.map((row) => row.question),
     [questions],
@@ -81,9 +117,11 @@ function NodeTranscript({
         eventsByRun={eventsByRun}
         loadEvents={loadNodeEvents}
         questions={questions}
+        focusTurnId={focusTurnId}
+        onCopyTurnLink={onCopyTurnLink}
       />
     ) : null,
-    [eventsByRun, loadNodeEvents, questions],
+    [eventsByRun, focusTurnId, loadNodeEvents, onCopyTurnLink, questions],
   );
   return (
     <ThreadTranscript
@@ -92,6 +130,8 @@ function NodeTranscript({
       working={sessionIsWorking(node)}
       renderWorker={renderWorker}
       onExpandTurn={loadNodeEvents}
+      focusTurnId={ownsFocusTurn ? loadedFocusTurnId : focusTurnId}
+      onCopyTurnLink={onCopyTurnLink}
     />
   );
 }
@@ -100,6 +140,7 @@ function NodeTranscript({
 export function OverviewThreadPane({
   thread, creating, notice, dismissNotice, onError, onCreated, questions,
   eventsByRun, runs, loadEvents, entries, openMenu, openProject, resumeWorkflow,
+  focusTurnId, onCopyTurnLink,
 }: PaneProps) {
   const { fleet, activeSid } = useCrystal();
   const activeWs = useWorkspaces((state) => state.activeId);
@@ -170,18 +211,25 @@ export function OverviewThreadPane({
   const activeProject = thread.ref.kind === "workspace"
     && activeSid === thread.ref.sid
     && activeWs === thread.ref.ws;
+  const recentTurnLog = thread.workflow?.turnLog.slice(-5) ?? [];
+  const recentTurnOffset = (thread.workflow?.turnLog.length ?? 0) - recentTurnLog.length;
 
   return (
     <main className="flex min-w-0 flex-1 flex-col">
       {notice ? <Notice text={notice} dismiss={dismissNotice} /> : null}
       <header className="flex items-center gap-2.5 border-b border-edge px-4 py-2.5">
-        <button
-          type="button"
-          onClick={openProject}
-          className="max-w-48 truncate rounded bg-surface-2 px-2 py-1 text-[10px] text-ink-muted"
-        >
-          {thread.serverLabel ? `${thread.serverLabel} › ` : ""}{thread.workspaceName}
-        </button>
+        <Tooltip content="Open in project">
+          <button
+            type="button"
+            onClick={openProject}
+            className={cn(
+              "max-w-48 truncate rounded bg-surface-2 px-2 py-1",
+              "text-[10px] text-ink-muted",
+            )}
+          >
+            {thread.serverLabel ? `${thread.serverLabel} › ` : ""}{thread.workspaceName}
+          </button>
+        </Tooltip>
         <StatusDot status={run.status} />
         <div className="min-w-0 flex-1">
           <div className="truncate text-sm font-medium text-ink">{thread.title}</div>
@@ -192,7 +240,8 @@ export function OverviewThreadPane({
             {working && run.startedAt ? <span>{formatElapsed(run.startedAt, nowMs)}</span> : null}
             {thread.workflow ? (
               <Badge>
-                {thread.workflow.name} · {thread.workflow.status}
+                {thread.workflow.name === thread.title ? "" : `${thread.workflow.name} · `}
+                {thread.workflow.status}
                 {thread.workflow.status === "paused"
                   ? ` · ${thread.workflow.pausedBy ?? "user"}`
                   : ""}
@@ -201,18 +250,30 @@ export function OverviewThreadPane({
             {thread.workflow && spend ? (
               <SpendLine costUsd={spend.costUsd} budgetUsd={thread.workflow.budgetUsd} />
             ) : null}
-            {thread.workflow?.turnLog.slice(-5).map((turn) => (
-              <span
-                key={`${turn.runId}:${turn.at}`}
-                className={cn(
-                  "rounded px-1 py-0.5",
-                  turn.progressed ? "bg-surface-2" : "bg-danger/15 font-semibold text-danger",
-                )}
-                title={turn.progressed ? "Progress made" : "No progress"}
-              >
-                {formatRunCost(turn.costUsd)}
-              </span>
-            ))}
+            {recentTurnLog.length ? <span className="text-ink-faint">last 5 turns</span> : null}
+            {recentTurnLog.map((turn, index) => {
+              const cost = formatRunCost(turn.costUsd);
+              return (
+                <Tooltip
+                  key={`${turn.runId}:${turn.at}`}
+                  content={
+                    `Turn ${recentTurnOffset + index + 1} · ${cost} · `
+                    + (turn.progressed ? "progressed" : "no progress")
+                  }
+                >
+                  <span
+                    className={cn(
+                      "rounded px-1 py-0.5",
+                      turn.progressed
+                        ? "bg-surface-2"
+                        : "bg-danger/15 font-semibold text-danger",
+                    )}
+                  >
+                    {cost}
+                  </span>
+                </Tooltip>
+              );
+            })}
           </div>
         </div>
         <Button
@@ -241,6 +302,8 @@ export function OverviewThreadPane({
         eventsByRun={eventsByRun}
         loadEvents={loadEvents}
         questions={activeQuestionRows}
+        focusTurnId={focusTurnId}
+        onCopyTurnLink={onCopyTurnLink}
       />
       {activeQuestionRows.length ? (
         <div className="space-y-2 border-t border-edge px-4 py-2">

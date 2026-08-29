@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Brain,
   ChevronDown,
@@ -8,6 +8,7 @@ import {
   CircleX,
   GitBranch,
   History,
+  Link,
 } from "lucide-react";
 import { formatRunCost, formatRunDuration } from "@crystal/client";
 import { Badge, Spinner, StatusDot, cn } from "@crystal/ui";
@@ -32,6 +33,8 @@ export function ThreadTranscript({
   renderWorker,
   /** Fetch a collapsed turn's events (the row shows a spinner meanwhile). */
   onExpandTurn,
+  focusTurnId,
+  onCopyTurnLink,
   /** Live thread: show the working shimmer under the last item. */
   working = false,
   className,
@@ -42,11 +45,18 @@ export function ThreadTranscript({
   renderQuestion?: (item: Extract<TranscriptItem, { kind: "question" }>) => ReactNode;
   renderWorker?: (item: Extract<TranscriptItem, { kind: "delegation" }>) => ReactNode;
   onExpandTurn?: (runId: string) => void | Promise<void>;
+  /** Scroll to and briefly highlight a turn once its rows are rendered. */
+  focusTurnId?: string;
+  /** When supplied, exposes a per-turn copy-link action. */
+  onCopyTurnLink?: (runId: string) => void | Promise<void>;
   working?: boolean;
   className?: string;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
+  const lastFocused = useRef<string | null>(null);
+  const [highlightedTurnId, setHighlightedTurnId] = useState<string | null>(null);
+  const turns = useMemo(() => groupItemsByTurn(items), [items]);
 
   useEffect(() => {
     stickToBottom.current = true;
@@ -62,6 +72,20 @@ export function ThreadTranscript({
     if (el && stickToBottom.current) el.scrollTop = el.scrollHeight;
   }, [items, working]);
 
+  useEffect(() => {
+    if (!focusTurnId || lastFocused.current === `${threadId}:${focusTurnId}`) return;
+    const target = Array.from(
+      scrollRef.current?.querySelectorAll<HTMLElement>("[data-turn-id]") ?? [],
+    ).find((element) => element.dataset.turnId === focusTurnId);
+    if (!target) return;
+    lastFocused.current = `${threadId}:${focusTurnId}`;
+    stickToBottom.current = false;
+    target.scrollIntoView({ block: "center", behavior: "smooth" });
+    setHighlightedTurnId(focusTurnId);
+    const timer = window.setTimeout(() => setHighlightedTurnId(null), 1_500);
+    return () => window.clearTimeout(timer);
+  }, [focusTurnId, items, threadId]);
+
   return (
     <div
       ref={scrollRef}
@@ -71,14 +95,42 @@ export function ThreadTranscript({
       }}
       className={cn("min-h-0 flex-1 space-y-2 overflow-y-auto px-4 py-3", className)}
     >
-      {items.map((item) => (
-        <TranscriptItemRow
-          key={item.id}
-          item={item}
-          renderQuestion={renderQuestion}
-          renderWorker={renderWorker}
-          onExpandTurn={onExpandTurn}
-        />
+      {turns.map((turn, index) => (
+        <div
+          key={turn.runId}
+          data-turn-id={turn.runId}
+          className={cn(
+            "group/turn relative space-y-2 rounded-lg transition-colors duration-500",
+            highlightedTurnId === turn.runId
+              && "bg-accent-blue/10 ring-2 ring-accent-blue/40",
+          )}
+        >
+          {onCopyTurnLink ? (
+            <button
+              type="button"
+              aria-label="Copy link to turn"
+              title={`Copy link to turn ${index + 1}`}
+              onClick={() => void onCopyTurnLink(turn.runId)}
+              className={cn(
+                "absolute right-1 top-1 z-10 rounded p-1 text-ink-faint opacity-0",
+                "hover:bg-surface-2 hover:text-ink group-hover/turn:opacity-100",
+                "focus-visible:opacity-100",
+              )}
+            >
+              <Link className="h-3 w-3" />
+            </button>
+          ) : null}
+          {turn.items.map((item) => (
+            <TranscriptItemRow
+              key={item.id}
+              item={item}
+              focusTurnId={focusTurnId}
+              renderQuestion={renderQuestion}
+              renderWorker={renderWorker}
+              onExpandTurn={onExpandTurn}
+            />
+          ))}
+        </div>
       ))}
       {working ? (
         <div className="flex items-center gap-2 px-1 text-xs text-ink-muted">
@@ -89,13 +141,31 @@ export function ThreadTranscript({
   );
 }
 
+function itemTurnId(item: TranscriptItem): string {
+  if ("runId" in item) return item.runId;
+  return item.id.slice(0, item.id.lastIndexOf(":"));
+}
+
+function groupItemsByTurn(items: readonly TranscriptItem[]) {
+  const groups: Array<{ runId: string; items: TranscriptItem[] }> = [];
+  for (const item of items) {
+    const runId = itemTurnId(item);
+    const tail = groups[groups.length - 1];
+    if (tail?.runId === runId) tail.items.push(item);
+    else groups.push({ runId, items: [item] });
+  }
+  return groups;
+}
+
 function TranscriptItemRow({
   item,
+  focusTurnId,
   renderQuestion,
   renderWorker,
   onExpandTurn,
 }: {
   item: TranscriptItem;
+  focusTurnId?: string;
   renderQuestion?: (item: Extract<TranscriptItem, { kind: "question" }>) => ReactNode;
   renderWorker?: (item: Extract<TranscriptItem, { kind: "delegation" }>) => ReactNode;
   onExpandTurn?: (runId: string) => void | Promise<void>;
@@ -110,7 +180,13 @@ function TranscriptItemRow({
     case "question":
       return <QuestionRow item={item} renderQuestion={renderQuestion} />;
     case "delegation":
-      return <DelegationRow item={item} renderWorker={renderWorker} />;
+      return (
+        <DelegationRow
+          item={item}
+          focusTurnId={focusTurnId}
+          renderWorker={renderWorker}
+        />
+      );
     case "permission":
       return (
         <div
@@ -317,14 +393,22 @@ function QuestionRow({
 
 function DelegationRow({
   item,
+  focusTurnId,
   renderWorker,
 }: {
   item: Extract<TranscriptItem, { kind: "delegation" }>;
+  focusTurnId?: string;
   renderWorker?: (item: Extract<TranscriptItem, { kind: "delegation" }>) => ReactNode;
 }) {
   const [open, setOpen] = useState(false);
   const worker = item.worker;
   const canExpand = worker != null && renderWorker != null;
+  const containsFocus = worker != null
+    && focusTurnId != null
+    && nodeContainsTurn(worker, focusTurnId);
+  useEffect(() => {
+    if (containsFocus) setOpen(true);
+  }, [containsFocus]);
   return (
     <div className="rounded-lg border border-crystal-500/25 bg-crystal-500/5">
       <button
@@ -358,6 +442,13 @@ function DelegationRow({
       ) : null}
     </div>
   );
+}
+
+function nodeContainsTurn(node: NonNullable<Extract<TranscriptItem, {
+  kind: "delegation";
+}>["worker"]>, runId: string): boolean {
+  return node.turns.some((turn) => turn.id === runId)
+    || node.workers.some((worker) => nodeContainsTurn(worker, runId));
 }
 
 function CollapsedTurnRow({

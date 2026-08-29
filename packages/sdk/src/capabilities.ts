@@ -10,6 +10,9 @@ export type PaletteCapabilityAction =
   | "publish-settings"
   | "open-workspace"
   | "new-thread"
+  | "overview-dashboard"
+  | "overview-threads"
+  | "overview-inbox"
   | "keyboard-shortcuts";
 
 export type PaletteCapabilityIcon =
@@ -48,6 +51,12 @@ export const NEW_THREAD_NAV = {
   threads: { thread: null, compose: true },
 } satisfies NavPatch;
 
+export const OVERVIEW_NAV = {
+  dashboard: { mode: "projects", projects: { view: "dashboard" } },
+  threads: { mode: "projects", projects: { view: "threads" } },
+  inbox: { mode: "projects", projects: { view: "inbox" } },
+} as const satisfies Record<string, NavPatch>;
+
 const ALWAYS_AVAILABLE: readonly PaletteCapability[] = [
   {
     id: "review.ref",
@@ -84,6 +93,24 @@ const ALWAYS_AVAILABLE: readonly PaletteCapability[] = [
     title: "New thread…",
     icon: "thread",
     action: "new-thread",
+  },
+  {
+    id: "overview.dashboard",
+    title: "Overview: Dashboard",
+    icon: "workspace",
+    action: "overview-dashboard",
+  },
+  {
+    id: "overview.threads",
+    title: "Overview: Threads",
+    icon: "thread",
+    action: "overview-threads",
+  },
+  {
+    id: "overview.inbox",
+    title: "Overview: Inbox",
+    icon: "workspace",
+    action: "overview-inbox",
   },
   {
     id: "shortcuts.open",
