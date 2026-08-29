@@ -61,4 +61,5 @@ export * from "./lens.js";
 export * from "./bridge.js";
 export * from "./publish.js";
 export * from "./deeplink.js";
+export * from "./overview-thread.js";
 export * from "./highlight.js";

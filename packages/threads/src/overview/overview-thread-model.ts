@@ -9,6 +9,9 @@ import {
   type Program,
   type ProgramSpend,
   type Workflow,
+  formatOverviewThreadId,
+  parseOverviewThreadId,
+  type OverviewThreadRef,
 } from "@crystal/core";
 import { chainOf, wsKey } from "@crystal/client";
 import {
@@ -19,33 +22,11 @@ import {
 } from "../thread-model.js";
 import { threadReadKey } from "../thread-unread.js";
 
-export type OverviewThreadRef =
-  | { kind: "workspace"; sid: string; ws: string; threadId: string }
-  | { kind: "program"; programId: string };
-
-export function formatOverviewThreadId(ref: OverviewThreadRef): string {
-  return ref.kind === "program"
-    ? `program:${ref.programId}`
-    : `ws:${ref.sid}/${ref.ws}/${ref.threadId}`;
-}
-
-export function parseOverviewThreadId(id: string): OverviewThreadRef | null {
-  if (id.startsWith("program:")) {
-    const programId = id.slice(8);
-    return programId ? { kind: "program", programId } : null;
-  }
-  if (!id.startsWith("ws:")) return null;
-  const value = id.slice(3);
-  const first = value.indexOf("/");
-  const last = value.lastIndexOf("/");
-  if (first <= 0 || last <= first + 1 || last === value.length - 1) return null;
-  return {
-    kind: "workspace",
-    sid: value.slice(0, first),
-    ws: value.slice(first + 1, last),
-    threadId: value.slice(last + 1),
-  };
-}
+export {
+  formatOverviewThreadId,
+  parseOverviewThreadId,
+  type OverviewThreadRef,
+} from "@crystal/core";
 
 export interface OverviewModelInput {
   connections: readonly {

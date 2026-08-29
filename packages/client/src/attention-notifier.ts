@@ -4,16 +4,27 @@ import {
   AttentionTracker,
   automaticWorkflowPauseIds,
   failureAttentionId,
+  programIdOfRun,
   questionAttentionId,
   runAttentionId,
   settledRunReviews,
   workflowPauseAttentionId,
   type AgentRun,
+  type HubQuestion,
   type ProjectEntry,
   type Workflow,
 } from "@crystal/core";
 import { wsKey } from "./fleet-client.js";
-import { useCrystal, useFleet, useNav, useWorkflows, useWorkspaces } from "./provider.js";
+import {
+  useCrystal,
+  useFleet,
+  useFleetConnections,
+  useHub,
+  useNav,
+  useWorkflows,
+  useWorkspaces,
+} from "./provider.js";
+import { attentionOnScreen } from "./attention-policy.js";
 import { useSettings } from "./settings.js";
 import {
   useAttentionJump,
@@ -23,12 +34,16 @@ import {
 
 /**
  * Desktop/browser notifications on transitions that need the operator: new
- * attention items anywhere in the fleet, settled runs ready for review, and
- * budget/stall workflow pauses in the active workspace. Every source seeds
+ * attention items anywhere in the fleet, settled runs ready for review,
+ * budget/stall workflow pauses in the active workspace, and the coordinator's
+ * own items (program questions from projects this fleet has not opened —
+ * every other question is already a fleet item — and settled program-manager
+ * turns). Every source seeds
  * silently on its first read, so reloads and workspace opens never announce
  * existing state. Runs are claimed once by id across failure/review categories;
  * workflow pauses re-arm after a resume. The exact item currently on screen is
- * skipped — in a focused window that toast would only echo the UI.
+ * skipped — in a focused window that toast would only echo the UI; the
+ * on-screen and click-target decisions are the pure `attention-policy.ts`.
  *
  * Backends: the web Notification API in the browser; in the Tauri webview
  * (which has no web Notification support) the shell's own `notify_attention`
@@ -142,6 +157,28 @@ function describeWorkflowPause(
   };
 }
 
+function describeProgramQuestion(
+  question: HubQuestion,
+  programName: string,
+): { title: string; body: string } {
+  return {
+    title: `Agent question — ${programName}`,
+    body: `${question.projectName} · ${question.taskTitle}: ${question.text}`,
+  };
+}
+
+function describeProgramTurn(
+  programName: string,
+  failed: boolean,
+): { title: string; body: string } {
+  return {
+    title: `${programName} — coordinator turn finished`,
+    body: failed
+      ? "The program manager's turn failed; open the Overview to inspect it."
+      : "The program manager finished its turn and is waiting on you.",
+  };
+}
+
 /** How many simultaneous arrivals collapse into one summary toast. */
 const SUMMARY_THRESHOLD = 4;
 
@@ -157,8 +194,12 @@ export function useAttentionNotifications(): void {
   const notifyAttention = useSettings((s) => s.notifyAttention);
   const notifyRunsSettled = useSettings((s) => s.notifyRunsSettled);
   const notifyWorkflowPaused = useSettings((s) => s.notifyWorkflowPaused);
-  const mode = useNav((l) => l.mode);
-  const selectedThread = useNav((l) => l.threads?.thread);
+  const link = useNav((l) => l);
+  const connections = useFleetConnections();
+  const programs = useHub((s) => s.programs);
+  const hubQuestions = useHub((s) => s.questions);
+  const hubRuns = useHub((s) => s.runs);
+  const hubLoaded = useHub((s) => s.loaded);
 
   const trackerRef = useRef<AttentionTracker | null>(null);
   const tracker = (trackerRef.current ??= new AttentionTracker());
@@ -182,20 +223,16 @@ export function useAttentionNotifications(): void {
   activeWsNameRef.current =
     workspaces.find((workspace) => workspace.id === activeWsId)?.name ?? "Workspace";
   const onScreenRef = useRef<(target: AttentionTarget) => boolean>(() => false);
-  onScreenRef.current = (target) => {
-    if (typeof document === "undefined" || !document.hasFocus()) return false;
-    if (!activeWsId || wsKey(target.sid, target.ws) !== wsKey(activeSid, activeWsId)) return false;
-    if (mode !== "threads") return false;
-    // A thread selection is "any run id in the chain", so exact-id equality is
-    // the conservative check: a mismatch may still be on screen (another turn
-    // of the same chain), but a false "on screen" would swallow the toast.
-    if (target.kind === "question") {
-      return target.question.question.runId != null && selectedThread === target.question.question.runId;
-    }
-    // Workflows have no dedicated surface anymore — never suppress the pause toast.
-    if (target.kind === "workflow") return false;
-    return selectedThread === target.run.id;
-  };
+  onScreenRef.current = (target) =>
+    attentionOnScreen(
+      link,
+      {
+        focused: typeof document !== "undefined" && document.hasFocus(),
+        activeSid,
+        activeWs: activeWsId,
+      },
+      target,
+    );
 
   // Desktop click-to-jump: the shell's notifier echoes the clicked toast's
   // target on this event (after focusing the window Rust-side); replay the
@@ -347,4 +384,61 @@ export function useAttentionNotifications(): void {
       void deliver(title, body, target, () => jumpRef.current(target));
     }
   }, [activeSid, activeWsId, pauseTracker, workflows, workflowsReadForWs]);
+
+  useEffect(() => {
+    // The hub store is per active server and starts empty until `refresh`
+    // lands — feeding that would announce every existing item as new.
+    if (!hubLoaded) return;
+    const programNames = new Map(programs.map((program) => [program.id, program.name]));
+    // Questions from projects open in this fleet are already fleet attention
+    // items (announced above, listed in the pill); only the external ones
+    // have the coordinator thread as their sole surface.
+    const openWorkspaceIds = new Set(
+      connections.find((connection) => connection.sid === activeSid)?.workspaces.map((w) => w.id) ?? [],
+    );
+    const external: { programId: string; question: HubQuestion }[] = [];
+    for (const [programId, rows] of Object.entries(hubQuestions)) {
+      for (const question of rows) {
+        if (!openWorkspaceIds.has(question.ws)) external.push({ programId, question });
+      }
+    }
+    const externalId = (q: HubQuestion) => `${q.deliveryId}:${q.questionId}`;
+    const newQuestionIds = new Set(
+      tracker.next(`${activeSid}:hub:questions`, external.map((e) => externalId(e.question))),
+    );
+    const reviews = settledRunReviews(hubRuns);
+    const reviewRuns = [...reviews.review, ...reviews.reviewFailed];
+    const failedIds = new Set(reviews.reviewFailed.map(runAttentionId));
+    const newReviewIds = new Set(
+      tracker.next(`${activeSid}:hub:reviews`, reviewRuns.map(runAttentionId)),
+    );
+
+    if (settingsRef.current.notifyAttention) {
+      for (const { programId, question } of external) {
+        if (!newQuestionIds.has(externalId(question))) continue;
+        const target: AttentionTarget = { kind: "program-question", sid: activeSid, programId, question };
+        if (onScreenRef.current(target)) continue;
+        const { title, body } = describeProgramQuestion(
+          question,
+          programNames.get(programId) ?? "Program",
+        );
+        void deliver(title, body, target, () => jumpRef.current(target));
+      }
+    }
+    if (settingsRef.current.notifyRunsSettled) {
+      for (const run of reviewRuns) {
+        const id = runAttentionId(run);
+        if (!newReviewIds.has(id)) continue;
+        const programId = programIdOfRun(run);
+        if (!programId) continue;
+        const target: AttentionTarget = { kind: "program-run", sid: activeSid, programId, run };
+        if (onScreenRef.current(target)) continue;
+        const { title, body } = describeProgramTurn(
+          programNames.get(programId) ?? "Program",
+          failedIds.has(id),
+        );
+        void deliver(title, body, target, () => jumpRef.current(target));
+      }
+    }
+  }, [activeSid, connections, hubLoaded, hubQuestions, hubRuns, programs, tracker]);
 }

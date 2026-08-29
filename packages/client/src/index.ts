@@ -203,6 +203,7 @@ export {
   type WorkspaceNeedsYou,
 } from "./fleet-needs-you.js";
 export { useAttentionNotifications } from "./attention-notifier.js";
+export { attentionJump, attentionOnScreen, type AttentionJump, type OnScreenContext } from "./attention-policy.js";
 export {
   RefCombobox,
   RefReviewBar,

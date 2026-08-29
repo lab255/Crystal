@@ -1,12 +1,14 @@
 import { useCallback, useMemo } from "react";
 import {
-  formatWsRef,
   partitionQuestionRows,
   unrecoveredFailures,
   type AgentRun,
 } from "@crystal/core";
 import { EMPTY_QUESTIONS, EMPTY_RUNS, type FleetQuestion } from "./fleet-store.js";
 import { wsKey } from "./fleet-client.js";
+import { attentionJump, type AttentionTarget } from "./attention-policy.js";
+
+export type { AttentionTarget } from "./attention-policy.js";
 import { useCrystal, useFleet, useFleetConnections } from "./provider.js";
 
 /**
@@ -86,43 +88,19 @@ export function useFleetNeedsYou(): FleetNeedsYou {
   }, [connections, runsByWs, runsLoadedByWs, questionsByWs]);
 }
 
-/** One notification item, addressed well enough to jump to it from anywhere. */
-export type AttentionTarget =
-  | { kind: "question"; sid: string; ws: string; question: FleetQuestion }
-  | { kind: "failure"; sid: string; ws: string; run: AgentRun }
-  | { kind: "run"; sid: string; ws: string; run: AgentRun }
-  | { kind: "workflow"; sid: string; ws: string; workflowId: string };
-
 /**
- * Jump to a notification item from any mode: focus its (server, workspace)
- * pair and land on the item's thread. A question jumps to the thread that
- * asked it (answering is inline there); a question with no asking run, and
- * workflow items, land on the bare Threads mode.
+ * Jump to a notification item from any mode — the policy is `attentionJump`
+ * (attention-policy.ts): in-project thread from a project mode, the Overview's
+ * cross-project thread when already in mission control, and coordinator items
+ * always on their program thread.
  */
 export function useAttentionJump(): (target: AttentionTarget) => void {
   const { selectWorkspace, navStore } = useCrystal();
   return useCallback(
     (target: AttentionTarget) => {
-      selectWorkspace(target.sid, target.ws);
-      const ws = formatWsRef(target.sid, target.ws);
-      // compose: null — a jump must land on the target thread (or the rail),
-      // never on a stale New-thread composer (nav merge keeps omitted keys).
-      if (target.kind === "question") {
-        const runId = target.question.question.runId ?? null;
-        navStore.getState().update({
-          ws,
-          mode: "threads",
-          threads: runId ? { thread: runId, compose: null } : { compose: null },
-        });
-      } else if (target.kind === "workflow") {
-        navStore.getState().update({ ws, mode: "threads", threads: { compose: null } });
-      } else {
-        navStore.getState().update({
-          ws,
-          mode: "threads",
-          threads: { thread: target.run.id, compose: null },
-        });
-      }
+      const jump = attentionJump(navStore.getState().link.mode, target);
+      if (jump.select) selectWorkspace(jump.select.sid, jump.select.ws);
+      navStore.getState().update(jump.patch);
     },
     [selectWorkspace, navStore],
   );
