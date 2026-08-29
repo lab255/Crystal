@@ -55,6 +55,8 @@ export function ThreadTranscript({
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
   const lastFocused = useRef<string | null>(null);
+  const lastFocusedOffset = useRef<number | null>(null);
+  const focusScrollUntil = useRef(0);
   const [highlightedTurnId, setHighlightedTurnId] = useState<string | null>(null);
   const turns = useMemo(() => groupItemsByTurn(items), [items]);
 
@@ -70,7 +72,15 @@ export function ThreadTranscript({
   useEffect(() => {
     const el = scrollRef.current;
     if (el && stickToBottom.current) el.scrollTop = el.scrollHeight;
-  }, [items, working]);
+    if (!focusTurnId || lastFocused.current !== `${threadId}:${focusTurnId}`) return;
+    if (Date.now() >= focusScrollUntil.current) return;
+    const target = Array.from(
+      el?.querySelectorAll<HTMLElement>("[data-turn-id]") ?? [],
+    ).find((element) => element.dataset.turnId === focusTurnId);
+    if (!target || target.offsetTop === lastFocusedOffset.current) return;
+    lastFocusedOffset.current = target.offsetTop;
+    target.scrollIntoView({ block: "center", behavior: "auto" });
+  }, [focusTurnId, items, threadId, working]);
 
   useEffect(() => {
     if (!focusTurnId || lastFocused.current === `${threadId}:${focusTurnId}`) return;
@@ -80,8 +90,11 @@ export function ThreadTranscript({
     ).find((element) => element.dataset.turnId === focusTurnId);
     if (!target) return;
     lastFocused.current = `${threadId}:${focusTurnId}`;
+    lastFocusedOffset.current = target.offsetTop;
+    focusScrollUntil.current = Date.now() + 1_000;
     stickToBottom.current = false;
-    target.scrollIntoView({ block: "center", behavior: "smooth" });
+    // Ignore scroll events while the focused turn grows, or tail-follow can win the race.
+    target.scrollIntoView({ block: "center", behavior: "auto" });
     setHighlightedTurnId(focusTurnId);
   }, [focusTurnId, items, threadId, turns]);
 
@@ -95,6 +108,7 @@ export function ThreadTranscript({
     <div
       ref={scrollRef}
       onScroll={(e) => {
+        if (Date.now() < focusScrollUntil.current) return;
         const el = e.currentTarget;
         stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
       }}
