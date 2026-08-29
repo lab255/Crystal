@@ -94,6 +94,15 @@ export function renderLightMarkdown(text: string): Block[] {
   }
 }
 
+/** The text users can actually see, with one newline between blocks/list items. */
+export function plainTextOf(blocks: readonly Block[]): string {
+  return blocks.flatMap((block) => {
+    if (block.type === "code") return [block.text];
+    if (block.type === "list") return block.items.map((item) => item.map((span) => span.text).join(""));
+    return [block.spans.map((span) => span.text).join("")];
+  }).join("\n");
+}
+
 function isBlockStart(line: string): boolean {
   return headingPattern.test(line) || listPattern.test(line) || fencePattern.test(line);
 }
@@ -107,7 +116,9 @@ function parseInline(text: string): InlineSpan[] {
   };
 
   for (let index = 0; index < text.length;) {
-    if (text[index] === "[") {
+    // A link label cannot begin with another opener in this deliberately flat subset.
+    // Skipping runs of `[` avoids retrying the bounded link regexp at every byte.
+    if (text[index] === "[" && text[index + 1] !== "[") {
       linkPattern.lastIndex = index;
       const link = linkPattern.exec(text);
       if (link) {

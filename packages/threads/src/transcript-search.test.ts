@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TranscriptItem } from "./transcript-items.js";
-import { searchTranscript } from "./transcript-search.js";
+import { searchTranscript, workEntryText } from "./transcript-search.js";
 
 describe("searchTranscript", () => {
   const items: TranscriptItem[] = [
@@ -18,8 +18,8 @@ describe("searchTranscript", () => {
       ["r1:user", "text", undefined, 0],
       ["r1:user", "text", undefined, 11],
       ["r1:work", "title", undefined, 9],
-      ["r1:work", "entry", 0, 30],
-      ["r1:work", "entry", 0, 38],
+      ["r1:work", "entry", 0, 9],
+      ["r1:work", "entry", 0, 29],
       ["r2:system", "text", undefined, 6],
     ]);
   });
@@ -30,10 +30,34 @@ describe("searchTranscript", () => {
 
   it("returns no hits for an empty query", () => {
     expect(searchTranscript(items, "")).toEqual([]);
+    expect(searchTranscript(items, "   ")).toEqual([]);
   });
 
-  it("finds expanded data while work entries are visually collapsed", () => {
-    const hits = searchTranscript(items, "hidden.txt");
+  it("searches assistant rendered text rather than markdown syntax and hrefs", () => {
+    const assistant: TranscriptItem[] = [
+      { kind: "assistant", id: "r1:a", text: "[docs](https://docs.x) al**pha**", thinking: null },
+    ];
+    expect(searchTranscript(assistant, "docs")).toMatchObject([{ start: 0, end: 4 }]);
+    expect(searchTranscript(assistant, "alpha")).toMatchObject([{ start: 5, end: 10 }]);
+    expect(searchTranscript(assistant, "https")).toEqual([]);
+  });
+
+  it("uses the displayed work-entry body", () => {
+    expect(workEntryText(items[1]!.kind === "work" ? items[1]!.entries[0]! : (() => { throw new Error(); })()))
+      .toBe('{"term":"ALPHA"}\n\n— result —\nalpha result');
+  });
+
+  it("excludes text that the row cannot highlight", () => {
+    const hidden: TranscriptItem[] = [
+      { kind: "turn-end", id: "r1:end", runId: "r1", status: "failed", ok: false, resultText: "rate_limit", costUsd: null, durationMs: null },
+      { kind: "question", id: "r1:q", runId: "r1", text: "Secret question", options: [], recommended: null, record: null },
+    ];
+    expect(searchTranscript(hidden, "rate_limit")).toEqual([]);
+    expect(searchTranscript(hidden, "secret", { excludeQuestions: true })).toEqual([]);
+  });
+
+  it("finds expanded preformatted data while work entries are visually collapsed", () => {
+    const hits = searchTranscript(items, "term");
     expect(hits).toMatchObject([{ itemId: "r1:work", field: "entry", entryIndex: 0 }]);
   });
 });

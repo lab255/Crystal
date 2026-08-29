@@ -25,6 +25,8 @@ export function TranscriptFindBar({
 }) {
   return (
     <div
+      role="search"
+      aria-label="Find in thread"
       className="flex shrink-0 items-center gap-1.5 border-b border-edge bg-surface-1 px-3 py-1.5"
       onKeyDown={(event) => {
         if (event.key === "Escape") {
@@ -50,7 +52,7 @@ export function TranscriptFindBar({
         aria-label="Find in thread"
         className="min-w-0 flex-1 rounded border border-edge bg-surface-0 px-2 py-1 text-xs text-ink outline-none focus:border-accent-amber"
       />
-      <span className="min-w-12 text-center text-[10px] text-ink-muted">
+      <span role="status" aria-live="polite" className="min-w-12 text-center text-[10px] text-ink-muted">
         {hitCount ? `${activeIndex + 1} of ${hitCount}` : "0 of 0"}
       </span>
       <button type="button" aria-label="Previous match" onClick={onPrevious} disabled={!hitCount} className="rounded p-1 text-ink-muted hover:bg-surface-2 disabled:opacity-40"><ChevronUp className="h-3.5 w-3.5" /></button>

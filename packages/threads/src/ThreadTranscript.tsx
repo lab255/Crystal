@@ -16,9 +16,10 @@ import { Badge, Spinner, StatusDot, cn } from "@crystal/ui";
 import { renderLightMarkdown, type InlineSpan } from "./light-markdown.js";
 import type { TranscriptItem, WorkEntry } from "./transcript-items.js";
 import { TranscriptFindBar } from "./TranscriptFindBar.js";
-import { searchTranscript, type SearchHit } from "./transcript-search.js";
+import { searchTranscript, workEntryText, type SearchHit } from "./transcript-search.js";
 
 type IndexedHit = SearchHit & { index: number };
+const NO_HITS: readonly IndexedHit[] = [];
 
 export interface QuestionAnswerResult {
   notice?: string;
@@ -73,7 +74,22 @@ export function ThreadTranscript({
   const [findOpen, setFindOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [activeHit, setActiveHit] = useState(0);
-  const hits = useMemo(() => searchTranscript(items, query), [items, query]);
+  const hits = useMemo(
+    () => searchTranscript(items, query, { excludeQuestions: renderQuestion != null }),
+    [items, query, renderQuestion],
+  );
+  const hitsByItem = useMemo(() => {
+    const grouped = new Map<string, IndexedHit[]>();
+    hits.forEach((hit, index) => {
+      const itemHits = grouped.get(hit.itemId) ?? [];
+      if (!grouped.has(hit.itemId)) grouped.set(hit.itemId, itemHits);
+      itemHits.push({ ...hit, index });
+    });
+    return grouped;
+  }, [hits]);
+  const activeKey = hits[activeHit]
+    ? `${hits[activeHit]!.itemId}:${hits[activeHit]!.field}:${hits[activeHit]!.entryIndex ?? ""}:${hits[activeHit]!.start}`
+    : null;
   const unloadedTurns = useMemo(
     () => items.filter((item): item is Extract<TranscriptItem, { kind: "collapsed-turn" }> => item.kind === "collapsed-turn"),
     [items],
@@ -86,6 +102,7 @@ export function ThreadTranscript({
 
   const closeFind = () => {
     setFindOpen(false);
+    // Closing find must not silently resume tail-follow after the user navigated away.
     requestAnimationFrame(() => scrollRef.current?.focus());
   };
   const cycleHit = (delta: number) => {
@@ -93,9 +110,11 @@ export function ThreadTranscript({
     setActiveHit((current) => (current + delta + hits.length) % hits.length);
   };
 
+  useEffect(() => { setActiveHit(0); }, [query]);
+
   useEffect(() => {
     setActiveHit((current) => hits.length ? Math.min(current, hits.length - 1) : 0);
-  }, [hits.length, query]);
+  }, [hits.length]);
 
   useEffect(() => {
     if (!findOpen) return;
@@ -110,7 +129,7 @@ export function ThreadTranscript({
         ?.scrollIntoView({ block: "center", behavior: "auto" });
     });
     return () => cancelAnimationFrame(frame);
-  }, [activeHit, findOpen, hits]);
+  }, [activeKey, activeHit, findOpen]);
 
   useEffect(() => {
     focusedRef.current = focusTurnId;
@@ -284,8 +303,8 @@ export function ThreadTranscript({
               renderQuestion={renderQuestion}
               renderWorker={renderWorker}
               onExpandTurn={onExpandTurn}
-              hits={hits}
-              activeHit={activeHit}
+              hits={hitsByItem.get(item.id) ?? NO_HITS}
+              activeHit={(hitsByItem.get(item.id) ?? NO_HITS).some((hit) => hit.index === activeHit) ? activeHit : -1}
             />
           ))}
         </div>
@@ -331,10 +350,10 @@ function TranscriptItemRow({
   renderQuestion?: (item: Extract<TranscriptItem, { kind: "question" }>) => ReactNode;
   renderWorker?: (item: Extract<TranscriptItem, { kind: "delegation" }>) => ReactNode;
   onExpandTurn?: (runId: string) => void | Promise<void>;
-  hits: readonly SearchHit[];
+  hits: readonly IndexedHit[];
   activeHit: number;
 }) {
-  const itemHits = hits.flatMap((hit, index) => hit.itemId === item.id ? [{ ...hit, index }] : []);
+  const itemHits = hits;
   switch (item.kind) {
     case "user":
       return <UserRow text={item.text} hits={itemHits} activeHit={activeHit} />;
@@ -470,6 +489,8 @@ function UserRow({ text, hits, activeHit }: { text: string; hits: readonly Index
   const [expanded, setExpanded] = useState(false);
   const [overflowing, setOverflowing] = useState(false);
   const textRef = useRef<HTMLSpanElement>(null);
+  const ownsActive = activeHit !== -1;
+  useEffect(() => { if (ownsActive) setExpanded(true); }, [ownsActive]);
   useLayoutEffect(() => {
     const element = textRef.current;
     if (!element || expanded) return;
@@ -526,45 +547,48 @@ const AssistantRow = memo(function AssistantRow({ text, thinking, hits, activeHi
           {thinking}
         </div>
       ) : null}
-      <LightMarkdown text={text} highlight={{ query: hits.length ? text.slice(hits[0]!.start, hits[0]!.end) : "", activeIndex: activeHit }} hits={hits} />
+      <LightMarkdown text={text} hits={hits} activeHit={activeHit} />
     </div>
   );
 });
 
-function LightMarkdown({ text, highlight, hits = [] }: { text: string; highlight?: { query: string; activeIndex?: number }; hits?: readonly IndexedHit[] }) {
+function LightMarkdown({ text, hits = [], activeHit = -1 }: { text: string; hits?: readonly IndexedHit[]; activeHit?: number }) {
   const blocks = useMemo(() => renderLightMarkdown(text), [text]);
-  const matchCursor = { current: 0 };
+  const runningOffset = { current: 0 };
+  const separator = () => { runningOffset.current += 1; };
   return (
     <div className="space-y-2 px-1 text-xs leading-relaxed text-ink">
       {blocks.map((block, index) => {
         const key = `${block.type}:${index}`;
         switch (block.type) {
           case "paragraph":
-            return <p key={key} className="whitespace-pre-wrap">{renderInline(block.spans, highlight, hits, matchCursor)}</p>;
+            { const content = renderInline(block.spans, hits, activeHit, runningOffset); separator(); return <p key={key} className="whitespace-pre-wrap">{content}</p>; }
           case "heading": {
             const className = "font-semibold text-ink";
-            if (block.level === 1) return <h1 key={key} className={className}>{renderInline(block.spans, highlight, hits, matchCursor)}</h1>;
-            if (block.level === 2) return <h2 key={key} className={className}>{renderInline(block.spans, highlight, hits, matchCursor)}</h2>;
-            return <h3 key={key} className={className}>{renderInline(block.spans, highlight, hits, matchCursor)}</h3>;
+            const content = renderInline(block.spans, hits, activeHit, runningOffset); separator();
+            if (block.level === 1) return <h1 key={key} className={className}>{content}</h1>;
+            if (block.level === 2) return <h2 key={key} className={className}>{content}</h2>;
+            return <h3 key={key} className={className}>{content}</h3>;
           }
           case "list": {
             const List = block.ordered ? "ol" : "ul";
             return (
               <List key={key} start={block.start} className={cn("pl-4", block.ordered ? "list-decimal" : "list-disc")}>
-                {block.items.map((item, itemIndex) => <li key={itemIndex}>{renderInline(item, highlight, hits, matchCursor)}</li>)}
+                {block.items.map((item, itemIndex) => { const content = renderInline(item, hits, activeHit, runningOffset); separator(); return <li key={itemIndex}>{content}</li>; })}
               </List>
             );
           }
-          case "code":
+          case "code": {
+            const content = highlightSlice(block.text, runningOffset.current, hits, activeHit);
+            runningOffset.current += block.text.length + 1;
             return (
               <pre key={key} className="overflow-x-auto whitespace-pre-wrap rounded bg-surface-2 px-2.5 py-2 font-mono text-[12px] text-ink">
                 <code data-language={block.language.slice(0, 32) || undefined}>
-                  {highlight?.query
-                    ? highlightInline(block.text, highlight.query, hits, highlight.activeIndex ?? -1, () => matchCursor.current++)
-                    : block.text}
+                  {content}
                 </code>
               </pre>
             );
+          }
         }
       })}
     </div>
@@ -573,12 +597,13 @@ function LightMarkdown({ text, highlight, hits = [] }: { text: string; highlight
 
 function renderInline(
   spans: readonly InlineSpan[],
-  highlight?: { query: string; activeIndex?: number },
   hits: readonly IndexedHit[] = [],
-  matchCursor = { current: 0 },
+  activeHit = -1,
+  runningOffset = { current: 0 },
 ): ReactNode[] {
   return spans.map((span, index) => {
-    const content = highlight?.query ? highlightInline(span.text, highlight.query, hits, highlight.activeIndex ?? -1, () => matchCursor.current++) : span.text;
+    const content = highlightSlice(span.text, runningOffset.current, hits, activeHit);
+    runningOffset.current += span.text.length;
     switch (span.type) {
       case "text": return <span key={index}>{content}</span>;
       case "bold": return <strong key={index}>{content}</strong>;
@@ -618,26 +643,22 @@ function highlightText(text: string, hits: readonly IndexedHit[], activeHit: num
   return parts;
 }
 
-function highlightInline(
+function highlightSlice(
   text: string,
-  query: string,
+  baseOffset: number,
   hits: readonly IndexedHit[],
   activeHit: number,
-  nextMatch: () => number,
 ): ReactNode {
-  const needle = query.toLocaleLowerCase();
-  const lower = text.toLocaleLowerCase();
+  if (!hits.length) return text;
   const parts: ReactNode[] = [];
   let offset = 0;
-  for (;;) {
-    const start = lower.indexOf(needle, offset);
-    if (start < 0) break;
+  for (const hit of hits) {
+    const start = Math.max(0, hit.start - baseOffset);
+    const end = Math.min(text.length, hit.end - baseOffset);
+    if (end <= 0 || start >= text.length || start < offset || end <= start) continue;
     if (start > offset) parts.push(text.slice(offset, start));
-    const ordinal = nextMatch();
-    const hit = hits[ordinal];
-    if (hit) parts.push(mark(text.slice(start, start + query.length), hit, activeHit));
-    else parts.push(text.slice(start, start + query.length));
-    offset = start + query.length;
+    parts.push(mark(text.slice(start, end), hit, activeHit));
+    offset = end;
   }
   if (offset < text.length) parts.push(text.slice(offset));
   return parts;
@@ -688,8 +709,7 @@ function WorkEntryRow({ entry, hits, activeHit }: { entry: WorkEntry; hits: read
   const [open, setOpen] = useState(entry.isError);
   const ownsActive = hits.some((hit) => hit.index === activeHit);
   useEffect(() => { if (ownsActive) setOpen(true); }, [ownsActive]);
-  const searchable = [entry.name, entry.title, entry.input, entry.result]
-    .filter((value): value is string => value != null).join("\n");
+  const searchable = workEntryText(entry);
   return (
     <div>
       <button

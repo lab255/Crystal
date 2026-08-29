@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { renderLightMarkdown } from "./light-markdown.js";
+import { plainTextOf, renderLightMarkdown } from "./light-markdown.js";
 
 describe("renderLightMarkdown", () => {
   it("parses bold, italic, and inline code", () => {
@@ -87,5 +87,10 @@ describe("renderLightMarkdown", () => {
       ordered: false,
       items: [[{ text: "parent" }], [{ text: "child" }], [{ text: "grandchild" }]],
     });
+  });
+
+  it("projects only rendered text with fixed separators", () => {
+    expect(plainTextOf(renderLightMarkdown("# Head\n\n- one\n- t**wo**\n\n[docs](https://docs.x)")))
+      .toBe("Head\none\ntwo\ndocs");
   });
 });
