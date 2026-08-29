@@ -76,7 +76,7 @@ export function ThreadRail({
                 {group.threads.map((thread) => (
                   <ThreadRow
                     key={thread.id}
-                    thread={thread}
+                    thread={{ ...thread, workerCount: thread.node.workers.length }}
                     selected={thread.id === selectedThreadId}
                     nowMs={nowMs}
                     onSelect={() => onSelect(thread.id)}

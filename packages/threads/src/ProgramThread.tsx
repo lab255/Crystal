@@ -163,7 +163,14 @@ export function CreateProgram({ onCreated }: { onCreated: (program: Program) => 
   );
 }
 
-export function ProgramSession({ program }: { program: Program }) {
+/** The reusable program conversation keeps hub actions honest on every surface. */
+export function ProgramSession({
+  program,
+  onError,
+}: {
+  program: Program;
+  onError?: (message: string) => void;
+}) {
   const spend = useHub((s) => s.spend[program.id] as ProgramSpend | undefined);
   const questions = useHub((s) => s.questions[program.id]);
   const runs = useHub((s) => (s.loaded ? s.runs : EMPTY_HUB_RUNS));
@@ -227,6 +234,8 @@ export function ProgramSession({ program }: { program: Program }) {
                 setBusy(true);
                 try {
                   await closeManager(program.id);
+                } catch (error) {
+                  onError?.(error instanceof Error ? error.message : String(error));
                 } finally {
                   setBusy(false);
                 }
@@ -262,7 +271,11 @@ export function ProgramSession({ program }: { program: Program }) {
                       variant="ghost"
                       size="icon-sm"
                       aria-label={`Retry ${delivery.projectName}`}
-                      onClick={() => void retryDelivery(program.id, delivery.id)}
+                      onClick={() => {
+                        void retryDelivery(program.id, delivery.id).catch((error) =>
+                          onError?.(error instanceof Error ? error.message : String(error)),
+                        );
+                      }}
                     >
                       <RotateCcw className="h-3 w-3" />
                     </Button>
@@ -295,6 +308,7 @@ export function ProgramSession({ program }: { program: Program }) {
               busy={busy}
               setBusy={setBusy}
               start={() => startManager(program.id)}
+              onError={onError}
               className="mt-3"
             />
           </EmptyState>
@@ -341,7 +355,12 @@ export function ProgramSession({ program }: { program: Program }) {
           <span className="text-[11px] text-ink-muted">
             The manager session is closed — its transcript stays above.
           </span>
-          <StartManagerButton busy={busy} setBusy={setBusy} start={() => startManager(program.id)} />
+          <StartManagerButton
+            busy={busy}
+            setBusy={setBusy}
+            start={() => startManager(program.id)}
+            onError={onError}
+          />
         </div>
       ) : null}
     </div>
@@ -353,11 +372,13 @@ function StartManagerButton({
   setBusy,
   start,
   className,
+  onError,
 }: {
   busy: boolean;
   setBusy: (v: boolean) => void;
   start: () => Promise<unknown>;
   className?: string;
+  onError?: (message: string) => void;
 }) {
   return (
     <Button
@@ -369,6 +390,8 @@ function StartManagerButton({
         setBusy(true);
         try {
           await start();
+        } catch (error) {
+          onError?.(error instanceof Error ? error.message : String(error));
         } finally {
           setBusy(false);
         }

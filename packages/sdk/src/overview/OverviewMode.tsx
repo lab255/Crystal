@@ -1,7 +1,21 @@
 import { useEffect, useState } from "react";
-import { FolderPlus, Globe2, Inbox, LayoutGrid, MessagesSquare, Unplug } from "lucide-react";
+import {
+  FolderPlus,
+  Globe2,
+  Inbox,
+  LayoutGrid,
+  MessagesSquare,
+  Unplug,
+} from "lucide-react";
 import { formatWsRef, type OverviewViewId } from "@crystal/core";
-import { useCrystal, useFleetConnections, useFleetNeedsYou, useHub, useNav, useNavUpdate } from "@crystal/client";
+import {
+  useCrystal,
+  useFleetConnections,
+  useFleetNeedsYou,
+  useHub,
+  useNav,
+  useNavUpdate,
+} from "@crystal/client";
 import { Button, EmptyState, Input, Tooltip, cn } from "@crystal/ui";
 import { OverviewThreads, QuestionInbox } from "@crystal/threads";
 import { OpenWorkspaceDialog } from "../OpenWorkspaceDialog.js";
@@ -58,7 +72,12 @@ export function OverviewMode() {
       <div className="flex shrink-0 items-center gap-2 border-b border-edge px-4 py-2">
         <div className="flex items-center gap-0.5 rounded-lg bg-surface-2 p-0.5">
           {tab("dashboard", "Dashboard", <LayoutGrid className="h-3.5 w-3.5" />)}
-          {tab("threads", "Threads", <MessagesSquare className="h-3.5 w-3.5" />, fleetNeedsYou.count + waiting)}
+          {tab(
+            "threads",
+            "Threads",
+            <MessagesSquare className="h-3.5 w-3.5" />,
+            fleetNeedsYou.count + waiting,
+          )}
           {tab("inbox", "Inbox", <Inbox className="h-3.5 w-3.5" />, waiting)}
         </div>
         {view === "inbox" ? (
@@ -154,7 +173,11 @@ function Dashboard() {
           <button
             type="button"
             onClick={openInfrastructure}
-            className="mb-4 flex w-full items-center gap-3 rounded-xl border border-edge bg-surface-1 px-4 py-3 text-left transition-colors hover:border-edge-strong hover:bg-surface-2"
+            className={cn(
+              "mb-4 flex w-full items-center gap-3 rounded-xl border border-edge",
+              "bg-surface-1 px-4 py-3 text-left transition-colors",
+              "hover:border-edge-strong hover:bg-surface-2",
+            )}
           >
             <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-surface-3 text-ink-muted">
               <Globe2 className="h-4 w-4" />

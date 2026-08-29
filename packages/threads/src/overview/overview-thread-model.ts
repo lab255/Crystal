@@ -79,6 +79,8 @@ export interface OverviewThread {
   program?: Program;
   workflow?: Workflow | null;
   live: boolean;
+  workspaceName?: string;
+  serverLabel?: string | null;
 }
 
 export type OverviewSection =
@@ -196,19 +198,34 @@ export function buildOverviewSections(input: OverviewModelInput): OverviewSectio
             summary.node.turns.some((run) => run.id === candidate.managerRunId || run.tags?.includes(`workflow:${candidate.id}`)),
           ) ?? null;
           return {
-            id: formatOverviewThreadId(ref), ref,
+            id: formatOverviewThreadId(ref),
+            ref,
             readKey: threadReadKey(summary.id, { sid: connection.sid, ws: workspace.id }),
-            title: summary.title, indicator: summary.indicator, lastActivity: summary.lastActivity,
-            costUsd: summary.costUsd, pinned: summary.pinned, summary, workflow,
+            title: summary.title,
+            indicator: summary.indicator,
+            lastActivity: summary.lastActivity,
+            costUsd: summary.costUsd,
+            pinned: summary.pinned,
+            summary,
+            workflow,
             live: sessionIsWorking(summary.node),
+            workspaceName: workspace.name,
+            serverLabel: multiServer ? connection.label : null,
           };
         });
       sortThreads(threads);
-      if (!needle || threads.length) sections.push({
-        kind: "workspace", sid: connection.sid, ws: workspace.id, key, name: workspace.name,
-        serverLabel: multiServer ? connection.label : null,
-        offline: connection.state !== "open", threads,
-      });
+      if (!needle || threads.length) {
+        sections.push({
+          kind: "workspace",
+          sid: connection.sid,
+          ws: workspace.id,
+          key,
+          name: workspace.name,
+          serverLabel: multiServer ? connection.label : null,
+          offline: connection.state !== "open",
+          threads,
+        });
+      }
     }
   }
   return needle && coordinator.threads.length === 0

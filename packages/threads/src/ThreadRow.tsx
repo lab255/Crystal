@@ -1,7 +1,16 @@
 import { Pin } from "lucide-react";
 import { formatRunCost } from "@crystal/client";
 import { StatusDot, cn, type StatusKind } from "@crystal/ui";
-import type { ThreadIndicator, ThreadSummary } from "./thread-model.js";
+import type { ThreadIndicator } from "./thread-model.js";
+
+export interface ThreadRowData {
+  title: string;
+  indicator: ThreadIndicator;
+  pinned: boolean;
+  lastActivity: string | null;
+  costUsd: number | null;
+  workerCount?: number;
+}
 
 const INDICATOR_STATUS: Record<ThreadIndicator, StatusKind> = {
   "needs-input": "needs-you",
@@ -33,6 +42,7 @@ export function relativeTime(iso: string, nowMs: number): string {
   return new Date(then).toLocaleDateString();
 }
 
+/** One shared row keeps workspace and coordinator threads visually comparable. */
 export function ThreadRow({
   thread,
   selected,
@@ -41,14 +51,14 @@ export function ThreadRow({
   onTogglePin,
   onContextMenu,
 }: {
-  thread: ThreadSummary;
+  thread: ThreadRowData;
   selected: boolean;
   nowMs: number;
   onSelect: () => void;
   onTogglePin: () => void;
   onContextMenu?: React.MouseEventHandler;
 }) {
-  const workers = thread.node.workers.length;
+  const workers = thread.workerCount ?? 0;
   return (
     <div
       className={cn(
@@ -63,7 +73,10 @@ export function ThreadRow({
         aria-selected={selected}
         role="option"
         title={INDICATOR_LABEL[thread.indicator]}
-        className="flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-crystal-400/60"
+        className={cn(
+          "flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-crystal-400/60",
+        )}
       >
         <StatusDot status={INDICATOR_STATUS[thread.indicator]} className="mt-1.5" />
         <div className="min-w-0 flex-1">
@@ -79,7 +92,7 @@ export function ThreadRow({
             {thread.title}
           </div>
           <div className="mt-0.5 flex items-center gap-1.5 text-[10px] text-ink-faint">
-            <span>{relativeTime(thread.lastActivity, nowMs)}</span>
+            {thread.lastActivity ? <span>{relativeTime(thread.lastActivity, nowMs)}</span> : null}
             {thread.costUsd != null ? (
               <>
                 <span>·</span>

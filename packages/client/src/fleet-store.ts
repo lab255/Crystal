@@ -334,6 +334,10 @@ export function createFleetStore(): FleetStore {
           if (!fetchedRuns.has(key)) return;
           store.setState((s) => {
             const existing = s.eventsByRunKey[key] ?? EMPTY_EVENTS;
+            const tail = existing[existing.length - 1];
+            if (!tail || tail.seq < event.seq) {
+              return { eventsByRunKey: { ...s.eventsByRunKey, [key]: [...existing, event] } };
+            }
             if (existing.some((item) => item.seq === event.seq)) return s;
             return { eventsByRunKey: { ...s.eventsByRunKey, [key]: [...existing, event] } };
           });
@@ -418,6 +422,9 @@ export function createFleetStore(): FleetStore {
         const eventsByRunKey: Record<string, RunEvent[]> = Object.fromEntries(
           Object.entries(s.eventsByRunKey).filter(([k]) => !k.startsWith(prefix)),
         );
+        for (const eventKey of fetchedRuns) {
+          if (eventKey.startsWith(prefix)) fetchedRuns.delete(eventKey);
+        }
         const questionsByWs: Record<string, FleetQuestion[]> = Object.fromEntries(
           Object.entries(s.questionsByWs).filter(([k]) => !k.startsWith(prefix)),
         );
@@ -453,8 +460,10 @@ export function createFleetStore(): FleetStore {
           for (const [eventKey, events] of Object.entries(s.eventsByRunKey)) {
             if (!eventKey.startsWith(`${key}/`)) continue;
             const runId = eventKey.slice(key.length + 1);
-            if (runIds.has(runId)) eventsByRunKey[eventKey] = events;
-            else fetchedRuns.delete(eventKey);
+            if (runIds.has(runId)) {
+              eventsByRunKey[eventKey] = events;
+              fetchedRuns.add(eventKey);
+            }
           }
         }
         return {
@@ -480,11 +489,9 @@ export function createFleetStore(): FleetStore {
       if (fetchedRuns.has(key)) return;
       const client = clientOf(sid);
       if (!client) return;
+      fetchedRuns.add(key);
       try {
         const { events } = await client.request("agent.events", { ws, runId });
-        // Mark loaded only once the full snapshot has arrived. Live events
-        // before this point are dropped, keeping absent histories non-partial.
-        fetchedRuns.add(key);
         set((s) => {
           const bySeq = new Map(events.map((event) => [event.seq, event]));
           for (const event of s.eventsByRunKey[key] ?? EMPTY_EVENTS) bySeq.set(event.seq, event);
@@ -496,6 +503,7 @@ export function createFleetStore(): FleetStore {
           };
         });
       } catch (error) {
+        fetchedRuns.delete(key);
         throw error;
       }
     },

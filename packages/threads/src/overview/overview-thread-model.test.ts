@@ -1,13 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { createAgentRun, createProgram, createWorkflow, type AgentRun, type Program, type Workflow } from "@crystal/core";
-import { buildOverviewSections, formatOverviewThreadId, parseOverviewThreadId } from "./overview-thread-model.js";
+import {
+  buildOverviewSections,
+  formatOverviewThreadId,
+  parseOverviewThreadId,
+  type OverviewModelInput,
+} from "./overview-thread-model.js";
 
 function run(id: string, overrides: Partial<AgentRun> = {}): AgentRun {
   return { ...createAgentRun({ prompt: overrides.prompt ?? id }), ...overrides, id };
 }
 function program(id: string, name = id): Program { return { ...createProgram({ name, goal: "goal" }), id }; }
 function workflow(id: string, managerRunId: string | null): Workflow { return { ...createWorkflow({ name: id, goal: "goal" }), id, managerRunId }; }
-function input(runs: AgentRun[] = [], workflows: Workflow[] = []) {
+function input(runs: AgentRun[] = [], workflows: Workflow[] = []): OverviewModelInput {
   return {
     connections: [{ sid: "s1", label: "Local", state: "open", workspaces: [{ id: "w1", name: "Alpha" }] }],
     runsByWs: { "s1/w1": runs }, workflowsByWs: { "s1/w1": workflows }, attentionByWs: {},
@@ -45,6 +50,31 @@ describe("buildOverviewSections", () => {
     expect(coordinator.threads.map((thread) => [thread.title, thread.indicator])).toEqual([["Fresh", "needs-input"], ["Active", "running"]]);
   });
 
+  it("marks program questions as needs-input and newer settled faces as unread", () => {
+    const questioned = { ...program("p1", "Questioned"), managerRunId: "hub1" };
+    const unread = { ...program("p2", "Unread"), managerRunId: "hub2" };
+    const data = input();
+    data.programs = [questioned, unread];
+    data.hubRuns = [
+      run("hub1", {
+        tags: ["program:p1"],
+        status: "completed",
+        endedAt: "2026-08-09T00:00:02.000Z",
+      }),
+      run("hub2", {
+        tags: ["program:p2"],
+        status: "completed",
+        endedAt: "2026-08-09T00:00:03.000Z",
+      }),
+    ];
+    data.programQuestions = { p1: [{ questionId: "q1" }] as never };
+    data.lastSeen["program:p2"] = "2026-08-09T00:00:01.000Z";
+
+    const rows = buildOverviewSections(data)[0]!.threads;
+    expect(rows.find((thread) => thread.title === "Questioned")?.indicator).toBe("needs-input");
+    expect(rows.find((thread) => thread.title === "Unread")?.indicator).toBe("unread");
+  });
+
   it("sorts pinned before attention and filters by workspace or program name", () => {
     const data = input([run("a", { role: "manager", status: "running" }), run("b", { role: "manager", status: "completed" })]);
     data.attentionByWs = { "s1/w1": new Set(["a"]) };
@@ -52,5 +82,19 @@ describe("buildOverviewSections", () => {
     expect(buildOverviewSections(data)[1]!.threads.map((thread) => thread.ref.kind === "workspace" && thread.ref.threadId)).toEqual(["b", "a"]);
     expect(buildOverviewSections({ ...data, find: "alpha" })).toHaveLength(1);
     expect(buildOverviewSections({ ...data, find: "missing" })).toHaveLength(0);
+  });
+
+  it("finds title, workspace name, or program name and carries workspace labels", () => {
+    const data = input([run("manager", { role: "manager", prompt: "Deploy API" })]);
+    data.programs = [program("p1", "Portfolio launch")];
+
+    const all = buildOverviewSections(data);
+    expect(all[1]!.threads[0]).toMatchObject({
+      workspaceName: "Alpha",
+      serverLabel: null,
+    });
+    expect(buildOverviewSections({ ...data, find: "deploy" })[0]!.threads).toHaveLength(1);
+    expect(buildOverviewSections({ ...data, find: "alpha" })[0]!.threads).toHaveLength(1);
+    expect(buildOverviewSections({ ...data, find: "portfolio" })[0]!.threads).toHaveLength(1);
   });
 });
