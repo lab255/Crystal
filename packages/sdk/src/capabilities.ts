@@ -12,6 +12,7 @@ export type PaletteCapabilityAction =
   | "new-thread"
   | "overview-dashboard"
   | "overview-threads"
+  | "overview-new-thread"
   | "overview-inbox"
   | "keyboard-shortcuts";
 
@@ -55,6 +56,7 @@ export const OVERVIEW_NAV = {
   dashboard: { mode: "projects", projects: { view: "dashboard" } },
   threads: { mode: "projects", projects: { view: "threads" } },
   inbox: { mode: "projects", projects: { view: "inbox" } },
+  newThread: { mode: "projects", projects: { view: "threads", compose: "thread" } },
 } as const satisfies Record<string, NavPatch>;
 
 const ALWAYS_AVAILABLE: readonly PaletteCapability[] = [
@@ -105,6 +107,12 @@ const ALWAYS_AVAILABLE: readonly PaletteCapability[] = [
     title: "Overview: Threads",
     icon: "thread",
     action: "overview-threads",
+  },
+  {
+    id: "overview.new-thread",
+    title: "Overview: New thread",
+    icon: "thread",
+    action: "overview-new-thread",
   },
   {
     id: "overview.inbox",

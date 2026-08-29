@@ -1,6 +1,16 @@
 import { useEffect, useState } from "react";
-import { MessageSquarePlus, MoreHorizontal, Unplug } from "lucide-react";
-import { Button, Input, Tooltip, cn, type MenuEntry } from "@crystal/ui";
+import { GitBranchPlus, MessageSquarePlus, MoreHorizontal, Plus, Unplug } from "lucide-react";
+import {
+  Button,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+  Input,
+  Tooltip,
+  cn,
+  type MenuEntry,
+} from "@crystal/ui";
 import { ThreadRow } from "../ThreadRow.js";
 import type { OverviewSection, OverviewThread } from "./overview-thread-model.js";
 import { useRovingListbox } from "../use-roving-listbox.js";
@@ -24,6 +34,7 @@ interface OverviewThreadRailProps {
   onSelect: (id: string) => void;
   onPin: (key: string) => void;
   onNewProgram: () => void;
+  onNewThread: () => void;
   onFocusComposer: () => void;
   entriesFor: (thread: OverviewThread) => MenuEntry[];
   headingEntriesFor: (section: OverviewSection) => MenuEntry[];
@@ -34,6 +45,7 @@ interface EmptyStateContent {
   title: string;
   body: string;
   action: { label: string; run: () => void };
+  secondary?: { label: string; run: () => void };
 }
 
 function emptyStateFor(
@@ -41,7 +53,7 @@ function emptyStateFor(
   find: string,
   hiddenCount: number,
   hasUnfiltered: boolean,
-  actions: { showAll: () => void; clear: () => void; create: () => void },
+  actions: { showAll: () => void; clear: () => void; createProgram: () => void; createThread: () => void },
 ): EmptyStateContent {
   if (filter === "managers" && hiddenCount > 0) {
     return {
@@ -60,7 +72,8 @@ function emptyStateFor(
   return {
     title: filter === "managers" ? "No manager threads yet" : "No threads yet",
     body: "Starting a workflow in a project creates one.",
-    action: { label: "New program", run: actions.create },
+    action: { label: "New thread", run: actions.createThread },
+    secondary: { label: "New program", run: actions.createProgram },
   };
 }
 
@@ -83,6 +96,7 @@ export function OverviewThreadRail({
   onSelect,
   onPin,
   onNewProgram,
+  onNewThread,
   onFocusComposer,
   entriesFor,
   headingEntriesFor,
@@ -93,7 +107,8 @@ export function OverviewThreadRail({
   const empty = emptyStateFor(filter, find, hiddenCount, hasUnfilteredThreads, {
     showAll: () => onFilter("all"),
     clear: () => onFind(""),
-    create: onNewProgram,
+    createProgram: onNewProgram,
+    createThread: onNewThread,
   });
   const listbox = useRovingListbox({
     ids: rows.map((row) => row.id),
@@ -126,11 +141,17 @@ export function OverviewThreadRail({
             aria-label="Find threads"
             className="h-7 min-w-0 flex-1 text-xs"
           />
-          <Tooltip content="New program">
-            <Button variant="ghost" size="icon-sm" aria-label="New program" onClick={onNewProgram}>
-              <MessageSquarePlus className="h-3.5 w-3.5" />
-            </Button>
-          </Tooltip>
+          <DropdownMenu>
+            <Tooltip content="New">
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="icon-sm" aria-label="New"><Plus className="h-3.5 w-3.5" /></Button>
+              </DropdownMenuTrigger>
+            </Tooltip>
+            <DropdownMenuContent align="end" className="min-w-52">
+              <DropdownMenuItem onSelect={onNewThread}><MessageSquarePlus className="h-3.5 w-3.5" />New thread in project…</DropdownMenuItem>
+              <DropdownMenuItem onSelect={onNewProgram}><GitBranchPlus className="h-3.5 w-3.5" />New program</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
         <div className="grid grid-cols-2 rounded-md bg-surface-2 p-0.5">
           {(["managers", "all"] as const).map((value) => (
@@ -234,9 +255,10 @@ export function OverviewThreadRail({
           <div className="px-3 py-8 text-center">
             <p className="text-xs font-medium text-ink">{empty.title}</p>
             <p className="mt-1 text-[11px] text-ink-muted">{empty.body}</p>
-            <Button className="mt-3" size="sm" onClick={empty.action.run}>
-              {empty.action.label}
-            </Button>
+            <div className="mt-3 flex justify-center gap-2">
+              <Button size="sm" onClick={empty.action.run}>{empty.action.label}</Button>
+              {empty.secondary ? <Button variant="ghost" size="sm" onClick={empty.secondary.run}>{empty.secondary.label}</Button> : null}
+            </div>
           </div>
         ) : null}
       </div>

@@ -301,6 +301,9 @@ export function CommandPalette({
       } else if (action === "overview-threads") {
         onSwitchMode("projects");
         nav(OVERVIEW_NAV.threads);
+      } else if (action === "overview-new-thread") {
+        onSwitchMode("projects");
+        nav(OVERVIEW_NAV.newThread);
       } else if (action === "overview-inbox") {
         onSwitchMode("projects");
         nav(OVERVIEW_NAV.inbox);

@@ -18,6 +18,7 @@ describe("paletteCapabilities", () => {
       ["New thread…", "new-thread"],
       ["Overview: Dashboard", "overview-dashboard"],
       ["Overview: Threads", "overview-threads"],
+      ["Overview: New thread", "overview-new-thread"],
       ["Overview: Inbox", "overview-inbox"],
       ["Keyboard shortcuts", "keyboard-shortcuts"],
     ]);
@@ -37,6 +38,7 @@ describe("paletteCapabilities", () => {
       "thread.new",
       "overview.dashboard",
       "overview.threads",
+      "overview.new-thread",
       "overview.inbox",
       "shortcuts.open",
     ]);
@@ -55,6 +57,7 @@ describe("paletteCapabilities", () => {
       dashboard: { mode: "projects", projects: { view: "dashboard" } },
       threads: { mode: "projects", projects: { view: "threads" } },
       inbox: { mode: "projects", projects: { view: "inbox" } },
+      newThread: { mode: "projects", projects: { view: "threads", compose: "thread" } },
     });
   });
 });

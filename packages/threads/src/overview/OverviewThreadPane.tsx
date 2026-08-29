@@ -37,6 +37,7 @@ import {
   type TranscriptItem,
 } from "../transcript-items.js";
 import { INDICATOR_LABEL } from "../ThreadRow.js";
+import { OverviewCompose } from "./OverviewCompose.js";
 import {
   stripWorkspaceSuffix,
   type OverviewThread,
@@ -45,12 +46,14 @@ import {
 
 interface PaneProps {
   thread: OverviewThread | null;
-  creating: boolean;
+  composing?: "program" | "thread";
+  composeTarget?: string;
   notice: string | null;
   noticeTone: "danger" | "neutral";
   dismissNotice: () => void;
   onError: (message: string) => void;
   onCreated: (id: string) => void;
+  onThreadStarted: (result: { sid: string; ws: string; runId: string; kind: "thread" | "workflow" }) => void;
   questions: FleetQuestion[];
   eventsByRun: Record<string, RunEvent[]>;
   runs: AgentRun[];
@@ -171,12 +174,14 @@ function NodeTranscript({
 /** The pane preserves project context and action truth while crossing workspaces. */
 export function OverviewThreadPane({
   thread,
-  creating,
+  composing,
+  composeTarget,
   notice,
   noticeTone,
   dismissNotice,
   onError,
   onCreated,
+  onThreadStarted,
   questions,
   eventsByRun,
   runs,
@@ -202,7 +207,10 @@ export function OverviewThreadPane({
     return questions.filter((row) => row.question.runId && chainIds.has(row.question.runId));
   }, [questions, thread?.summary]);
 
-  if (creating) {
+  if (composing === "thread") {
+    return <OverviewCompose target={composeTarget} onCancel={clearSelection} onStarted={onThreadStarted} />;
+  }
+  if (composing === "program") {
     return (
       <main className="flex min-w-0 flex-1 flex-col">
         {notice ? <Notice text={notice} tone={noticeTone} dismiss={dismissNotice} /> : null}

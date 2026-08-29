@@ -84,7 +84,12 @@ export default function OverviewThreads() {
   const { fleet, selectWorkspace, activeSid } = useCrystal();
   const read = useThreadReadState();
   const menu = useContextMenu();
-  const creating = nav?.compose === true;
+  const composing = nav?.compose;
+  const firstOpenWorkspace = connections.flatMap((connection) =>
+    connection.state === "open"
+      ? connection.workspaces.map((workspace) => wsKey(connection.sid, workspace.id))
+      : [],
+  )[0];
   const [notice, setNotice] = useState<{
     text: string;
     tone: "danger" | "neutral";
@@ -202,6 +207,7 @@ export default function OverviewThreads() {
       program: null,
       turn: null,
       compose: null,
+      target: null,
     },
   }), [update]);
   const handleFocusedTurn = useCallback(() => {
@@ -427,7 +433,7 @@ export default function OverviewThreads() {
       return [{
         type: "item",
         label: "New program",
-        onSelect: () => update({ projects: { view: "threads", compose: true } }),
+        onSelect: () => update({ projects: { view: "threads", compose: "program", target: null } }),
       }];
     }
     return [
@@ -441,7 +447,14 @@ export default function OverviewThreads() {
       },
       {
         type: "item",
-        label: "New thread in project",
+        label: "New thread here",
+        onSelect: () => update({
+          projects: { view: "threads", compose: "thread", target: wsKey(section.sid, section.ws) },
+        }),
+      },
+      {
+        type: "item",
+        label: "Open project composer",
         onSelect: () => {
           selectWorkspace(section.sid, section.ws);
           update({
@@ -501,11 +514,15 @@ export default function OverviewThreads() {
             program: null,
             turn: null,
             compose: null,
+            target: null,
           },
         });
       }}
       onPin={read.togglePin}
-      onNewProgram={() => update({ projects: { view: "threads", compose: true } })}
+      onNewProgram={() => update({ projects: { view: "threads", compose: "program", target: null } })}
+      onNewThread={() => update({
+        projects: { view: "threads", compose: "thread", target: firstOpenWorkspace ?? null },
+      })}
       onFocusComposer={() => {
         surfaceRef.current?.querySelector<HTMLTextAreaElement>(
           'main textarea[aria-label^="Message"]',
@@ -517,7 +534,8 @@ export default function OverviewThreads() {
       />
       <OverviewThreadPane
       thread={selected}
-      creating={creating}
+      composing={composing}
+      composeTarget={nav?.target}
       notice={notice?.text ?? null}
       noticeTone={notice?.tone ?? "danger"}
       dismissNotice={() => setNotice(null)}
@@ -529,6 +547,23 @@ export default function OverviewThreads() {
             thread: formatOverviewThreadId({ kind: "program", programId }),
             program: null,
             compose: null,
+            target: null,
+          },
+        });
+      }}
+      onThreadStarted={({ sid, ws, runId, kind }) => {
+        if (kind === "thread" && filter === "managers") {
+          setFilter("all");
+          setNotice({ text: "Showing all threads", tone: "neutral" });
+        }
+        update({
+          projects: {
+            view: "threads",
+            thread: formatOverviewThreadId({ kind: "workspace", sid, ws, threadId: runId }),
+            program: null,
+            turn: null,
+            compose: null,
+            target: null,
           },
         });
       }}

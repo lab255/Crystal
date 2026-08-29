@@ -124,9 +124,21 @@ describe("formatDeepLink", () => {
   it("round-trips the overview new-program composer", () => {
     const link: DeepLink = {
       mode: "projects",
-      projects: { view: "threads", compose: true },
+      projects: { view: "threads", compose: "program" },
     };
-    expect(formatDeepLink(link)).toBe("#/projects/threads?compose=1");
+    expect(formatDeepLink(link)).toBe("#/projects/threads?compose=program");
+    expect(parseDeepLink(formatDeepLink(link))).toEqual(link);
+    expect(parseDeepLink("#/projects/threads?compose=1")).toEqual(link);
+  });
+
+  it("round-trips the overview new-thread composer target", () => {
+    const link: DeepLink = {
+      mode: "projects",
+      projects: { view: "threads", compose: "thread", target: "remote/project-1" },
+    };
+    expect(formatDeepLink(link)).toBe(
+      "#/projects/threads?compose=thread&target=remote/project-1",
+    );
     expect(parseDeepLink(formatDeepLink(link))).toEqual(link);
   });
 });
@@ -487,7 +499,7 @@ describe("round trips", () => {
   });
 
   it("accepts overview compose only on the threads view", () => {
-    expect(parseDeepLink("#/projects/threads?compose=1").projects?.compose).toBe(true);
+    expect(parseDeepLink("#/projects/threads?compose=1").projects?.compose).toBe("program");
     expect(parseDeepLink("#/projects/inbox?compose=1").projects?.compose).toBeUndefined();
     expect(parseDeepLink("#/projects?compose=1").projects?.compose).toBeUndefined();
   });

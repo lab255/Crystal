@@ -244,8 +244,10 @@ export interface ProjectsLink {
   turn?: string;
   /** Find query (inbox). */
   find?: string;
-  /** New-program composer open. */
-  compose?: boolean;
+  /** Overview composer open; `compose=1` remains the legacy program form. */
+  compose?: "program" | "thread";
+  /** Compound `sid/ws` key preselected by the thread composer. */
+  target?: string;
 }
 
 export interface DeepLink {
@@ -403,7 +405,8 @@ export function formatDeepLink(link: DeepLink): string {
     if (view === "threads" && p.program) add("program", p.program);
     if (view === "threads" && p.turn) add("turn", p.turn);
     if (p.find) add("find", p.find);
-    if (view === "threads" && p.compose) add("compose", "1");
+    if (view === "threads" && p.compose) add("compose", p.compose === "thread" ? "thread" : "program");
+    if (view === "threads" && p.target) add("target", p.target);
   }
   // "jobs" (agent job hub) is stateless — nothing to encode beyond ws.
 
@@ -647,7 +650,11 @@ export function parseDeepLink(hash: string): DeepLink {
     if (p.view === "threads" && turn) p.turn = turn;
     const find = params.get("find");
     if (find) p.find = find;
-    if (p.view === "threads" && params.get("compose") === "1") p.compose = true;
+    const compose = params.get("compose");
+    if (p.view === "threads" && (compose === "1" || compose === "program")) p.compose = "program";
+    else if (p.view === "threads" && compose === "thread") p.compose = "thread";
+    const target = params.get("target");
+    if (p.view === "threads" && target) p.target = target;
     if (Object.keys(p).length) link.projects = p;
   } else if (mode === "jobs") {
     link.mode = "jobs";
@@ -683,8 +690,8 @@ const QUALITY_VIEW_FIELDS: Record<QualityViewId, readonly (keyof QualityLink)[]>
 
 const PROJECTS_VIEW_FIELDS: Record<OverviewViewId, readonly (keyof ProjectsLink)[]> = {
   dashboard: ["view", "find"],
-  threads: ["view", "thread", "program", "turn", "find", "compose"],
-  chat: ["view", "thread", "program", "turn", "find", "compose"],
+  threads: ["view", "thread", "program", "turn", "find", "compose", "target"],
+  chat: ["view", "thread", "program", "turn", "find", "compose", "target"],
   inbox: ["view", "find"],
 };
 
