@@ -73,6 +73,13 @@ describe("matchDevUrl", () => {
     expect(matchDevUrl("Listening on http://0.0.0.0:8080")).toBe("http://localhost:8080");
   });
 
+  it("keeps only the origin — a logged deep link is not the base URL", () => {
+    expect(matchDevUrl("GET /invite/x 200 http://localhost:3000/invite/Xiq6j-pblAP/ 43ms")).toBe(
+      "http://localhost:3000",
+    );
+    expect(matchDevUrl("- Local: http://localhost:3000/")).toBe("http://localhost:3000");
+  });
+
   it("ignores non-local URLs and plain text", () => {
     expect(matchDevUrl("see https://vitejs.dev/config for docs")).toBeNull();
     expect(matchDevUrl("compiling...")).toBeNull();

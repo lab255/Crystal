@@ -125,15 +125,19 @@ const DEV_URL_RE =
 
 /**
  * First local URL in a chunk of process output (ANSI stripped), normalized to
- * a clickable localhost origin — how a running server's real address is
- * learned. Returns null when the chunk names none.
+ * a clickable localhost ORIGIN — how a running server's real address is
+ * learned. The path is dropped on purpose: servers log request URLs and apps
+ * log deep links (`/invite/<token>`), and whichever is printed first would
+ * otherwise become the base every screen route is appended to. Returns null
+ * when the chunk names none.
  */
 export function matchDevUrl(text: string): string | null {
   const m = DEV_URL_RE.exec(text.replace(ANSI_RE, ""));
   if (!m) return null;
-  return m[0]
+  const origin = m[0].replace(/^(https?:\/\/[^/]+).*$/i, "$1");
+  return origin
     .replace("0.0.0.0", "localhost")
     .replace("[::1]", "localhost")
     .replace("[::]", "localhost")
-    .replace(/[/.,;]+$/, "");
+    .replace(/[.,;]+$/, "");
 }

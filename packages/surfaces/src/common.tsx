@@ -282,10 +282,17 @@ export function DevServerPreview({
 }) {
   const live = control.target?.availability === "live";
   const expected = control.target?.url ?? null;
+  // `frameUrl` is what the iframe loads; `draftUrl` is what the user is
+  // typing. Committing only on Enter keeps a half-typed URL from firing one
+  // request per keystroke at the dev server.
   const [frameUrl, setFrameUrl] = useState(url ?? "");
+  const [draftUrl, setDraftUrl] = useState(url ?? "");
   const [frameNonce, setFrameNonce] = useState(0);
   const [frameFailed, setFrameFailed] = useState(false);
-  useEffect(() => setFrameUrl(url ?? ""), [url]);
+  useEffect(() => {
+    setFrameUrl(url ?? "");
+    setDraftUrl(url ?? "");
+  }, [url]);
   useEffect(() => setFrameFailed(false), [url, frameNonce]);
   const storybook = kind === "storybook";
   const label = storybook ? "Storybook" : "dev server";
@@ -358,10 +365,12 @@ export function DevServerPreview({
       {manualUrl ? (
         <div className="flex items-center gap-1.5">
           <input
-            value={frameUrl}
-            onChange={(event) => setFrameUrl(event.target.value)}
+            value={draftUrl}
+            onChange={(event) => setDraftUrl(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === "Enter") setFrameNonce((nonce) => nonce + 1);
+              if (event.key !== "Enter") return;
+              setFrameUrl(draftUrl);
+              setFrameNonce((nonce) => nonce + 1);
             }}
             spellCheck={false}
             aria-label="Preview URL"
@@ -370,7 +379,7 @@ export function DevServerPreview({
           <Tooltip content="Open in browser">
             <button
               type="button"
-              onClick={() => window.open(frameUrl, "_blank", "noopener")}
+              onClick={() => window.open(draftUrl, "_blank", "noopener")}
               className="rounded-md border border-edge bg-surface-2 p-1 text-ink-muted hover:text-ink"
               aria-label="Open in browser"
             >
