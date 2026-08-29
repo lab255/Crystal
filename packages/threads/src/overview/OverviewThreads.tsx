@@ -189,10 +189,15 @@ export default function OverviewThreads() {
   const handleFocusedTurn = useCallback(() => {
     update({ projects: { view: "threads", turn: null } });
   }, [update]);
+  const requestedProjectClosed = requestedRef?.kind === "workspace"
+    && !connections.some((connection) =>
+      connection.sid === requestedRef.sid
+      && connection.workspaces.some((workspace) => workspace.id === requestedRef.ws));
   const requestedLoaded = requestedRef?.kind === "program"
     ? hubLoaded
     : requestedRef?.kind === "workspace"
-      ? runsLoadedByWs[wsKey(requestedRef.sid, requestedRef.ws)] === true
+      ? requestedProjectClosed
+        || runsLoadedByWs[wsKey(requestedRef.sid, requestedRef.ws)] === true
       : true;
   const copyLink = (thread: OverviewThread) => act(async () => {
     const hash = formatDeepLink({
@@ -507,13 +512,7 @@ export default function OverviewThreads() {
       openMenu={menu.open}
       openProject={() => selected && openProject(selected)}
       missingRef={requested && !selected && requestedLoaded ? requestedRef : null}
-      missingProjectClosed={(() => {
-        const ref = requested ? parseOverviewThreadId(requested) : null;
-        if (ref?.kind !== "workspace") return false;
-        return !connections.some((connection) =>
-          connection.sid === ref.sid
-          && connection.workspaces.some((workspace) => workspace.id === ref.ws));
-      })()}
+      missingProjectClosed={requestedProjectClosed}
       clearSelection={clearSelection}
       resumeWorkflow={() => {
         if (selected?.ref.kind !== "workspace" || !selected.workflow) return;
