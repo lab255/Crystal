@@ -45,6 +45,24 @@ describe("buildThreadGroups", () => {
     expect(groups.map((g) => g.name)).toEqual(["Ad hoc", "Payments"]);
   });
 
+  it("groups unprojected workflow chains by workflow name instead of ad hoc", () => {
+    const workflowRun = run({
+      id: "r1",
+      prompt: "Coordinate release",
+      tags: ["workflow:wf1"],
+      status: "completed",
+    });
+    const groups = buildThreadGroups({
+      runs: [workflowRun],
+      attention: new Set(),
+      lastSeen: {},
+      pins: new Set(),
+      namingContext: { workflowNameOf: (id) => id === "wf1" ? "Release train" : null },
+    });
+    expect(groups).toHaveLength(1);
+    expect(groups[0]).toMatchObject({ projectId: null, name: "Release train" });
+  });
+
   it("orders by pin, then indicator precedence, then recency", () => {
     const needsInput = run({ id: "rq", prompt: "Blocked on a question", status: "completed", createdAt: "2026-01-01T00:00:00Z" });
     const working = run({ id: "rw", prompt: "Streaming", status: "running", createdAt: "2026-01-02T00:00:00Z" });

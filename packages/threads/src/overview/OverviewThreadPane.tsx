@@ -315,7 +315,7 @@ export function OverviewThreadPane({
             {working && run.startedAt ? <Elapsed startedAt={run.startedAt} /> : null}
             {workflowLabel ? <Badge>{workflowLabel}</Badge> : null}
             {thread.workflow && spend ? (
-              <span>Workflow <SpendLine
+              <span className="flex items-center gap-1">Workflow <SpendLine
                 costUsd={spend.costUsd}
                 budgetUsd={thread.workflow.budgetUsd}
               /></span>

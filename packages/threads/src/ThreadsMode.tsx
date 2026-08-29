@@ -9,7 +9,7 @@ import {
   useWorkflows,
   useWorkspace,
 } from "@crystal/client";
-import { attentionRunIds, MANAGER_PREAMBLE, type Workflow } from "@crystal/core";
+import { attentionRunIds, formatDeepLink, MANAGER_PREAMBLE, type Workflow } from "@crystal/core";
 import { EmptyState } from "@crystal/ui";
 import { NewThread } from "./NewThread.js";
 import { ThreadRail } from "./ThreadRail.js";
@@ -83,6 +83,14 @@ export function ThreadsMode() {
     (threadId: string, stamp: string) => markSeen(threadId, stamp),
     [markSeen],
   );
+  const copyTurnLink = useCallback(async (turn: string) => {
+    if (!selected) return;
+    const hash = formatDeepLink({
+      mode: "threads",
+      threads: { thread: selected.id, turn },
+    });
+    await navigator.clipboard.writeText(`${location.origin}${location.pathname}${hash}`);
+  }, [selected]);
 
   return (
     <div ref={surfaceRef} className="flex h-full min-h-0">
@@ -114,7 +122,14 @@ export function ThreadsMode() {
           onStarted={(runId) => update({ threads: { thread: runId, compose: null } })}
         />
       ) : selected ? (
-        <ThreadView thread={selected} onSeen={onSeen} className="flex-1" />
+        <ThreadView
+          thread={selected}
+          onSeen={onSeen}
+          focusTurnId={link?.turn}
+          onCopyTurnLink={copyTurnLink}
+          onFocusedTurn={() => update({ threads: { ...link, turn: null } })}
+          className="flex-1"
+        />
       ) : (
         <div className="flex flex-1 items-center justify-center">
           <EmptyState icon={MessagesSquare} title="Pick a thread">

@@ -57,6 +57,8 @@ export type TranscriptItem =
       recommended: string | null;
       /** Board record joined by (runId, text) — carries answer + lifecycle. */
       record: TaskQuestion | null;
+      /** Answer recovered from the later delivery notice when the board join is stale. */
+      answeredByNotice?: string;
     }
   | {
       kind: "delegation";
@@ -504,15 +506,24 @@ export function joinTranscriptRecords(
 ): TranscriptItem[] {
   const questionPool = [...questions];
   const workerPool = [...workers];
-  return items.map((item) => {
+  return items.map((item, itemIndex) => {
     if (item.kind === "question") {
       let index = questionPool.findIndex(
         (question) => question.runId === item.runId && question.text === item.text,
       );
       if (index === -1) index = questionPool.findIndex((question) => question.text === item.text);
+      const record = index === -1 ? null : questionPool.splice(index, 1)[0] ?? null;
+      const prefix = item.text.slice(0, 48);
+      const answerNotice = items.slice(itemIndex + 1).find(
+        (later): later is Extract<TranscriptItem, { kind: "notice" }> =>
+          later.kind === "notice"
+          && later.text.startsWith(`Answer to your question \"${prefix}`),
+      );
+      const answeredByNotice = answerNotice?.text.match(/^Answer to your question \".*?\":\s*([\s\S]+)$/)?.[1];
       return {
         ...item,
-        record: index === -1 ? null : questionPool.splice(index, 1)[0] ?? null,
+        record,
+        ...(record?.answer == null && answeredByNotice ? { answeredByNotice } : {}),
       };
     }
     if (item.kind !== "delegation") return item;

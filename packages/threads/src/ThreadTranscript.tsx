@@ -563,7 +563,8 @@ function QuestionRow({
   item: Extract<TranscriptItem, { kind: "question" }>;
   renderQuestion?: (item: Extract<TranscriptItem, { kind: "question" }>) => ReactNode;
 }) {
-  const answered = item.record?.answer != null;
+  const answer = item.record?.answer ?? item.answeredByNotice ?? null;
+  const answered = answer != null;
   if (!answered && renderQuestion) {
     const custom = renderQuestion(item);
     if (custom) return <>{custom}</>;
@@ -581,7 +582,7 @@ function QuestionRow({
           <span className="whitespace-pre-wrap">{item.text}</span>
           {answered ? (
             <div className="mt-1 whitespace-pre-wrap text-[11px] text-ink">
-              <span className="font-semibold">Answer:</span> {item.record!.answer}
+              <span className="font-semibold">Answer:</span> {answer}
             </div>
           ) : (
             <div className="mt-1 text-[10px] text-ink-faint">Waiting for your answer.</div>

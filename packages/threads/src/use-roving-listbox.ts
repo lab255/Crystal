@@ -30,6 +30,7 @@ export function useRovingListbox({
         return;
       }
       if (event.key === "Escape") {
+        if (document.querySelector('[role="menu"]')) return;
         event.preventDefault();
         onEscape();
         return;

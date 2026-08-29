@@ -1,6 +1,6 @@
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { X } from "lucide-react";
-import type { ReactNode } from "react";
+import { useRef, type ReactNode } from "react";
 import { cn } from "../cn.js";
 import { Button } from "./Button.js";
 
@@ -19,10 +19,18 @@ export function DialogContent({
   children?: ReactNode;
   className?: string;
 }) {
+  const returnFocusRef = useRef(
+    typeof document === "undefined" ? null : document.activeElement as HTMLElement | null,
+  );
   return (
     <DialogPrimitive.Portal>
       <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/60 backdrop-blur-[2px]" />
       <DialogPrimitive.Content
+        onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          const target = returnFocusRef.current;
+          if (target?.isConnected) target.focus();
+        }}
         className={cn(
           "fixed left-1/2 top-[38%] z-50 w-[440px] max-w-[92vw] -translate-x-1/2 -translate-y-1/2",
           "rounded-xl border border-edge-strong bg-surface-2 p-4 shadow-2xl shadow-black/50",

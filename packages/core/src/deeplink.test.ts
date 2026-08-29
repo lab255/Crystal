@@ -110,13 +110,13 @@ describe("formatDeepLink", () => {
     const url = formatDeepLink({
       mode: "threads",
       ws: "abc",
-      threads: { thread: "r1", find: "auth", compose: true },
+      threads: { thread: "r1", turn: "r2", find: "auth", compose: true },
     });
-    expect(url).toBe("#/threads?ws=abc&thread=r1&find=auth&compose=1");
+    expect(url).toBe("#/threads?ws=abc&thread=r1&turn=r2&find=auth&compose=1");
     expect(parseDeepLink(url)).toEqual({
       mode: "threads",
       ws: "abc",
-      threads: { thread: "r1", find: "auth", compose: true },
+      threads: { thread: "r1", turn: "r2", find: "auth", compose: true },
     });
     expect(formatDeepLink({ mode: "threads" })).toBe("#/threads");
   });
@@ -875,6 +875,9 @@ describe("deepLinkNavIdentity", () => {
       deepLinkNavIdentity(a),
     );
     expect(deepLinkNavIdentity({ mode: "threads", threads: { thread: "r2" } })).not.toBe(
+      deepLinkNavIdentity(a),
+    );
+    expect(deepLinkNavIdentity({ mode: "threads", threads: { thread: "r1", turn: "r2" } })).toBe(
       deepLinkNavIdentity(a),
     );
     expect(deepLinkNavIdentity({ mode: "threads" })).not.toBe(deepLinkNavIdentity(a));

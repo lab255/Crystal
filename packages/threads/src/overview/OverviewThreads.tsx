@@ -1,5 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Copy, ExternalLink, Pause, Play, Square, Terminal, Trash2 } from "lucide-react";
+import {
+  Archive,
+  Bot,
+  Copy,
+  ExternalLink,
+  Mail,
+  MailOpen,
+  Pause,
+  Pin,
+  PinOff,
+  Play,
+  RotateCcw,
+  Square,
+  Terminal,
+  Trash2,
+  XCircle,
+} from "lucide-react";
 import { formatDeepLink, formatWsRef, isProgramTerminal } from "@crystal/core";
 import {
   EMPTY_EVENTS,
@@ -232,11 +248,13 @@ export default function OverviewThreads() {
       {
         type: "item",
         label: thread.pinned ? "Unpin" : "Pin",
+        icon: thread.pinned ? PinOff : Pin,
         onSelect: () => read.togglePin(thread.readKey),
       },
       {
         type: "item",
         label: thread.indicator === "unread" ? "Mark as read" : "Mark as unread",
+        icon: thread.indicator === "unread" ? MailOpen : Mail,
         disabled: thread.indicator !== "unread" && !read.seen[thread.readKey],
         onSelect: () => {
           if (thread.indicator === "unread" && thread.lastActivity) {
@@ -253,6 +271,8 @@ export default function OverviewThreads() {
       const client = fleet.clientOf(ref.sid);
       const disconnected = client == null;
       const face = thread.summary!.node.run;
+      const workflowClosed = thread.workflow != null
+        && ["completed", "failed", "cancelled"].includes(thread.workflow.status);
       return [
         {
           type: "item",
@@ -283,8 +303,9 @@ export default function OverviewThreads() {
             type: "item" as const,
             label: thread.workflow.status === "paused" ? "Resume workflow" : "Pause workflow",
             icon: thread.workflow.status === "paused" ? Play : Pause,
-            disabled: disconnected,
-            hint: disconnected ? "server disconnected" : undefined,
+            disabled: disconnected || workflowClosed,
+            hint: workflowClosed ? "workflow is closed"
+              : disconnected ? "server disconnected" : undefined,
             onSelect: () => act(() => client!.request("workflow.setPaused", {
               ws: ref.ws,
               workflowId: thread.workflow!.id,
@@ -294,6 +315,7 @@ export default function OverviewThreads() {
           {
             type: "item" as const,
             label: "Compact manager transcript",
+            icon: Archive,
             disabled: disconnected || thread.live,
             hint: disconnected ? "server disconnected"
               : thread.live ? "refused while runs are live" : undefined,
@@ -305,9 +327,11 @@ export default function OverviewThreads() {
           {
             type: "item" as const,
             label: "Cancel workflow",
+            icon: XCircle,
             danger: true,
-            disabled: disconnected,
-            hint: disconnected ? "server disconnected" : undefined,
+            disabled: disconnected || workflowClosed,
+            hint: workflowClosed ? "workflow is closed"
+              : disconnected ? "server disconnected" : undefined,
             onSelect: () => {
               setConfirmation({
                 title: "Cancel this workflow?",
@@ -343,6 +367,7 @@ export default function OverviewThreads() {
       {
         type: "item",
         label: program.managerRunId ? "Close manager" : "Start manager",
+        icon: Bot,
         onSelect: () => act(() => program.managerRunId
           ? closeManager(program.id)
           : startManager(program.id)),
@@ -350,15 +375,18 @@ export default function OverviewThreads() {
       {
         type: "item",
         label: program.status === "paused" ? "Resume program" : "Pause program",
+        icon: program.status === "paused" ? Play : Pause,
         onSelect: () => act(() => setProgramPaused(program.id, program.status !== "paused")),
       },
       {
         type: "submenu",
         label: "Retry delivery",
+        icon: RotateCcw,
         disabled: !terminalDeliveries.length,
         entries: terminalDeliveries.map((delivery) => ({
           type: "item",
           label: delivery.projectName,
+          icon: RotateCcw,
           onSelect: () => act(() => retryDelivery(program.id, delivery.id)),
         })),
       },

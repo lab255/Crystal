@@ -52,7 +52,11 @@ export function ContextMenu({
       if (!ref.current?.contains(evt.target as Node)) onClose();
     };
     const onKeyDown = (evt: KeyboardEvent) => {
-      if (evt.key === "Escape") onClose();
+      if (evt.key === "Escape") {
+        evt.preventDefault();
+        evt.stopPropagation();
+        onClose();
+      }
     };
     window.addEventListener("pointerdown", onPointerDown, true);
     window.addEventListener("keydown", onKeyDown);
@@ -114,6 +118,9 @@ function MenuPanel({
   }, [x, y, align, anchor]);
 
   const openEntry = open != null ? entries[open.index] : undefined;
+  const reservesIconGutter = entries.some(
+    (entry) => (entry.type === "item" || entry.type === "submenu") && entry.icon,
+  );
 
   return (
     <>
@@ -166,7 +173,8 @@ function MenuPanel({
                       : "text-ink-muted hover:bg-surface-active hover:text-ink",
                 )}
               >
-                {Icon ? <Icon className="h-3.5 w-3.5 shrink-0" /> : null}
+                {Icon ? <Icon className="h-3.5 w-3.5 shrink-0" />
+                  : reservesIconGutter ? <span className="h-3.5 w-3.5 shrink-0" /> : null}
                 <span className="min-w-0 flex-1 truncate">{entry.label}</span>
                 {entry.hint ? (
                   <span className="max-w-28 shrink-0 truncate font-mono text-[9.5px] text-ink-faint">
@@ -199,7 +207,8 @@ function MenuPanel({
                     : "text-ink-muted hover:bg-surface-active hover:text-ink",
               )}
             >
-              {Icon ? <Icon className="h-3.5 w-3.5 shrink-0" /> : null}
+              {Icon ? <Icon className="h-3.5 w-3.5 shrink-0" />
+                : reservesIconGutter ? <span className="h-3.5 w-3.5 shrink-0" /> : null}
               <span className="min-w-0 flex-1 truncate">{entry.label}</span>
               {entry.checked ? <span className="shrink-0 text-crystal-300">✓</span> : null}
               {entry.hint ? (

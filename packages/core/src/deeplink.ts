@@ -168,6 +168,8 @@ export interface ArchitectLink {
 export interface ThreadsLink {
   /** Any run id in the target chain (unset = no thread selected). */
   thread?: string;
+  /** Turn to reveal and briefly focus inside the selected thread. */
+  turn?: string;
   /** Thread-rail text filter. */
   find?: string;
   /** New-thread composer open. */
@@ -351,6 +353,7 @@ export function formatDeepLink(link: DeepLink): string {
   } else if (mode === "threads") {
     const t = link.threads ?? {};
     if (t.thread) add("thread", t.thread);
+    if (t.turn) add("turn", t.turn);
     if (t.find) add("find", t.find);
     if (t.compose) add("compose", "1");
   } else if (mode === "code") {
@@ -550,6 +553,8 @@ export function parseDeepLink(hash: string): DeepLink {
     const t: ThreadsLink = {};
     const thread = params.get("thread");
     if (thread) t.thread = thread;
+    const turn = params.get("turn");
+    if (turn) t.turn = turn;
     const find = params.get("find");
     if (find) t.find = find;
     if (params.get("compose") === "1") t.compose = true;

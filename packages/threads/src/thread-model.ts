@@ -4,6 +4,7 @@ import {
   sessionHeadline,
   sessionLatestActivity,
   sessionSubtreeCost,
+  sessionWorkflowId,
   type AgentRun,
   type RunNode,
   type SessionNamingContext,
@@ -138,14 +139,20 @@ export function buildThreadGroups(input: ThreadModelInput): ThreadGroup[] {
     return b.lastActivity.localeCompare(a.lastActivity);
   });
 
-  const groups = new Map<string | null, ThreadGroup>();
+  const groups = new Map<string, ThreadGroup>();
   for (const summary of summaries) {
-    const key = summary.projectId;
+    const workflowId = summary.projectId ? null : sessionWorkflowId(summary.node);
+    const key = summary.projectId ? `project:${summary.projectId}`
+      : workflowId ? `workflow:${workflowId}` : "ad-hoc";
     let group = groups.get(key);
     if (!group) {
       group = {
-        projectId: key,
-        name: (key ? input.projectNameOf?.(key) : null) ?? (key ? key : "Ad hoc"),
+        projectId: summary.projectId,
+        name: summary.projectId
+          ? (input.projectNameOf?.(summary.projectId) ?? summary.projectId)
+          : workflowId
+            ? (input.namingContext?.workflowNameOf?.(workflowId) ?? "Workflows")
+            : "Ad hoc",
         threads: [],
         ...input.scope,
       };

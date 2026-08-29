@@ -254,6 +254,25 @@ describe("buildTranscriptItems", () => {
     expect(q && q.kind === "question" ? q.record?.id : null).toBe("q1");
   });
 
+  it("marks a question answered from its later delivery notice when the board join is stale", () => {
+    const turn = run({ id: "r1", prompt: "x", status: "completed" });
+    const answer = run({
+      id: "r2",
+      prompt: 'Answer to your question "Ship the release to production?": yes',
+      resumedFromRunId: "r1",
+      status: "completed",
+    });
+    const items = buildTranscriptItems({
+      turns: [turn, answer],
+      eventsByRun: {
+        r1: events("r1", [{ type: "question", text: "Ship the release to production?" }]),
+        r2: [],
+      },
+    });
+    const question = items.find((item) => item.kind === "question");
+    expect(question?.kind === "question" ? question.answeredByNotice : null).toBe("yes");
+  });
+
   it("nests the dispatched worker under its delegation row", () => {
     const manager = run({ id: "m1", prompt: "Manage", role: "manager", status: "completed", createdAt: "2026-01-01T00:00:00Z" });
     const worker = run({ id: "w1", prompt: "Do the thing", parentRunId: "m1", status: "completed", createdAt: "2026-01-02T00:00:00Z" });

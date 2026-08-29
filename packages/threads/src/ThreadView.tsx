@@ -28,6 +28,7 @@ import {
 import { Badge, Button, StatusDot, Tooltip, cn } from "@crystal/ui";
 import { ThreadComposer } from "./ThreadComposer.js";
 import { SpendLine } from "./spend-line.js";
+import { StatusBadge } from "./spend-line.js";
 import { RunContextDetails } from "./RunContextDetails.js";
 import { ThreadTranscript } from "./ThreadTranscript.js";
 import { buildTranscriptItems, type TranscriptItem } from "./transcript-items.js";
@@ -94,6 +95,9 @@ function flattenRuns(node: RunNode): AgentRun[] {
 export function ThreadView({
   thread,
   onSeen,
+  focusTurnId,
+  onCopyTurnLink,
+  onFocusedTurn,
   className,
 }: {
   thread: ThreadSummary;
@@ -101,6 +105,9 @@ export function ThreadView({
    * is the thread's own latest-activity time (server clock domain) — never
    * the client clock, which can sit behind the bridge's stamps. */
   onSeen?: (threadId: string, stamp: string) => void;
+  focusTurnId?: string;
+  onCopyTurnLink?: (runId: string) => void | Promise<void>;
+  onFocusedTurn?: (runId: string) => void;
   className?: string;
 }) {
   const { client } = useCrystal();
@@ -219,9 +226,10 @@ export function ThreadView({
             {working && face.startedAt ? <span>{formatElapsed(face.startedAt, nowMs)}</span> : null}
             {workflow && spend ? (
               <span className="flex items-center gap-1">
-                workflow <SpendLine costUsd={spend.costUsd} budgetUsd={workflow.budgetUsd} />
+                Workflow <SpendLine costUsd={spend.costUsd} budgetUsd={workflow.budgetUsd} />
               </span>
             ) : null}
+            {workflow ? <StatusBadge status={workflow.status} /> : null}
           </div>
         </div>
         {working ? (
@@ -259,12 +267,21 @@ export function ThreadView({
           renderQuestion={renderQuestion}
           renderWorker={renderWorker}
           onExpandTurn={(runId) => loadEvents(runId)}
+          focusTurnId={focusTurnId}
+          onCopyTurnLink={onCopyTurnLink}
+          onFocusedTurn={onFocusedTurn}
         />
       )}
 
       <ChangesFooter run={face} surface={surface} />
 
-      <ThreadComposer run={face} className="border-t border-edge" />
+      {workflow && ["completed", "failed", "cancelled"].includes(workflow.status) ? (
+        <div className="border-t border-edge px-4 py-3 text-xs text-ink-muted">
+          This workflow is closed. The transcript is read-only.
+        </div>
+      ) : (
+        <ThreadComposer run={face} className="border-t border-edge" />
+      )}
     </div>
   );
 }
