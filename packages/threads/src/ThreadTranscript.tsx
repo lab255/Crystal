@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { formatRunCost, formatRunDuration } from "@crystal/client";
 import { Badge, Spinner, StatusDot, cn } from "@crystal/ui";
+import { renderLightMarkdown, type InlineSpan } from "./light-markdown.js";
 import type { TranscriptItem, WorkEntry } from "./transcript-items.js";
 
 export interface QuestionAnswerResult {
@@ -432,9 +433,56 @@ function AssistantRow({ text, thinking }: { text: string; thinking: string | nul
           {thinking}
         </div>
       ) : null}
-      <div className="whitespace-pre-wrap px-1 text-xs leading-relaxed text-ink">{text}</div>
+      <LightMarkdown text={text} />
     </div>
   );
+}
+
+function LightMarkdown({ text }: { text: string }) {
+  const blocks = renderLightMarkdown(text);
+  return (
+    <div className="space-y-2 px-1 text-xs leading-relaxed text-ink">
+      {blocks.map((block, index) => {
+        const key = `${block.type}:${index}`;
+        switch (block.type) {
+          case "paragraph":
+            return <p key={key} className="whitespace-pre-wrap">{renderInline(block.spans)}</p>;
+          case "heading": {
+            const className = "font-semibold text-ink";
+            if (block.level === 1) return <h1 key={key} className={className}>{renderInline(block.spans)}</h1>;
+            if (block.level === 2) return <h2 key={key} className={className}>{renderInline(block.spans)}</h2>;
+            return <h3 key={key} className={className}>{renderInline(block.spans)}</h3>;
+          }
+          case "list": {
+            const List = block.ordered ? "ol" : "ul";
+            return (
+              <List key={key} className={cn("pl-4", block.ordered ? "list-decimal" : "list-disc")}>
+                {block.items.map((item, itemIndex) => <li key={itemIndex}>{renderInline(item)}</li>)}
+              </List>
+            );
+          }
+          case "code":
+            return (
+              <pre key={key} className="overflow-x-auto whitespace-pre-wrap rounded bg-surface-2 px-2.5 py-2 font-mono text-[12px] text-ink">
+                <code data-language={block.language || undefined}>{block.text}</code>
+              </pre>
+            );
+        }
+      })}
+    </div>
+  );
+}
+
+function renderInline(spans: readonly InlineSpan[]): ReactNode[] {
+  return spans.map((span, index) => {
+    switch (span.type) {
+      case "text": return span.text;
+      case "bold": return <strong key={index}>{span.text}</strong>;
+      case "italic": return <em key={index}>{span.text}</em>;
+      case "code": return <code key={index} className="rounded bg-surface-2 px-1 font-mono text-[12px]">{span.text}</code>;
+      case "link": return <a key={index} href={span.href} target="_blank" rel="noreferrer" className="underline">{span.text}</a>;
+    }
+  });
 }
 
 function WorkRow({ item }: { item: Extract<TranscriptItem, { kind: "work" }> }) {
