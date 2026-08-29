@@ -1,6 +1,32 @@
 import { describe, expect, it } from "vitest";
 import type { TranscriptItem } from "./transcript-items.js";
-import { searchTranscript, workEntryText } from "./transcript-search.js";
+import { resolveActiveHit, searchTranscript, workEntryText } from "./transcript-search.js";
+
+describe("resolveActiveHit", () => {
+  const hit = (itemId: string, start: number) => ({
+    itemId, turnId: itemId, field: "text" as const, start, end: start + 1,
+  });
+
+  it("keeps the active hit across a reorder", () => {
+    const first = hit("first", 0);
+    const active = hit("active", 2);
+    expect(resolveActiveHit([active, first], "active:text::2", 1)).toEqual({
+      index: 0,
+      key: "active:text::2",
+    });
+  });
+
+  it("clamps the active index when hits shrink", () => {
+    expect(resolveActiveHit([hit("only", 0)], "removed:text::0", 3)).toEqual({
+      index: 0,
+      key: "only:text::0",
+    });
+  });
+
+  it("returns zero when there are no hits", () => {
+    expect(resolveActiveHit([], "removed:text::0", 2)).toEqual({ index: 0, key: null });
+  });
+});
 
 describe("searchTranscript", () => {
   const items: TranscriptItem[] = [

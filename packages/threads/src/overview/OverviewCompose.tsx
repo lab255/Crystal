@@ -19,6 +19,7 @@ import {
 import { Button, Select, Switch, Textarea } from "@crystal/ui";
 
 const STORAGE_KEY = "crystal.overview.compose";
+// Drafts are scoped per project; explicit Cancel clears one, while Escape preserves it.
 const DRAFT_KEY = "crystal.overview.compose.draft";
 const EMPTY_AGENTS: AgentProfile[] = [];
 
@@ -41,9 +42,13 @@ function promptName(prompt: string): string {
   return prompt.trim().split(/\r?\n/, 1)[0]?.trim().slice(0, 120) ?? "";
 }
 
-function readDraft(): string {
+function draftKey(projectKey: string): string {
+  return `${DRAFT_KEY}:${projectKey || "~"}`;
+}
+
+function readDraft(projectKey: string): string {
   try {
-    return sessionStorage.getItem(DRAFT_KEY) ?? "";
+    return sessionStorage.getItem(draftKey(projectKey)) ?? "";
   } catch {
     return "";
   }
@@ -77,7 +82,7 @@ export function OverviewCompose({
   const initialTarget = chooseInitialTarget(target, saved.target, choices);
   const [projectKey, setProjectKey] = useState(initialTarget);
   const [kind, setKind] = useState<ComposeKind>(saved.kind === "workflow" ? "workflow" : "thread");
-  const [prompt, setPrompt] = useState(readDraft);
+  const [prompt, setPrompt] = useState(() => readDraft(initialTarget));
   const [name, setName] = useState("");
   const [nameEdited, setNameEdited] = useState(false);
   const [templateId, setTemplateId] = useState("standard");
@@ -110,16 +115,19 @@ export function OverviewCompose({
   useEffect(() => {
     if (projectKey) return;
     const next = chooseInitialTarget(target, saved.target, choices);
-    if (next) setProjectKey(next);
+    if (next) {
+      setProjectKey(next);
+      setPrompt(readDraft(next));
+    }
   }, [choices, projectKey, saved.target, target]);
 
   useEffect(() => {
     try {
-      sessionStorage.setItem(DRAFT_KEY, prompt);
+      sessionStorage.setItem(draftKey(projectKey), prompt);
     } catch {
       // Persistence is optional.
     }
-  }, [prompt]);
+  }, [projectKey, prompt]);
 
   useEffect(() => {
     if (!projectKey || !online) return;
@@ -220,7 +228,7 @@ export function OverviewCompose({
         // Persistence is optional.
       }
       try {
-        sessionStorage.removeItem(DRAFT_KEY);
+        sessionStorage.removeItem(draftKey(projectKey));
       } catch {
         // Persistence is optional.
       }
@@ -233,6 +241,14 @@ export function OverviewCompose({
   }
 
   const composerKeydown = useComposerKeydown(() => void dispatch());
+  const cancelAndClearDraft = () => {
+    try {
+      sessionStorage.removeItem(draftKey(projectKey));
+    } catch {
+      // Persistence is optional.
+    }
+    onCancel();
+  };
   const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === "Escape") {
       event.preventDefault();
@@ -257,7 +273,7 @@ export function OverviewCompose({
         <div className="mt-4 grid gap-3">
           <label className="grid gap-1 text-xs text-ink-muted">
             Project
-            <Select value={projectKey} onChange={(event) => { setProjectKey(event.target.value); setAgentId(""); }}>
+            <Select value={projectKey} onChange={(event) => { const next = event.target.value; setProjectKey(next); setPrompt(readDraft(next)); setAgentId(""); }}>
               {!choices.length ? <option value="">No open projects</option> : null}
               {multiServer ? connections.map((connection) => (
                 <optgroup key={connection.sid} label={connection.label}>
@@ -325,7 +341,7 @@ export function OverviewCompose({
           </div>
           {kind === "thread" ? (
             <div className="flex flex-wrap items-center gap-4 text-xs text-ink-muted">
-              <label className="flex items-center gap-1.5"><Switch aria-label="Isolate in a git worktree" checked={worktree} onChange={setWorktree} /> Isolate in a git worktree</label>
+              <label className="flex items-center gap-1.5"><Switch aria-label="Isolate in a git worktree" checked={worktree} onChange={(value) => { setWorktree(value); if (value) setInteractivePreference(false); }} /> Isolate in a git worktree</label>
               {active ? <label className="flex items-center gap-1.5"><Switch aria-label="Interactive terminal" checked={interactive} onChange={(value) => { setInteractivePreference(value); if (value) setWorktree(false); }} /> Interactive terminal</label> : <span>Open the project to start an interactive session.</span>}
             </div>
           ) : null}
@@ -333,7 +349,7 @@ export function OverviewCompose({
           {loadError ? <p role="alert" className="text-xs text-danger">{loadError}</p> : null}
           <div className="flex justify-end gap-2">
             {!hasOpenProjects ? <span className="self-center text-xs text-ink-muted">No open projects</span> : null}
-            <Button variant="ghost" size="sm" onClick={onCancel}>Cancel</Button>
+            <Button variant="ghost" size="sm" onClick={cancelAndClearDraft}>Cancel</Button>
             <Button variant="primary" size="sm" title={!hasOpenProjects ? "No open projects" : !budgetValid ? "Budget must be a positive number or empty" : undefined} disabled={busy || !prompt.trim() || !selected || !online || !budgetValid} onClick={() => void dispatch()}>
               <Send className="h-3.5 w-3.5" /> {busy ? "Starting…" : "Start"}
             </Button>

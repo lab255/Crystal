@@ -11,6 +11,26 @@ export interface SearchHit {
   end: number;
 }
 
+function hitKey(hit: SearchHit): string {
+  return `${hit.itemId}:${hit.field}:${hit.entryIndex ?? ""}:${hit.start}`;
+}
+
+/** Preserve a selected match as search results are reordered or removed. */
+export function resolveActiveHit(
+  hits: readonly SearchHit[],
+  preservedKey: string | null,
+  current: number,
+): { index: number; key: string | null } {
+  if (!hits.length) return { index: 0, key: null };
+  const preservedIndex = preservedKey == null
+    ? -1
+    : hits.findIndex((hit) => hitKey(hit) === preservedKey);
+  const index = preservedIndex >= 0
+    ? preservedIndex
+    : Math.max(0, Math.min(current, hits.length - 1));
+  return { index, key: hitKey(hits[index]!) };
+}
+
 function turnIdOf(item: TranscriptItem): string {
   if ("runId" in item) return item.runId;
   return item.id.slice(0, item.id.lastIndexOf(":"));

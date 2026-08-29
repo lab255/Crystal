@@ -1,6 +1,20 @@
 import { ChevronDown, ChevronUp, X } from "lucide-react";
 import { Spinner } from "@crystal/ui";
 
+function LoadAllButton({ loading, onLoadAll }: { loading: boolean; onLoadAll: () => void | Promise<void> }) {
+  return (
+    <button
+      type="button"
+      onClick={() => void onLoadAll()}
+      disabled={loading}
+      className="flex items-center gap-1 text-[10px] font-medium text-accent-amber hover:underline disabled:opacity-50"
+    >
+      {loading ? <Spinner className="h-3 w-3" /> : null}
+      {loading ? "Loading…" : "Load all"}
+    </button>
+  );
+}
+
 export function TranscriptFindBar({
   query,
   onQueryChange,
@@ -63,7 +77,7 @@ export function TranscriptFindBar({
       </div>
       <button type="button" aria-label="Previous match" onClick={onPrevious} disabled={!hitCount} className="rounded p-1 text-ink-muted hover:bg-surface-2 disabled:opacity-40"><ChevronUp className="h-3.5 w-3.5" /></button>
       <button type="button" aria-label="Next match" onClick={onNext} disabled={!hitCount} className="rounded p-1 text-ink-muted hover:bg-surface-2 disabled:opacity-40"><ChevronDown className="h-3.5 w-3.5" /></button>
-      {unloadedCount && onLoadAll ? <button type="button" onClick={() => void onLoadAll()} disabled={loadingAll} className="flex items-center gap-1 text-[10px] font-medium text-accent-amber hover:underline disabled:opacity-50">{loadingAll ? <Spinner className="h-3 w-3" /> : null}{loadingAll ? "Loading…" : "Load all"}</button> : null}
+      {unloadedCount && onLoadAll ? <LoadAllButton loading={loadingAll} onLoadAll={onLoadAll} /> : null}
       <button type="button" aria-label="Close find" onClick={onClose} className="rounded p-1 text-ink-muted hover:bg-surface-2"><X className="h-3.5 w-3.5" /></button>
     </div>
   );

@@ -16,10 +16,11 @@ import { Badge, Spinner, StatusDot, cn } from "@crystal/ui";
 import { renderLightMarkdown, type InlineSpan } from "./light-markdown.js";
 import type { TranscriptItem, WorkEntry } from "./transcript-items.js";
 import { TranscriptFindBar } from "./TranscriptFindBar.js";
-import { searchTranscript, workEntryText, type SearchHit } from "./transcript-search.js";
+import { resolveActiveHit, searchTranscript, workEntryText, type SearchHit } from "./transcript-search.js";
 
 type IndexedHit = SearchHit & { index: number };
 const NO_HITS: readonly IndexedHit[] = [];
+const EMPTY_HITS_BY_ITEM = new Map<string, IndexedHit[]>();
 
 function hitKey(hit: SearchHit): string {
   return `${hit.itemId}:${hit.field}:${hit.entryIndex ?? ""}:${hit.start}`;
@@ -88,8 +89,8 @@ export function ThreadTranscript({
     [items, query, renderQuestion],
   );
   const hitsByItem = useMemo(() => {
+    if (!findOpen || !query.trim()) return EMPTY_HITS_BY_ITEM;
     const grouped = new Map<string, IndexedHit[]>();
-    if (!findOpen || !query.trim()) return grouped;
     hits.forEach((hit, index) => {
       const itemHits = grouped.get(hit.itemId) ?? [];
       if (!grouped.has(hit.itemId)) grouped.set(hit.itemId, itemHits);
@@ -124,16 +125,16 @@ export function ThreadTranscript({
 
   useEffect(() => {
     setActiveHit(0);
-    activeKeyRef.current = hits[0] ? hitKey(hits[0]) : null;
-  }, [hits, query]);
+    activeKeyRef.current = null;
+  }, [query]);
 
   useEffect(() => {
-    const preserved = activeKeyRef.current;
-    const preservedIndex = preserved == null ? -1 : hits.findIndex((hit) => hitKey(hit) === preserved);
-    const next = hits.length ? (preservedIndex >= 0 ? preservedIndex : Math.min(activeHit, hits.length - 1)) : 0;
-    setActiveHit(next);
-    activeKeyRef.current = hits[next] ? hitKey(hits[next]!) : null;
-  }, [activeHit, hits]);
+    setActiveHit((current) => {
+      const resolved = resolveActiveHit(hits, activeKeyRef.current, current);
+      activeKeyRef.current = resolved.key;
+      return resolved.index;
+    });
+  }, [hits]);
 
   useEffect(() => {
     if (!findOpen) return;
@@ -148,7 +149,7 @@ export function ThreadTranscript({
         ?.scrollIntoView({ block: "center", behavior: "auto" });
     });
     return () => cancelAnimationFrame(frame);
-  }, [activeKey, activeHit, findOpen, hits]);
+  }, [activeKey, activeHit, findOpen]);
 
   useEffect(() => {
     focusedRef.current = focusTurnId;
@@ -560,8 +561,8 @@ function UserRow({ text, hits, activeHit }: { text: string; hits: readonly Index
 
 const AssistantRow = memo(function AssistantRow({ text, thinking, hits, activeHit }: { text: string; thinking: string | null; hits: readonly IndexedHit[]; activeHit: number }) {
   const [showThinking, setShowThinking] = useState(false);
-  const thinkingHits = hits.filter((hit) => hit.field === "thinking");
-  const textHits = hits.filter((hit) => hit.field === "text");
+  const thinkingHits = useMemo(() => hits.filter((hit) => hit.field === "thinking"), [hits]);
+  const textHits = useMemo(() => hits.filter((hit) => hit.field === "text"), [hits]);
   useEffect(() => {
     if (thinkingHits.some((hit) => hit.index === activeHit)) setShowThinking(true);
   }, [activeHit, thinkingHits]);

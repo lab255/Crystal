@@ -562,6 +562,7 @@ export default function OverviewThreads() {
             ws: formatWsRef(sid, ws),
             mode: "threads",
             threads: { thread: run.id, compose: null },
+            projects: { compose: null, target: null },
           });
           return;
         }
