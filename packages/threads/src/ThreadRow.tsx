@@ -39,12 +39,14 @@ export function ThreadRow({
   nowMs,
   onSelect,
   onTogglePin,
+  onContextMenu,
 }: {
   thread: ThreadSummary;
   selected: boolean;
   nowMs: number;
   onSelect: () => void;
   onTogglePin: () => void;
+  onContextMenu?: React.MouseEventHandler;
 }) {
   const workers = thread.node.workers.length;
   return (
@@ -57,6 +59,9 @@ export function ThreadRow({
       <button
         type="button"
         onClick={onSelect}
+        onContextMenu={onContextMenu}
+        aria-selected={selected}
+        role="option"
         title={INDICATOR_LABEL[thread.indicator]}
         className="flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-crystal-400/60"
       >

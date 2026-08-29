@@ -79,6 +79,7 @@ export interface ThreadReadState {
    * fresh endedAt stamps.
    */
   markSeen: (threadId: string, stamp: string) => void;
+  clearSeen: (threadId: string) => void;
   togglePin: (threadId: string) => void;
 }
 
@@ -108,5 +109,15 @@ export function useThreadReadState(): ThreadReadState {
     });
   }, []);
 
-  return { seen, pins, markSeen, togglePin };
+  const clearSeen = useCallback((threadId: string) => {
+    setSeen((current) => {
+      if (!(threadId in current)) return current;
+      const next = { ...current };
+      delete next[threadId];
+      persistSeen(next);
+      return next;
+    });
+  }, []);
+
+  return { seen, pins, markSeen, clearSeen, togglePin };
 }

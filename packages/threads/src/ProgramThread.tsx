@@ -3,7 +3,6 @@ import { MessageSquarePlus, Play, RotateCcw, Square } from "lucide-react";
 import {
   MessageComposer,
   QuestionCard,
-  chainOf,
   questionDeliveryNotice,
   useHub,
   useNav,
@@ -11,7 +10,6 @@ import {
   type ComposerSendResult,
 } from "@crystal/client";
 import {
-  programIdOfRun,
   type AgentRun,
   type HubQuestion,
   type Program,
@@ -21,6 +19,7 @@ import { Button, EmptyState, Input, Select, Spinner, Textarea, Tooltip, cn } fro
 import { SpendLine, StatusBadge, parseBudget } from "./spend-line.js";
 import { ThreadTranscript } from "./ThreadTranscript.js";
 import { buildTranscriptItems } from "./transcript-items.js";
+import { programChain } from "./overview/overview-thread-model.js";
 
 const EMPTY_PROGRAMS: Program[] = [];
 const EMPTY_HUB_RUNS: AgentRun[] = [];
@@ -96,7 +95,7 @@ export function ProgramThread({ className }: { className?: string }) {
   );
 }
 
-function CreateProgram({ onCreated }: { onCreated: (program: Program) => void }) {
+export function CreateProgram({ onCreated }: { onCreated: (program: Program) => void }) {
   const createProgram = useHub((s) => s.createProgram);
   const [name, setName] = useState("");
   const [goal, setGoal] = useState("");
@@ -164,7 +163,7 @@ function CreateProgram({ onCreated }: { onCreated: (program: Program) => void })
   );
 }
 
-function ProgramSession({ program }: { program: Program }) {
+export function ProgramSession({ program }: { program: Program }) {
   const spend = useHub((s) => s.spend[program.id] as ProgramSpend | undefined);
   const questions = useHub((s) => s.questions[program.id]);
   const runs = useHub((s) => (s.loaded ? s.runs : EMPTY_HUB_RUNS));
@@ -186,15 +185,7 @@ function ProgramSession({ program }: { program: Program }) {
   // The manager conversation: this program's hub runs collapsed to a resume
   // chain — anchored on managerRunId when live, else the retired chain's
   // history (rendered read-only below).
-  const chain = useMemo(() => {
-    const mine = runs.filter((r) => programIdOfRun(r) === program.id);
-    if (!mine.length) return [];
-    const anchor =
-      (program.managerRunId != null
-        ? mine.find((r) => r.id === program.managerRunId)
-        : null) ?? mine[0]!;
-    return chainOf(mine, anchor);
-  }, [runs, program.id, program.managerRunId]);
+  const chain = useMemo(() => programChain(program, runs), [runs, program]);
   const face = chain[chain.length - 1] ?? null;
   const working =
     hasManager && face != null && (face.status === "running" || face.status === "queued");

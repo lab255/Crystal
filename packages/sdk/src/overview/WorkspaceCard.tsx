@@ -33,6 +33,7 @@ import {
   useWorkspaces,
   wsKey,
 } from "@crystal/client";
+import { formatOverviewThreadId } from "@crystal/threads";
 import { Tooltip, TrafficLightDot, cn } from "@crystal/ui";
 import { TodoSection } from "./TodoSection.js";
 
@@ -133,7 +134,10 @@ export function WorkspaceCard({
   const goToChat = () => {
     updateNav({
       mode: "projects",
-      projects: { view: "threads", program: programId },
+      projects: {
+        view: "threads",
+        thread: programId ? formatOverviewThreadId({ kind: "program", programId }) : null,
+      },
     });
   };
 

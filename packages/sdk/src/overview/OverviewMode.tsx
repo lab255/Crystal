@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import { FolderPlus, Globe2, Inbox, LayoutGrid, MessagesSquare, Unplug } from "lucide-react";
 import { formatWsRef, type OverviewViewId } from "@crystal/core";
-import { useCrystal, useFleetConnections, useHub, useNav, useNavUpdate } from "@crystal/client";
+import { useCrystal, useFleetConnections, useFleetNeedsYou, useHub, useNav, useNavUpdate } from "@crystal/client";
 import { Button, EmptyState, Input, Tooltip, cn } from "@crystal/ui";
-import { ProgramThread, QuestionInbox } from "@crystal/threads";
+import { OverviewThreads, QuestionInbox } from "@crystal/threads";
 import { OpenWorkspaceDialog } from "../OpenWorkspaceDialog.js";
 import { FleetPulse } from "./FleetPulse.js";
 import { LiveRunsPanel } from "./LiveRunsPanel.js";
@@ -26,7 +26,7 @@ export function OverviewMode() {
   const waiting = useHub((s) =>
     Object.values(s.questions).reduce((n, qs) => n + qs.length, 0),
   );
-  const livePrograms = useHub((s) => s.programs.filter((p) => p.status === "running").length);
+  const fleetNeedsYou = useFleetNeedsYou();
 
   // The hub store used to be primed by the hub mode; the Overview owns it now.
   useEffect(() => {
@@ -58,7 +58,7 @@ export function OverviewMode() {
       <div className="flex shrink-0 items-center gap-2 border-b border-edge px-4 py-2">
         <div className="flex items-center gap-0.5 rounded-lg bg-surface-2 p-0.5">
           {tab("dashboard", "Dashboard", <LayoutGrid className="h-3.5 w-3.5" />)}
-          {tab("threads", "Threads", <MessagesSquare className="h-3.5 w-3.5" />, livePrograms)}
+          {tab("threads", "Threads", <MessagesSquare className="h-3.5 w-3.5" />, fleetNeedsYou.count + waiting)}
           {tab("inbox", "Inbox", <Inbox className="h-3.5 w-3.5" />, waiting)}
         </div>
         {view === "inbox" ? (
@@ -73,7 +73,7 @@ export function OverviewMode() {
       </div>
 
       {view === "threads" ? (
-        <ProgramThread />
+        <OverviewThreads />
       ) : view === "inbox" ? (
         <QuestionInbox find={find} />
       ) : (
