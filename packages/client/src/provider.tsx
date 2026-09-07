@@ -1,3 +1,4 @@
+import { bindAccount } from "./account-store.js";
 import {
   createContext,
   useContext,
@@ -552,6 +553,8 @@ export function CrystalProvider({
   }, [runtime]);
 
   const value = useSyncExternalStore(runtime.subscribe, runtime.getValue, runtime.getValue);
+
+  useEffect(() => bindAccount(value.client), [value.client]);
 
   return <CrystalContext.Provider value={value}>{children}</CrystalContext.Provider>;
 }

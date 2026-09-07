@@ -4,6 +4,7 @@ import { PUBLISH_PASSWORD_MIN_LEN, type PublishStatus } from "@crystal/core";
 import {
   checkForDesktopUpdateNow,
   useCrystal,
+  useAccount,
   useDesktopUpdate,
   useSettings,
   type EnterBehavior,
@@ -97,6 +98,10 @@ export function SettingsDialog({
             </div>
           </Section>
 
+          <Section label="Account">
+            <AccountSection />
+          </Section>
+
           <Section label="Updates">
             <UpdateRow />
           </Section>
@@ -134,6 +139,51 @@ function Section({
       <div className="text-[11px] font-medium uppercase tracking-wide text-ink-faint">{label}</div>
       {children}
       {hint ? <div className="text-[11px] text-ink-faint">{hint}</div> : null}
+    </div>
+  );
+}
+
+function AccountSection() {
+  const { client } = useCrystal();
+  const status = useAccount((s) => s.status);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => { setError(null); setBusy(false); }, [client, status]);
+
+  async function act(signOut: boolean) {
+    setBusy(true);
+    setError(null);
+    try {
+      if (signOut) {
+        await client.request("account.signOut", {});
+      } else {
+        const { authorizeUrl } = await client.request("account.signIn", {});
+        window.open(authorizeUrl, "_blank", "noopener");
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Account request failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!status) return <span className="text-xs text-ink-muted">Connecting to account…</span>;
+  return (
+    <div className="flex flex-col gap-2 text-xs text-ink">
+      {status.signedIn ? (
+        <>
+          <div>{status.profile?.name ?? status.profile?.email ?? status.profile?.sub}</div>
+          {status.profile?.name && status.profile.email ? <div className="text-ink-muted">{status.profile.email}</div> : null}
+          <button type="button" disabled={busy} onClick={() => void act(true)}
+            className="w-fit rounded-md bg-surface-2 px-2.5 py-1 text-ink-muted hover:bg-surface-3 hover:text-ink disabled:opacity-50">Sign out</button>
+        </>
+      ) : status.available ? (
+        <button type="button" disabled={busy} onClick={() => void act(false)}
+          className="w-fit rounded-md bg-surface-2 px-2.5 py-1 text-ink-muted hover:bg-surface-3 hover:text-ink disabled:opacity-50">Sign in with able</button>
+      ) : null}
+      {!status.available ? <div className="text-ink-muted">{status.reason}</div> : null}
+      {error ? <div role="alert" className="text-ink-muted">{error}</div> : null}
     </div>
   );
 }

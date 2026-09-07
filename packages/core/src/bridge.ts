@@ -308,6 +308,14 @@ export interface WorkspaceInfo {
   projects: { path: string; project: Project }[];
 }
 
+/** Public account state. Credentials and tokens stay on the server. */
+export interface AccountStatus {
+  available: boolean;
+  reason?: string;
+  signedIn: boolean;
+  profile?: { sub: string; email?: string; name?: string };
+}
+
 /** Method name → { params, result }. The single source of truth for both sides. */
 export interface BridgeMethods {
   "workspaces.list": {
@@ -1373,6 +1381,10 @@ export interface BridgeMethods {
   "hub.runEvents": { params: { runId: string }; result: { events: RunEvent[] } };
   "hub.cancelRun": { params: { runId: string }; result: { ok: true } };
 
+  /** Server-owned able account; tokens never cross the bridge. */
+  "account.status": { params: Record<string, never>; result: AccountStatus };
+  "account.signIn": { params: Record<string, never>; result: { authorizeUrl: string } };
+  "account.signOut": { params: Record<string, never>; result: { ok: true } };
   /** Current publish-server state (relay connection, share URL). */
   "publish.status": { params: Record<string, never>; result: PublishStatus };
   /**
@@ -1442,6 +1454,10 @@ export const UNSCOPED_METHODS: readonly BridgeMethodName[] = [
   "hub.runs",
   "hub.runEvents",
   "hub.cancelRun",
+  // Account identity is server-level.
+  "account.status",
+  "account.signIn",
+  "account.signOut",
   // Publishing is server-level: one relay connection exposes every workspace.
   "publish.status",
   "publish.configure",
@@ -1530,6 +1546,8 @@ export interface BridgeEvents {
   "hub.questionsChanged": { programId: string; questions: HubQuestion[] };
   /** A program-manager run changed (status, usage, result). */
   "hub.runChanged": { run: AgentRun };
+  /** Public account state changed after sign-in, refresh or sign-out. */
+  "account.changed": AccountStatus;
   /**
    * The publish-server state changed (configured, relay connected or lost, a
    * remote client attached). Server-level, so no `ws`.
