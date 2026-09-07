@@ -21,6 +21,7 @@ export interface WorkspaceState {
    * diagrams into it.
    */
   archOverlay: ArchOverlay | null;
+  archOverlayError: string | null;
   loading: boolean;
   error: string | null;
   /** Paths with unsaved (debounced, in-flight) changes. */
@@ -127,6 +128,7 @@ export function createWorkspaceStore(client: BridgeClient): WorkspaceStore {
       info: null,
       roster: null,
       archOverlay: null,
+      archOverlayError: null,
       loading: false,
       error: null,
       pendingSaves: {},
@@ -149,7 +151,7 @@ export function createWorkspaceStore(client: BridgeClient): WorkspaceStore {
             loading: false,
             error: null,
             // The overlay is workspace-scoped — a workspace switch invalidates it.
-            ...(prev && prev.id !== info.id ? { archOverlay: null } : {}),
+            ...(prev && prev.id !== info.id ? { archOverlay: null, archOverlayError: null } : {}),
           });
         } catch (err) {
           if (refreshEpoch !== myEpoch || client.scope !== ws) return;
@@ -161,14 +163,19 @@ export function createWorkspaceStore(client: BridgeClient): WorkspaceStore {
         if (!force && get().archOverlay) return;
         const ws = client.scope;
         const myEpoch = ++overlayEpoch;
+        set({ archOverlayError: null });
         try {
-          const { overlay } = await client.request("arch.getOverlay", ws === null ? {} : { ws });
+          const { overlay } = await client.request(
+            "arch.getOverlay",
+            ws === null ? {} : { ws },
+            { timeoutMs: 180_000 },
+          );
           if (overlayEpoch !== myEpoch || client.scope !== ws) return;
           if (force && get().pendingSaves[ARCH_OVERLAY_FILE]) return;
-          set({ archOverlay: overlay });
+          set({ archOverlay: overlay, archOverlayError: null });
         } catch (err) {
           if (overlayEpoch !== myEpoch || client.scope !== ws) return;
-          set({ error: (err as Error).message });
+          set({ error: (err as Error).message, archOverlayError: (err as Error).message });
         }
       },
 

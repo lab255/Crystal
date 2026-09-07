@@ -100,11 +100,12 @@ export function useCanonicalArchitecture(options?: {
   rendered: ArchitectureGraph | null;
   /** True while the overview/code-map inputs are being fetched or retried. */
   loading: boolean;
-  /** Last derive-input request failure; cleared by the next attempt. */
+  overlayLoaded: boolean;
+  /** Last input or overlay request failure; cleared by the next attempt. */
   error: string | null;
   /** Latest server-side full-pass progress for the active workspace. */
   progress: CodeMapProgress | null;
-  /** Immediately retry a failed derive-input request. */
+  /** Immediately retry input and overlay requests. */
   retry: () => void;
   /**
    * Persist a canvas edit. The edit must be free of anything that is not the
@@ -117,15 +118,12 @@ export function useCanonicalArchitecture(options?: {
   const connection = useConnectionState();
   const activeWs = useWorkspaces((s) => s.activeId);
   const overlay = useWorkspace((s) => s.archOverlay);
+  const overlayError = useWorkspace((s) => s.archOverlayError);
   const loadArchOverlay = useWorkspace((s) => s.loadArchOverlay);
   const updateArchOverlay = useWorkspace((s) => s.updateArchOverlay);
   const surfaces = options?.surfaces ?? null;
   const screensInfo = options?.screens ?? null;
   const schemasInfo = options?.schemas ?? null;
-
-  useEffect(() => {
-    if (connection === "open") void loadArchOverlay();
-  }, [connection, loadArchOverlay]);
 
   const [codeSummary, setCodeSummary] = useState<CodeMapSummary | null>(null);
   const [overviewData, setOverviewData] = useState<SystemOverview | null>(null);
@@ -138,6 +136,10 @@ export function useCanonicalArchitecture(options?: {
   const requestIdRef = useRef(0);
   const inFlightRef = useRef<{ ws: string; requestId: number } | null>(null);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const overlayRef = useRef(overlay);
+  const overlayEpochRef = useRef(0);
+  const overlayInFlightRef = useRef<number | null>(null);
+  const overlayRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sessionHasUserEditRef = useRef(false);
   const sessionWsRef = useRef(activeWs);
   if (sessionWsRef.current !== activeWs) {
@@ -146,6 +148,7 @@ export function useCanonicalArchitecture(options?: {
   }
   activeWsRef.current = activeWs;
   connectionRef.current = connection;
+  overlayRef.current = overlay;
 
   const clearRetryTimer = useCallback(() => {
     if (!retryTimerRef.current) return;
@@ -201,12 +204,57 @@ export function useCanonicalArchitecture(options?: {
     [client, clearRetryTimer],
   );
 
+  const clearOverlayRetryTimer = useCallback(() => {
+    if (!overlayRetryTimerRef.current) return;
+    clearTimeout(overlayRetryTimerRef.current);
+    overlayRetryTimerRef.current = null;
+  }, []);
+
+  const fetchOverlay = useCallback(
+    async function fetchOverlay(ws: string, delay = RETRY_BASE_DELAY_MS): Promise<void> {
+      if (connectionRef.current !== "open" || activeWsRef.current !== ws || overlayRef.current != null) return;
+      const epoch = overlayEpochRef.current;
+      if (overlayInFlightRef.current === epoch) return;
+      clearOverlayRetryTimer();
+      overlayInFlightRef.current = epoch;
+      try {
+        // The store records failures instead of rejecting; retry while data is absent.
+        await loadArchOverlay();
+      } finally {
+        if (overlayInFlightRef.current === epoch) overlayInFlightRef.current = null;
+      }
+      if (
+        overlayEpochRef.current !== epoch ||
+        activeWsRef.current !== ws ||
+        connectionRef.current !== "open" ||
+        overlayRef.current != null
+      ) return;
+      overlayRetryTimerRef.current = setTimeout(() => {
+        overlayRetryTimerRef.current = null;
+        void fetchOverlay(ws, Math.min(delay * 2, 30_000));
+      }, delay);
+    },
+    [loadArchOverlay, clearOverlayRetryTimer],
+  );
+
+  const overlayLoaded = overlay != null;
+  useEffect(() => {
+    if (connection === "open" && activeWs && !overlayLoaded) void fetchOverlay(activeWs);
+    return () => {
+      clearOverlayRetryTimer();
+      overlayEpochRef.current += 1;
+      overlayInFlightRef.current = null;
+    };
+  }, [activeWs, connection, overlayLoaded, fetchOverlay, clearOverlayRetryTimer]);
+
   const retry = useCallback(() => {
     const ws = activeWsRef.current;
     if (!ws || connectionRef.current !== "open") return;
     clearRetryTimer();
     void fetchDeriveInputs(ws);
-  }, [clearRetryTimer, fetchDeriveInputs]);
+    clearOverlayRetryTimer();
+    void fetchOverlay(ws);
+  }, [clearRetryTimer, fetchDeriveInputs, clearOverlayRetryTimer, fetchOverlay]);
 
   useEffect(
     () =>
@@ -379,7 +427,8 @@ export function useCanonicalArchitecture(options?: {
     staleIds,
     rendered,
     loading,
-    error,
+    overlayLoaded,
+    error: error ?? (overlayError ? `overlay: ${overlayError}` : null),
     progress,
     retry,
     commitEdited,

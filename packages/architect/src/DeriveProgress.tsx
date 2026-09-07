@@ -28,6 +28,7 @@ export function DeriveProgress({
   progress,
   loading,
   hasData,
+  overlay,
   rendered,
   error,
 }: {
@@ -35,10 +36,11 @@ export function DeriveProgress({
   progress: CodeMapProgress | null;
   loading: boolean;
   hasData: boolean;
+  overlay: boolean;
   rendered: boolean;
   error?: string | null;
 }) {
-  const stages = deriveStages({ progress, loading, hasData, rendered });
+  const stages = deriveStages({ progress, loading, hasData, overlay, rendered });
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 500);
@@ -110,12 +112,15 @@ export function DeriveProgress({
                       <span className="h-1.5 w-1.5 rounded-full bg-edge" />
                     )}
                   </span>
-                  <span className={cn("flex-1 truncate", st.status === "pending" ? "text-ink-faint" : "text-ink")}>
+                  <span className={cn("min-w-0 flex-1", st.status === "pending" ? "text-ink-faint" : "text-ink")}>
                     {st.label}
                     {st.id === "parse" && st.status === "active" && progress?.total != null ? (
                       <span className="text-ink-muted">
                         {" "}· {N.format(progress.done ?? 0)} / {N.format(progress.total)} files
                       </span>
+                    ) : null}
+                    {st.id === "layout" && hasData && !overlay ? (
+                      <span className="text-ink-muted"> · waiting for overlay (arch.getOverlay)</span>
                     ) : null}
                     {st.id === "derive" && st.status === "active" ? (
                       <span className="text-ink-muted"> · building code index + system overview (no per-file progress)</span>
@@ -137,7 +142,7 @@ export function DeriveProgress({
             </dd>
             <dt>Request</dt>
             <dd className="font-mono text-ink-muted">
-              {loading ? "codemap.get + codemap.overview pending" : hasData ? "inputs received" : "idle"}
+              {loading ? "codemap.get + codemap.overview pending" : hasData ? (overlay ? "inputs received" : "inputs received — overlay pending") : "idle"}
             </dd>
             {error ? (
               <>

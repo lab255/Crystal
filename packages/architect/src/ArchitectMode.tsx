@@ -551,6 +551,7 @@ function DiagramsView({
     reconciled,
     staleIds,
     rendered,
+    overlayLoaded,
     loading: architectureLoading,
     error: architectureError,
     progress: architectureProgress,
@@ -2013,6 +2014,7 @@ function DiagramsView({
                 progress={architectureProgress}
                 loading={architectureLoading}
                 hasData={derived != null}
+                overlay={overlayLoaded}
                 rendered={rendered != null}
                 error={architectureError}
               />
