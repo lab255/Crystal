@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.45.0 (2026-09-07)
+
+### Features
+
+- job queue on a worker pool; watchdog + coalescing on the analysis worker ([`6cfe53b`](https://github.com/lab255/Crystal/commit/6cfe53b))
+
+### Bug Fixes
+
+- overlay load retries with backoff; derive progress shows overlay wait ([`d24989b`](https://github.com/lab255/Crystal/commit/d24989b))
+
 ## v0.44.0 (2026-08-29)
 
 ### Features
