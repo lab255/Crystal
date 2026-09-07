@@ -5,12 +5,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ENRICHMENT_SCHEMA_VERSION,
   INDEX_DIR,
+  buildCodeIndex,
+  type CodeEnrichment,
   serializeCrystalFile,
   type AgentRun,
   type IndexSourceFile,
 } from "@crystal/core";
 import { CodeIndexService, type EnrichmentBatch } from "./code-index.js";
-import type { CodeMapAnalyzer } from "./code-map.js";
 
 const tmpRoots: string[] = [];
 afterEach(async () => {
@@ -19,7 +20,7 @@ afterEach(async () => {
 });
 
 /** N one-symbol source files plus a service reading them from a real temp root. */
-async function makeService(fileCount: number): Promise<{ svc: CodeIndexService; root: string }> {
+async function makeService(fileCount: number): Promise<{ svc: CodeIndexService; root: string; indexBuild: ReturnType<typeof vi.fn> }> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "crystal-index-"));
   tmpRoots.push(root);
   const sources: IndexSourceFile[] = Array.from({ length: fileCount }, (_, i) => ({
@@ -29,8 +30,8 @@ async function makeService(fileCount: number): Promise<{ svc: CodeIndexService; 
     importerModules: 0,
     symbols: [{ name: `fn${i}`, kind: "function", line: 1, exported: true }],
   }));
-  const codemap = { indexSourceFiles: async () => sources } as unknown as CodeMapAnalyzer;
-  return { svc: new CodeIndexService(root, codemap), root };
+  const indexBuild = vi.fn(async (enrichments: CodeEnrichment[]) => buildCodeIndex(sources, enrichments));
+  return { svc: new CodeIndexService(root, { indexBuild }), root, indexBuild };
 }
 
 /** Simulate an indexing agent: write an enrichment covering `files` (no entries). */
@@ -158,4 +159,16 @@ describe("CodeIndexService.drainBacklog", () => {
       "A full index is already running",
     );
   });
+});
+
+it("passes disk enrichments to the analyzer and caches the returned index", async () => {
+  const { svc, root, indexBuild } = await makeService(1);
+  await writeCoverage(root, "coverage.json", [{ path: "src/f00.ts", hash: "h0" }]);
+  const result = await svc.get();
+  expect(result.staleFiles).toEqual([]);
+  expect(indexBuild).toHaveBeenCalledWith([
+    expect.objectContaining({ covered: [{ file: "src/f00.ts", hash: "h0" }] }),
+  ]);
+  expect(await svc.get()).toBe(result);
+  expect(indexBuild).toHaveBeenCalledTimes(1);
 });

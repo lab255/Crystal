@@ -30,6 +30,11 @@ describe("AnalysisBackend", () => {
     backends.push(backend);
     const codemap = createCodeMapFacade(backend);
 
+    const summary = backend.call("summary", []);
+    expect(backend.call("summary", [])).toBe(summary);
+    await summary;
+    const index = await codemap.indexBuild([]);
+    expect(index.files.map((file) => file.path)).toContain("src/a.ts");
     const detail = await codemap.fileDetail("src/a.ts");
     expect(detail.symbols.map((s) => s.name)).toContain("alpha");
     // Whichever mode it landed in, it must have settled on one.

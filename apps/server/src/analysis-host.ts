@@ -33,6 +33,7 @@ interface Pending {
   reject: (err: Error) => void;
   method: string;
   args: unknown[];
+  timer?: ReturnType<typeof setTimeout>;
 }
 
 type WorkerReply =
@@ -94,6 +95,8 @@ function tsBootScript(entry: string): string {
 /** Crashes within this window count toward the give-up threshold. */
 const CRASH_WINDOW_MS = 60_000;
 const MAX_CRASHES = 3;
+const CALL_TIMEOUT_MS = 300_000;
+const METHOD_TIMEOUT_MS: Readonly<Record<string, number>> = { invalidate: 0 };
 
 export class AnalysisBackend {
   private worker: Worker | null = null;
@@ -105,12 +108,15 @@ export class AnalysisBackend {
   private crashTimes: number[] = [];
   private pending = new Map<number, Pending>();
   private nextId = 1;
+  private coalesced = new Map<string, Promise<unknown>>();
+  private timedOutWorkers = new WeakSet<Worker>();
   private localAnalyzer: CodeMapAnalyzer | null = null;
   private progressListeners = new Set<(progress: CodeMapProgress) => void>();
 
   constructor(
     private readonly root: string,
     private readonly ws: string = root,
+    private readonly timeouts: Readonly<Record<string, number>> = {},
   ) {}
 
   /** How calls are currently served — for logs and tests. */
@@ -121,14 +127,50 @@ export class AnalysisBackend {
 
   call(method: string, args: unknown[]): Promise<unknown> {
     if (this.disposed) return Promise.reject(new Error("Analysis backend disposed"));
-    if (this.broken) return this.callLocal(method, args);
-    const worker = this.ensureWorker();
-    if (!worker) return this.callLocal(method, args);
-    return new Promise((resolve, reject) => {
-      const id = this.nextId++;
-      this.pending.set(id, { resolve, reject, method, args });
-      worker.postMessage({ id, method, args });
+    const key = method === "invalidate" ? undefined : JSON.stringify([method, args]);
+    const hit = key === undefined ? undefined : this.coalesced.get(key);
+    if (hit) return hit;
+    const worker = this.broken ? null : this.ensureWorker();
+    const id = this.nextId++;
+    const promise = new Promise<unknown>((resolve, reject) => {
+      const finish = (error: Error | null, value?: unknown) => {
+        const p = this.pending.get(id);
+        if (!p) return;
+        clearTimeout(p.timer);
+        this.pending.delete(id);
+        if (key !== undefined) this.coalesced.delete(key);
+        if (error) reject(error);
+        else resolve(value);
+      };
+      const p: Pending = {
+        method,
+        args,
+        resolve: (value) => finish(null, value),
+        reject: (error) => finish(error),
+      };
+      this.pending.set(id, p);
+      const timeoutMs = this.timeouts[method] ?? METHOD_TIMEOUT_MS[method] ?? CALL_TIMEOUT_MS;
+      if (timeoutMs > 0) {
+        p.timer = setTimeout(() => {
+          p.reject(new Error(`Analysis method ${method} timed out after ${timeoutMs}ms`));
+          if (worker && this.worker === worker) {
+            this.timedOutWorkers.add(worker);
+            void worker.terminate();
+          }
+        }, timeoutMs);
+      }
+      if (worker) {
+        try {
+          worker.postMessage({ id, method, args });
+        } catch (err) {
+          p.reject(err as Error);
+        }
+      } else {
+        void this.callLocal(method, args).then(p.resolve, p.reject);
+      }
     });
+    if (key !== undefined && this.pending.has(id)) this.coalesced.set(key, promise);
+    return promise;
   }
 
   onProgress(listener: (progress: CodeMapProgress) => void): () => void {
@@ -189,6 +231,7 @@ export class AnalysisBackend {
     }
     this.worker = worker;
     worker.on("message", (msg: WorkerReply) => {
+      if (this.worker !== worker || this.timedOutWorkers.has(worker)) return;
       if (msg.type === "ready") {
         this.everReady = true;
         return;
@@ -200,7 +243,6 @@ export class AnalysisBackend {
       const reply = msg;
       const p = this.pending.get(reply.id);
       if (!p) return;
-      this.pending.delete(reply.id);
       if (reply.ok) p.resolve(reply.result);
       else p.reject(new Error(reply.error ?? "analysis failed"));
     });
@@ -218,12 +260,12 @@ export class AnalysisBackend {
     if (this.worker !== worker) return;
     this.worker = null;
     const stranded = [...this.pending.values()];
-    this.pending.clear();
     if (this.disposed) {
       for (const p of stranded) p.reject(new Error("Analysis backend disposed"));
       return;
     }
-    if (!this.everReady) {
+    const timedOut = this.timedOutWorkers.has(worker);
+    if (!this.everReady && !timedOut) {
       // Never booted: no TS loader (tests), missing bundle. Serve the queue
       // in-process and stay there.
       this.markBroken(`worker exited with code ${code} before ready`);
@@ -231,7 +273,9 @@ export class AnalysisBackend {
       return;
     }
     const now = Date.now();
-    this.crashTimes = [...this.crashTimes.filter((t) => now - t < CRASH_WINDOW_MS), now];
+    if (!timedOut) {
+      this.crashTimes = [...this.crashTimes.filter((t) => now - t < CRASH_WINDOW_MS), now];
+    }
     if (this.crashTimes.length > MAX_CRASHES) {
       this.markBroken("worker crashing repeatedly");
       for (const p of stranded) this.callLocal(p.method, p.args).then(p.resolve, p.reject);

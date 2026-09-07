@@ -58,7 +58,8 @@ import {
 } from "./git.js";
 import { HUB_MCP_ID, handleMcpRequest, isMcpRequest } from "./mcp/http.js";
 import { INTERACTIVE_PROMPT_DELAY_MS, launchInteractiveRun } from "./interactive.js";
-import { overviewSourcesAtRef, surfacesSnapshotAtRef } from "./ref-snapshot.js";
+import { JobQueue } from "./job-queue.js";
+import { RefResultCache } from "./ref-result-cache.js";
 import { pasteInput } from "./terminal-manager.js";
 import { PublishManager } from "./publish-manager.js";
 import { sendApiRequest } from "./api-client-store.js";
@@ -396,6 +397,8 @@ export async function startCrystalServer(opts: {
   const mcpBaseUrl = `http://127.0.0.1:${mcpPort}`;
   const hubMcpUrl = `${mcpBaseUrl}/mcp/${HUB_MCP_ID}`;
 
+  const jobs = new JobQueue();
+  const refResults = new RefResultCache(jobs);
   const registry = new WorkspaceRegistry(
     (event, payload) => {
       // The hub watches every project's workflows: a delivery follows the
@@ -881,7 +884,7 @@ export async function startCrystalServer(opts: {
       if (!wants.has("summary") && !wants.has("surfaces")) {
         const [{ index }, atRef, changes] = await Promise.all([
           rt.codeindex.get(),
-          overviewSourcesAtRef(rt.root, repo, ref),
+          refResults.get("refOverviewSources", rt.root, repo, ref, rt.id),
           changed,
         ]);
         return {
@@ -896,7 +899,7 @@ export async function startCrystalServer(opts: {
       }
       const [{ index }, snap, changes] = await Promise.all([
         rt.codeindex.get(),
-        surfacesSnapshotAtRef(rt.root, repo, ref),
+        refResults.get("refSurfacesSnapshot", rt.root, repo, ref, rt.id),
         changed,
       ]);
       return {
@@ -1532,6 +1535,8 @@ export async function startCrystalServer(opts: {
       // must stop registering before the set is cleared below.
       publish?.stop();
       hub?.dispose();
+      refResults.dispose();
+      jobs.dispose();
       await registry.closeAll();
       for (const dispose of permissionBroadcastDisposers.values()) dispose();
       permissionBroadcastDisposers.clear();
