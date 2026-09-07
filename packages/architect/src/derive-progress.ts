@@ -33,6 +33,8 @@ export interface DeriveState {
   loading: boolean;
   /** Overview + summary landed for the active workspace. */
   hasData: boolean;
+  /** Architecture overlay landed for the active workspace. */
+  overlay: boolean;
   /** Composed graph is ready to render. */
   rendered: boolean;
 }

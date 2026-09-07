@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   Emitter,
+  createArchOverlay,
   createDefaultRoster,
   createProject,
   type BridgeEvents,
@@ -50,6 +51,52 @@ function scopedClient(
 }
 
 describe("workspace store", () => {
+  it("loads overlays with a longer timeout and clears only the overlay error on retry", async () => {
+    const overlay = createArchOverlay();
+    const result = deferred<BridgeMethods["arch.getOverlay"]["result"]>();
+    let failed = false;
+    const client = scopedClient(async () => {
+      if (!failed) {
+        failed = true;
+        throw new Error("overlay timed out");
+      }
+      return result.promise;
+    });
+    const store = createWorkspaceStore(client);
+    expect(store.getState().archOverlayError).toBeNull();
+    await store.getState().loadArchOverlay();
+    expect(client.request).toHaveBeenCalledWith("arch.getOverlay", { ws: "a" }, { timeoutMs: 180_000 });
+    expect(store.getState()).toMatchObject({ archOverlay: null, error: "overlay timed out", archOverlayError: "overlay timed out" });
+
+    const retry = store.getState().loadArchOverlay();
+    expect(store.getState().archOverlayError).toBeNull();
+    result.resolve({ overlay });
+    await retry;
+    expect(store.getState()).toMatchObject({ archOverlay: overlay, archOverlayError: null, error: "overlay timed out" });
+    await store.getState().loadArchOverlay();
+    expect(client.request).toHaveBeenCalledTimes(2);
+  });
+
+  it("resets overlay errors on workspace switches and ignores failures from the old workspace", async () => {
+    const pending = deferred<BridgeMethods["arch.getOverlay"]["result"]>();
+    const client = scopedClient(async (method, _params, ws) => {
+      if (method === "workspace.get") return workspace(ws!);
+      if (method === "agents.get") return { roster: createDefaultRoster() };
+      await pending.promise;
+      throw new Error("old workspace failure");
+    });
+    const store = createWorkspaceStore(client);
+    store.setState({ info: workspace("a"), archOverlayError: "previous failure" });
+    const load = store.getState().loadArchOverlay();
+    store.setState({ archOverlayError: "previous failure" });
+    client.scope = "b";
+    await store.getState().refresh();
+    expect(store.getState()).toMatchObject({ archOverlay: null, archOverlayError: null });
+    pending.resolve({ overlay: createArchOverlay() });
+    await load;
+    expect(store.getState()).toMatchObject({ archOverlay: null, archOverlayError: null, error: null });
+  });
+
   it("keeps the newest workspace refresh and scopes subsequent edits to it", async () => {
     const infoA = deferred<WorkspaceInfo>();
     const agentsA = deferred<BridgeMethods["agents.get"]["result"]>();
