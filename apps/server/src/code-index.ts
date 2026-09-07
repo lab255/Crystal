@@ -1,7 +1,6 @@
 import fs from "node:fs/promises";
 import {
   INDEX_DIR,
-  buildCodeIndex,
   buildEnrichmentPrompt,
   parseCrystalFile,
   staleIndexFiles,
@@ -45,9 +44,8 @@ export class CodeIndexService {
 
   constructor(
     private readonly root: string,
-    // Only the (async) source pull is needed, so the worker-backed facade
-    // plugs in as well as the real analyzer.
-    private readonly codemap: Pick<CodeMapAnalyzer, "indexSourceFiles">,
+    // Aggregate beside the analyzer so source files never cross the worker boundary.
+    private readonly codemap: Pick<CodeMapAnalyzer, "indexBuild">,
   ) {}
 
   onProgress(listener: (progress: CodeIndexBatchProgress) => void): () => void {
@@ -73,8 +71,7 @@ export class CodeIndexService {
   }
 
   private async build(): Promise<{ index: CodeIndex; staleFiles: string[] }> {
-    const sources = await this.codemap.indexSourceFiles();
-    const index = buildCodeIndex(sources, await this.loadEnrichments());
+    const index = await this.codemap.indexBuild(await this.loadEnrichments());
     index.generatedAt = new Date().toISOString();
     this.cached = { index, staleFiles: staleIndexFiles(index) };
     return this.cached;

@@ -11,6 +11,7 @@ import {
   routeSegments,
   routesMatchSuffix,
   buildSystemOverview,
+  buildCodeIndex,
 } from "@crystal/core";
 import type {
   ApiTrace,
@@ -21,6 +22,7 @@ import type {
   CodeFileSummary,
   CodeImport,
   CodeIndex,
+  CodeEnrichment,
   CodeMapProgress,
   CodeMapSummary,
   CodeModule,
@@ -2878,6 +2880,11 @@ export class CodeMapAnalyzer {
     const value = buildSystemOverview(await this.overviewSourceFiles(), index);
     this.overviewMemo = { generation: this.generation, indexGeneratedAt, value };
     return value;
+  }
+
+  /** Build the semantic index beside the analyzer, so sources never cross a thread. */
+  async indexBuild(enrichments: CodeEnrichment[]): Promise<CodeIndex> {
+    return buildCodeIndex(await this.indexSourceFiles(), enrichments);
   }
 
   /** Per-file inputs for the semantic code index (see core's code-index.ts). */

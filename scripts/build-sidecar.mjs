@@ -129,14 +129,13 @@ fs.cpSync(platDir, path.join(stageRoot, path.basename(platformPkg)), {
 console.log("staged node-pty:", ptyDir);
 console.log("staged prebuild:", platDir);
 
-// 6. Stage the analysis worker bundle. Worker threads need a real file on
+// 6. Stage the worker bundles. Worker threads need a real file on
 //    disk — a SEA can't host one — so the host resolves it from the module
 //    base dir (see workerEntry() in apps/server/src/analysis-host.ts).
-fs.copyFileSync(
-  path.resolve("dist", "analysis-worker.cjs"),
-  path.join(stageBase, "analysis-worker.cjs"),
-);
-console.log("staged analysis worker");
+for (const worker of ["analysis-worker.cjs", "jobs-worker.cjs"]) {
+  fs.copyFileSync(path.resolve("dist", worker), path.join(stageBase, worker));
+  console.log("staged worker:", worker);
+}
 
 // 6b. Stage the hub's stdio MCP shim. An *external* agent (Claude Code in a
 //     terminal, Claude Desktop) reaches this app's hub through it, and the
