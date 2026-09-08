@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.46.0 (2026-09-08)
+
+### Features
+
+- Sign in with able — OIDC PKCE sign-in against account.able.online (#2) ([`70a4441`](https://github.com/lab255/Crystal/commit/70a4441))
+
 ## v0.45.0 (2026-09-07)
 
 ### Features
