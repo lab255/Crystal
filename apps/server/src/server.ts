@@ -61,6 +61,7 @@ import { INTERACTIVE_PROMPT_DELAY_MS, launchInteractiveRun } from "./interactive
 import { JobQueue } from "./job-queue.js";
 import { RefResultCache } from "./ref-result-cache.js";
 import { pasteInput } from "./terminal-manager.js";
+import { AccountManager } from "./able-auth.js";
 import { PublishManager } from "./publish-manager.js";
 import { sendApiRequest } from "./api-client-store.js";
 import { WorkspaceRegistry, canonicalRoot, type WorkspaceRuntime } from "./workspace-registry.js";
@@ -516,6 +517,10 @@ export async function startCrystalServer(opts: {
     if (!infraOverlayStore) throw new Error("The cross-project hub is disabled on this server.");
     return infraOverlayStore;
   };
+
+  // Account identity belongs to this server, across all workspaces.
+  const account = new AccountManager();
+  account.events.on("changed", (status) => broadcast("account.changed", status));
 
   // --- Publishing: an outbound relay connection that turns remote browsers
   // into ordinary bridge clients. Registered channels join `clients`, so they
@@ -1158,6 +1163,9 @@ export async function startCrystalServer(opts: {
       await requireHub().cancelManagerRun(runId);
       return { ok: true as const };
     },
+    "account.status": () => account.status(),
+    "account.signIn": () => account.beginSignIn(),
+    "account.signOut": () => account.signOut(),
     "publish.status": () => requirePublish().status(),
     "publish.configure": (params) => requirePublish().configure(params),
     "refactor.preview": ({ ws, intents }) => registry.get(ws).refactor().preview(intents),
@@ -1531,6 +1539,7 @@ export async function startCrystalServer(opts: {
         clearTimeout(instanceTimer);
         instanceTimer = null;
       }
+      account.dispose();
       // Publish first: relayed clients are in `clients` and their channels
       // must stop registering before the set is cleared below.
       publish?.stop();

@@ -266,3 +266,5 @@ export {
   useWorkspaces,
   type CrystalContextValue,
 } from "./provider.js";
+
+export { useAccount } from "./account-store.js";
